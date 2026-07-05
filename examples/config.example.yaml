@@ -1,0 +1,57 @@
+server:
+  listen_addr: ":18080"
+  public_base_url: "https://codespace.example.com"
+  shutdown_timeout: "10s"
+
+gitea:
+  url: "https://gitea.example.com"
+
+gateway:
+  ssh_host: "codespace.example.com"
+  ssh_port: 2222
+
+manager:
+  id: 0
+  uuid: "replace-with-manager-uuid"
+  token: "replace-with-manager-token"
+  name: "local-incus-manager"
+  gateway_url: "https://codespace.example.com"
+  version: "0.1.0"
+  poll_interval: "750ms"
+  ping_interval: "5s"
+  fetch_capacity: 4
+  http_timeout: "15s"
+  labels:
+    - "linux"
+    - "incus"
+    - "local"
+  max_concurrency: 4
+  supported_instance_types:
+    - "container"
+    - "vm"
+  images:
+    - "images:debian/12"
+    - "images:ubuntu/24.04"
+  resource_presets:
+    - name: "small"
+      cpu: "2"
+      memory: "4GiB"
+      disk: "40GiB"
+  features:
+    web: true
+    ssh: true
+    port_preview: true
+    public_port: false
+  default_init_script: "npx --yes @devcontainers/cli up --workspace-folder ."
+
+provisioner:
+  kind: "incus"
+  codespace_root: "/codespace"
+  incus:
+    unix_socket: "/var/lib/incus/unix.socket"
+    project: "default"
+  bootstrap:
+    shell: "/bin/sh"
+    home_dir: "/root"
+    user: 0
+    group: 0

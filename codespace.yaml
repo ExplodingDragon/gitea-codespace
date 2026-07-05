@@ -1,0 +1,54 @@
+server:
+    listen_addr: :18080
+    public_base_url: http://127.0.0.1:18080
+    shutdown_timeout: 10s
+gitea:
+    url: http://127.0.0.1:3000
+gateway:
+    ssh_host: 127.0.0.1
+    ssh_port: 2222
+manager:
+    id: 1
+    uuid: mgr-SrIbZ1jt0HTJuzED
+    token: A0LcmbQIdfoUScubeGwaUSM3nRoeKATX5Znz4zLK
+    name: embedded-reference-manager
+    gateway_url: http://127.0.0.1:18080
+    version: 0.1.0
+    poll_interval: 750ms
+    ping_interval: 5s
+    fetch_capacity: 4
+    http_timeout: 15s
+    labels:
+        - linux
+        - reference
+        - embedded
+    max_concurrency: 4
+    supported_instance_types:
+        - container
+        - vm
+    images:
+        - images:debian/12
+        - images:ubuntu/24.04
+    resource_presets:
+        - name: small
+          cpu: "2"
+          memory: 4GiB
+          disk: 40GiB
+    features:
+        web: true
+        ssh: true
+        port_preview: true
+        public_port: false
+    default_init_script: npx --yes @devcontainers/cli up --workspace-folder .
+provisioner:
+    kind: dummy
+    codespace_root: /codespace
+    incus:
+        remote: ""
+        unix_socket: ""
+        project: ""
+    bootstrap:
+        shell: /bin/sh
+        home_dir: /root
+        user: 0
+        group: 0
