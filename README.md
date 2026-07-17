@@ -1,42 +1,12 @@
 # codespace
 
-Codespace manager and gateway client for Gitea.
+Gitea Codespace 的 Manager 与 Gateway 实现目录。
 
-## What It Contains
+该模块负责：
 
-- Gateway user API for open flow, codespace view, and preview ports.
-- Runtime API for codespace init status and port declarations.
-- Manager worker that declares itself to Gitea, polls tasks, and executes lifecycle actions.
-- Dummy provisioner used to simulate Incus-backed codespace during development and tests.
+- Manager 注册、声明、批量领取 operation 和生命周期 worker。
+- Runtime Instance 映射、本地状态恢复与 Runtime HTTP API。
+- Gateway 的 Endpoint、WebSocket 和 SSH 接入。
+- ManagerService 客户端、Gateway session、日志脱敏和本地诊断。
 
-## Current Behavior
-
-- `register` consumes a Gitea manager registration token once and writes the returned manager credentials to `codespace.yaml`.
-- `serve` reads `codespace.yaml`, starts the local gateway/runtime API, and connects to Gitea with the saved manager UUID and token.
-- Runtime state is kept in memory; Gitea remains the control-plane source of truth.
-
-## Register
-
-```bash
-go run ./cmd/gitea-codespace register
-```
-
-The command prompts for the Gitea URL, registration token, and manager name. It writes `codespace.yaml` in the current directory.
-
-## Serve
-
-```bash
-go run ./cmd/gitea-codespace serve
-```
-
-Default gateway listen address:
-
-```text
-http://127.0.0.1:18080
-```
-
-Useful endpoints:
-
-- `GET /api/codespace/{id}/open`
-- `GET /api/runtime/context`
-- `POST /api/runtime/ports`
+在 Gitea Codespace 集成仓库中，系统职责、状态机、RPC 字段、配置和验收行为以 `src/README.md` 及其子文档为准。实现命令、配置示例和运行说明在对应功能可执行后随代码补充，避免把临时脚手架描述为已确定接口。
