@@ -1,45 +1,38 @@
 server:
     listen_addr: :18080
-    public_base_url: http://127.0.0.1:18080
+    runtime_api_listen: :18080
+    gateway_listen: :18081
+    gateway_ssh_listen: :2222
+    public_base_url: http://127.0.0.1:18081
     shutdown_timeout: 10s
 gitea:
     url: http://127.0.0.1:3000
 gateway:
     ssh_host: 127.0.0.1
     ssh_port: 2222
+    gateway_max_inflight_total: 4096
+    gateway_max_inflight_per_session: 32
+    gateway_public_max_connections_per_endpoint: 64
+    gateway_public_max_connections_per_ip: 16
+    gateway_validation_max_inflight: 128
 manager:
-    id: 1
-    uuid: mgr-SrIbZ1jt0HTJuzED
-    token: A0LcmbQIdfoUScubeGwaUSM3nRoeKATX5Znz4zLK
-    name: embedded-reference-manager
+    state_dir: codespace-state
+    name: codespace-manager
     gateway_url: http://127.0.0.1:18080
+    gateway_ssh_addr: 127.0.0.1:2222
+    gateway_ssh_host_key_algorithm: ""
+    gateway_ssh_host_key_fingerprint_sha256: ""
+    gateway_ssh_host_key_updated_unix: 0
     version: 0.1.0
     poll_interval: 750ms
-    ping_interval: 5s
-    fetch_capacity: 4
+    declare_interval: 5s
+    capacity_total: 4
+    capacity_available: 4
+    cleanup_capacity_available: 4
+    max_operations: 4
     http_timeout: 15s
-    labels:
-        - linux
-        - reference
-        - embedded
-    max_concurrency: 4
-    supported_instance_types:
-        - container
-        - vm
-    images:
-        - images:debian/12
-        - images:ubuntu/24.04
-    resource_presets:
-        - name: small
-          cpu: "2"
-          memory: 4GiB
-          disk: 40GiB
-    features:
-        web: true
-        ssh: true
-        port_preview: true
-        public_port: false
-    default_init_script: npx --yes @devcontainers/cli up --workspace-folder .
+    tags:
+        - default
 provisioner:
     kind: dummy
     codespace_root: /codespace

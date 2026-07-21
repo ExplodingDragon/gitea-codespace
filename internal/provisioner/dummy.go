@@ -4,10 +4,9 @@
 package provisioner
 
 import (
+	"context"
 	"fmt"
 	"sync"
-
-	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 )
 
 // DummyProvisioner simulates backend operations for tests.
@@ -24,7 +23,10 @@ func NewDummy() *DummyProvisioner {
 }
 
 // CreateOrStart creates or starts one instance.
-func (p *DummyProvisioner) CreateOrStart(spec InstanceSpec) (*Instance, error) {
+func (p *DummyProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec) (*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -35,22 +37,31 @@ func (p *DummyProvisioner) CreateOrStart(spec InstanceSpec) (*Instance, error) {
 	instance, ok := p.instances[spec.Name]
 	if !ok {
 		instance = &Instance{
-			Name:         spec.Name,
-			Image:        spec.Image,
-			Type:         spec.Type,
-			RepoFullName: spec.RepoFullName,
+			CodespaceUUID:          spec.CodespaceUUID,
+			Name:                   spec.Name,
+			RuntimeState:           RuntimeStateRunning,
+			RepoFullName:           spec.RepoFullName,
+			RepoTag:                spec.RepoTag,
+			InternalSSHHost:        "127.0.0.1",
+			InternalSSHPort:        22,
+			InternalSSHUser:        "root",
+			InternalSSHAuthMode:    "publickey",
+			InternalSSHFingerprint: "SHA256:dummy",
 		}
 		p.instances[instance.Name] = instance
 	}
-	instance.State = codespacev1.CodespaceStatus_CODESPACE_STATUS_RUNNING
 	instance.Workdir = "/codespace/" + repoDirName(spec.RepoFullName)
+	instance.RuntimeState = RuntimeStateRunning
 
 	copyValue := *instance
 	return &copyValue, nil
 }
 
 // StartExisting starts one existing instance.
-func (p *DummyProvisioner) StartExisting(spec InstanceSpec) (*Instance, error) {
+func (p *DummyProvisioner) StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -61,20 +72,39 @@ func (p *DummyProvisioner) StartExisting(spec InstanceSpec) (*Instance, error) {
 	if !ok {
 		return nil, fmt.Errorf("instance %s does not exist", spec.Name)
 	}
-	instance.State = codespacev1.CodespaceStatus_CODESPACE_STATUS_RUNNING
 	instance.Workdir = "/codespace/" + repoDirName(instance.RepoFullName)
+	instance.RuntimeState = RuntimeStateRunning
 
 	copyValue := *instance
 	return &copyValue, nil
 }
 
+// ListInstances returns all local dummy instances.
+func (p *DummyProvisioner) ListInstances(ctx context.Context) ([]*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	instances := make([]*Instance, 0, len(p.instances))
+	for _, instance := range p.instances {
+		copyValue := *instance
+		instances = append(instances, &copyValue)
+	}
+	return instances, nil
+}
+
 // Bootstrap simulates one bootstrap run.
-func (p *DummyProvisioner) Bootstrap(instanceName string, request BootstrapRequest) error {
+func (p *DummyProvisioner) Bootstrap(ctx context.Context, instanceName string, request BootstrapRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if instanceName == "" {
 		return fmt.Errorf("instance name is empty")
 	}
-	if request.CodespaceID == "" {
-		return fmt.Errorf("codespace id is empty")
+	if request.CodespaceUUID == "" {
+		return fmt.Errorf("codespace uuid is empty")
 	}
 	if request.Workdir == "" {
 		return fmt.Errorf("workdir is empty")
@@ -83,20 +113,25 @@ func (p *DummyProvisioner) Bootstrap(instanceName string, request BootstrapReque
 }
 
 // Stop marks one instance as stopped.
-func (p *DummyProvisioner) Stop(instanceName string) error {
+func (p *DummyProvisioner) Stop(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	instance, ok := p.instances[instanceName]
-	if !ok {
+	if _, ok := p.instances[instanceName]; !ok {
 		return nil
 	}
-	instance.State = codespacev1.CodespaceStatus_CODESPACE_STATUS_STOPPED
+	p.instances[instanceName].RuntimeState = RuntimeStateStopped
 	return nil
 }
 
 // Delete deletes one instance.
-func (p *DummyProvisioner) Delete(instanceName string) error {
+func (p *DummyProvisioner) Delete(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	p.mu.Lock()
 	defer p.mu.Unlock()
 

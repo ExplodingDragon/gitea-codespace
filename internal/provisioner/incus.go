@@ -5,6 +5,7 @@ package provisioner
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"net/url"
@@ -13,14 +14,20 @@ import (
 
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
-
-	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 )
 
 const defaultCodespaceRoot = "/codespace"
 
+const (
+	incusConfigManagerID     = "user.gitea.manager_id"
+	incusConfigCodespaceUUID = "user.gitea.codespace_uuid"
+	incusConfigSchemaVersion = "user.gitea.schema_version"
+	incusConfigTag           = "user.gitea.tag"
+)
+
 // IncusConfig configures one Incus-backed provisioner.
 type IncusConfig struct {
+	ManagerID     int64
 	Project       string
 	Remote        string
 	UnixSocket    string
@@ -31,12 +38,16 @@ type IncusConfig struct {
 // IncusProvisioner provisions codespace as Incus instances.
 type IncusProvisioner struct {
 	client        incus.InstanceServer
+	managerID     string
 	codespaceRoot string
 	bootstrap     BootstrapConfig
 }
 
 // NewIncus creates one Incus-backed provisioner.
 func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
+	if config.ManagerID <= 0 {
+		return nil, fmt.Errorf("manager_id is required")
+	}
 	client, err := connectIncus(config)
 	if err != nil {
 		return nil, fmt.Errorf("connect incus: %w", err)
@@ -49,13 +60,17 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 
 	return &IncusProvisioner{
 		client:        client,
+		managerID:     fmt.Sprintf("%d", config.ManagerID),
 		codespaceRoot: codespaceRoot,
 		bootstrap:     config.Bootstrap,
 	}, nil
 }
 
 // CreateOrStart creates or starts one instance.
-func (p *IncusProvisioner) CreateOrStart(spec InstanceSpec) (*Instance, error) {
+func (p *IncusProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec) (*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	instanceName := spec.Name
 	if instanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
@@ -66,7 +81,7 @@ func (p *IncusProvisioner) CreateOrStart(spec InstanceSpec) (*Instance, error) {
 		if !isNotFoundError(err) {
 			return nil, fmt.Errorf("get instance %s: %w", instanceName, err)
 		}
-		if err := p.createInstance(spec); err != nil {
+		if err := p.createInstance(ctx, spec); err != nil {
 			return nil, fmt.Errorf("create instance %s: %w", instanceName, err)
 		}
 		instance, _, err = p.client.GetInstance(instanceName)
@@ -75,11 +90,14 @@ func (p *IncusProvisioner) CreateOrStart(spec InstanceSpec) (*Instance, error) {
 		}
 	}
 
-	return p.startExistingInstance(spec, instance.Name)
+	return p.startExistingInstance(ctx, spec, instance.Name)
 }
 
 // StartExisting starts one existing instance.
-func (p *IncusProvisioner) StartExisting(spec InstanceSpec) (*Instance, error) {
+func (p *IncusProvisioner) StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	instanceName := spec.Name
 	if instanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
@@ -91,41 +109,45 @@ func (p *IncusProvisioner) StartExisting(spec InstanceSpec) (*Instance, error) {
 		}
 		return nil, fmt.Errorf("get instance %s: %w", instanceName, err)
 	}
-	return p.startExistingInstance(spec, instance.Name)
+	return p.startExistingInstance(ctx, spec, instance.Name)
 }
 
 // Bootstrap clones the repo, configures git auth, and runs the init script.
-func (p *IncusProvisioner) Bootstrap(instanceName string, request BootstrapRequest) error {
+func (p *IncusProvisioner) Bootstrap(ctx context.Context, instanceName string, request BootstrapRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if instanceName == "" {
 		return fmt.Errorf("instance name is empty")
 	}
 	if request.Workdir == "" {
 		return fmt.Errorf("workdir is empty")
 	}
-	if request.RepoURL == "" {
-		return fmt.Errorf("repo url is empty")
+	repoURL := request.RepoCloneHTTPURL
+	if strings.EqualFold(request.GitProtocol, "GIT_PROTOCOL_SSH") && request.RepoCloneSSHURL != "" {
+		repoURL = request.RepoCloneSSHURL
+	}
+	if repoURL == "" {
+		return fmt.Errorf("repo clone url is empty")
 	}
 
-	authPrefix, httpsPrefix, err := buildGitURLPrefixes(request.RepoURL, request.GitUsername, request.GitToken)
+	authPrefix, httpsPrefix, err := buildGitURLPrefixes(repoURL, "codespace", request.GiteaToken)
 	if err != nil {
 		return fmt.Errorf("build git url prefixes: %w", err)
 	}
 
 	environment := map[string]string{
-		"HOME":              p.bootstrap.HomeDir,
-		"CODESPACE_ID":      request.CodespaceID,
-		"CODESPACE_TOKEN":   request.RuntimeToken,
-		"CODESPACE_API_URL": request.RuntimeAPIURL,
-		"CODESPACE_ROOT":    request.Workdir,
-		"CODESPACE_DIR":     request.Workdir,
-		"CODESPACE_PARENT":  filepath.Dir(request.Workdir),
-		"REPO_URL":          request.RepoURL,
-		"REPO_FULL_NAME":    request.RepoFullName,
-		"START_REF":         request.StartRef,
-		"START_SHA":         request.StartSHA,
-		"INIT_SCRIPT":       request.InitScript,
-		"GIT_AUTH_PREFIX":   authPrefix,
-		"GIT_HTTPS_PREFIX":  httpsPrefix,
+		"HOME":             p.bootstrap.HomeDir,
+		"CODESPACE_ID":     request.CodespaceUUID,
+		"CODESPACE_ROOT":   request.Workdir,
+		"CODESPACE_DIR":    request.Workdir,
+		"CODESPACE_PARENT": filepath.Dir(request.Workdir),
+		"REPO_URL":         repoURL,
+		"REPO_FULL_NAME":   request.RepoFullName,
+		"START_REF":        request.StartRef,
+		"START_SHA":        request.CommitSHA,
+		"GIT_AUTH_PREFIX":  authPrefix,
+		"GIT_HTTPS_PREFIX": httpsPrefix,
 	}
 
 	script := strings.TrimSpace(`
@@ -149,20 +171,19 @@ if [ -n "$START_SHA" ]; then
 elif [ -n "$START_REF" ]; then
   git -C "$CODESPACE_DIR" checkout --detach FETCH_HEAD
 fi
-if [ -n "$INIT_SCRIPT" ]; then
-  cd "$CODESPACE_DIR"
-  ` + p.bootstrap.Shell + ` -lc "$INIT_SCRIPT"
-fi
 `)
 
-	if err := p.execScript(instanceName, script, environment, request.Workdir); err != nil {
+	if err := p.execScript(ctx, instanceName, script, environment, request.Workdir); err != nil {
 		return fmt.Errorf("bootstrap instance %s: %w", instanceName, err)
 	}
 	return nil
 }
 
 // Stop stops one instance if it exists.
-func (p *IncusProvisioner) Stop(instanceName string) error {
+func (p *IncusProvisioner) Stop(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if instanceName == "" {
 		return nil
 	}
@@ -186,19 +207,22 @@ func (p *IncusProvisioner) Stop(instanceName string) error {
 	if err != nil {
 		return fmt.Errorf("stop instance %s: %w", instanceName, err)
 	}
-	if err := operation.Wait(); err != nil {
+	if err := operation.WaitContext(ctx); err != nil {
 		return fmt.Errorf("wait stop instance %s: %w", instanceName, err)
 	}
 	return nil
 }
 
 // Delete deletes one instance if it exists.
-func (p *IncusProvisioner) Delete(instanceName string) error {
+func (p *IncusProvisioner) Delete(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if instanceName == "" {
 		return nil
 	}
 
-	if err := p.Stop(instanceName); err != nil {
+	if err := p.Stop(ctx, instanceName); err != nil {
 		return err
 	}
 
@@ -209,30 +233,31 @@ func (p *IncusProvisioner) Delete(instanceName string) error {
 		}
 		return fmt.Errorf("delete instance %s: %w", instanceName, err)
 	}
-	if err := operation.Wait(); err != nil {
+	if err := operation.WaitContext(ctx); err != nil {
 		return fmt.Errorf("wait delete instance %s: %w", instanceName, err)
 	}
 	return nil
 }
 
-func (p *IncusProvisioner) createInstance(spec InstanceSpec) error {
-	instanceType := spec.Type
-	if instanceType == "" {
-		instanceType = "container"
+func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec) error {
+	if err := ctx.Err(); err != nil {
+		return err
 	}
-
-	imageAlias := spec.Image
-	if imageAlias == "" {
-		imageAlias = "images:debian/12"
-	}
-
 	request := api.InstancesPost{
 		Name: spec.Name,
-		Type: api.InstanceType(instanceType),
+		Type: api.InstanceType("container"),
+		InstancePut: api.InstancePut{
+			Config: map[string]string{
+				incusConfigManagerID:     p.managerID,
+				incusConfigCodespaceUUID: spec.CodespaceUUID,
+				incusConfigSchemaVersion: "1",
+				incusConfigTag:           spec.RepoTag,
+			},
+		},
 		Source: api.InstanceSource{
 			Type:     "image",
-			Alias:    trimRemoteAlias(imageAlias),
-			Server:   imageServerForAlias(imageAlias),
+			Alias:    trimRemoteAlias("images:debian/12"),
+			Server:   imageServerForAlias("images:debian/12"),
 			Protocol: "simplestreams",
 		},
 	}
@@ -241,13 +266,52 @@ func (p *IncusProvisioner) createInstance(spec InstanceSpec) error {
 	if err != nil {
 		return fmt.Errorf("create instance request: %w", err)
 	}
-	if err := operation.Wait(); err != nil {
+	if err := operation.WaitContext(ctx); err != nil {
 		return fmt.Errorf("wait create instance: %w", err)
 	}
 	return nil
 }
 
-func (p *IncusProvisioner) startInstance(instanceName string) error {
+// ListInstances returns all Codespace instances owned by this provisioner.
+func (p *IncusProvisioner) ListInstances(ctx context.Context) ([]*Instance, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	instances, err := p.client.GetInstances(api.InstanceTypeAny)
+	if err != nil {
+		return nil, fmt.Errorf("list instances: %w", err)
+	}
+	result := make([]*Instance, 0, len(instances))
+	for _, instance := range instances {
+		owned, ok := p.instanceFromAPI(instance)
+		if !ok {
+			continue
+		}
+		result = append(result, owned)
+	}
+	return result, nil
+}
+
+func (p *IncusProvisioner) instanceFromAPI(instance api.Instance) (*Instance, bool) {
+	if strings.TrimSpace(instance.Config[incusConfigManagerID]) != p.managerID {
+		return nil, false
+	}
+	codespaceUUID := strings.TrimSpace(instance.Config[incusConfigCodespaceUUID])
+	if codespaceUUID == "" {
+		return nil, false
+	}
+	return &Instance{
+		CodespaceUUID: codespaceUUID,
+		Name:          instance.Name,
+		RuntimeState:  incusRuntimeState(instance.Status),
+		RepoTag:       instance.Config[incusConfigTag],
+	}, true
+}
+
+func (p *IncusProvisioner) startInstance(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	instance, _, err := p.client.GetInstance(instanceName)
 	if err != nil {
 		return fmt.Errorf("get instance %s: %w", instanceName, err)
@@ -263,24 +327,40 @@ func (p *IncusProvisioner) startInstance(instanceName string) error {
 	if err != nil {
 		return fmt.Errorf("start instance request: %w", err)
 	}
-	if err := operation.Wait(); err != nil {
+	if err := operation.WaitContext(ctx); err != nil {
 		return fmt.Errorf("wait start instance: %w", err)
 	}
 	return nil
 }
 
-func (p *IncusProvisioner) startExistingInstance(spec InstanceSpec, instanceName string) (*Instance, error) {
-	if err := p.startInstance(instanceName); err != nil {
+func (p *IncusProvisioner) startExistingInstance(ctx context.Context, spec InstanceSpec, instanceName string) (*Instance, error) {
+	if err := p.startInstance(ctx, instanceName); err != nil {
 		return nil, fmt.Errorf("start instance %s: %w", instanceName, err)
 	}
 	return &Instance{
-		Name:         instanceName,
-		State:        codespacev1.CodespaceStatus_CODESPACE_STATUS_RUNNING,
-		Workdir:      filepath.Join(p.codespaceRoot, repoDirName(spec.RepoFullName)),
-		Image:        spec.Image,
-		Type:         spec.Type,
-		RepoFullName: spec.RepoFullName,
+		CodespaceUUID:          spec.CodespaceUUID,
+		Name:                   instanceName,
+		RuntimeState:           RuntimeStateRunning,
+		Workdir:                filepath.Join(p.codespaceRoot, repoDirName(spec.RepoFullName)),
+		RepoFullName:           spec.RepoFullName,
+		RepoTag:                spec.RepoTag,
+		InternalSSHHost:        instanceName,
+		InternalSSHPort:        22,
+		InternalSSHUser:        "root",
+		InternalSSHAuthMode:    "publickey",
+		InternalSSHFingerprint: "SHA256:incus-local",
 	}, nil
+}
+
+func incusRuntimeState(status string) RuntimeState {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "running":
+		return RuntimeStateRunning
+	case "stopped":
+		return RuntimeStateStopped
+	default:
+		return RuntimeStateCreating
+	}
 }
 
 func connectIncus(config IncusConfig) (incus.InstanceServer, error) {
@@ -345,6 +425,7 @@ func buildGitURLPrefixes(repoURL string, username string, token string) (string,
 }
 
 func (p *IncusProvisioner) execScript(
+	ctx context.Context,
 	instanceName string,
 	script string,
 	environment map[string]string,
@@ -366,7 +447,7 @@ func (p *IncusProvisioner) execScript(
 	if err != nil {
 		return fmt.Errorf("exec bootstrap command: %w", err)
 	}
-	if err := operation.Wait(); err != nil {
+	if err := operation.WaitContext(ctx); err != nil {
 		return fmt.Errorf(
 			"wait bootstrap command: %w (stdout=%q stderr=%q)",
 			err,

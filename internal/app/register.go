@@ -30,6 +30,7 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if err != nil {
 		config = DefaultConfig()
 		config.applyDefaults()
+		config.resolveRelativePaths(configPath)
 	}
 
 	reader := bufio.NewReader(input)
@@ -52,23 +53,29 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		config.Manager.GatewayURL = config.Server.PublicBaseURL
 	}
 
-	client := codespacev1connect.NewCodespaceServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, config.Gitea.URL)
+	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, config.Gitea.URL)
 	ctx, cancel := context.WithTimeout(context.Background(), config.Manager.HTTPTimeout.ToStdlib())
 	defer cancel()
 	response, err := client.RegisterManager(ctx, connect.NewRequest(&codespacev1.RegisterManagerRequest{
+		ProtocolVersion:   1,
 		RegistrationToken: registrationToken,
-		Name:              config.Manager.Name,
-		GatewayUrl:        config.Manager.GatewayURL,
-		Version:           config.Manager.Version,
-		Capabilities:      buildCapabilities(config),
 	}))
 	if err != nil {
 		return fmt.Errorf("register manager rpc: %w", err)
 	}
 
-	config.Manager.ID = response.Msg.GetManagerId()
-	config.Manager.UUID = response.Msg.GetManagerUuid()
-	config.Manager.Token = response.Msg.GetManagerToken()
+	if err := SaveManagerCredentials(config.Manager.StateDir, ManagerCredentials{
+		ManagerID:     response.Msg.GetManagerId(),
+		ManagerSecret: response.Msg.GetManagerSecret(),
+	}); err != nil {
+		return err
+	}
+	if err := SaveManagerRootState(config.Manager.StateDir, ManagerRootState{
+		ManagerID:           response.Msg.GetManagerId(),
+		InventoryGeneration: 0,
+	}); err != nil {
+		return err
+	}
 
 	savePath := configPath
 	if strings.TrimSpace(savePath) == "" {
@@ -79,7 +86,7 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if err := SaveRegisterConfig(savePath, config); err != nil {
 		return err
 	}
-	fmt.Fprintf(output, "registered manager %s and wrote %s\n", config.Manager.UUID, savePath)
+	fmt.Fprintf(output, "registered manager %d and wrote %s\n", response.Msg.GetManagerId(), savePath)
 	return nil
 }
 

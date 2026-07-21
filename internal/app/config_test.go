@@ -16,12 +16,14 @@ func TestLoadConfigYAML(t *testing.T) {
 	content := `
 server:
   listen_addr: ":19090"
+  runtime_api_listen: ":19090"
+  gateway_listen: ":19091"
+  gateway_ssh_listen: ":19022"
   public_base_url: "https://codespace.example.com"
 gitea:
   url: "https://gitea.example.com"
 manager:
-  uuid: "mgr-yaml"
-  token: "manager-token"
+  state_dir: "state"
   name: "yaml-manager"
   poll_interval: "1s"
 provisioner:
@@ -41,8 +43,20 @@ provisioner:
 	if config.Server.ListenAddr != ":19090" {
 		t.Fatalf("listen addr = %q", config.Server.ListenAddr)
 	}
+	if config.Server.RuntimeAPIListenAddr != ":19090" {
+		t.Fatalf("runtime api listen addr = %q", config.Server.RuntimeAPIListenAddr)
+	}
+	if config.Server.GatewayListenAddr != ":19091" {
+		t.Fatalf("gateway listen addr = %q", config.Server.GatewayListenAddr)
+	}
+	if config.Server.GatewaySSHListenAddr != ":19022" {
+		t.Fatalf("gateway ssh listen addr = %q", config.Server.GatewaySSHListenAddr)
+	}
 	if config.Manager.GatewayURL != "https://codespace.example.com" {
 		t.Fatalf("manager gateway url = %q", config.Manager.GatewayURL)
+	}
+	if config.Manager.StateDir != filepath.Join(filepath.Dir(configPath), "state") {
+		t.Fatalf("manager state dir = %q", config.Manager.StateDir)
 	}
 	if config.Manager.PollInterval.ToStdlib().Seconds() != 1 {
 		t.Fatalf("manager poll interval = %s", config.Manager.PollInterval.ToStdlib())
@@ -59,14 +73,16 @@ func TestLoadConfigJSON(t *testing.T) {
 	content := `{
   "server": {
     "listen_addr": ":20080",
+    "runtime_api_listen": ":20080",
+    "gateway_listen": ":20081",
+    "gateway_ssh_listen": ":20022",
     "public_base_url": "http://127.0.0.1:20080"
   },
   "gitea": {
     "url": "http://127.0.0.1:3000"
   },
   "manager": {
-    "uuid": "mgr-json",
-    "token": "manager-token",
+    "state_dir": "state",
     "name": "json-manager",
     "gateway_url": "http://127.0.0.1:20080"
   },
@@ -83,13 +99,44 @@ func TestLoadConfigJSON(t *testing.T) {
 		t.Fatalf("load json config: %v", err)
 	}
 
-	if config.Manager.UUID != "mgr-json" {
-		t.Fatalf("manager uuid = %q", config.Manager.UUID)
+	if config.Manager.StateDir != filepath.Join(filepath.Dir(configPath), "state") {
+		t.Fatalf("manager state dir = %q", config.Manager.StateDir)
 	}
 	if config.Server.ShutdownTimeout.ToStdlib().Seconds() != 10 {
 		t.Fatalf("shutdown timeout = %s", config.Server.ShutdownTimeout.ToStdlib())
 	}
 	if config.Provisioner.Bootstrap.Shell != "/bin/sh" {
 		t.Fatalf("bootstrap shell = %q", config.Provisioner.Bootstrap.Shell)
+	}
+	if config.Gateway.MaxInflightTotal != 4096 ||
+		config.Gateway.MaxInflightPerSession != 32 ||
+		config.Gateway.PublicMaxConnectionsPerEndpoint != 64 ||
+		config.Gateway.PublicMaxConnectionsPerIP != 16 ||
+		config.Gateway.ValidationMaxInflight != 128 {
+		t.Fatalf("gateway defaults = %#v", config.Gateway)
+	}
+}
+
+func TestGatewayConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.Gateway.PublicMaxConnectionsPerEndpoint = 4
+	config.Gateway.PublicMaxConnectionsPerIP = 5
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected per-ip gateway limit validation error")
+	}
+
+	config = DefaultConfig()
+	config.Gateway.MaxInflightTotal = 4
+	config.Gateway.MaxInflightPerSession = 5
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected per-session gateway limit validation error")
+	}
+
+	config = DefaultConfig()
+	config.Gateway.ValidationMaxInflight = 4097
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected validation inflight limit error")
 	}
 }

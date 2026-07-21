@@ -6,28 +6,30 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
-	"net/url"
 	"os/signal"
-	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"time"
 
-	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
-	"gitea.dev/codespace/internal/controlplane"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
-	"gitea.dev/codespace/internal/store"
 )
 
-const sessionCookieName = "codespace_session"
+const gatewaySessionCookieName = "gitea_codespace_session"
 
-// Run starts the reference control plane, gateway, runtime API, and embedded manager.
+const (
+	gatewayHTTPMaxHeaderBytes = 64 * 1024
+	gatewayHTTPReadHeaderTime = 10 * time.Second
+)
+
+// Run starts the Codespace Manager process.
 func Run(output io.Writer, configPath string) error {
 	if output == nil {
 		return fmt.Errorf("output is nil")
@@ -40,81 +42,235 @@ func Run(output io.Writer, configPath string) error {
 	return RunWithConfig(output, config)
 }
 
-// RunWithConfig starts the service stack with one in-memory config.
+// RunWithConfig starts the Manager worker and the process health endpoint.
 func RunWithConfig(output io.Writer, config Config) error {
 	if output == nil {
 		return fmt.Errorf("output is nil")
 	}
 
-	memoryStore := store.New()
-	controlPlaneService := controlplane.New(memoryStore)
-	handler := newHTTPHandler(config, memoryStore, controlPlaneService)
-	server := &http.Server{
-		Addr:              config.Server.ListenAddr,
-		Handler:           handler,
-		ReadHeaderTimeout: 10 * time.Second,
+	credentials, err := LoadManagerCredentials(config.Manager.StateDir)
+	if err != nil {
+		return fmt.Errorf("load manager credentials: %w", err)
 	}
-
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-
-	errorChannel := make(chan error, 2)
-	go func() {
-		fmt.Fprintf(output, "codespace listening on %s\n", config.Server.PublicBaseURL)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			errorChannel <- fmt.Errorf("listen and serve: %w", err)
+	stateLock, err := acquireStateDirLock(config.Manager.StateDir)
+	if err != nil {
+		return fmt.Errorf("acquire manager state dir lock: %w", err)
+	}
+	defer func() {
+		if err := stateLock.Close(); err != nil {
+			log.Printf("release manager state dir lock: %v", err)
 		}
 	}()
-
-	managerProvisioner, err := newProvisioner(config)
+	rootState, err := LoadManagerRootState(config.Manager.StateDir, credentials)
+	if err != nil {
+		return fmt.Errorf("load manager root state: %w", err)
+	}
+	if err := ValidateCodespaceStateFiles(config.Manager.StateDir); err != nil {
+		return fmt.Errorf("validate codespace state files: %w", err)
+	}
+	codespaceStateStore := NewCodespaceStateStore(config.Manager.StateDir)
+	initialOperations, err := codespaceStateStore.LoadActiveOperations()
+	if err != nil {
+		return fmt.Errorf("load codespace active operations: %w", err)
+	}
+	initialRuntimeGenerations, err := codespaceStateStore.LoadRuntimeGenerations()
+	if err != nil {
+		return fmt.Errorf("load codespace runtime generations: %w", err)
+	}
+	initialRuntimeTransitions, err := codespaceStateStore.LoadRuntimeTransitionPendings()
+	if err != nil {
+		return fmt.Errorf("load codespace runtime transitions: %w", err)
+	}
+	initialCleanupPendings, err := codespaceStateStore.LoadCleanupPendings()
+	if err != nil {
+		return fmt.Errorf("load codespace cleanup pendings: %w", err)
+	}
+	managerProvisioner, err := newProvisioner(config, credentials.ManagerID)
 	if err != nil {
 		return fmt.Errorf("create provisioner: %w", err)
 	}
 
-	embeddedManager := manager.New(
-		manager.AgentConfig{
-			BaseURL:       config.Gitea.URL,
-			ManagerUUID:   config.Manager.UUID,
-			ManagerToken:  config.Manager.Token,
-			Name:          config.Manager.Name,
-			GatewayURL:    config.Manager.GatewayURL,
-			Version:       config.Manager.Version,
-			PollInterval:  config.Manager.PollInterval.ToStdlib(),
-			PingInterval:  config.Manager.PingInterval.ToStdlib(),
-			FetchCapacity: config.Manager.FetchCapacity,
-			RuntimeAPIURL: strings.TrimSuffix(config.Server.PublicBaseURL, "/") + "/api/runtime",
-			Capabilities:  buildCapabilities(config),
-		},
+	listeners, err := openProcessListeners(config)
+	if err != nil {
+		return err
+	}
+	defer listeners.Close()
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	ctx, cancelProcess := context.WithCancel(ctx)
+	defer cancelProcess()
+	sessionRegistry := newGatewaySessionRegistry()
+	gatewayAccess := newGatewayAccessControllerFromConfig(config.Gateway)
+	gatewayBrowserAuth := newGatewayBrowserAuth()
+	gatewayOrigin, err := newGatewayOriginPolicy(config.Manager.GatewayURL)
+	if err != nil {
+		return fmt.Errorf("configure gateway origin: %w", err)
+	}
+	gatewayControlPlane := newGatewayControlPlane(
+		strings.TrimRight(config.Gitea.URL, "/"),
+		credentials.ManagerID,
+		credentials.ManagerSecret,
 		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
-		managerProvisioner,
-		memoryStore,
 	)
+
+	agent := manager.New(manager.AgentConfig{
+		BaseURL:                   strings.TrimRight(config.Gitea.URL, "/"),
+		ManagerID:                 credentials.ManagerID,
+		ManagerSecret:             credentials.ManagerSecret,
+		Name:                      config.Manager.Name,
+		GatewayURL:                config.Manager.GatewayURL,
+		GatewaySSHAddr:            config.Manager.GatewaySSHAddr,
+		GatewaySSHHostKeyAlgo:     config.Manager.GatewaySSHHostKeyAlgorithm,
+		GatewaySSHHostKeySHA256:   config.Manager.GatewaySSHHostKeyFingerprintSHA256,
+		GatewaySSHHostKeyUnix:     config.Manager.GatewaySSHHostKeyUpdatedUnix,
+		Version:                   config.Manager.Version,
+		Tags:                      append([]string(nil), config.Manager.Tags...),
+		PollInterval:              config.Manager.PollInterval.ToStdlib(),
+		DeclareInterval:           config.Manager.DeclareInterval.ToStdlib(),
+		CapacityTotal:             config.Manager.CapacityTotal,
+		CapacityAvailable:         config.Manager.CapacityAvailable,
+		CleanupCapacityAvailable:  config.Manager.CleanupCapacityAvailable,
+		MaxOperations:             config.Manager.MaxOperations,
+		HTTPTimeout:               config.Manager.HTTPTimeout.ToStdlib(),
+		RuntimeMetadataGeneration: 1,
+		InventoryGeneration:       rootState.InventoryGeneration,
+		InitialRuntimeGenerations: initialRuntimeGenerations,
+		InitialRuntimeTransitions: initialRuntimeTransitions,
+		InitialCleanupPendings:    initialCleanupPendings,
+		InitialOperations:         initialOperations,
+		OperationStateStore:       codespaceStateStore,
+		InventoryStateStore:       NewManagerRootStateStore(config.Manager.StateDir, credentials.ManagerID),
+		RuntimeStateStore:         codespaceStateStore,
+		CleanupStateStore:         codespaceStateStore,
+		SessionTracker:            sessionRegistry,
+		ManagerServiceSettings:    gatewayBrowserAuth,
+	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
+
+	processHealth := newProcessHealth()
+	runtimeAPIServer := &http.Server{
+		Handler:           newRuntimeAPIHandler(processHealth),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
+		processHealth,
+		sessionRegistry,
+		gatewayAccess,
+		gatewayControlPlane,
+		gatewayOrigin,
+		gatewayBrowserAuth,
+	))
+
+	errorChannel := make(chan error, 4)
+	go serveHTTP(ctx, errorChannel, "runtime api", runtimeAPIServer, listeners.RuntimeAPI)
+	go serveHTTP(ctx, errorChannel, "gateway http", gatewayServer, listeners.GatewayHTTP)
+	go serveSSH(ctx, errorChannel, listeners.GatewaySSH)
+	fmt.Fprintf(output, "codespace runtime api listening on %s\n", listeners.RuntimeAPI.Addr())
+	fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
+	fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
+
 	go func() {
-		if err := embeddedManager.Run(ctx); err != nil {
+		if err := agent.Run(ctx); err != nil {
 			errorChannel <- fmt.Errorf("manager: %w", err)
 		}
 	}()
 
+	var runErr error
 	select {
 	case <-ctx.Done():
 	case err := <-errorChannel:
-		return err
+		runErr = err
+		cancelProcess()
 	}
+	processHealth.Fail()
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), config.Server.ShutdownTimeout.ToStdlib())
 	defer cancel()
-	if err := server.Shutdown(shutdownContext); err != nil {
-		return fmt.Errorf("shutdown server: %w", err)
+	if err := runtimeAPIServer.Shutdown(shutdownContext); err != nil {
+		return fmt.Errorf("shutdown runtime api server: %w", err)
 	}
-	return nil
+	if err := gatewayServer.Shutdown(shutdownContext); err != nil {
+		return fmt.Errorf("shutdown gateway server: %w", err)
+	}
+	listeners.Close()
+	return runErr
 }
 
-func newProvisioner(config Config) (provisioner.Provisioner, error) {
+type processListeners struct {
+	RuntimeAPI  net.Listener
+	GatewayHTTP net.Listener
+	GatewaySSH  net.Listener
+}
+
+func openProcessListeners(config Config) (*processListeners, error) {
+	runtimeAPI, err := net.Listen("tcp", config.Server.RuntimeAPIListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen runtime api %s: %w", config.Server.RuntimeAPIListenAddr, err)
+	}
+	listeners := &processListeners{RuntimeAPI: runtimeAPI}
+	defer func() {
+		if err != nil {
+			listeners.Close()
+		}
+	}()
+
+	listeners.GatewayHTTP, err = net.Listen("tcp", config.Server.GatewayListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen gateway http %s: %w", config.Server.GatewayListenAddr, err)
+	}
+	listeners.GatewaySSH, err = net.Listen("tcp", config.Server.GatewaySSHListenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("listen gateway ssh %s: %w", config.Server.GatewaySSHListenAddr, err)
+	}
+	return listeners, nil
+}
+
+func (l *processListeners) Close() {
+	if l == nil {
+		return
+	}
+	if l.RuntimeAPI != nil {
+		_ = l.RuntimeAPI.Close()
+	}
+	if l.GatewayHTTP != nil {
+		_ = l.GatewayHTTP.Close()
+	}
+	if l.GatewaySSH != nil {
+		_ = l.GatewaySSH.Close()
+	}
+}
+
+func serveHTTP(ctx context.Context, errorChannel chan<- error, name string, server *http.Server, listener net.Listener) {
+	if err := server.Serve(listener); err != nil && err != http.ErrServerClosed && !errors.Is(err, net.ErrClosed) {
+		errorChannel <- fmt.Errorf("%s listener: %w", name, err)
+		return
+	}
+	if ctx.Err() == nil {
+		errorChannel <- fmt.Errorf("%s listener stopped unexpectedly", name)
+	}
+}
+
+func serveSSH(ctx context.Context, errorChannel chan<- error, listener net.Listener) {
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			if errors.Is(err, net.ErrClosed) && ctx.Err() != nil {
+				return
+			}
+			errorChannel <- fmt.Errorf("gateway ssh listener: %w", err)
+			return
+		}
+		_ = conn.Close()
+	}
+}
+
+func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, error) {
 	switch strings.ToLower(strings.TrimSpace(config.Provisioner.Kind)) {
 	case "dummy":
 		return provisioner.NewDummy(), nil
 	case "incus":
 		return provisioner.NewIncus(provisioner.IncusConfig{
+			ManagerID:     managerID,
 			Project:       config.Provisioner.Incus.Project,
 			Remote:        config.Provisioner.Incus.Remote,
 			UnixSocket:    config.Provisioner.Incus.UnixSocket,
@@ -131,340 +287,541 @@ func newProvisioner(config Config) (provisioner.Provisioner, error) {
 	}
 }
 
-func newHTTPHandler(config Config, memoryStore *store.MemoryStore, controlPlaneService *controlplane.Service) http.Handler {
+type healthStatus int32
+
+const (
+	healthStatusPass healthStatus = iota
+	healthStatusWarn
+	healthStatusFail
+)
+
+type processHealth struct {
+	status atomic.Int32
+}
+
+func newProcessHealth() *processHealth {
+	health := &processHealth{}
+	health.status.Store(int32(healthStatusPass))
+	return health
+}
+
+func (h *processHealth) Warn() {
+	h.status.CompareAndSwap(int32(healthStatusPass), int32(healthStatusWarn))
+}
+
+func (h *processHealth) Fail() {
+	h.status.Store(int32(healthStatusFail))
+}
+
+func (h *processHealth) writeHealthz(writer http.ResponseWriter) {
+	switch healthStatus(h.status.Load()) {
+	case healthStatusWarn:
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "warn"})
+	case healthStatusFail:
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"status": "fail"})
+	default:
+		writeJSON(writer, http.StatusOK, map[string]any{"status": "pass"})
+	}
+}
+
+func newRuntimeAPIHandler(health *processHealth) http.Handler {
 	mux := http.NewServeMux()
-	path, handler := codespacev1connect.NewCodespaceServiceHandler(controlPlaneService)
-	mux.Handle(path, handler)
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" {
 			http.NotFound(writer, request)
 			return
 		}
 		writeJSON(writer, http.StatusOK, map[string]any{
-			"name":   "codespace",
+			"name":   "gitea-codespace",
 			"status": "ok",
 		})
 	})
-	mux.HandleFunc("/healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		writeJSON(writer, http.StatusOK, map[string]any{"ok": true})
-	})
-	mux.HandleFunc("/api/admin/managers", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodGet {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{"managers": memoryStore.ListManagers()})
-	})
-	mux.HandleFunc("/api/codespace", func(writer http.ResponseWriter, request *http.Request) {
-		switch request.Method {
-		case http.MethodGet:
-			writeJSON(writer, http.StatusOK, map[string]any{"codespace": memoryStore.ListCodespace()})
-		case http.MethodPost:
-			var payload store.CreateCodespaceInput
-			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-				writeError(writer, http.StatusBadRequest, fmt.Errorf("decode codespace payload: %w", err))
-				return
-			}
-			if payload.Owner == "" {
-				payload.Owner = "demo"
-			}
-			if payload.RepoName == "" {
-				payload.RepoName = "repo"
-			}
-			if payload.UserID == 0 {
-				payload.UserID = 100
-			}
-			if payload.RepoID == 0 {
-				payload.RepoID = 200
-			}
-			codespace, task, err := memoryStore.CreateCodespace(payload)
-			if err != nil {
-				writeError(writer, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(writer, http.StatusCreated, map[string]any{
-				"codespace": codespace,
-				"task":      task,
-			})
-		default:
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})
-	mux.HandleFunc("/api/codespace/", func(writer http.ResponseWriter, request *http.Request) {
-		handleCodespaceRoute(memoryStore, writer, request)
-	})
-	mux.HandleFunc("/open", func(writer http.ResponseWriter, request *http.Request) {
-		ticket := request.URL.Query().Get("ticket")
-		record, err := memoryStore.ValidateAccessTicket(ticket, "open")
-		if err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		session, err := memoryStore.CreateSession(record.CodespaceID, record.UserID, record.RepoID)
-		if err != nil {
-			writeError(writer, http.StatusInternalServerError, err)
-			return
-		}
-		http.SetCookie(writer, &http.Cookie{
-			Name:     sessionCookieName,
-			Value:    session.Token,
-			HttpOnly: true,
-			Path:     "/",
-			SameSite: http.SameSiteLaxMode,
-		})
-		http.Redirect(writer, request, "/w/"+record.CodespaceID+"/", http.StatusFound)
-	})
-	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
-		codespaceID := strings.TrimSuffix(strings.TrimPrefix(request.URL.Path, "/w/"), "/")
-		session, err := requireSession(memoryStore, request, codespaceID)
-		if err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		codespace, err := memoryStore.GetCodespace(codespaceID)
-		if err != nil {
-			writeError(writer, http.StatusNotFound, err)
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"codespace": codespace,
-			"session":   session,
-			"ssh":       sshTarget(config, codespaceID),
-		})
-	})
-	mux.HandleFunc("/p/", func(writer http.ResponseWriter, request *http.Request) {
-		pathValue := strings.TrimPrefix(request.URL.Path, "/p/")
-		parts := strings.Split(strings.TrimSuffix(pathValue, "/"), "/")
-		if len(parts) != 2 {
-			http.NotFound(writer, request)
-			return
-		}
-		codespaceID := parts[0]
-		portName := parts[1]
-		if _, err := requireSession(memoryStore, request, codespaceID); err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		port, err := memoryStore.FindPort(codespaceID, portName)
-		if err != nil {
-			writeError(writer, http.StatusNotFound, err)
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"codespace_id": codespaceID,
-			"port":         port,
-		})
-	})
-	mux.HandleFunc("/api/runtime/context", func(writer http.ResponseWriter, request *http.Request) {
-		token := bearerToken(request)
-		runtimeContext, _, err := memoryStore.ValidateRuntimeToken(token)
-		if err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"codespace_id": runtimeContext.CodespaceID,
-			"repo":         runtimeContext.Repo,
-			"ref":          runtimeContext.Ref,
-			"root":         runtimeContext.Root,
-			"phase":        runtimeContext.Phase,
-			"message":      runtimeContext.Message,
-		})
-	})
-	mux.HandleFunc("/api/runtime/ports", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		token := bearerToken(request)
-		runtimeContext, codespace, err := memoryStore.ValidateRuntimeToken(token)
-		if err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		var payload struct {
-			Name        string `json:"name"`
-			Port        int32  `json:"port"`
-			Protocol    string `json:"protocol"`
-			Visibility  string `json:"visibility"`
-			Description string `json:"description"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-			writeError(writer, http.StatusBadRequest, fmt.Errorf("decode port payload: %w", err))
-			return
-		}
-		port, err := memoryStore.UpsertRuntimePort(token, store.Port{
-			Name:        payload.Name,
-			Port:        payload.Port,
-			Protocol:    defaultString(payload.Protocol, "http"),
-			Visibility:  parseVisibility(payload.Visibility),
-			Description: payload.Description,
-			PublicURL:   requestBaseURL(request) + "/p/" + runtimeContext.CodespaceID + "/" + payload.Name + "/",
-			Status:      codespacev1.PortStatus_PORT_STATUS_ACTIVE,
-		})
-		if err != nil {
-			writeError(writer, http.StatusBadRequest, err)
-			return
-		}
-		writeJSON(writer, http.StatusCreated, map[string]any{
-			"name":   port.Name,
-			"status": port.Status,
-			"url":    port.PublicURL,
-			"repo":   codespace.RepoFullName,
-		})
-	})
-	mux.HandleFunc("/api/runtime/ports/", func(writer http.ResponseWriter, request *http.Request) {
-		token := bearerToken(request)
-		name := strings.TrimPrefix(request.URL.Path, "/api/runtime/ports/")
-		if name == "" {
-			http.NotFound(writer, request)
-			return
-		}
-		switch request.Method {
-		case http.MethodPatch:
-			var payload struct {
-				Visibility  string `json:"visibility"`
-				Description string `json:"description"`
-			}
-			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-				writeError(writer, http.StatusBadRequest, fmt.Errorf("decode port patch payload: %w", err))
-				return
-			}
-			port, err := memoryStore.PatchRuntimePort(token, name, parseVisibility(payload.Visibility), payload.Description)
-			if err != nil {
-				writeError(writer, http.StatusBadRequest, err)
-				return
-			}
-			writeJSON(writer, http.StatusOK, port)
-		case http.MethodDelete:
-			if err := memoryStore.DeleteRuntimePort(token, name); err != nil {
-				writeError(writer, http.StatusBadRequest, err)
-				return
-			}
-			writer.WriteHeader(http.StatusNoContent)
-		default:
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-		}
-	})
-	mux.HandleFunc("/api/runtime/status", func(writer http.ResponseWriter, request *http.Request) {
-		if request.Method != http.MethodPost {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		token := bearerToken(request)
-		var payload struct {
-			Phase   string `json:"phase"`
-			Message string `json:"message"`
-		}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
-			writeError(writer, http.StatusBadRequest, fmt.Errorf("decode runtime status payload: %w", err))
-			return
-		}
-		value, err := memoryStore.UpdateRuntimeStatus(token, payload.Phase, payload.Message)
-		if err != nil {
-			writeError(writer, http.StatusUnauthorized, err)
-			return
-		}
-		writeJSON(writer, http.StatusOK, value)
+	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
+		health.writeHealthz(writer)
 	})
 	return loggingMiddleware(mux)
 }
 
-func handleCodespaceRoute(memoryStore *store.MemoryStore, writer http.ResponseWriter, request *http.Request) {
-	trimmed := strings.TrimPrefix(request.URL.Path, "/api/codespace/")
-	parts := strings.Split(strings.Trim(trimmed, "/"), "/")
-	if len(parts) == 0 || parts[0] == "" {
-		http.NotFound(writer, request)
-		return
-	}
-	codespaceID := parts[0]
-	if len(parts) == 1 {
-		if request.Method != http.MethodGet {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
+func newGatewayHandler(
+	health *processHealth,
+	sessions *gatewaySessionRegistry,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+) http.Handler {
+	return newGatewayHandlerWithOrigin(health, sessions, access, controlPlane, gatewayOriginPolicy{})
+}
+
+func newGatewayHandlerWithOrigin(
+	health *processHealth,
+	sessions *gatewaySessionRegistry,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+	originPolicy gatewayOriginPolicy,
+) http.Handler {
+	return newGatewayHandlerWithOriginAndBrowserAuth(health, sessions, access, controlPlane, originPolicy, nil)
+}
+
+func newGatewayHandlerWithOriginAndBrowserAuth(
+	health *processHealth,
+	sessions *gatewaySessionRegistry,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+	originPolicy gatewayOriginPolicy,
+	browserAuth *gatewayBrowserAuth,
+) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/" {
+			http.NotFound(writer, request)
 			return
 		}
-		codespace, err := memoryStore.GetCodespace(codespaceID)
-		if err != nil {
-			writeError(writer, http.StatusNotFound, err)
-			return
-		}
-		writeJSON(writer, http.StatusOK, codespace)
-		return
-	}
-	action := parts[1]
-	switch action {
-	case "open":
-		if request.Method != http.MethodGet {
-			writer.WriteHeader(http.StatusMethodNotAllowed)
-			return
-		}
-		userID := int64(100)
-		if headerValue := request.Header.Get("X-User-ID"); headerValue != "" {
-			if value, err := strconv.ParseInt(headerValue, 10, 64); err == nil {
-				userID = value
-			}
-		}
-		ticket, err := memoryStore.IssueAccessTicket(codespaceID, userID, "open")
-		if err != nil {
-			writeError(writer, http.StatusBadRequest, err)
-			return
-		}
-		http.Redirect(writer, request, requestBaseURL(request)+"/open?ticket="+ticket.Token, http.StatusFound)
-	case "resume":
-		queueCodespaceAction(memoryStore, writer, request, codespaceID, codespacev1.OperationType_OPERATION_TYPE_RESUME)
-	case "stop":
-		queueCodespaceAction(memoryStore, writer, request, codespaceID, codespacev1.OperationType_OPERATION_TYPE_STOP)
-	case "delete":
-		queueCodespaceAction(memoryStore, writer, request, codespaceID, codespacev1.OperationType_OPERATION_TYPE_DELETE)
-	default:
-		http.NotFound(writer, request)
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"name":   "gitea-codespace-gateway",
+			"status": "ok",
+		})
+	})
+	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
+		health.writeHealthz(writer)
+	})
+	mux.HandleFunc("/open", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayOpen(writer, request, sessions, access, controlPlane, originPolicy)
+	})
+	mux.HandleFunc("/.gitea-codespace/open", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayOpen(writer, request, sessions, access, controlPlane, originPolicy)
+	})
+	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayWorkspace(writer, request, sessions, access, controlPlane, originPolicy, browserAuth)
+	})
+	mux.HandleFunc("/p/", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayPublicEndpoint(writer, request, access, controlPlane, originPolicy)
+	})
+	return loggingMiddleware(mux)
+}
+
+func newGatewayHTTPServer(handler http.Handler) *http.Server {
+	return &http.Server{
+		Handler:           handler,
+		ReadHeaderTimeout: gatewayHTTPReadHeaderTime,
+		MaxHeaderBytes:    gatewayHTTPMaxHeaderBytes,
 	}
 }
 
-func queueCodespaceAction(
-	memoryStore *store.MemoryStore,
+func handleGatewayOpen(
 	writer http.ResponseWriter,
 	request *http.Request,
-	codespaceID string,
-	taskType codespacev1.OperationType,
+	sessions *gatewaySessionRegistry,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+	originPolicy gatewayOriginPolicy,
 ) {
-	if request.Method != http.MethodPost {
+	setGatewayOpenResponseHeaders(writer)
+	if rejectGatewayServiceWorkerRequest(writer, request) {
+		return
+	}
+	if request.Method != http.MethodGet {
 		writer.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	task, err := memoryStore.QueueCodespaceAction(codespaceID, taskType)
-	if err != nil {
-		writeError(writer, http.StatusBadRequest, err)
+	if originPolicy.domain != "" && request.URL.Path != "/.gitea-codespace/open" {
+		http.NotFound(writer, request)
 		return
 	}
-	writeJSON(writer, http.StatusAccepted, task)
-}
+	if sessions == nil || access == nil || controlPlane == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		return
+	}
+	hostBinding, hasHostBinding := originPolicy.bindingForRequest(request)
+	if originPolicy.domain != "" && !hasHostBinding {
+		http.NotFound(writer, request)
+		return
+	}
+	code, ok := gatewayOpenCode(request)
+	if !ok {
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "invalid open code request"})
+		return
+	}
+	reservation, limitStatus := access.reserveRequest()
+	if limitStatus != 0 {
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		return
+	}
+	defer reservation.Release()
 
-func requireSession(memoryStore *store.MemoryStore, request *http.Request, codespaceID string) (*store.Session, error) {
-	cookie, err := request.Cookie(sessionCookieName)
+	decision, err := controlPlane.validateOpenToken(request.Context(), code)
 	if err != nil {
-		return nil, fmt.Errorf("read session cookie: %w", err)
+		log.Printf("validate open token: %v", err)
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		return
 	}
-	session, err := memoryStore.ValidateSession(cookie.Value, codespaceID)
+	if !decision.allowed {
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": decision.deniedCategory})
+		return
+	}
+	if hasHostBinding &&
+		(hostBinding.codespaceUUID != decision.binding.codespaceUUID ||
+			hostBinding.endpointID != decision.binding.endpointID) {
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway host binding mismatch"})
+		return
+	}
+	sessionID, err := sessions.Create(decision.binding, time.Now())
 	if err != nil {
-		return nil, fmt.Errorf("validate session: %w", err)
+		log.Printf("create gateway session: %v", err)
+		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway session unavailable"})
+		return
 	}
-	return session, nil
+	setGatewaySessionCookie(writer, sessionID, originPolicy)
+	returnTo, hasReturnTo := gatewayReturnToPathFromRequest(request, originPolicy)
+	if hasReturnTo {
+		clearGatewayReturnToCookies(writer)
+	}
+	http.Redirect(writer, request, gatewayOpenRedirectPath(decision.binding.codespaceUUID, decision.binding.endpointID, originPolicy, returnTo), http.StatusSeeOther)
 }
 
-func bearerToken(request *http.Request) string {
-	return strings.TrimSpace(strings.TrimPrefix(request.Header.Get("Authorization"), "Bearer "))
+func setGatewayOpenResponseHeaders(writer http.ResponseWriter) {
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Referrer-Policy", "no-referrer")
 }
 
-func parseVisibility(value string) codespacev1.PortVisibility {
-	switch strings.ToLower(value) {
-	case "org":
-		return codespacev1.PortVisibility_PORT_VISIBILITY_ORG
-	case "public":
-		return codespacev1.PortVisibility_PORT_VISIBILITY_PUBLIC
-	default:
-		return codespacev1.PortVisibility_PORT_VISIBILITY_PRIVATE
+func gatewayOpenCode(request *http.Request) (string, bool) {
+	query := request.URL.Query()
+	codes := query["code"]
+	if len(query) != 1 || len(codes) != 1 || strings.TrimSpace(codes[0]) == "" {
+		return "", false
 	}
+	return codes[0], true
+}
+
+func handleGatewayWorkspace(
+	writer http.ResponseWriter,
+	request *http.Request,
+	sessions *gatewaySessionRegistry,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+	originPolicy gatewayOriginPolicy,
+	browserAuth *gatewayBrowserAuth,
+) {
+	if sessions == nil || access == nil || controlPlane == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		return
+	}
+	codespaceUUID, endpointID, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	if rejectGatewayServiceWorkerRequest(writer, request) {
+		return
+	}
+	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway source is not allowed"})
+		return
+	}
+	sessionID, ok := gatewaySessionIDFromRequest(request, originPolicy)
+	if !ok {
+		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
+			return
+		}
+		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is required"})
+		return
+	}
+	session, ok := sessions.Authenticate(sessionID, codespaceUUID, endpointID, time.Now())
+	if !ok {
+		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
+			return
+		}
+		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is invalid"})
+		return
+	}
+	reservation, limitStatus := access.reserveSessionRequest(session.id)
+	if limitStatus != 0 {
+		if limitStatus == http.StatusTooManyRequests {
+			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway session request limit reached"})
+			return
+		}
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		return
+	}
+	defer reservation.Release()
+
+	decision, validationFull, err := access.validateEndpointSession(
+		request.Context(),
+		session.userID,
+		session.codespaceUUID,
+		session.endpointID,
+		time.Now(),
+		func(ctx context.Context) (gatewayAccessDecision, error) {
+			return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+		},
+	)
+	if validationFull {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization capacity unavailable"})
+		return
+	}
+	if err != nil {
+		log.Printf("revalidate gateway session: %v", err)
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		return
+	}
+	if !decision.allowed {
+		writeJSON(writer, http.StatusForbidden, map[string]any{"error": decision.deniedCategory})
+		return
+	}
+	end := sessions.Begin(session.codespaceUUID)
+	defer end()
+
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"codespace_uuid": session.codespaceUUID,
+		"endpoint_id":    session.endpointID,
+		"status":         "authorized",
+	})
+}
+
+func handleGatewayPublicEndpoint(
+	writer http.ResponseWriter,
+	request *http.Request,
+	access *gatewayAccessController,
+	controlPlane *gatewayControlPlane,
+	originPolicy gatewayOriginPolicy,
+) {
+	if access == nil || controlPlane == nil {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		return
+	}
+	codespaceUUID, endpointID, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
+	if !ok {
+		http.NotFound(writer, request)
+		return
+	}
+	if rejectGatewayServiceWorkerRequest(writer, request) {
+		return
+	}
+	clearGatewayReservedCookies(writer)
+	reservation, limitStatus := access.reservePublic(codespaceUUID, endpointID, gatewayPeerIP(request))
+	if limitStatus != 0 {
+		if limitStatus == http.StatusTooManyRequests {
+			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway public connection limit reached"})
+			return
+		}
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		return
+	}
+	defer reservation.Release()
+
+	decision, validationFull, err := access.validatePublicEndpoint(
+		request.Context(),
+		codespaceUUID,
+		endpointID,
+		time.Now(),
+		func(ctx context.Context) (gatewayAccessDecision, error) {
+			return controlPlane.validatePublicEndpoint(ctx, codespaceUUID, endpointID)
+		},
+	)
+	if validationFull {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization capacity unavailable"})
+		return
+	}
+	if err != nil {
+		log.Printf("validate public endpoint: %v", err)
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		return
+	}
+	if !decision.allowed {
+		http.NotFound(writer, request)
+		return
+	}
+	writeJSON(writer, http.StatusOK, map[string]any{
+		"access":         "public",
+		"codespace_uuid": codespaceUUID,
+		"endpoint_id":    endpointID,
+		"status":         "authorized",
+	})
+}
+
+func parseGatewayWorkspacePath(path string) (string, string, bool) {
+	trimmed := strings.Trim(strings.TrimPrefix(path, "/w/"), "/")
+	if trimmed == "" {
+		return "", "", false
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) == 1 {
+		return parts[0], "workspace", true
+	}
+	if len(parts) == 3 && parts[1] == "e" && parts[2] != "" && parts[2] != "workspace" {
+		return parts[0], parts[2], true
+	}
+	return "", "", false
+}
+
+func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, bool) {
+	if originPolicy.domain == "" {
+		return parseGatewayWorkspacePath(request.URL.Path)
+	}
+	hostBinding, ok := originPolicy.bindingForRequest(request)
+	if !ok {
+		return "", "", false
+	}
+	pathUUID, pathEndpoint, pathOK := parseGatewayWorkspacePath(request.URL.Path)
+	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
+		return "", "", false
+	}
+	if !pathOK && request.URL.Path != "/w/" {
+		return "", "", false
+	}
+	return hostBinding.codespaceUUID, hostBinding.endpointID, true
+}
+
+func parseGatewayPublicEndpointPath(path string) (string, string, bool) {
+	trimmed := strings.Trim(strings.TrimPrefix(path, "/p/"), "/")
+	if trimmed == "" {
+		return "", "", false
+	}
+	parts := strings.Split(trimmed, "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[1] == "workspace" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, bool) {
+	if originPolicy.domain == "" {
+		return parseGatewayPublicEndpointPath(request.URL.Path)
+	}
+	hostBinding, ok := originPolicy.bindingForRequest(request)
+	if !ok || hostBinding.endpointID == "workspace" {
+		return "", "", false
+	}
+	pathUUID, pathEndpoint, pathOK := parseGatewayPublicEndpointPath(request.URL.Path)
+	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
+		return "", "", false
+	}
+	if !pathOK && request.URL.Path != "/p/" {
+		return "", "", false
+	}
+	return hostBinding.codespaceUUID, hostBinding.endpointID, true
+}
+
+func gatewayPeerIP(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(request.RemoteAddr)
+	if err == nil {
+		return host
+	}
+	if parsed := net.ParseIP(request.RemoteAddr); parsed != nil {
+		return parsed.String()
+	}
+	return request.RemoteAddr
+}
+
+func rejectGatewayServiceWorkerRequest(writer http.ResponseWriter, request *http.Request) bool {
+	if !isGatewayServiceWorkerRequest(request) {
+		return false
+	}
+	writer.Header().Del("Service-Worker-Allowed")
+	writeJSON(writer, http.StatusForbidden, map[string]any{"error": "service worker is not allowed"})
+	return true
+}
+
+func isGatewayServiceWorkerRequest(request *http.Request) bool {
+	if request == nil {
+		return false
+	}
+	if values := request.Header.Values("Service-Worker"); len(values) > 0 {
+		return true
+	}
+	values := request.Header.Values("Sec-Fetch-Dest")
+	if len(values) == 0 {
+		return false
+	}
+	if len(values) > 1 {
+		return true
+	}
+	value := strings.TrimSpace(values[0])
+	return value == "" || strings.EqualFold(value, "serviceworker")
+}
+
+func gatewayWorkspacePath(codespaceUUID, endpointID string) string {
+	if endpointID == "" || endpointID == "workspace" {
+		return "/w/" + codespaceUUID + "/"
+	}
+	return "/w/" + codespaceUUID + "/e/" + endpointID + "/"
+}
+
+func gatewayOpenRedirectPath(codespaceUUID, endpointID string, originPolicy gatewayOriginPolicy, returnTo string) string {
+	if returnTo != "" {
+		return returnTo
+	}
+	if originPolicy.domain != "" {
+		return "/"
+	}
+	return gatewayWorkspacePath(codespaceUUID, endpointID)
+}
+
+func setGatewaySessionCookie(writer http.ResponseWriter, sessionID string, originPolicy gatewayOriginPolicy) {
+	cookie := &http.Cookie{
+		Name:     gatewaySessionCookieName,
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	}
+	if strings.EqualFold(originPolicy.scheme, "https") {
+		cookie.Name = gatewaySecureSessionCookieName
+		cookie.Secure = true
+	}
+	http.SetCookie(writer, cookie)
+}
+
+func gatewaySessionIDFromRequest(request *http.Request, originPolicy gatewayOriginPolicy) (string, bool) {
+	name := gatewaySessionCookieName
+	if strings.EqualFold(originPolicy.scheme, "https") {
+		name = gatewaySecureSessionCookieName
+	}
+	values := make(map[string]struct{})
+	for _, cookie := range parseGatewayProxyRequestCookies(request.Header.Values("Cookie")) {
+		if cookie.Name == name && cookie.Value != "" {
+			values[cookie.Value] = struct{}{}
+		}
+	}
+	if len(values) != 1 {
+		return "", false
+	}
+	for value := range values {
+		return value, true
+	}
+	return "", false
+}
+
+func clearGatewayReservedCookies(writer http.ResponseWriter) {
+	clearGatewaySessionCookies(writer)
+	clearGatewayReturnToCookies(writer)
+}
+
+func clearGatewaySessionCookies(writer http.ResponseWriter) {
+	http.SetCookie(writer, &http.Cookie{
+		Name:     gatewaySessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+	http.SetCookie(writer, &http.Cookie{
+		Name:     gatewaySecureSessionCookieName,
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
 }
 
 func writeJSON(writer http.ResponseWriter, statusCode int, value any) {
@@ -475,49 +832,9 @@ func writeJSON(writer http.ResponseWriter, statusCode int, value any) {
 	}
 }
 
-func writeError(writer http.ResponseWriter, statusCode int, err error) {
-	writeJSON(writer, statusCode, map[string]any{
-		"error": err.Error(),
-	})
-}
-
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		log.Printf("%s %s", request.Method, request.URL.Path)
 		next.ServeHTTP(writer, request)
 	})
-}
-
-func defaultString(value string, fallback string) string {
-	if strings.TrimSpace(value) == "" {
-		return fallback
-	}
-	return value
-}
-
-func requestBaseURL(request *http.Request) string {
-	scheme := "http"
-	if request.TLS != nil {
-		scheme = "https"
-	}
-	if forwarded := request.Header.Get("X-Forwarded-Proto"); forwarded != "" {
-		scheme = forwarded
-	}
-	return scheme + "://" + request.Host
-}
-
-func sshTarget(config Config, codespaceID string) string {
-	sshHost := strings.TrimSpace(config.Gateway.SSHHost)
-	if sshHost == "" {
-		if parsedURL, err := url.Parse(config.Server.PublicBaseURL); err == nil && parsedURL.Host != "" {
-			sshHost = parsedURL.Hostname()
-		}
-	}
-	if sshHost == "" {
-		sshHost = "localhost"
-	}
-	if config.Gateway.SSHPort > 0 && config.Gateway.SSHPort != 22 {
-		return fmt.Sprintf("ssh -p %d codespace-%s@%s", config.Gateway.SSHPort, codespaceID, sshHost)
-	}
-	return fmt.Sprintf("ssh codespace-%s@%s", codespaceID, sshHost)
 }

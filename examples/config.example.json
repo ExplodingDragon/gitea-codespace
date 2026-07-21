@@ -1,6 +1,9 @@
 {
   "server": {
     "listen_addr": ":18080",
+    "runtime_api_listen": ":18080",
+    "gateway_listen": ":18081",
+    "gateway_ssh_listen": ":2222",
     "public_base_url": "https://codespace.example.com",
     "shutdown_timeout": "10s"
   },
@@ -9,38 +12,30 @@
   },
   "gateway": {
     "ssh_host": "codespace.example.com",
-    "ssh_port": 2222
+    "ssh_port": 2222,
+    "gateway_max_inflight_total": 4096,
+    "gateway_max_inflight_per_session": 32,
+    "gateway_public_max_connections_per_endpoint": 64,
+    "gateway_public_max_connections_per_ip": 16,
+    "gateway_validation_max_inflight": 128
   },
   "manager": {
-    "id": 0,
-    "uuid": "replace-with-manager-uuid",
-    "token": "replace-with-manager-token",
+    "state_dir": "codespace-state",
     "name": "local-incus-manager",
     "gateway_url": "https://codespace.example.com",
+    "gateway_ssh_addr": "codespace.example.com:2222",
+    "gateway_ssh_host_key_algorithm": "ssh-ed25519",
+    "gateway_ssh_host_key_fingerprint_sha256": "SHA256:replace-with-host-key-fingerprint",
+    "gateway_ssh_host_key_updated_unix": 0,
     "version": "0.1.0",
     "poll_interval": "750ms",
-    "ping_interval": "5s",
-    "fetch_capacity": 4,
+    "declare_interval": "5s",
+    "capacity_total": 4,
+    "capacity_available": 4,
+    "cleanup_capacity_available": 4,
+    "max_operations": 4,
     "http_timeout": "15s",
-    "labels": ["linux", "incus", "local"],
-    "max_concurrency": 4,
-    "supported_instance_types": ["container", "vm"],
-    "images": ["images:debian/12", "images:ubuntu/24.04"],
-    "resource_presets": [
-      {
-        "name": "small",
-        "cpu": "2",
-        "memory": "4GiB",
-        "disk": "40GiB"
-      }
-    ],
-    "features": {
-      "web": true,
-      "ssh": true,
-      "port_preview": true,
-      "public_port": false
-    },
-    "default_init_script": "npx --yes @devcontainers/cli up --workspace-folder ."
+    "tags": ["default", "linux", "incus"]
   },
   "provisioner": {
     "kind": "incus",
