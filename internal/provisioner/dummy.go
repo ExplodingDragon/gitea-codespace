@@ -95,6 +95,26 @@ func (p *DummyProvisioner) ListInstances(ctx context.Context) ([]*Instance, erro
 	return instances, nil
 }
 
+// WriteCredentials simulates writing runtime credential files.
+func (p *DummyProvisioner) WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if request.CodespaceUUID == "" {
+		return fmt.Errorf("codespace uuid is empty")
+	}
+	if request.GiteaToken == "" {
+		return fmt.Errorf("gitea token is empty")
+	}
+	if request.RuntimeToken == "" {
+		return fmt.Errorf("runtime token is empty")
+	}
+	return nil
+}
+
 // Bootstrap simulates one bootstrap run.
 func (p *DummyProvisioner) Bootstrap(ctx context.Context, instanceName string, request BootstrapRequest) error {
 	if err := ctx.Err(); err != nil {

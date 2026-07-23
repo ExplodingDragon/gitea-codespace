@@ -12,6 +12,8 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
+	"net/url"
 	"os/signal"
 	"strings"
 	"sync/atomic"
@@ -85,6 +87,10 @@ func RunWithConfig(output io.Writer, config Config) error {
 	if err != nil {
 		return fmt.Errorf("load codespace cleanup pendings: %w", err)
 	}
+	initialGatewayRoutes, err := codespaceStateStore.LoadGatewayRoutes()
+	if err != nil {
+		return fmt.Errorf("load codespace gateway routes: %w", err)
+	}
 	managerProvisioner, err := newProvisioner(config, credentials.ManagerID)
 	if err != nil {
 		return fmt.Errorf("create provisioner: %w", err)
@@ -101,6 +107,12 @@ func RunWithConfig(output io.Writer, config Config) error {
 	ctx, cancelProcess := context.WithCancel(ctx)
 	defer cancelProcess()
 	sessionRegistry := newGatewaySessionRegistry()
+	gatewayRoutes := newGatewayRouteStore()
+	for _, route := range initialGatewayRoutes {
+		if err := gatewayRoutes.Put(route); err != nil {
+			return fmt.Errorf("load gateway route %s/%s: %w", route.codespaceUUID, route.endpointID, err)
+		}
+	}
 	gatewayAccess := newGatewayAccessControllerFromConfig(config.Gateway)
 	gatewayBrowserAuth := newGatewayBrowserAuth()
 	gatewayOrigin, err := newGatewayOriginPolicy(config.Manager.GatewayURL)
@@ -143,13 +155,16 @@ func RunWithConfig(output io.Writer, config Config) error {
 		InventoryStateStore:       NewManagerRootStateStore(config.Manager.StateDir, credentials.ManagerID),
 		RuntimeStateStore:         codespaceStateStore,
 		CleanupStateStore:         codespaceStateStore,
+		RuntimeCredentialStore:    codespaceStateStore,
+		RuntimeMetadataStateStore: codespaceStateStore,
+		RuntimeAPIBaseURL:         config.Server.RuntimeAPIURL,
 		SessionTracker:            sessionRegistry,
 		ManagerServiceSettings:    gatewayBrowserAuth,
 	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
 
 	processHealth := newProcessHealth()
 	runtimeAPIServer := &http.Server{
-		Handler:           newRuntimeAPIHandler(processHealth),
+		Handler:           newRuntimeAPIHandler(processHealth, newRuntimeAPIService(codespaceStateStore, gatewayRoutes, gatewayControlPlane, runtimeSourceResolverFor(managerProvisioner))),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
@@ -159,6 +174,7 @@ func RunWithConfig(output io.Writer, config Config) error {
 		gatewayControlPlane,
 		gatewayOrigin,
 		gatewayBrowserAuth,
+		gatewayRoutes,
 	))
 
 	errorChannel := make(chan error, 4)
@@ -270,11 +286,12 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 		return provisioner.NewDummy(), nil
 	case "incus":
 		return provisioner.NewIncus(provisioner.IncusConfig{
-			ManagerID:     managerID,
-			Project:       config.Provisioner.Incus.Project,
-			Remote:        config.Provisioner.Incus.Remote,
-			UnixSocket:    config.Provisioner.Incus.UnixSocket,
-			CodespaceRoot: config.Provisioner.CodespaceRoot,
+			ManagerID:              managerID,
+			Project:                config.Provisioner.Incus.Project,
+			Remote:                 config.Provisioner.Incus.Remote,
+			UnixSocket:             config.Provisioner.Incus.UnixSocket,
+			CodespaceRoot:          config.Provisioner.CodespaceRoot,
+			CommunicationInterface: config.Provisioner.Incus.CommunicationInterface,
 			Bootstrap: provisioner.BootstrapConfig{
 				Shell:   config.Provisioner.Bootstrap.Shell,
 				HomeDir: config.Provisioner.Bootstrap.HomeDir,
@@ -285,6 +302,14 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 	default:
 		return nil, fmt.Errorf("unknown provisioner kind %q", config.Provisioner.Kind)
 	}
+}
+
+func runtimeSourceResolverFor(managerProvisioner provisioner.Provisioner) runtimeSourceResolver {
+	resolver, ok := managerProvisioner.(runtimeSourceResolver)
+	if !ok {
+		return nil
+	}
+	return resolver
 }
 
 type healthStatus int32
@@ -324,7 +349,11 @@ func (h *processHealth) writeHealthz(writer http.ResponseWriter) {
 	}
 }
 
-func newRuntimeAPIHandler(health *processHealth) http.Handler {
+func newRuntimeAPIHandler(health *processHealth, services ...*runtimeAPIService) http.Handler {
+	var runtimeAPI *runtimeAPIService
+	if len(services) > 0 {
+		runtimeAPI = services[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" {
@@ -339,6 +368,10 @@ func newRuntimeAPIHandler(health *processHealth) http.Handler {
 	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		health.writeHealthz(writer)
 	})
+	if runtimeAPI != nil {
+		mux.HandleFunc(runtimeGitSSHKeyAPIPath, runtimeAPI.handleGitSSHKey)
+		mux.HandleFunc(runtimeEndpointAPIPrefix, runtimeAPI.handleEndpoint)
+	}
 	return loggingMiddleware(mux)
 }
 
@@ -368,7 +401,12 @@ func newGatewayHandlerWithOriginAndBrowserAuth(
 	controlPlane *gatewayControlPlane,
 	originPolicy gatewayOriginPolicy,
 	browserAuth *gatewayBrowserAuth,
+	routes ...*gatewayRouteStore,
 ) http.Handler {
+	var routeStore *gatewayRouteStore
+	if len(routes) > 0 && routes[0] != nil {
+		routeStore = routes[0]
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" {
@@ -390,10 +428,10 @@ func newGatewayHandlerWithOriginAndBrowserAuth(
 		handleGatewayOpen(writer, request, sessions, access, controlPlane, originPolicy)
 	})
 	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayWorkspace(writer, request, sessions, access, controlPlane, originPolicy, browserAuth)
+		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
 	})
 	mux.HandleFunc("/p/", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayPublicEndpoint(writer, request, access, controlPlane, originPolicy)
+		handleGatewayPublicEndpoint(writer, request, routeStore, access, controlPlane, originPolicy)
 	})
 	return loggingMiddleware(mux)
 }
@@ -501,6 +539,7 @@ func handleGatewayWorkspace(
 	writer http.ResponseWriter,
 	request *http.Request,
 	sessions *gatewaySessionRegistry,
+	routes *gatewayRouteStore,
 	access *gatewayAccessController,
 	controlPlane *gatewayControlPlane,
 	originPolicy gatewayOriginPolicy,
@@ -510,7 +549,7 @@ func handleGatewayWorkspace(
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
 		return
 	}
-	codespaceUUID, endpointID, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
+	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
 	if !ok {
 		http.NotFound(writer, request)
 		return
@@ -575,16 +614,33 @@ func handleGatewayWorkspace(
 	end := sessions.Begin(session.codespaceUUID)
 	defer end()
 
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"codespace_uuid": session.codespaceUUID,
-		"endpoint_id":    session.endpointID,
-		"status":         "authorized",
+	if routes == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"codespace_uuid": session.codespaceUUID,
+			"endpoint_id":    session.endpointID,
+			"status":         "authorized",
+		})
+		return
+	}
+	route, ok := routes.Get(session.codespaceUUID, session.endpointID)
+	if !ok {
+		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway route unavailable"})
+		return
+	}
+	proxyGatewayEndpoint(writer, request, route, upstreamPath, gatewayProxyRequestContext{
+		codespaceUUID:  session.codespaceUUID,
+		endpointID:     session.endpointID,
+		access:         "authenticated",
+		userID:         session.userID,
+		externalScheme: gatewayExternalScheme(request, originPolicy),
+		externalHost:   gatewayExternalHost(request),
 	})
 }
 
 func handleGatewayPublicEndpoint(
 	writer http.ResponseWriter,
 	request *http.Request,
+	routes *gatewayRouteStore,
 	access *gatewayAccessController,
 	controlPlane *gatewayControlPlane,
 	originPolicy gatewayOriginPolicy,
@@ -593,7 +649,7 @@ func handleGatewayPublicEndpoint(
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
 		return
 	}
-	codespaceUUID, endpointID, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
+	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
 	if !ok {
 		http.NotFound(writer, request)
 		return
@@ -635,75 +691,161 @@ func handleGatewayPublicEndpoint(
 		http.NotFound(writer, request)
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"access":         "public",
-		"codespace_uuid": codespaceUUID,
-		"endpoint_id":    endpointID,
-		"status":         "authorized",
+	if routes == nil {
+		writeJSON(writer, http.StatusOK, map[string]any{
+			"access":         "public",
+			"codespace_uuid": codespaceUUID,
+			"endpoint_id":    endpointID,
+			"status":         "authorized",
+		})
+		return
+	}
+	route, ok := routes.Get(codespaceUUID, endpointID)
+	if !ok || !route.public {
+		http.NotFound(writer, request)
+		return
+	}
+	proxyGatewayEndpoint(writer, request, route, upstreamPath, gatewayProxyRequestContext{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     endpointID,
+		access:         "public",
+		externalScheme: gatewayExternalScheme(request, originPolicy),
+		externalHost:   gatewayExternalHost(request),
 	})
 }
 
-func parseGatewayWorkspacePath(path string) (string, string, bool) {
-	trimmed := strings.Trim(strings.TrimPrefix(path, "/w/"), "/")
+func parseGatewayWorkspacePath(path string) (string, string, string, bool) {
+	withoutPrefix, ok := strings.CutPrefix(path, "/w/")
+	if !ok {
+		return "", "", "", false
+	}
+	trimmed := strings.Trim(withoutPrefix, "/")
 	if trimmed == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(trimmed, "/")
 	if len(parts) == 1 {
-		return parts[0], "workspace", true
+		return parts[0], "workspace", "/", true
 	}
-	if len(parts) == 3 && parts[1] == "e" && parts[2] != "" && parts[2] != "workspace" {
-		return parts[0], parts[2], true
+	if len(parts) >= 3 && parts[1] == "e" && parts[2] != "" && parts[2] != "workspace" {
+		return parts[0], parts[2], gatewayProxyPathFromParts(parts[3:]), true
 	}
-	return "", "", false
+	return parts[0], "workspace", gatewayProxyPathFromParts(parts[1:]), true
 }
 
-func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, bool) {
+func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, string, bool) {
 	if originPolicy.domain == "" {
 		return parseGatewayWorkspacePath(request.URL.Path)
 	}
 	hostBinding, ok := originPolicy.bindingForRequest(request)
 	if !ok {
-		return "", "", false
+		return "", "", "", false
 	}
-	pathUUID, pathEndpoint, pathOK := parseGatewayWorkspacePath(request.URL.Path)
+	pathUUID, pathEndpoint, upstreamPath, pathOK := parseGatewayWorkspacePath(request.URL.Path)
 	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
-		return "", "", false
+		return "", "", "", false
 	}
 	if !pathOK && request.URL.Path != "/w/" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return hostBinding.codespaceUUID, hostBinding.endpointID, true
+	if !pathOK {
+		upstreamPath = "/"
+	}
+	return hostBinding.codespaceUUID, hostBinding.endpointID, upstreamPath, true
 }
 
-func parseGatewayPublicEndpointPath(path string) (string, string, bool) {
-	trimmed := strings.Trim(strings.TrimPrefix(path, "/p/"), "/")
+func parseGatewayPublicEndpointPath(path string) (string, string, string, bool) {
+	withoutPrefix, ok := strings.CutPrefix(path, "/p/")
+	if !ok {
+		return "", "", "", false
+	}
+	trimmed := strings.Trim(withoutPrefix, "/")
 	if trimmed == "" {
-		return "", "", false
+		return "", "", "", false
 	}
 	parts := strings.Split(trimmed, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || parts[1] == "workspace" {
-		return "", "", false
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[1] == "workspace" {
+		return "", "", "", false
 	}
-	return parts[0], parts[1], true
+	return parts[0], parts[1], gatewayProxyPathFromParts(parts[2:]), true
 }
 
-func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, bool) {
+func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, string, bool) {
 	if originPolicy.domain == "" {
 		return parseGatewayPublicEndpointPath(request.URL.Path)
 	}
 	hostBinding, ok := originPolicy.bindingForRequest(request)
 	if !ok || hostBinding.endpointID == "workspace" {
-		return "", "", false
+		return "", "", "", false
 	}
-	pathUUID, pathEndpoint, pathOK := parseGatewayPublicEndpointPath(request.URL.Path)
+	pathUUID, pathEndpoint, upstreamPath, pathOK := parseGatewayPublicEndpointPath(request.URL.Path)
 	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
-		return "", "", false
+		return "", "", "", false
 	}
 	if !pathOK && request.URL.Path != "/p/" {
-		return "", "", false
+		return "", "", "", false
 	}
-	return hostBinding.codespaceUUID, hostBinding.endpointID, true
+	if !pathOK {
+		upstreamPath = "/"
+	}
+	return hostBinding.codespaceUUID, hostBinding.endpointID, upstreamPath, true
+}
+
+func gatewayProxyPathFromParts(parts []string) string {
+	if len(parts) == 0 {
+		return "/"
+	}
+	return "/" + strings.Join(parts, "/")
+}
+
+func proxyGatewayEndpoint(
+	writer http.ResponseWriter,
+	request *http.Request,
+	route gatewayEndpointRoute,
+	upstreamPath string,
+	proxyContext gatewayProxyRequestContext,
+) {
+	target := &url.URL{Scheme: route.upstreamScheme, Host: route.upstreamHost}
+	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy.Director = func(upstream *http.Request) {
+		upstream.URL.Scheme = target.Scheme
+		upstream.URL.Host = target.Host
+		upstream.URL.Path = upstreamPath
+		upstream.URL.RawPath = ""
+		upstream.Host = target.Host
+		prepareGatewayProxyRequest(upstream, proxyContext)
+	}
+	proxy.ModifyResponse = func(response *http.Response) error {
+		normalizeGatewayProxyResponse(response.Header, gatewayProxyResponseContext{
+			externalScheme: proxyContext.externalScheme,
+			externalHost:   proxyContext.externalHost,
+			upstreamScheme: route.upstreamScheme,
+			upstreamHost:   route.upstreamHost,
+		})
+		return nil
+	}
+	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+		log.Printf("gateway proxy %s/%s: %v", route.codespaceUUID, route.endpointID, err)
+		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": "gateway upstream unavailable"})
+	}
+	proxy.ServeHTTP(writer, request)
+}
+
+func gatewayExternalScheme(request *http.Request, originPolicy gatewayOriginPolicy) string {
+	if originPolicy.scheme != "" {
+		return originPolicy.scheme
+	}
+	if request.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func gatewayExternalHost(request *http.Request) string {
+	if request == nil {
+		return ""
+	}
+	return request.Host
 }
 
 func gatewayPeerIP(request *http.Request) string {

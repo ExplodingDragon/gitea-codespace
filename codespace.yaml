@@ -1,6 +1,7 @@
 server:
     listen_addr: :18080
     runtime_api_listen: :18080
+    runtime_api_url: http://127.0.0.1:18080
     gateway_listen: :18081
     gateway_ssh_listen: :2222
     public_base_url: http://127.0.0.1:18081
@@ -33,6 +34,10 @@ manager:
     http_timeout: 15s
     tags:
         - default
+scripts:
+    init: builtin
+    start: builtin
+    resume: builtin
 provisioner:
     kind: dummy
     codespace_root: /codespace
@@ -40,6 +45,7 @@ provisioner:
         remote: ""
         unix_socket: ""
         project: ""
+        communication_interface: eth0
     bootstrap:
         shell: /bin/sh
         home_dir: /root

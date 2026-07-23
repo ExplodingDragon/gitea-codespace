@@ -127,6 +127,34 @@ func (c *gatewayControlPlane) verifySSHPublicKey(ctx context.Context, codespaceU
 	return gatewaySSHAuthDecision{}, fmt.Errorf("verify ssh public key outcome is missing")
 }
 
+func (c *gatewayControlPlane) ensureCodespaceGitSSHKey(ctx context.Context, codespaceUUID string, publicKey []byte) ([]string, error) {
+	request := connect.NewRequest(&codespacev1.EnsureCodespaceGitSSHKeyRequest{
+		ProtocolVersion: gatewayProtocolVersion,
+		CodespaceUuid:   codespaceUUID,
+		PublicKey:       append([]byte(nil), publicKey...),
+	})
+	c.setManagerAuth(request.Header())
+	response, err := c.client.EnsureCodespaceGitSSHKey(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("ensure codespace git ssh key rpc: %w", err)
+	}
+	return append([]string(nil), response.Msg.GetKnownHostsLines()...), nil
+}
+
+func (c *gatewayControlPlane) reportRuntimeMetadata(ctx context.Context, codespaceUUID, metadataJSON string, metadataGeneration int64) error {
+	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
+		ProtocolVersion:    gatewayProtocolVersion,
+		CodespaceUuid:      codespaceUUID,
+		MetadataJson:       metadataJSON,
+		MetadataGeneration: metadataGeneration,
+	})
+	c.setManagerAuth(request.Header())
+	if _, err := c.client.ReportRuntimeMetadata(ctx, request); err != nil {
+		return fmt.Errorf("report runtime metadata rpc: %w", err)
+	}
+	return nil
+}
+
 func (c *gatewayControlPlane) revalidateEndpointSession(ctx context.Context, userID int64, codespaceUUID, endpointID string) (gatewayAccessDecision, error) {
 	return c.revalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{
 		ProtocolVersion: gatewayProtocolVersion,

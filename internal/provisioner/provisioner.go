@@ -48,16 +48,31 @@ type InstanceSpec struct {
 
 // BootstrapRequest stores the codespace bootstrap inputs.
 type BootstrapRequest struct {
-	CodespaceUUID    string
-	GiteaToken       string
-	ServerURL        string
-	RepoCloneHTTPURL string
-	RepoCloneSSHURL  string
-	RepoFullName     string
-	StartRef         string
-	CommitSHA        string
-	Workdir          string
-	GitProtocol      string
+	CodespaceUUID     string
+	GiteaToken        string
+	RuntimeToken      string
+	RuntimeAPIBaseURL string
+	ServerURL         string
+	RepoCloneHTTPURL  string
+	RepoCloneSSHURL   string
+	RepoFullName      string
+	StartRef          string
+	CommitSHA         string
+	Workdir           string
+	GitProtocol       string
+}
+
+// CredentialRequest stores the current runtime credential file inputs.
+type CredentialRequest struct {
+	CodespaceUUID string
+	GiteaToken    string
+	RuntimeToken  string
+}
+
+// RuntimeSource stores the provisioner runtime matched from one Runtime API source address.
+type RuntimeSource struct {
+	CodespaceUUID string
+	InstanceName  string
 }
 
 // BootstrapConfig stores runtime bootstrap execution settings.
@@ -73,6 +88,7 @@ type Provisioner interface {
 	CreateOrStart(ctx context.Context, spec InstanceSpec) (*Instance, error)
 	StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error)
 	ListInstances(ctx context.Context) ([]*Instance, error)
+	WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error
 	Bootstrap(ctx context.Context, instanceName string, request BootstrapRequest) error
 	Stop(ctx context.Context, instanceName string) error
 	Delete(ctx context.Context, instanceName string) error

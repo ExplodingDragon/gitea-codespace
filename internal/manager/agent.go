@@ -5,6 +5,8 @@ package manager
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -61,6 +63,9 @@ type AgentConfig struct {
 	InventoryStateStore       InventoryStateStore
 	RuntimeStateStore         RuntimeStateStore
 	CleanupStateStore         CleanupStateStore
+	RuntimeCredentialStore    RuntimeCredentialStore
+	RuntimeMetadataStateStore RuntimeMetadataStateStore
+	RuntimeAPIBaseURL         string
 	SessionTracker            SessionTracker
 	ManagerServiceSettings    ManagerServiceSettingsStore
 }
@@ -130,6 +135,41 @@ type CleanupStateStore interface {
 	ClearCodespaceState(codespaceUUID string) error
 }
 
+// RuntimeCredentialStore persists the verifier for the Runtime HTTP API token.
+type RuntimeCredentialStore interface {
+	SaveRuntimeCredential(codespaceUUID, token string) error
+}
+
+// RuntimeMetadataSnapshot stores the current complete runtime metadata base owned by a Codespace.
+type RuntimeMetadataSnapshot struct {
+	CodespaceUUID      string
+	MetadataGeneration int64
+	InternalSSH        RuntimeMetadataInternalSSH
+	Boot               RuntimeMetadataBoot
+}
+
+// RuntimeMetadataInternalSSH stores the internal SSH endpoint observed by the Manager.
+type RuntimeMetadataInternalSSH struct {
+	Host               string
+	Port               int
+	User               string
+	AuthMode           string
+	HostKeyFingerprint string
+}
+
+// RuntimeMetadataBoot stores the boot stage accepted for the current runtime.
+type RuntimeMetadataBoot struct {
+	OperationRVersion int64
+	Stage             string
+	StartedUnix       int64
+	LastUpdateUnix    int64
+}
+
+// RuntimeMetadataStateStore persists runtime metadata snapshots for Endpoint updates.
+type RuntimeMetadataStateStore interface {
+	SaveRuntimeMetadataSnapshot(snapshot RuntimeMetadataSnapshot) error
+}
+
 type operationContext struct {
 	operationRVersion int64
 	payload           *codespacev1.OperationPayload
@@ -194,6 +234,8 @@ type Agent struct {
 	inventoryStore      InventoryStateStore
 	runtimeStateStore   RuntimeStateStore
 	cleanupStateStore   CleanupStateStore
+	credentialStore     RuntimeCredentialStore
+	metadataStateStore  RuntimeMetadataStateStore
 	sessionTracker      SessionTracker
 	settingsStore       ManagerServiceSettingsStore
 	autoStopMu          sync.Mutex
@@ -222,6 +264,8 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		inventoryStore:      config.InventoryStateStore,
 		runtimeStateStore:   config.RuntimeStateStore,
 		cleanupStateStore:   config.CleanupStateStore,
+		credentialStore:     config.RuntimeCredentialStore,
+		metadataStateStore:  config.RuntimeMetadataStateStore,
 		sessionTracker:      config.SessionTracker,
 		settingsStore:       config.ManagerServiceSettings,
 		autoStops:           make(map[string]*autoStopState),
@@ -1511,17 +1555,30 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
+	runtimeToken, err := a.prepareRuntimeCredential(operation.GetCodespaceUuid())
+	if err != nil {
+		return err
+	}
+	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
+		CodespaceUUID: operation.GetCodespaceUuid(),
+		GiteaToken:    token.GetToken(),
+		RuntimeToken:  runtimeToken,
+	}); err != nil {
+		return err
+	}
 	if err := a.provisioner.Bootstrap(ctx, instance.Name, provisioner.BootstrapRequest{
-		CodespaceUUID:    operation.GetCodespaceUuid(),
-		GiteaToken:       token.GetToken(),
-		ServerURL:        token.GetServerUrl(),
-		RepoCloneHTTPURL: payload.GetRepoCloneHttpUrl(),
-		RepoCloneSSHURL:  payload.GetRepoCloneSshUrl(),
-		RepoFullName:     payload.GetRepoFullName(),
-		StartRef:         payload.GetStartRef(),
-		CommitSHA:        payload.GetCommitSha(),
-		Workdir:          instance.Workdir,
-		GitProtocol:      payload.GetGitProtocol().String(),
+		CodespaceUUID:     operation.GetCodespaceUuid(),
+		GiteaToken:        token.GetToken(),
+		RuntimeToken:      runtimeToken,
+		RuntimeAPIBaseURL: a.config.RuntimeAPIBaseURL,
+		ServerURL:         token.GetServerUrl(),
+		RepoCloneHTTPURL:  payload.GetRepoCloneHttpUrl(),
+		RepoCloneSSHURL:   payload.GetRepoCloneSshUrl(),
+		RepoFullName:      payload.GetRepoFullName(),
+		StartRef:          payload.GetStartRef(),
+		CommitSHA:         payload.GetCommitSha(),
+		Workdir:           instance.Workdir,
+		GitProtocol:       payload.GetGitProtocol().String(),
 	}); err != nil {
 		return err
 	}
@@ -1541,7 +1598,19 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	if _, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid()); err != nil {
+	token, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid())
+	if err != nil {
+		return err
+	}
+	runtimeToken, err := a.prepareRuntimeCredential(operation.GetCodespaceUuid())
+	if err != nil {
+		return err
+	}
+	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
+		CodespaceUUID: operation.GetCodespaceUuid(),
+		GiteaToken:    token.GetToken(),
+		RuntimeToken:  runtimeToken,
+	}); err != nil {
 		return err
 	}
 	if err := a.reportReadyMetadata(ctx, operation, instance); err != nil {
@@ -1583,6 +1652,28 @@ func (a *Agent) requestGiteaToken(ctx context.Context, codespaceUUID string) (*c
 		return nil, fmt.Errorf("request gitea token rpc: %w", err)
 	}
 	return response.Msg, nil
+}
+
+func (a *Agent) prepareRuntimeCredential(codespaceUUID string) (string, error) {
+	token, err := newRuntimeToken()
+	if err != nil {
+		return "", err
+	}
+	if a.credentialStore == nil {
+		return token, nil
+	}
+	if err := a.credentialStore.SaveRuntimeCredential(codespaceUUID, token); err != nil {
+		return "", fmt.Errorf("save runtime credential: %w", err)
+	}
+	return token, nil
+}
+
+func newRuntimeToken() (string, error) {
+	var random [32]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("generate runtime token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(random[:]), nil
 }
 
 func (a *Agent) requestIdleStop(
@@ -1631,24 +1722,29 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 		return fmt.Errorf("runtime instance is required")
 	}
 	now := time.Now().Unix()
-	metadata := map[string]any{
-		"runtime": map[string]any{
-			"internal_ssh": map[string]any{
-				"host":                 instance.InternalSSHHost,
-				"port":                 instance.InternalSSHPort,
-				"user":                 instance.InternalSSHUser,
-				"auth_mode":            instance.InternalSSHAuthMode,
-				"host_key_fingerprint": instance.InternalSSHFingerprint,
-			},
+	snapshot := RuntimeMetadataSnapshot{
+		CodespaceUUID:      operation.GetCodespaceUuid(),
+		MetadataGeneration: a.nextRuntimeMetadataGeneration(),
+		InternalSSH: RuntimeMetadataInternalSSH{
+			Host:               instance.InternalSSHHost,
+			Port:               instance.InternalSSHPort,
+			User:               instance.InternalSSHUser,
+			AuthMode:           instance.InternalSSHAuthMode,
+			HostKeyFingerprint: instance.InternalSSHFingerprint,
 		},
-		"endpoints": []any{},
-		"boot": map[string]any{
-			"stage":              "ready",
-			"operation_rversion": operation.GetOperationRversion(),
-			"started_unix":       now,
-			"last_update_unix":   now,
+		Boot: RuntimeMetadataBoot{
+			OperationRVersion: operation.GetOperationRversion(),
+			Stage:             "ready",
+			StartedUnix:       now,
+			LastUpdateUnix:    now,
 		},
 	}
+	if a.metadataStateStore != nil {
+		if err := a.metadataStateStore.SaveRuntimeMetadataSnapshot(snapshot); err != nil {
+			return fmt.Errorf("save runtime metadata snapshot: %w", err)
+		}
+	}
+	metadata := runtimeMetadataPayload(snapshot, nil)
 	encoded, err := json.Marshal(metadata)
 	if err != nil {
 		return fmt.Errorf("encode runtime metadata: %w", err)
@@ -1657,13 +1753,37 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 		ProtocolVersion:    protocolVersion,
 		CodespaceUuid:      operation.GetCodespaceUuid(),
 		MetadataJson:       string(encoded),
-		MetadataGeneration: a.nextRuntimeMetadataGeneration(),
+		MetadataGeneration: snapshot.MetadataGeneration,
 	})
 	a.setManagerAuth(request.Header())
 	if _, err := a.client.ReportRuntimeMetadata(ctx, request); err != nil {
 		return fmt.Errorf("report runtime metadata rpc: %w", err)
 	}
 	return nil
+}
+
+func runtimeMetadataPayload(snapshot RuntimeMetadataSnapshot, endpoints []map[string]any) map[string]any {
+	if endpoints == nil {
+		endpoints = []map[string]any{}
+	}
+	return map[string]any{
+		"runtime": map[string]any{
+			"internal_ssh": map[string]any{
+				"host":                 snapshot.InternalSSH.Host,
+				"port":                 snapshot.InternalSSH.Port,
+				"user":                 snapshot.InternalSSH.User,
+				"auth_mode":            snapshot.InternalSSH.AuthMode,
+				"host_key_fingerprint": snapshot.InternalSSH.HostKeyFingerprint,
+			},
+		},
+		"endpoints": endpoints,
+		"boot": map[string]any{
+			"stage":              snapshot.Boot.Stage,
+			"operation_rversion": snapshot.Boot.OperationRVersion,
+			"started_unix":       snapshot.Boot.StartedUnix,
+			"last_update_unix":   snapshot.Boot.LastUpdateUnix,
+		},
+	}
 }
 
 func (a *Agent) nextRuntimeMetadataGeneration() int64 {

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,17 @@ import (
 )
 
 const defaultCodespaceRoot = "/codespace"
+const defaultCommunicationInterface = "eth0"
+
+const (
+	runtimeCredentialDir       = "/var/lib/gitea-codespace"
+	runtimeGitCredentialDir    = "/var/lib/gitea-codespace/git"
+	runtimeGiteaTokenFilePath  = "/var/lib/gitea-codespace/gitea-token"
+	runtimeAPITokenFilePath    = "/var/lib/gitea-codespace/runtime-token"
+	runtimeCredentialDirMode   = 0o700
+	runtimeCredentialFileMode  = 0o600
+	runtimeCredentialWriteMode = "overwrite"
+)
 
 const (
 	incusConfigManagerID     = "user.gitea.manager_id"
@@ -25,22 +37,31 @@ const (
 	incusConfigTag           = "user.gitea.tag"
 )
 
+type bootstrapCredentialFile struct {
+	path    string
+	content string
+	mode    int
+	kind    string
+}
+
 // IncusConfig configures one Incus-backed provisioner.
 type IncusConfig struct {
-	ManagerID     int64
-	Project       string
-	Remote        string
-	UnixSocket    string
-	CodespaceRoot string
-	Bootstrap     BootstrapConfig
+	ManagerID              int64
+	Project                string
+	Remote                 string
+	UnixSocket             string
+	CodespaceRoot          string
+	CommunicationInterface string
+	Bootstrap              BootstrapConfig
 }
 
 // IncusProvisioner provisions codespace as Incus instances.
 type IncusProvisioner struct {
-	client        incus.InstanceServer
-	managerID     string
-	codespaceRoot string
-	bootstrap     BootstrapConfig
+	client                 incus.InstanceServer
+	managerID              string
+	codespaceRoot          string
+	communicationInterface string
+	bootstrap              BootstrapConfig
 }
 
 // NewIncus creates one Incus-backed provisioner.
@@ -52,17 +73,29 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("connect incus: %w", err)
 	}
+	server, _, err := client.GetServer()
+	if err != nil {
+		return nil, fmt.Errorf("get incus server: %w", err)
+	}
+	if err := validateIncusServer(server, config.Project); err != nil {
+		return nil, err
+	}
 
 	codespaceRoot := config.CodespaceRoot
 	if codespaceRoot == "" {
 		codespaceRoot = defaultCodespaceRoot
 	}
+	communicationInterface := strings.TrimSpace(config.CommunicationInterface)
+	if communicationInterface == "" {
+		communicationInterface = defaultCommunicationInterface
+	}
 
 	return &IncusProvisioner{
-		client:        client,
-		managerID:     fmt.Sprintf("%d", config.ManagerID),
-		codespaceRoot: codespaceRoot,
-		bootstrap:     config.Bootstrap,
+		client:                 client,
+		managerID:              fmt.Sprintf("%d", config.ManagerID),
+		codespaceRoot:          codespaceRoot,
+		communicationInterface: communicationInterface,
+		bootstrap:              config.Bootstrap,
 	}, nil
 }
 
@@ -135,19 +168,21 @@ func (p *IncusProvisioner) Bootstrap(ctx context.Context, instanceName string, r
 	if err != nil {
 		return fmt.Errorf("build git url prefixes: %w", err)
 	}
-
 	environment := map[string]string{
-		"HOME":             p.bootstrap.HomeDir,
-		"CODESPACE_ID":     request.CodespaceUUID,
-		"CODESPACE_ROOT":   request.Workdir,
-		"CODESPACE_DIR":    request.Workdir,
-		"CODESPACE_PARENT": filepath.Dir(request.Workdir),
-		"REPO_URL":         repoURL,
-		"REPO_FULL_NAME":   request.RepoFullName,
-		"START_REF":        request.StartRef,
-		"START_SHA":        request.CommitSHA,
-		"GIT_AUTH_PREFIX":  authPrefix,
-		"GIT_HTTPS_PREFIX": httpsPrefix,
+		"HOME":                       p.bootstrap.HomeDir,
+		"CODESPACE_ID":               request.CodespaceUUID,
+		"CODESPACE_ROOT":             request.Workdir,
+		"CODESPACE_DIR":              request.Workdir,
+		"CODESPACE_PARENT":           filepath.Dir(request.Workdir),
+		"CODESPACE_MANAGER_BASE_URL": request.RuntimeAPIBaseURL,
+		"CODESPACE_RUNTIME_TOKEN":    request.RuntimeToken,
+		"GITEA_TOKEN":                request.GiteaToken,
+		"REPO_URL":                   repoURL,
+		"REPO_FULL_NAME":             request.RepoFullName,
+		"START_REF":                  request.StartRef,
+		"START_SHA":                  request.CommitSHA,
+		"GIT_AUTH_PREFIX":            authPrefix,
+		"GIT_HTTPS_PREFIX":           httpsPrefix,
 	}
 
 	script := strings.TrimSpace(`
@@ -177,6 +212,63 @@ fi
 		return fmt.Errorf("bootstrap instance %s: %w", instanceName, err)
 	}
 	return nil
+}
+
+// WriteCredentials writes the current Gitea and Runtime API tokens into the instance.
+func (p *IncusProvisioner) WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if strings.TrimSpace(request.GiteaToken) == "" {
+		return fmt.Errorf("gitea token is empty")
+	}
+	if strings.TrimSpace(request.RuntimeToken) == "" {
+		return fmt.Errorf("runtime token is empty")
+	}
+	for _, file := range bootstrapCredentialFiles(request) {
+		args := incus.InstanceFileArgs{
+			Content:   strings.NewReader(file.content),
+			UID:       int64(p.bootstrap.User),
+			GID:       int64(p.bootstrap.Group),
+			Mode:      file.mode,
+			Type:      file.kind,
+			WriteMode: runtimeCredentialWriteMode,
+		}
+		if err := p.client.CreateInstanceFile(instanceName, file.path, args); err != nil {
+			return fmt.Errorf("write %s: %w", file.path, err)
+		}
+	}
+	return nil
+}
+
+func bootstrapCredentialFiles(request CredentialRequest) []bootstrapCredentialFile {
+	return []bootstrapCredentialFile{
+		{
+			path: runtimeCredentialDir,
+			mode: runtimeCredentialDirMode,
+			kind: "directory",
+		},
+		{
+			path: runtimeGitCredentialDir,
+			mode: runtimeCredentialDirMode,
+			kind: "directory",
+		},
+		{
+			path:    runtimeGiteaTokenFilePath,
+			content: request.GiteaToken,
+			mode:    runtimeCredentialFileMode,
+			kind:    "file",
+		},
+		{
+			path:    runtimeAPITokenFilePath,
+			content: request.RuntimeToken,
+			mode:    runtimeCredentialFileMode,
+			kind:    "file",
+		},
+	}
 }
 
 // Stop stops one instance if it exists.
@@ -292,6 +384,49 @@ func (p *IncusProvisioner) ListInstances(ctx context.Context) ([]*Instance, erro
 	return result, nil
 }
 
+// ResolveRuntimeSource matches one Runtime API source address to an owned running Incus instance.
+func (p *IncusProvisioner) ResolveRuntimeSource(ctx context.Context, sourceIP string) (RuntimeSource, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return RuntimeSource{}, false, err
+	}
+	parsedIP := net.ParseIP(strings.TrimSpace(sourceIP))
+	if parsedIP == nil {
+		return RuntimeSource{}, false, nil
+	}
+	instances, err := p.client.GetInstances(api.InstanceTypeAny)
+	if err != nil {
+		return RuntimeSource{}, false, fmt.Errorf("list instances: %w", err)
+	}
+
+	var result RuntimeSource
+	matched := false
+	for _, instance := range instances {
+		owned, ok := p.instanceFromAPI(instance)
+		if !ok || owned.RuntimeState != RuntimeStateRunning {
+			continue
+		}
+		state, _, err := p.client.GetInstanceState(instance.Name)
+		if err != nil {
+			if isNotFoundError(err) {
+				continue
+			}
+			return RuntimeSource{}, false, fmt.Errorf("get instance state %s: %w", instance.Name, err)
+		}
+		if !instanceStateHasSourceIP(state, parsedIP, p.communicationInterface) {
+			continue
+		}
+		if matched {
+			return RuntimeSource{}, false, nil
+		}
+		result = RuntimeSource{
+			CodespaceUUID: owned.CodespaceUUID,
+			InstanceName:  owned.Name,
+		}
+		matched = true
+	}
+	return result, matched, nil
+}
+
 func (p *IncusProvisioner) instanceFromAPI(instance api.Instance) (*Instance, bool) {
 	if strings.TrimSpace(instance.Config[incusConfigManagerID]) != p.managerID {
 		return nil, false
@@ -306,6 +441,38 @@ func (p *IncusProvisioner) instanceFromAPI(instance api.Instance) (*Instance, bo
 		RuntimeState:  incusRuntimeState(instance.Status),
 		RepoTag:       instance.Config[incusConfigTag],
 	}, true
+}
+
+func instanceStateHasSourceIP(state *api.InstanceState, sourceIP net.IP, interfaceName string) bool {
+	if state == nil || sourceIP == nil {
+		return false
+	}
+	if strings.TrimSpace(interfaceName) != "" {
+		return networkAddressHasSourceIP(state.Network[interfaceName], sourceIP)
+	}
+	for _, network := range state.Network {
+		if networkAddressHasSourceIP(network, sourceIP) {
+			return true
+		}
+	}
+	return false
+}
+
+func networkAddressHasSourceIP(network api.InstanceStateNetwork, sourceIP net.IP) bool {
+	for _, address := range network.Addresses {
+		if strings.EqualFold(strings.TrimSpace(address.Scope), "link") ||
+			strings.EqualFold(strings.TrimSpace(address.Scope), "local") {
+			continue
+		}
+		ip := net.ParseIP(strings.TrimSpace(address.Address))
+		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+			continue
+		}
+		if ip.Equal(sourceIP) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *IncusProvisioner) startInstance(ctx context.Context, instanceName string) error {
@@ -384,6 +551,29 @@ func withProject(client incus.InstanceServer, project string) incus.InstanceServ
 		return client
 	}
 	return client.UseProject(project)
+}
+
+func validateIncusServer(server *api.Server, project string) error {
+	if server == nil {
+		return fmt.Errorf("incus server response is empty")
+	}
+	if !strings.EqualFold(strings.TrimSpace(server.Environment.Server), "incus") {
+		return fmt.Errorf("incus server implementation is %q", server.Environment.Server)
+	}
+	if !strings.EqualFold(strings.TrimSpace(server.Auth), "trusted") {
+		return fmt.Errorf("incus client is not trusted")
+	}
+	if server.Public {
+		return fmt.Errorf("incus server is public-only")
+	}
+	if server.Environment.ServerClustered {
+		return fmt.Errorf("incus clustered mode is not supported")
+	}
+	project = strings.TrimSpace(project)
+	if project != "" && strings.TrimSpace(server.Environment.Project) != project {
+		return fmt.Errorf("incus project %q is not active", project)
+	}
+	return nil
 }
 
 func trimRemoteAlias(value string) string {

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -91,6 +92,7 @@ type Config struct {
 	Gitea       GiteaConfig       `json:"gitea" yaml:"gitea"`
 	Gateway     GatewayConfig     `json:"gateway" yaml:"gateway"`
 	Manager     ManagerConfig     `json:"manager" yaml:"manager"`
+	Scripts     ScriptsConfig     `json:"scripts" yaml:"scripts"`
 	Provisioner ProvisionerConfig `json:"provisioner" yaml:"provisioner"`
 }
 
@@ -98,6 +100,7 @@ type Config struct {
 type ServerConfig struct {
 	ListenAddr           string   `json:"listen_addr" yaml:"listen_addr"`
 	RuntimeAPIListenAddr string   `json:"runtime_api_listen" yaml:"runtime_api_listen"`
+	RuntimeAPIURL        string   `json:"runtime_api_url" yaml:"runtime_api_url"`
 	GatewayListenAddr    string   `json:"gateway_listen" yaml:"gateway_listen"`
 	GatewaySSHListenAddr string   `json:"gateway_ssh_listen" yaml:"gateway_ssh_listen"`
 	PublicBaseURL        string   `json:"public_base_url" yaml:"public_base_url"`
@@ -140,6 +143,13 @@ type ManagerConfig struct {
 	Tags                               []string `json:"tags" yaml:"tags"`
 }
 
+// ScriptsConfig stores the create/resume script entry points.
+type ScriptsConfig struct {
+	Init   string `json:"init" yaml:"init"`
+	Start  string `json:"start" yaml:"start"`
+	Resume string `json:"resume" yaml:"resume"`
+}
+
 // ProvisionerConfig stores provisioner selection and runtime options.
 type ProvisionerConfig struct {
 	Kind          string          `json:"kind" yaml:"kind"`
@@ -150,9 +160,10 @@ type ProvisionerConfig struct {
 
 // IncusAPIConfig stores Incus connection settings.
 type IncusAPIConfig struct {
-	Remote     string `json:"remote" yaml:"remote"`
-	UnixSocket string `json:"unix_socket" yaml:"unix_socket"`
-	Project    string `json:"project" yaml:"project"`
+	Remote                 string `json:"remote" yaml:"remote"`
+	UnixSocket             string `json:"unix_socket" yaml:"unix_socket"`
+	Project                string `json:"project" yaml:"project"`
+	CommunicationInterface string `json:"communication_interface" yaml:"communication_interface"`
 }
 
 // BootstrapConfig stores codespace bootstrap execution settings.
@@ -169,6 +180,7 @@ func DefaultConfig() Config {
 		Server: ServerConfig{
 			ListenAddr:           ":18080",
 			RuntimeAPIListenAddr: ":18080",
+			RuntimeAPIURL:        "http://127.0.0.1:18080",
 			GatewayListenAddr:    ":18081",
 			GatewaySSHListenAddr: ":2222",
 			PublicBaseURL:        "http://127.0.0.1:18081",
@@ -199,9 +211,17 @@ func DefaultConfig() Config {
 			HTTPTimeout:              Duration(15 * time.Second),
 			Tags:                     []string{"default"},
 		},
+		Scripts: ScriptsConfig{
+			Init:   "builtin",
+			Start:  "builtin",
+			Resume: "builtin",
+		},
 		Provisioner: ProvisionerConfig{
 			Kind:          "dummy",
 			CodespaceRoot: "/codespace",
+			Incus: IncusAPIConfig{
+				CommunicationInterface: "eth0",
+			},
 			Bootstrap: BootstrapConfig{
 				Shell:   "/bin/sh",
 				HomeDir: "/root",
@@ -306,6 +326,9 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Server.RuntimeAPIListenAddr) == "" {
 		return fmt.Errorf("server.runtime_api_listen is required")
 	}
+	if strings.TrimSpace(c.Server.RuntimeAPIURL) == "" {
+		return fmt.Errorf("server.runtime_api_url is required")
+	}
 	if strings.TrimSpace(c.Server.GatewayListenAddr) == "" {
 		return fmt.Errorf("server.gateway_listen is required")
 	}
@@ -332,6 +355,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Provisioner.Kind) == "" {
 		return fmt.Errorf("provisioner.kind is required")
+	}
+	if err := c.Scripts.Validate(); err != nil {
+		return err
 	}
 	if c.Gateway.MaxInflightTotal < 1 || c.Gateway.MaxInflightTotal > 1000000 {
 		return fmt.Errorf("gateway.gateway_max_inflight_total must be between 1 and 1000000")
@@ -369,6 +395,10 @@ func (c *Config) applyDefaults() {
 		} else {
 			c.Server.RuntimeAPIListenAddr = defaults.Server.RuntimeAPIListenAddr
 		}
+	}
+	if strings.TrimSpace(c.Server.RuntimeAPIURL) == "" ||
+		(c.Server.RuntimeAPIURL == defaults.Server.RuntimeAPIURL && c.Server.RuntimeAPIListenAddr != defaults.Server.RuntimeAPIListenAddr) {
+		c.Server.RuntimeAPIURL = runtimeAPIURLFromListen(c.Server.RuntimeAPIListenAddr)
 	}
 	if strings.TrimSpace(c.Server.GatewayListenAddr) == "" {
 		c.Server.GatewayListenAddr = defaults.Server.GatewayListenAddr
@@ -448,11 +478,23 @@ func (c *Config) applyDefaults() {
 	if len(c.Manager.Tags) == 0 {
 		c.Manager.Tags = append([]string(nil), defaults.Manager.Tags...)
 	}
+	if strings.TrimSpace(c.Scripts.Init) == "" {
+		c.Scripts.Init = defaults.Scripts.Init
+	}
+	if strings.TrimSpace(c.Scripts.Start) == "" {
+		c.Scripts.Start = defaults.Scripts.Start
+	}
+	if strings.TrimSpace(c.Scripts.Resume) == "" {
+		c.Scripts.Resume = defaults.Scripts.Resume
+	}
 	if strings.TrimSpace(c.Provisioner.Kind) == "" {
 		c.Provisioner.Kind = defaults.Provisioner.Kind
 	}
 	if strings.TrimSpace(c.Provisioner.CodespaceRoot) == "" {
 		c.Provisioner.CodespaceRoot = defaults.Provisioner.CodespaceRoot
+	}
+	if strings.TrimSpace(c.Provisioner.Incus.CommunicationInterface) == "" {
+		c.Provisioner.Incus.CommunicationInterface = defaults.Provisioner.Incus.CommunicationInterface
 	}
 	if strings.TrimSpace(c.Provisioner.Bootstrap.Shell) == "" {
 		c.Provisioner.Bootstrap.Shell = defaults.Provisioner.Bootstrap.Shell
@@ -460,6 +502,17 @@ func (c *Config) applyDefaults() {
 	if strings.TrimSpace(c.Provisioner.Bootstrap.HomeDir) == "" {
 		c.Provisioner.Bootstrap.HomeDir = defaults.Provisioner.Bootstrap.HomeDir
 	}
+}
+
+func runtimeAPIURLFromListen(listenAddr string) string {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(listenAddr))
+	if err != nil || port == "" {
+		return DefaultConfig().Server.RuntimeAPIURL
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "127.0.0.1"
+	}
+	return "http://" + net.JoinHostPort(host, port)
 }
 
 func (c *Config) resolveRelativePaths(configPath string) {
@@ -471,4 +524,40 @@ func (c *Config) resolveRelativePaths(configPath string) {
 		return
 	}
 	c.Manager.StateDir = filepath.Clean(filepath.Join(configDir, c.Manager.StateDir))
+}
+
+// Validate checks whether the script entry points are usable.
+func (c ScriptsConfig) Validate() error {
+	entries := []struct {
+		name  string
+		value string
+	}{
+		{name: "scripts.init", value: c.Init},
+		{name: "scripts.start", value: c.Start},
+		{name: "scripts.resume", value: c.Resume},
+	}
+	builtinCount := 0
+	customCount := 0
+	for _, entry := range entries {
+		value := strings.TrimSpace(entry.value)
+		if value == "builtin" {
+			builtinCount++
+			continue
+		}
+		customCount++
+		if !filepath.IsAbs(value) {
+			return fmt.Errorf("%s must be builtin or an absolute local file path", entry.name)
+		}
+		info, err := os.Stat(value)
+		if err != nil {
+			return fmt.Errorf("%s file %s is not accessible: %w", entry.name, value, err)
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("%s file %s must be a regular file", entry.name, value)
+		}
+	}
+	if builtinCount != 0 && customCount != 0 {
+		return fmt.Errorf("scripts.init, scripts.start, and scripts.resume must all be builtin or all be absolute local file paths")
+	}
+	return nil
 }

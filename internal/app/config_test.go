@@ -46,6 +46,9 @@ provisioner:
 	if config.Server.RuntimeAPIListenAddr != ":19090" {
 		t.Fatalf("runtime api listen addr = %q", config.Server.RuntimeAPIListenAddr)
 	}
+	if config.Server.RuntimeAPIURL != "http://127.0.0.1:19090" {
+		t.Fatalf("runtime api url = %q", config.Server.RuntimeAPIURL)
+	}
 	if config.Server.GatewayListenAddr != ":19091" {
 		t.Fatalf("gateway listen addr = %q", config.Server.GatewayListenAddr)
 	}
@@ -63,6 +66,12 @@ provisioner:
 	}
 	if config.Provisioner.Incus.UnixSocket != "/var/lib/incus/unix.socket" {
 		t.Fatalf("incus unix socket = %q", config.Provisioner.Incus.UnixSocket)
+	}
+	if config.Provisioner.Incus.CommunicationInterface != "eth0" {
+		t.Fatalf("incus communication interface = %q", config.Provisioner.Incus.CommunicationInterface)
+	}
+	if config.Scripts.Init != "builtin" || config.Scripts.Start != "builtin" || config.Scripts.Resume != "builtin" {
+		t.Fatalf("scripts defaults = %#v", config.Scripts)
 	}
 }
 
@@ -105,6 +114,9 @@ func TestLoadConfigJSON(t *testing.T) {
 	if config.Server.ShutdownTimeout.ToStdlib().Seconds() != 10 {
 		t.Fatalf("shutdown timeout = %s", config.Server.ShutdownTimeout.ToStdlib())
 	}
+	if config.Server.RuntimeAPIURL != "http://127.0.0.1:20080" {
+		t.Fatalf("runtime api url = %q", config.Server.RuntimeAPIURL)
+	}
 	if config.Provisioner.Bootstrap.Shell != "/bin/sh" {
 		t.Fatalf("bootstrap shell = %q", config.Provisioner.Bootstrap.Shell)
 	}
@@ -139,4 +151,56 @@ func TestGatewayConfigValidation(t *testing.T) {
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected validation inflight limit error")
 	}
+}
+
+func TestScriptsConfigValidation(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	initPath := writeScriptForTest(t, dir, "init.sh")
+	startPath := writeScriptForTest(t, dir, "start.sh")
+	resumePath := writeScriptForTest(t, dir, "resume.sh")
+
+	config := DefaultConfig()
+	config.applyDefaults()
+	config.Scripts = ScriptsConfig{
+		Init:   initPath,
+		Start:  startPath,
+		Resume: resumePath,
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("custom scripts validation: %v", err)
+	}
+
+	config = DefaultConfig()
+	config.applyDefaults()
+	config.Scripts = ScriptsConfig{
+		Init:   "builtin",
+		Start:  startPath,
+		Resume: resumePath,
+	}
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected mixed scripts validation error")
+	}
+
+	config = DefaultConfig()
+	config.applyDefaults()
+	config.Scripts = ScriptsConfig{
+		Init:   "init.sh",
+		Start:  startPath,
+		Resume: resumePath,
+	}
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected relative script path validation error")
+	}
+}
+
+func writeScriptForTest(t *testing.T, dir, name string) string {
+	t.Helper()
+
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatalf("write script %s: %v", name, err)
+	}
+	return path
 }

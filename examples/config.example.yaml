@@ -1,6 +1,7 @@
 server:
   listen_addr: ":18080"
   runtime_api_listen: ":18080"
+  runtime_api_url: "http://10.0.0.1:18080"
   gateway_listen: ":18081"
   gateway_ssh_listen: ":2222"
   public_base_url: "https://codespace.example.com"
@@ -39,12 +40,18 @@ manager:
     - "linux"
     - "incus"
 
+scripts:
+  init: "builtin"
+  start: "builtin"
+  resume: "builtin"
+
 provisioner:
   kind: "incus"
   codespace_root: "/codespace"
   incus:
     unix_socket: "/var/lib/incus/unix.socket"
     project: "default"
+    communication_interface: "eth0"
   bootstrap:
     shell: "/bin/sh"
     home_dir: "/root"

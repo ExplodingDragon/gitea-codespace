@@ -109,6 +109,53 @@ func TestGatewayControlPlaneVerifySSHPublicKeyAllowed(t *testing.T) {
 	assertGatewayManagerAuth(t, service)
 }
 
+func TestGatewayControlPlaneEnsureCodespaceGitSSHKey(t *testing.T) {
+	t.Parallel()
+
+	service := &gatewayManagerService{
+		ensureGitSSHKeyResponse: &codespacev1.EnsureCodespaceGitSSHKeyResponse{
+			KnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+
+	publicKey := []byte("ssh-wire-key")
+	lines, err := controlPlane.ensureCodespaceGitSSHKey(context.Background(), "codespace-uuid", publicKey)
+	if err != nil {
+		t.Fatalf("ensure git ssh key: %v", err)
+	}
+	publicKey[0] = 'X'
+	if len(lines) != 1 || lines[0] != "gitea.example.com ssh-ed25519 AAAA" {
+		t.Fatalf("known hosts lines = %#v", lines)
+	}
+	if service.ensureGitSSHKeyRequest.GetProtocolVersion() != 1 ||
+		service.ensureGitSSHKeyRequest.GetCodespaceUuid() != "codespace-uuid" ||
+		string(service.ensureGitSSHKeyRequest.GetPublicKey()) != "ssh-wire-key" {
+		t.Fatalf("ensure git ssh key request = %#v", service.ensureGitSSHKeyRequest)
+	}
+	assertGatewayManagerAuth(t, service)
+}
+
+func TestGatewayControlPlaneReportRuntimeMetadata(t *testing.T) {
+	t.Parallel()
+
+	service := &gatewayManagerService{}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+
+	if err := controlPlane.reportRuntimeMetadata(context.Background(), "codespace-uuid", `{"endpoints":[]}`, 3); err != nil {
+		t.Fatalf("report runtime metadata: %v", err)
+	}
+	if service.metadataRequest.GetProtocolVersion() != 1 ||
+		service.metadataRequest.GetCodespaceUuid() != "codespace-uuid" ||
+		service.metadataRequest.GetMetadataJson() != `{"endpoints":[]}` ||
+		service.metadataRequest.GetMetadataGeneration() != 3 {
+		t.Fatalf("metadata request = %#v", service.metadataRequest)
+	}
+	assertGatewayManagerAuth(t, service)
+}
+
 func TestGatewayControlPlaneRevalidateSSHSessionAllowed(t *testing.T) {
 	t.Parallel()
 
@@ -154,26 +201,31 @@ func TestGatewayControlPlaneMissingOutcomeFails(t *testing.T) {
 type gatewayManagerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 
-	mu                     sync.Mutex
-	managerID              string
-	managerSecret          string
-	openTokenRequest       *codespacev1.ValidateOpenTokenRequest
-	publicEndpointRequest  *codespacev1.ValidatePublicEndpointRequest
-	sshRequest             *codespacev1.VerifySSHPublicKeyRequest
-	revalidateRequest      *codespacev1.RevalidateGatewaySessionRequest
-	publicEndpointCalls    int
-	openTokenResponse      *codespacev1.ValidateOpenTokenResponse
-	openTokenCalls         int
-	openTokenStarted       chan struct{}
-	openTokenRelease       chan struct{}
-	publicEndpointResponse *codespacev1.ValidatePublicEndpointResponse
-	publicEndpointStarted  chan struct{}
-	publicEndpointRelease  chan struct{}
-	sshResponse            *codespacev1.VerifySSHPublicKeyResponse
-	revalidateResponse     *codespacev1.RevalidateGatewaySessionResponse
-	revalidateCalls        int
-	revalidateStarted      chan struct{}
-	revalidateRelease      chan struct{}
+	mu                      sync.Mutex
+	managerID               string
+	managerSecret           string
+	openTokenRequest        *codespacev1.ValidateOpenTokenRequest
+	publicEndpointRequest   *codespacev1.ValidatePublicEndpointRequest
+	sshRequest              *codespacev1.VerifySSHPublicKeyRequest
+	ensureGitSSHKeyRequest  *codespacev1.EnsureCodespaceGitSSHKeyRequest
+	metadataRequest         *codespacev1.ReportRuntimeMetadataRequest
+	revalidateRequest       *codespacev1.RevalidateGatewaySessionRequest
+	publicEndpointCalls     int
+	openTokenResponse       *codespacev1.ValidateOpenTokenResponse
+	openTokenCalls          int
+	openTokenStarted        chan struct{}
+	openTokenRelease        chan struct{}
+	publicEndpointResponse  *codespacev1.ValidatePublicEndpointResponse
+	publicEndpointStarted   chan struct{}
+	publicEndpointRelease   chan struct{}
+	sshResponse             *codespacev1.VerifySSHPublicKeyResponse
+	ensureGitSSHKeyResponse *codespacev1.EnsureCodespaceGitSSHKeyResponse
+	metadataErr             error
+	metadataResponse        *codespacev1.ReportRuntimeMetadataResponse
+	revalidateResponse      *codespacev1.RevalidateGatewaySessionResponse
+	revalidateCalls         int
+	revalidateStarted       chan struct{}
+	revalidateRelease       chan struct{}
 }
 
 func (s *gatewayManagerService) ValidateOpenToken(
@@ -241,6 +293,43 @@ func (s *gatewayManagerService) VerifySSHPublicKey(
 		return connect.NewResponse(response), nil
 	}
 	return connect.NewResponse(&codespacev1.VerifySSHPublicKeyResponse{}), nil
+}
+
+func (s *gatewayManagerService) EnsureCodespaceGitSSHKey(
+	_ context.Context,
+	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
+) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
+	s.captureAuth(req.Header())
+	request := *req.Msg
+	request.PublicKey = append([]byte(nil), req.Msg.GetPublicKey()...)
+	s.mu.Lock()
+	s.ensureGitSSHKeyRequest = &request
+	response := s.ensureGitSSHKeyResponse
+	s.mu.Unlock()
+	if response != nil {
+		return connect.NewResponse(response), nil
+	}
+	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{}), nil
+}
+
+func (s *gatewayManagerService) ReportRuntimeMetadata(
+	_ context.Context,
+	req *connect.Request[codespacev1.ReportRuntimeMetadataRequest],
+) (*connect.Response[codespacev1.ReportRuntimeMetadataResponse], error) {
+	s.captureAuth(req.Header())
+	request := *req.Msg
+	s.mu.Lock()
+	s.metadataRequest = &request
+	err := s.metadataErr
+	response := s.metadataResponse
+	s.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if response != nil {
+		return connect.NewResponse(response), nil
+	}
+	return connect.NewResponse(&codespacev1.ReportRuntimeMetadataResponse{}), nil
 }
 
 func (s *gatewayManagerService) RevalidateGatewaySession(

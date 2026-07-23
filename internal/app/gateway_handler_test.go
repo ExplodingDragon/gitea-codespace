@@ -5,6 +5,7 @@ package app
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -13,7 +14,208 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
+	"github.com/gorilla/websocket"
 )
+
+func TestGatewayWorkspaceProxiesAuthenticatedRoute(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/hello" || request.URL.RawQuery != "x=1" {
+			t.Fatalf("upstream url = %s", request.URL.String())
+		}
+		if got := request.Header.Get(gatewayProxyHeaderCodespaceUUID); got != codespaceUUID {
+			t.Fatalf("codespace header = %q", got)
+		}
+		if got := request.Header.Get(gatewayProxyHeaderEndpointID); got != "workspace" {
+			t.Fatalf("endpoint header = %q", got)
+		}
+		if got := request.Header.Get(gatewayProxyHeaderAccess); got != "authenticated" {
+			t.Fatalf("access header = %q", got)
+		}
+		if got := request.Header.Get(gatewayProxyHeaderUserID); got != "42" {
+			t.Fatalf("user header = %q", got)
+		}
+		fmt.Fprint(writer, "workspace proxied")
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "workspace",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: &codespacev1.RevalidateGatewaySessionResponse{
+			Outcome: &codespacev1.RevalidateGatewaySessionResponse_Allowed{
+				Allowed: &codespacev1.SessionAllowed{},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistry()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, routes)
+
+	cookie := openGatewaySession(t, handler)
+	request := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/hello?x=1", nil)
+	request.AddCookie(cookie)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace proxy status = %d body=%s", response.Code, response.Body.String())
+	}
+	if response.Body.String() != "workspace proxied" {
+		t.Fatalf("workspace proxy body = %q", response.Body.String())
+	}
+}
+
+func TestGatewayPublicEndpointProxiesPublicRoute(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/api" {
+			t.Fatalf("upstream path = %q", request.URL.Path)
+		}
+		if got := request.Header.Get(gatewayProxyHeaderAccess); got != "public" {
+			t.Fatalf("access header = %q", got)
+		}
+		if got := request.Header.Get(gatewayProxyHeaderUserID); got != "" {
+			t.Fatalf("user header = %q", got)
+		}
+		fmt.Fprint(writer, "public proxied")
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		publicEndpointResponse: &codespacev1.ValidatePublicEndpointResponse{
+			Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{
+				Allowed: &codespacev1.PublicEndpointAllowed{},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, routes)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/p/"+codespaceUUID+"/web/api", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("public proxy status = %d body=%s", response.Code, response.Body.String())
+	}
+	if response.Body.String() != "public proxied" {
+		t.Fatalf("public proxy body = %q", response.Body.String())
+	}
+}
+
+func TestGatewayPublicEndpointProxiesWebSocketRoute(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamErrors := make(chan error, 1)
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path != "/socket" || request.URL.RawQuery != "x=1" {
+			upstreamErrors <- fmt.Errorf("upstream url = %s", request.URL.String())
+			return
+		}
+		if got := request.Header.Get(gatewayProxyHeaderAccess); got != "public" {
+			upstreamErrors <- fmt.Errorf("access header = %q", got)
+			return
+		}
+		conn, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			upstreamErrors <- fmt.Errorf("upgrade websocket: %w", err)
+			return
+		}
+		defer conn.Close()
+		messageType, message, err := conn.ReadMessage()
+		if err != nil {
+			upstreamErrors <- fmt.Errorf("read websocket message: %w", err)
+			return
+		}
+		if string(message) != "ping" {
+			upstreamErrors <- fmt.Errorf("websocket message = %q", message)
+			return
+		}
+		if err := conn.WriteMessage(messageType, []byte("pong")); err != nil {
+			upstreamErrors <- fmt.Errorf("write websocket message: %w", err)
+			return
+		}
+		upstreamErrors <- nil
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		publicEndpointResponse: &codespacev1.ValidatePublicEndpointResponse{
+			Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{
+				Allowed: &codespacev1.PublicEndpointAllowed{},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, routes)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http")+"/p/"+codespaceUUID+"/web/socket?x=1", nil)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial websocket status = %d error = %v", response.StatusCode, err)
+		}
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
+		t.Fatalf("write websocket: %v", err)
+	}
+	_, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read websocket: %v", err)
+	}
+	if string(message) != "pong" {
+		t.Fatalf("websocket response = %q", message)
+	}
+	if err := <-upstreamErrors; err != nil {
+		t.Fatalf("upstream websocket: %v", err)
+	}
+}
 
 func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 	t.Parallel()

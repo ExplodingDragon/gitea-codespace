@@ -24,12 +24,15 @@ import (
 func TestAgentHandlesCreateOperation(t *testing.T) {
 	t.Parallel()
 
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	stateStore := &memoryOperationStateStore{}
+	credentialStore := &memoryRuntimeCredentialStore{}
+	metadataStore := &memoryRuntimeMetadataStateStore{}
 	service := &managerService{
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             "11111111-1111-4111-8111-111111111111",
+			CodespaceUuid:             codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -51,6 +54,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	provisioner := newCredentialTrackingProvisioner()
 	agent := New(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
@@ -66,7 +70,9 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		MaxOperations:             1,
 		RuntimeMetadataGeneration: 1,
 		OperationStateStore:       stateStore,
-	}, server.Client(), provisioner.NewDummy())
+		RuntimeCredentialStore:    credentialStore,
+		RuntimeMetadataStateStore: metadataStore,
+	}, server.Client(), provisioner)
 
 	if err := agent.declare(context.Background(), codespacev1.ManagerRuntimeState_MANAGER_RUNTIME_STATE_ONLINE); err != nil {
 		t.Fatalf("declare: %v", err)
@@ -97,6 +103,24 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	if service.metadataGeneration != 1 {
 		t.Fatalf("metadata generation = %d", service.metadataGeneration)
 	}
+	saved := credentialStore.savedTokens()
+	if len(saved) != 1 || saved[0].codespaceUUID != codespaceUUID || saved[0].token == "" {
+		t.Fatalf("runtime credentials = %#v", saved)
+	}
+	if records := provisioner.credentialWrites(); len(records) != 1 ||
+		records[0].instanceName == "" ||
+		records[0].request.CodespaceUUID != codespaceUUID ||
+		records[0].request.GiteaToken != "gcs_test" ||
+		records[0].request.RuntimeToken != saved[0].token {
+		t.Fatalf("credential writes = %#v saved=%#v", records, saved)
+	}
+	if snapshots := metadataStore.savedSnapshots(); len(snapshots) != 1 ||
+		snapshots[0].CodespaceUUID != codespaceUUID ||
+		snapshots[0].MetadataGeneration != 1 ||
+		snapshots[0].Boot.Stage != "ready" ||
+		snapshots[0].InternalSSH.Host == "" {
+		t.Fatalf("runtime metadata snapshots = %#v", snapshots)
+	}
 	if service.managerID != "7" || service.managerSecret != "manager-secret" {
 		t.Fatalf("manager auth headers = %q/%q", service.managerID, service.managerSecret)
 	}
@@ -109,6 +133,80 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	waitDeleted(t, stateStore, 1)
 	if stateStore.deletedCount() != 1 {
 		t.Fatalf("deleted active operations = %d", stateStore.deletedCount())
+	}
+}
+
+func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "12121212-1212-4212-8212-121212121212"
+	credentialStore := &memoryRuntimeCredentialStore{}
+	service := &managerService{
+		finalized:                 make(chan struct{}, 1),
+		metadataOperationRVersion: 2,
+		operation: &codespacev1.OperationPayload{
+			OperationRversion:         2,
+			CodespaceUuid:             codespaceUUID,
+			LogOffset:                 0,
+			LeaseValidForMilliseconds: 30000,
+			Command: &codespacev1.OperationPayload_Resume{
+				Resume: &codespacev1.ResumeOperationPayload{
+					RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{},
+				},
+			},
+		},
+	}
+	path, handler := codespacev1connect.NewManagerServiceHandler(service)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	trackedProvisioner := newCredentialTrackingProvisioner()
+	if _, err := trackedProvisioner.CreateOrStart(context.Background(), provisioner.InstanceSpec{
+		CodespaceUUID: codespaceUUID,
+		Name:          runtimeInstanceName(codespaceUUID),
+		RepoFullName:  "owner/repo",
+		RepoTag:       "default",
+	}); err != nil {
+		t.Fatalf("create existing instance: %v", err)
+	}
+	agent := New(AgentConfig{
+		BaseURL:                   server.URL,
+		ManagerID:                 7,
+		ManagerSecret:             "manager-secret",
+		Name:                      "test-manager",
+		GatewayURL:                "https://workspace.example.net",
+		GatewaySSHAddr:            "workspace.example.net:22",
+		Version:                   "test",
+		Tags:                      []string{"default"},
+		CapacityTotal:             1,
+		CapacityAvailable:         1,
+		CleanupCapacityAvailable:  1,
+		MaxOperations:             1,
+		RuntimeMetadataGeneration: 1,
+		RuntimeCredentialStore:    credentialStore,
+	}, server.Client(), trackedProvisioner)
+
+	if err := agent.pollOnce(context.Background()); err != nil {
+		t.Fatalf("poll once: %v", err)
+	}
+	waitFinalized(t, service.finalized)
+	if service.finalStatus != codespacev1.FinalStatus_FINAL_STATUS_DONE {
+		t.Fatalf("final status = %s", service.finalStatus)
+	}
+	if service.finalOperationType != codespacev1.OperationType_OPERATION_TYPE_RESUME {
+		t.Fatalf("final operation type = %s", service.finalOperationType)
+	}
+	saved := credentialStore.savedTokens()
+	if len(saved) != 1 || saved[0].codespaceUUID != codespaceUUID || saved[0].token == "" {
+		t.Fatalf("runtime credentials = %#v", saved)
+	}
+	if records := trackedProvisioner.credentialWrites(); len(records) != 1 ||
+		records[0].request.CodespaceUUID != codespaceUUID ||
+		records[0].request.GiteaToken != "gcs_test" ||
+		records[0].request.RuntimeToken != saved[0].token {
+		t.Fatalf("credential writes = %#v saved=%#v", records, saved)
 	}
 }
 
@@ -1717,34 +1815,35 @@ func TestRuntimeInstanceNameUsesShortUUID(t *testing.T) {
 type managerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 
-	mu                  sync.Mutex
-	operation           *codespacev1.OperationPayload
-	sawDeclare          bool
-	sawFetch            bool
-	sawToken            bool
-	sawMetadata         bool
-	finalStatus         codespacev1.FinalStatus
-	finalOperationType  codespacev1.OperationType
-	metadataGeneration  int64
-	managerID           string
-	managerSecret       string
-	observed            []*codespacev1.ObservedOperation
-	finalized           chan struct{}
-	inventoryReported   chan struct{}
-	finalResourceAbsent bool
-	renewObserved       bool
-	tokenErr            error
-	inventoryErr        error
-	transitionErr       error
-	inventory           []*codespacev1.RuntimeInstanceRef
-	inventoryGen        []int64
-	inventoryResults    []*codespacev1.RuntimeInstanceResult
-	transitions         []*codespacev1.ReportRuntimeTransitionRequest
-	idleStopResponse    *codespacev1.RequestIdleStopResponse
-	idleStop            []*codespacev1.RequestIdleStopRequest
-	onlineDeclared      chan struct{}
-	onlineBeforeInv     bool
-	sawOnline           bool
+	mu                        sync.Mutex
+	operation                 *codespacev1.OperationPayload
+	sawDeclare                bool
+	sawFetch                  bool
+	sawToken                  bool
+	sawMetadata               bool
+	finalStatus               codespacev1.FinalStatus
+	finalOperationType        codespacev1.OperationType
+	metadataGeneration        int64
+	metadataOperationRVersion int64
+	managerID                 string
+	managerSecret             string
+	observed                  []*codespacev1.ObservedOperation
+	finalized                 chan struct{}
+	inventoryReported         chan struct{}
+	finalResourceAbsent       bool
+	renewObserved             bool
+	tokenErr                  error
+	inventoryErr              error
+	transitionErr             error
+	inventory                 []*codespacev1.RuntimeInstanceRef
+	inventoryGen              []int64
+	inventoryResults          []*codespacev1.RuntimeInstanceResult
+	transitions               []*codespacev1.ReportRuntimeTransitionRequest
+	idleStopResponse          *codespacev1.RequestIdleStopResponse
+	idleStop                  []*codespacev1.RequestIdleStopRequest
+	onlineDeclared            chan struct{}
+	onlineBeforeInv           bool
+	sawOnline                 bool
 }
 
 type staticSessionTracker map[string]int
@@ -1975,6 +2074,10 @@ func (s *managerService) ReportRuntimeMetadata(
 	if err := json.Unmarshal([]byte(req.Msg.GetMetadataJson()), &metadata); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	expectedOperationRVersion := s.metadataOperationRVersion
+	if expectedOperationRVersion == 0 {
+		expectedOperationRVersion = 1
+	}
 	if metadata.Workspace != nil ||
 		metadata.Runtime.InternalSSH.Host == "" ||
 		metadata.Runtime.InternalSSH.Port <= 0 ||
@@ -1982,7 +2085,7 @@ func (s *managerService) ReportRuntimeMetadata(
 		metadata.Runtime.InternalSSH.AuthMode != "publickey" ||
 		metadata.Runtime.InternalSSH.HostKeyFingerprint == "" ||
 		metadata.Endpoints == nil ||
-		metadata.Boot.OperationRVersion != 1 ||
+		metadata.Boot.OperationRVersion != expectedOperationRVersion ||
 		metadata.Boot.Stage != "ready" ||
 		metadata.Boot.StartedUnix <= 0 ||
 		metadata.Boot.LastUpdateUnix < metadata.Boot.StartedUnix {
@@ -2148,8 +2251,24 @@ type blockingProvisioner struct {
 	release chan struct{}
 }
 
+type credentialWriteRecord struct {
+	instanceName string
+	request      provisioner.CredentialRequest
+}
+
+type credentialTrackingProvisioner struct {
+	base *provisioner.DummyProvisioner
+	mu   sync.Mutex
+
+	writes []credentialWriteRecord
+}
+
 type nonDeletingProvisioner struct {
 	base *provisioner.DummyProvisioner
+}
+
+func newCredentialTrackingProvisioner() *credentialTrackingProvisioner {
+	return &credentialTrackingProvisioner{base: provisioner.NewDummy()}
 }
 
 func newBlockingProvisioner() *blockingProvisioner {
@@ -2159,6 +2278,52 @@ func newBlockingProvisioner() *blockingProvisioner {
 		stopped: make(chan struct{}),
 		release: make(chan struct{}),
 	}
+}
+
+func (p *credentialTrackingProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
+	return p.base.CreateOrStart(ctx, spec)
+}
+
+func (p *credentialTrackingProvisioner) StartExisting(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
+	return p.base.StartExisting(ctx, spec)
+}
+
+func (p *credentialTrackingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
+	return p.base.ListInstances(ctx)
+}
+
+func (p *credentialTrackingProvisioner) WriteCredentials(ctx context.Context, instanceName string, request provisioner.CredentialRequest) error {
+	if err := p.base.WriteCredentials(ctx, instanceName, request); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.writes = append(p.writes, credentialWriteRecord{
+		instanceName: instanceName,
+		request:      request,
+	})
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *credentialTrackingProvisioner) Bootstrap(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) error {
+	return p.base.Bootstrap(ctx, instanceName, request)
+}
+
+func (p *credentialTrackingProvisioner) Stop(ctx context.Context, instanceName string) error {
+	return p.base.Stop(ctx, instanceName)
+}
+
+func (p *credentialTrackingProvisioner) Delete(ctx context.Context, instanceName string) error {
+	return p.base.Delete(ctx, instanceName)
+}
+
+func (p *credentialTrackingProvisioner) credentialWrites() []credentialWriteRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	writes := make([]credentialWriteRecord, len(p.writes))
+	copy(writes, p.writes)
+	return writes
 }
 
 func (p *blockingProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
@@ -2171,6 +2336,10 @@ func (p *blockingProvisioner) StartExisting(ctx context.Context, spec provisione
 
 func (p *blockingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
 	return p.base.ListInstances(ctx)
+}
+
+func (p *blockingProvisioner) WriteCredentials(ctx context.Context, instanceName string, request provisioner.CredentialRequest) error {
+	return p.base.WriteCredentials(ctx, instanceName, request)
 }
 
 func (p *blockingProvisioner) Bootstrap(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) error {
@@ -2208,6 +2377,10 @@ func (p *nonDeletingProvisioner) StartExisting(ctx context.Context, spec provisi
 
 func (p *nonDeletingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
 	return p.base.ListInstances(ctx)
+}
+
+func (p *nonDeletingProvisioner) WriteCredentials(ctx context.Context, instanceName string, request provisioner.CredentialRequest) error {
+	return p.base.WriteCredentials(ctx, instanceName, request)
 }
 
 func (p *nonDeletingProvisioner) Bootstrap(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) error {
@@ -2313,6 +2486,21 @@ type memoryRuntimeStateStore struct {
 	cleared []int64
 }
 
+type memoryRuntimeCredentialStore struct {
+	mu     sync.Mutex
+	tokens []runtimeCredentialRecord
+}
+
+type memoryRuntimeMetadataStateStore struct {
+	mu        sync.Mutex
+	snapshots []RuntimeMetadataSnapshot
+}
+
+type runtimeCredentialRecord struct {
+	codespaceUUID string
+	token         string
+}
+
 type memoryCleanupStateStore struct {
 	mu      sync.Mutex
 	saveErr error
@@ -2359,6 +2547,36 @@ func (s *memoryRuntimeStateStore) state() ([]RuntimeTransitionSnapshot, []int64)
 	defer s.mu.Unlock()
 
 	return append([]RuntimeTransitionSnapshot(nil), s.saved...), append([]int64(nil), s.cleared...)
+}
+
+func (s *memoryRuntimeCredentialStore) SaveRuntimeCredential(codespaceUUID, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.tokens = append(s.tokens, runtimeCredentialRecord{codespaceUUID: codespaceUUID, token: token})
+	return nil
+}
+
+func (s *memoryRuntimeCredentialStore) savedTokens() []runtimeCredentialRecord {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]runtimeCredentialRecord(nil), s.tokens...)
+}
+
+func (s *memoryRuntimeMetadataStateStore) SaveRuntimeMetadataSnapshot(snapshot RuntimeMetadataSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.snapshots = append(s.snapshots, snapshot)
+	return nil
+}
+
+func (s *memoryRuntimeMetadataStateStore) savedSnapshots() []RuntimeMetadataSnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]RuntimeMetadataSnapshot(nil), s.snapshots...)
 }
 
 func (s *memoryCleanupStateStore) SaveCleanupPending(codespaceUUID string) error {

@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -272,6 +273,336 @@ func TestCodespaceStateStoreCleanupPendingSkipsOperationRecovery(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("state file after clear err = %v", err)
+	}
+}
+
+func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "app-3000",
+		label:          " App 3000 ",
+		upstreamScheme: "HTTP",
+		upstreamHost:   "127.0.0.1:3000",
+		public:         true,
+	}); err != nil {
+		t.Fatalf("save endpoint route: %v", err)
+	}
+	routes, err := store.LoadGatewayRoutes()
+	if err != nil {
+		t.Fatalf("load gateway routes: %v", err)
+	}
+	if len(routes) != 1 {
+		t.Fatalf("routes = %#v", routes)
+	}
+	route := routes[0]
+	if route.codespaceUUID != codespaceUUID ||
+		route.endpointID != "app-3000" ||
+		route.label != "App 3000" ||
+		route.upstreamScheme != "http" ||
+		route.upstreamHost != "127.0.0.1:3000" ||
+		!route.public {
+		t.Fatalf("route = %#v", route)
+	}
+
+	if err := store.DeleteEndpointRoute(codespaceUUID, "app-3000"); err != nil {
+		t.Fatalf("delete endpoint route: %v", err)
+	}
+	routes, err = store.LoadGatewayRoutes()
+	if err != nil {
+		t.Fatalf("reload gateway routes: %v", err)
+	}
+	if len(routes) != 0 {
+		t.Fatalf("routes after delete = %#v", routes)
+	}
+	statePath, err := codespaceStatePath(stateDir, codespaceUUID)
+	if err != nil {
+		t.Fatalf("codespace state path: %v", err)
+	}
+	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("state file after route delete err = %v", err)
+	}
+}
+
+func TestCodespaceStateStoreEndpointRoutePreservesRuntimeState(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeTransitionPending(manager.RuntimeTransitionSnapshot{
+		CodespaceUUID:             codespaceUUID,
+		TargetState:               codespacev1.RuntimeState_RUNTIME_STATE_STOPPED,
+		RuntimeGeneration:         5,
+		ObservedOperationRVersion: 8,
+	}); err != nil {
+		t.Fatalf("save runtime transition: %v", err)
+	}
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "workspace",
+		label:          "Workspace",
+		upstreamScheme: "http",
+		upstreamHost:   "localhost:8080",
+	}); err != nil {
+		t.Fatalf("save endpoint route: %v", err)
+	}
+	if err := store.DeleteEndpointRoute(codespaceUUID, "workspace"); err != nil {
+		t.Fatalf("delete endpoint route: %v", err)
+	}
+	generations, err := store.LoadRuntimeGenerations()
+	if err != nil {
+		t.Fatalf("load runtime generations: %v", err)
+	}
+	if generations[codespaceUUID] != 5 {
+		t.Fatalf("runtime generation after endpoint delete = %d", generations[codespaceUUID])
+	}
+}
+
+func TestCodespaceStateStoreEndpointLimitAllowsUpdates(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	for i := 0; i < maxCodespaceEndpoints; i++ {
+		if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+			codespaceUUID:  codespaceUUID,
+			endpointID:     endpointIDForTest(i),
+			label:          "App",
+			upstreamScheme: "http",
+			upstreamHost:   "127.0.0.1:3000",
+		}); err != nil {
+			t.Fatalf("save endpoint %d: %v", i, err)
+		}
+	}
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "extra",
+		label:          "Extra",
+		upstreamScheme: "http",
+		upstreamHost:   "127.0.0.1:3001",
+	}); !errors.Is(err, errEndpointLimitExceeded) {
+		t.Fatalf("extra endpoint err = %v", err)
+	}
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     endpointIDForTest(0),
+		label:          "Updated",
+		upstreamScheme: "http",
+		upstreamHost:   "127.0.0.1:3002",
+	}); err != nil {
+		t.Fatalf("update existing endpoint at limit: %v", err)
+	}
+}
+
+func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InternalSSH: manager.RuntimeMetadataInternalSSH{
+			Host:               "10.0.0.12",
+			Port:               2222,
+			User:               "codespace",
+			AuthMode:           "publickey",
+			HostKeyFingerprint: "SHA256:test",
+		},
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             "ready",
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save runtime metadata snapshot: %v", err)
+	}
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "app-3000",
+		label:          "App 3000",
+		upstreamScheme: "http",
+		upstreamHost:   "10.0.0.12:3000",
+		public:         true,
+	}); err != nil {
+		t.Fatalf("save endpoint route: %v", err)
+	}
+	generation, metadataJSON, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load runtime metadata request: %v", err)
+	}
+	if !ok || generation != 2 {
+		t.Fatalf("metadata ok=%v generation=%d", ok, generation)
+	}
+	if !strings.Contains(metadataJSON, `"endpoint_id":"app-3000"`) ||
+		!strings.Contains(metadataJSON, `"label":"App 3000"`) ||
+		!strings.Contains(metadataJSON, `"public":true`) ||
+		!strings.Contains(metadataJSON, `"stage":"ready"`) {
+		t.Fatalf("metadata json = %s", metadataJSON)
+	}
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "app-3000",
+		label:          "App 3000",
+		upstreamScheme: "http",
+		upstreamHost:   "10.0.0.12:3000",
+		public:         true,
+	}); err != nil {
+		t.Fatalf("resave endpoint route: %v", err)
+	}
+	generation, _, ok, err = store.LoadRuntimeMetadataRequest(codespaceUUID)
+	if err != nil {
+		t.Fatalf("reload runtime metadata request: %v", err)
+	}
+	if !ok || generation != 2 {
+		t.Fatalf("metadata after same save ok=%v generation=%d", ok, generation)
+	}
+}
+
+func TestCodespaceStateStoreRuntimeAPIOperation(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	operation, err := store.RuntimeAPIOperation(codespaceUUID)
+	if err != nil {
+		t.Fatalf("runtime api operation without state: %v", err)
+	}
+	if operation != runtimeAPIOperationNone {
+		t.Fatalf("operation without state = %q", operation)
+	}
+	if err := store.SaveActiveOperation(manager.OperationSnapshot{Payload: &codespacev1.OperationPayload{
+		OperationRversion: 1,
+		CodespaceUuid:     codespaceUUID,
+		Command: &codespacev1.OperationPayload_Create{
+			Create: &codespacev1.CreateOperationPayload{},
+		},
+	}}); err != nil {
+		t.Fatalf("save active operation: %v", err)
+	}
+	operation, err = store.RuntimeAPIOperation(codespaceUUID)
+	if err != nil {
+		t.Fatalf("runtime api operation with create: %v", err)
+	}
+	if operation != runtimeAPIOperationCreate {
+		t.Fatalf("operation with create = %q", operation)
+	}
+	if err := store.SaveCleanupPending(codespaceUUID); err != nil {
+		t.Fatalf("save cleanup pending: %v", err)
+	}
+	operation, err = store.RuntimeAPIOperation(codespaceUUID)
+	if err != nil {
+		t.Fatalf("runtime api operation with cleanup: %v", err)
+	}
+	if operation != runtimeAPIOperationDelete {
+		t.Fatalf("operation with cleanup = %q", operation)
+	}
+}
+
+func endpointIDForTest(index int) string {
+	return fmt.Sprintf("app-%02d", index)
+}
+
+func TestCodespaceStateStoreRuntimeCredentialRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	token := "runtime-token"
+	if err := store.SaveRuntimeCredential(codespaceUUID, token); err != nil {
+		t.Fatalf("save runtime credential: %v", err)
+	}
+	statePath, err := codespaceStatePath(stateDir, codespaceUUID)
+	if err != nil {
+		t.Fatalf("codespace state path: %v", err)
+	}
+	content, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read state: %v", err)
+	}
+	if strings.Contains(string(content), token) {
+		t.Fatalf("runtime token was stored in clear text: %s", content)
+	}
+	resolved, ok, err := store.ResolveRuntimeToken(token)
+	if err != nil {
+		t.Fatalf("resolve runtime token: %v", err)
+	}
+	if !ok || resolved != codespaceUUID {
+		t.Fatalf("resolved=%q ok=%v", resolved, ok)
+	}
+	if _, ok, err := store.ResolveRuntimeToken("wrong-token"); err != nil || ok {
+		t.Fatalf("wrong token ok=%v err=%v", ok, err)
+	}
+}
+
+func TestValidateCodespaceStateFilesRejectsInvalidEndpointSnapshot(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	codespaceDir, err := codespaceStateDir(stateDir)
+	if err != nil {
+		t.Fatalf("codespace state dir: %v", err)
+	}
+	if err := os.MkdirAll(codespaceDir, 0o700); err != nil {
+		t.Fatalf("create codespace state dir: %v", err)
+	}
+	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
+	if err := os.WriteFile(path, []byte(`{
+		"state_format_version": 1,
+		"endpoints": [
+			{"endpoint_id": "workspace", "label": "Bad\u003cLabel", "upstream_scheme": "http", "upstream_host": "127.0.0.1:3000", "public": false}
+		]
+	}`), 0o600); err != nil {
+		t.Fatalf("write codespace state: %v", err)
+	}
+	if err := ValidateCodespaceStateFiles(stateDir); err == nil {
+		t.Fatalf("expected invalid endpoint snapshot error")
+	}
+}
+
+func TestValidateCodespaceStateFilesRejectsTooManyEndpoints(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	codespaceDir, err := codespaceStateDir(stateDir)
+	if err != nil {
+		t.Fatalf("codespace state dir: %v", err)
+	}
+	if err := os.MkdirAll(codespaceDir, 0o700); err != nil {
+		t.Fatalf("create codespace state dir: %v", err)
+	}
+	state := codespaceState{
+		StateFormatVersion: codespaceStateFormatVersion,
+		Endpoints:          make([]codespaceEndpointSnapshot, 0, maxCodespaceEndpoints+1),
+	}
+	for i := 0; i <= maxCodespaceEndpoints; i++ {
+		state.Endpoints = append(state.Endpoints, codespaceEndpointSnapshot{
+			EndpointID:     endpointIDForTest(i),
+			Label:          "App",
+			UpstreamScheme: "http",
+			UpstreamHost:   "127.0.0.1:3000",
+		})
+	}
+	content, err := json.Marshal(state)
+	if err != nil {
+		t.Fatalf("marshal state: %v", err)
+	}
+	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
+	if err := os.WriteFile(path, content, 0o600); err != nil {
+		t.Fatalf("write codespace state: %v", err)
+	}
+	if err := ValidateCodespaceStateFiles(stateDir); err == nil {
+		t.Fatalf("expected too many endpoints error")
 	}
 }
 
