@@ -5,11 +5,15 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"sync"
 	"time"
 
+	"connectrpc.com/connect"
+
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
 )
 
@@ -34,7 +38,8 @@ type runtimeMetadataPublisher struct {
 }
 
 type runtimeMetadataWorker struct {
-	wake chan struct{}
+	wake      chan struct{}
+	publishMu sync.Mutex
 }
 
 func newRuntimeMetadataPublisher(state *CodespaceStateStore, controlPlane *gatewayControlPlane, retryInterval time.Duration) *runtimeMetadataPublisher {
@@ -65,15 +70,7 @@ func (p *runtimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID string) {
 	if p == nil || p.state == nil || p.controlPlane == nil {
 		return
 	}
-	p.mu.Lock()
-	worker, ok := p.workers[codespaceUUID]
-	if !ok && p.ctx != nil {
-		worker = &runtimeMetadataWorker{wake: make(chan struct{}, 1)}
-		p.workers[codespaceUUID] = worker
-		go p.runWorker(p.ctx, codespaceUUID, worker)
-		ok = true
-	}
-	p.mu.Unlock()
+	worker, ok := p.ensureWorker(codespaceUUID)
 	if !ok {
 		return
 	}
@@ -84,6 +81,10 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 	if p == nil || p.state == nil || p.controlPlane == nil {
 		return fmt.Errorf("runtime metadata publisher is not ready")
 	}
+	worker, _ := p.ensureWorker(codespaceUUID)
+	worker.publishMu.Lock()
+	defer worker.publishMu.Unlock()
+
 	for {
 		generation, metadataJSON, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
 		if err != nil {
@@ -96,6 +97,12 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 			return fmt.Errorf("runtime metadata snapshot %s is missing", codespaceUUID)
 		}
 		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadataJSON, generation); err != nil {
+			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
+				if handleErr != nil {
+					return handleErr
+				}
+				continue
+			}
 			if !waitRuntimeMetadataRetry(ctx, p.retryInterval) {
 				return fmt.Errorf("report runtime metadata %s generation %d: %w", codespaceUUID, generation, err)
 			}
@@ -104,6 +111,24 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 		p.NotifyRuntimeMetadata(codespaceUUID)
 		return nil
 	}
+}
+
+func (p *runtimeMetadataPublisher) ensureWorker(codespaceUUID string) (*runtimeMetadataWorker, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	worker, ok := p.workers[codespaceUUID]
+	if !ok {
+		worker = &runtimeMetadataWorker{wake: make(chan struct{}, 1)}
+		p.workers[codespaceUUID] = worker
+		if p.ctx != nil {
+			go p.runWorker(p.ctx, codespaceUUID, worker)
+			ok = true
+		}
+	} else if p.ctx != nil {
+		ok = true
+	}
+	return worker, ok
 }
 
 func (p *runtimeMetadataPublisher) Run(ctx context.Context, codespaceUUIDs []string) {
@@ -181,6 +206,9 @@ func (p *runtimeMetadataPublisher) runWorker(ctx context.Context, codespaceUUID 
 }
 
 func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, codespaceUUID string, worker *runtimeMetadataWorker) {
+	worker.publishMu.Lock()
+	defer worker.publishMu.Unlock()
+
 	for {
 		generation, metadataJSON, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
 		if err != nil {
@@ -194,6 +222,13 @@ func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, code
 			return
 		}
 		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadataJSON, generation); err != nil {
+			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
+				if handleErr != nil {
+					log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, handleErr)
+					return
+				}
+				continue
+			}
 			log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, err)
 			if !waitRuntimeMetadataRetry(ctx, p.retryInterval) {
 				return
@@ -204,6 +239,46 @@ func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, code
 			return
 		}
 	}
+}
+
+func (p *runtimeMetadataPublisher) handleMetadataPublishError(codespaceUUID string, err error) (bool, error) {
+	category, staleGeneration, ok := metadataFailure(err)
+	if !ok {
+		return false, nil
+	}
+	switch category {
+	case "stale_generation":
+		if err := p.state.RebaseRuntimeMetadataGeneration(codespaceUUID, staleGeneration); err != nil {
+			return true, fmt.Errorf("rebase runtime metadata %s from stale generation %d: %w", codespaceUUID, staleGeneration, err)
+		}
+		return true, nil
+	case "generation_conflict", "version_exhausted":
+		return true, fmt.Errorf("report runtime metadata %s: %s: %w", codespaceUUID, category, err)
+	default:
+		return false, nil
+	}
+}
+
+func metadataFailure(err error) (string, int64, bool) {
+	var connectErr *connect.Error
+	if !errors.As(err, &connectErr) {
+		return "", 0, false
+	}
+	var category string
+	var staleGeneration int64
+	for _, detail := range connectErr.Details() {
+		value, valueErr := detail.Value()
+		if valueErr != nil {
+			continue
+		}
+		switch typed := value.(type) {
+		case *codespacev1.FailureDetail:
+			category = typed.GetCategory()
+		case *codespacev1.StaleGenerationDetail:
+			staleGeneration = typed.GetCurrentGeneration()
+		}
+	}
+	return category, staleGeneration, category != ""
 }
 
 func (w *runtimeMetadataWorker) notify() {

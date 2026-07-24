@@ -512,6 +512,58 @@ func TestRuntimeMetadataPublisherRefreshesPersistedSnapshots(t *testing.T) {
 	}
 }
 
+func TestRuntimeMetadataPublisherSerializesWorkerAndSynchronousPublish(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	saveRuntimeMetadataSnapshotForTest(t, store, codespaceUUID, 1)
+	service := &gatewayManagerService{
+		metadataStarted: make(chan struct{}, 2),
+		metadataRelease: make(chan struct{}),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publisher.Run(ctx, nil)
+
+	publisher.NotifyRuntimeMetadata(codespaceUUID)
+	select {
+	case <-service.metadataStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("worker metadata publish did not start")
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- publisher.PublishRuntimeMetadata(context.Background(), codespaceUUID)
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("synchronous publish completed while worker request was in flight: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	close(service.metadataRelease)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("synchronous publish: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("synchronous publish did not finish")
+	}
+	select {
+	case <-service.metadataStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("synchronous metadata publish did not start after worker release")
+	}
+}
+
 func TestRuntimeAPIEndpointGenerationExhaustionDoesNotCommitPartialRoute(t *testing.T) {
 	t.Parallel()
 

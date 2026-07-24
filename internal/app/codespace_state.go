@@ -541,15 +541,7 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (
 		})
 	}
 	metadata := map[string]any{
-		"runtime": map[string]any{
-			"internal_ssh": map[string]any{
-				"host":                 state.RuntimeMetadata.InternalSSH.Host,
-				"port":                 state.RuntimeMetadata.InternalSSH.Port,
-				"user":                 state.RuntimeMetadata.InternalSSH.User,
-				"auth_mode":            state.RuntimeMetadata.InternalSSH.AuthMode,
-				"host_key_fingerprint": state.RuntimeMetadata.InternalSSH.HostKeyFingerprint,
-			},
-		},
+		"runtime":   runtimeMetadataRuntimePayload(state.RuntimeMetadata.InternalSSH),
 		"endpoints": metadataEndpoints,
 		"boot": map[string]any{
 			"operation_rversion": state.RuntimeMetadata.Boot.OperationRVersion,
@@ -563,6 +555,50 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (
 		return 0, "", false, fmt.Errorf("encode runtime metadata: %w", err)
 	}
 	return state.RuntimeMetadata.MetadataGeneration, string(encoded), true, nil
+}
+
+// RebaseRuntimeMetadataGeneration moves a persisted metadata snapshot above a stale server generation.
+func (s *CodespaceStateStore) RebaseRuntimeMetadataGeneration(codespaceUUID string, currentGeneration int64) error {
+	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
+		return fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	if currentGeneration <= 0 {
+		return fmt.Errorf("current metadata generation must be positive")
+	}
+	if currentGeneration == math.MaxInt64 {
+		return fmt.Errorf("metadata_generation is exhausted")
+	}
+	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	if err != nil {
+		return err
+	}
+	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	if err != nil {
+		return err
+	}
+	if state.RuntimeMetadata == nil {
+		return fmt.Errorf("runtime metadata snapshot is missing")
+	}
+	if state.RuntimeMetadata.MetadataGeneration > currentGeneration {
+		return nil
+	}
+	state.RuntimeMetadata.MetadataGeneration = currentGeneration + 1
+	return writeJSONFileAtomic(path, state)
+}
+
+func runtimeMetadataRuntimePayload(internalSSH codespaceRuntimeMetadataSSH) map[string]any {
+	payload := map[string]any{}
+	if !hasRuntimeMetadataInternalSSH(internalSSH) {
+		return payload
+	}
+	payload["internal_ssh"] = map[string]any{
+		"host":                 internalSSH.Host,
+		"port":                 internalSSH.Port,
+		"user":                 internalSSH.User,
+		"auth_mode":            internalSSH.AuthMode,
+		"host_key_fingerprint": internalSSH.HostKeyFingerprint,
+	}
+	return payload
 }
 
 // RuntimeAPIOperation returns the current active operation type relevant to the Runtime API.
@@ -998,26 +1034,32 @@ func validateRuntimeMetadataState(snapshot codespaceRuntimeMetadataSnapshot) err
 	if snapshot.MetadataGeneration <= 0 {
 		return fmt.Errorf("metadata_generation must be positive")
 	}
-	if strings.TrimSpace(snapshot.InternalSSH.Host) == "" {
-		return fmt.Errorf("internal ssh host is required")
+	hasInternalSSH := hasRuntimeMetadataInternalSSH(snapshot.InternalSSH)
+	if manager.RuntimeBootStageRequiresInternalSSH(snapshot.Boot.Stage) && !hasInternalSSH {
+		return fmt.Errorf("ready runtime metadata requires internal ssh")
 	}
-	if snapshot.InternalSSH.Port < 1 || snapshot.InternalSSH.Port > 65535 {
-		return fmt.Errorf("internal ssh port is invalid")
-	}
-	if strings.TrimSpace(snapshot.InternalSSH.User) == "" {
-		return fmt.Errorf("internal ssh user is required")
-	}
-	if snapshot.InternalSSH.AuthMode != "publickey" {
-		return fmt.Errorf("internal ssh auth_mode must be publickey")
-	}
-	if strings.TrimSpace(snapshot.InternalSSH.HostKeyFingerprint) == "" {
-		return fmt.Errorf("internal ssh host key fingerprint is required")
+	if hasInternalSSH {
+		if strings.TrimSpace(snapshot.InternalSSH.Host) == "" {
+			return fmt.Errorf("internal ssh host is required")
+		}
+		if snapshot.InternalSSH.Port < 1 || snapshot.InternalSSH.Port > 65535 {
+			return fmt.Errorf("internal ssh port is invalid")
+		}
+		if strings.TrimSpace(snapshot.InternalSSH.User) == "" {
+			return fmt.Errorf("internal ssh user is required")
+		}
+		if snapshot.InternalSSH.AuthMode != "publickey" {
+			return fmt.Errorf("internal ssh auth_mode must be publickey")
+		}
+		if strings.TrimSpace(snapshot.InternalSSH.HostKeyFingerprint) == "" {
+			return fmt.Errorf("internal ssh host key fingerprint is required")
+		}
 	}
 	if snapshot.Boot.OperationRVersion <= 0 {
 		return fmt.Errorf("boot operation_rversion must be positive")
 	}
-	if snapshot.Boot.Stage != "ready" {
-		return fmt.Errorf("boot stage must be ready")
+	if !manager.IsRuntimeBootStage(snapshot.Boot.Stage) {
+		return fmt.Errorf("boot stage is invalid")
 	}
 	if snapshot.Boot.StartedUnix <= 0 {
 		return fmt.Errorf("boot started_unix must be positive")
@@ -1026,6 +1068,14 @@ func validateRuntimeMetadataState(snapshot codespaceRuntimeMetadataSnapshot) err
 		return fmt.Errorf("boot last_update_unix must be greater than or equal to started_unix")
 	}
 	return nil
+}
+
+func hasRuntimeMetadataInternalSSH(internalSSH codespaceRuntimeMetadataSSH) bool {
+	return strings.TrimSpace(internalSSH.Host) != "" ||
+		internalSSH.Port != 0 ||
+		strings.TrimSpace(internalSSH.User) != "" ||
+		strings.TrimSpace(internalSSH.AuthMode) != "" ||
+		strings.TrimSpace(internalSSH.HostKeyFingerprint) != ""
 }
 
 func runtimeTokenHash(token string) (string, error) {

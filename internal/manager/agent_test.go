@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -100,8 +101,11 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	if service.finalOperationType != codespacev1.OperationType_OPERATION_TYPE_CREATE {
 		t.Fatalf("final operation type = %s", service.finalOperationType)
 	}
-	if service.metadataGeneration != 1 {
+	if service.metadataGeneration != 6 {
 		t.Fatalf("metadata generation = %d", service.metadataGeneration)
+	}
+	if got := service.runtimeMetadataStages(); !slices.Equal(got, expectedRuntimeBootStages()) {
+		t.Fatalf("metadata stages = %#v", got)
 	}
 	saved := credentialStore.savedTokens()
 	if len(saved) != 1 || saved[0].codespaceUUID != codespaceUUID || saved[0].token == "" {
@@ -114,11 +118,13 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		records[0].request.RuntimeToken != saved[0].token {
 		t.Fatalf("credential writes = %#v saved=%#v", records, saved)
 	}
-	if snapshots := metadataStore.savedSnapshots(); len(snapshots) != 1 ||
+	if snapshots := metadataStore.savedSnapshots(); len(snapshots) != 6 ||
 		snapshots[0].CodespaceUUID != codespaceUUID ||
 		snapshots[0].MetadataGeneration != 1 ||
-		snapshots[0].Boot.Stage != "ready" ||
-		snapshots[0].InternalSSH.Host == "" {
+		snapshots[0].Boot.Stage != RuntimeBootStagePrepareRuntime ||
+		snapshots[5].MetadataGeneration != 6 ||
+		snapshots[5].Boot.Stage != RuntimeBootStageReady ||
+		snapshots[5].InternalSSH.Host == "" {
 		t.Fatalf("runtime metadata snapshots = %#v", snapshots)
 	}
 	if service.managerID != "7" || service.managerSecret != "manager-secret" {
@@ -260,6 +266,12 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 	}
 	if service.finalOperationType != codespacev1.OperationType_OPERATION_TYPE_RESUME {
 		t.Fatalf("final operation type = %s", service.finalOperationType)
+	}
+	if service.metadataGeneration != 6 {
+		t.Fatalf("metadata generation = %d", service.metadataGeneration)
+	}
+	if got := service.runtimeMetadataStages(); !slices.Equal(got, expectedRuntimeBootStages()) {
+		t.Fatalf("metadata stages = %#v", got)
 	}
 	saved := credentialStore.savedTokens()
 	if len(saved) != 1 || saved[0].codespaceUUID != codespaceUUID || saved[0].token == "" {
@@ -1887,7 +1899,9 @@ type managerService struct {
 	finalStatus               codespacev1.FinalStatus
 	finalOperationType        codespacev1.OperationType
 	metadataGeneration        int64
+	metadataGenerations       []int64
 	metadataOperationRVersion int64
+	metadataStages            []string
 	managerID                 string
 	managerSecret             string
 	observed                  []*codespacev1.ObservedOperation
@@ -2082,6 +2096,24 @@ func (s *managerService) RequestGiteaToken(
 	}), nil
 }
 
+func (s *managerService) runtimeMetadataStages() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return append([]string(nil), s.metadataStages...)
+}
+
+func expectedRuntimeBootStages() []string {
+	return []string{
+		RuntimeBootStagePrepareRuntime,
+		RuntimeBootStageInitializeSystem,
+		RuntimeBootStagePrepareWorkspace,
+		RuntimeBootStageStartEnvironment,
+		RuntimeBootStagePublishRuntime,
+		RuntimeBootStageReady,
+	}
+}
+
 func (s *managerService) RequestIdleStop(
 	_ context.Context,
 	req *connect.Request[codespacev1.RequestIdleStopRequest],
@@ -2108,7 +2140,8 @@ func (s *managerService) ReportRuntimeMetadata(
 	s.captureAuth(req.Header())
 	s.sawMetadata = true
 	s.metadataGeneration = req.Msg.GetMetadataGeneration()
-	if req.Msg.GetMetadataGeneration() != 1 {
+	s.metadataGenerations = append(s.metadataGenerations, req.Msg.GetMetadataGeneration())
+	if req.Msg.GetMetadataGeneration() <= 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	var metadata struct {
@@ -2137,10 +2170,8 @@ func (s *managerService) ReportRuntimeMetadata(
 	if err := json.Unmarshal([]byte(req.Msg.GetMetadataJson()), &metadata); err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
+	s.metadataStages = append(s.metadataStages, metadata.Boot.Stage)
 	expectedOperationRVersion := s.metadataOperationRVersion
-	if expectedOperationRVersion == 0 {
-		expectedOperationRVersion = 1
-	}
 	if metadata.Workspace != nil ||
 		metadata.Runtime.InternalSSH.Host == "" ||
 		metadata.Runtime.InternalSSH.Port <= 0 ||
@@ -2148,10 +2179,12 @@ func (s *managerService) ReportRuntimeMetadata(
 		metadata.Runtime.InternalSSH.AuthMode != "publickey" ||
 		metadata.Runtime.InternalSSH.HostKeyFingerprint == "" ||
 		metadata.Endpoints == nil ||
-		metadata.Boot.OperationRVersion != expectedOperationRVersion ||
-		metadata.Boot.Stage != "ready" ||
+		!IsRuntimeBootStage(metadata.Boot.Stage) ||
 		metadata.Boot.StartedUnix <= 0 ||
 		metadata.Boot.LastUpdateUnix < metadata.Boot.StartedUnix {
+		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
+	}
+	if expectedOperationRVersion > 0 && metadata.Boot.OperationRVersion != expectedOperationRVersion {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	return connect.NewResponse(&codespacev1.ReportRuntimeMetadataResponse{}), nil
@@ -2562,6 +2595,7 @@ type memoryRuntimeMetadataStateStore struct {
 type memoryRuntimeMetadataPublisher struct {
 	mu             sync.Mutex
 	codespaceUUIDs []string
+	notified       []string
 	err            error
 }
 
@@ -2662,6 +2696,13 @@ func (p *memoryRuntimeMetadataPublisher) PublishRuntimeMetadata(_ context.Contex
 	}
 	p.codespaceUUIDs = append(p.codespaceUUIDs, codespaceUUID)
 	return nil
+}
+
+func (p *memoryRuntimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.notified = append(p.notified, codespaceUUID)
 }
 
 func (p *memoryRuntimeMetadataPublisher) calls() []string {

@@ -529,6 +529,56 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 	}
 }
 
+func TestCodespaceStateStoreRuntimeMetadataAllowsNonReadyWithoutInternalSSH(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStagePublishRuntime,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save non-ready runtime metadata snapshot: %v", err)
+	}
+	_, metadataJSON, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load runtime metadata request: %v", err)
+	}
+	if !ok {
+		t.Fatalf("metadata request was missing")
+	}
+	if strings.Contains(metadataJSON, "internal_ssh") || !strings.Contains(metadataJSON, `"stage":"publish-runtime"`) {
+		t.Fatalf("metadata json = %s", metadataJSON)
+	}
+}
+
+func TestCodespaceStateStoreRuntimeMetadataReadyRequiresInternalSSH(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      "11111111-1111-4111-8111-111111111111",
+		MetadataGeneration: 1,
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "ready runtime metadata requires internal ssh") {
+		t.Fatalf("ready metadata err = %v", err)
+	}
+}
+
 func TestCodespaceStateStoreRuntimeAPIOperation(t *testing.T) {
 	t.Parallel()
 

@@ -31,7 +31,40 @@ const (
 
 	defaultInventoryInterval = time.Minute
 	maxInventoryInstances    = 10000
+
+	// RuntimeBootStagePrepareRuntime means the Manager has started preparing the runtime.
+	RuntimeBootStagePrepareRuntime = "prepare-runtime"
+	// RuntimeBootStageInitializeSystem means the Manager is preparing system credentials.
+	RuntimeBootStageInitializeSystem = "initialize-system"
+	// RuntimeBootStagePrepareWorkspace means credentials are written and workspace setup can proceed.
+	RuntimeBootStagePrepareWorkspace = "prepare-workspace"
+	// RuntimeBootStageStartEnvironment means the workspace environment is starting.
+	RuntimeBootStageStartEnvironment = "start-environment"
+	// RuntimeBootStagePublishRuntime means the runtime is validated and ready metadata is being published.
+	RuntimeBootStagePublishRuntime = "publish-runtime"
+	// RuntimeBootStageReady means the runtime is ready for user entry.
+	RuntimeBootStageReady = "ready"
 )
+
+var runtimeBootStageRanks = map[string]int{
+	RuntimeBootStagePrepareRuntime:   0,
+	RuntimeBootStageInitializeSystem: 1,
+	RuntimeBootStagePrepareWorkspace: 2,
+	RuntimeBootStageStartEnvironment: 3,
+	RuntimeBootStagePublishRuntime:   4,
+	RuntimeBootStageReady:            5,
+}
+
+// IsRuntimeBootStage reports whether stage is defined by the Runtime Metadata protocol.
+func IsRuntimeBootStage(stage string) bool {
+	_, ok := runtimeBootStageRanks[stage]
+	return ok
+}
+
+// RuntimeBootStageRequiresInternalSSH reports whether stage must include internal SSH metadata.
+func RuntimeBootStageRequiresInternalSSH(stage string) bool {
+	return stage == RuntimeBootStageReady
+}
 
 // AgentConfig configures the Manager worker.
 type AgentConfig struct {
@@ -179,6 +212,7 @@ type RuntimeMetadataStateStore interface {
 
 // RuntimeMetadataPublisher publishes the current complete metadata snapshot.
 type RuntimeMetadataPublisher interface {
+	NotifyRuntimeMetadata(codespaceUUID string)
 	PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error
 }
 
@@ -1559,6 +1593,7 @@ func (a *Agent) handleResourceAbsentFinal(ctx context.Context, operation *codesp
 
 func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.CreateOperationPayload) error {
 	a.applyRuntimeSettings(operation.GetCodespaceUuid(), payload.GetRuntimeSettings(), time.Now())
+	startedUnix := time.Now().Unix()
 	instance, err := a.provisioner.CreateOrStart(ctx, provisioner.InstanceSpec{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		Name:          runtimeInstanceName(operation.GetCodespaceUuid()),
@@ -1566,6 +1601,9 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 		RepoTag:       payload.GetRepoTag(),
 	})
 	if err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
 		return err
 	}
 	token, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid())
@@ -1576,11 +1614,20 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
+		return err
+	}
 	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		GiteaToken:    token.GetToken(),
 		RuntimeToken:  runtimeToken,
 	}); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
 		return err
 	}
 	if err := a.provisioner.Bootstrap(ctx, instance.Name, provisioner.BootstrapRequest{
@@ -1599,7 +1646,10 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	}); err != nil {
 		return err
 	}
-	if err := a.reportReadyMetadata(ctx, operation, instance); err != nil {
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePublishRuntime, startedUnix); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
 		return err
 	}
 	a.markRuntimeReady(operation.GetCodespaceUuid())
@@ -1608,11 +1658,15 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 
 func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.ResumeOperationPayload) error {
 	a.applyRuntimeSettings(operation.GetCodespaceUuid(), payload.GetRuntimeSettings(), time.Now())
+	startedUnix := time.Now().Unix()
 	instance, err := a.provisioner.StartExisting(ctx, provisioner.InstanceSpec{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		Name:          runtimeInstanceName(operation.GetCodespaceUuid()),
 	})
 	if err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
 		return err
 	}
 	token, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid())
@@ -1623,6 +1677,9 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
+		return err
+	}
 	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		GiteaToken:    token.GetToken(),
@@ -1630,7 +1687,16 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	}); err != nil {
 		return err
 	}
-	if err := a.reportReadyMetadata(ctx, operation, instance); err != nil {
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePublishRuntime, startedUnix); err != nil {
+		return err
+	}
+	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
 		return err
 	}
 	a.markRuntimeReady(operation.GetCodespaceUuid())
@@ -1743,11 +1809,26 @@ func (a *Agent) requestIdleStop(
 	}
 }
 
-func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.OperationPayload, instance *provisioner.Instance) error {
+func (a *Agent) reportBootMetadata(
+	ctx context.Context,
+	operation *codespacev1.OperationPayload,
+	instance *provisioner.Instance,
+	stage string,
+	startedUnix int64,
+) error {
 	if instance == nil {
 		return fmt.Errorf("runtime instance is required")
 	}
+	if !IsRuntimeBootStage(stage) {
+		return fmt.Errorf("runtime boot stage %q is invalid", stage)
+	}
 	now := time.Now().Unix()
+	if startedUnix <= 0 {
+		startedUnix = now
+	}
+	if now < startedUnix {
+		now = startedUnix
+	}
 	snapshot := RuntimeMetadataSnapshot{
 		CodespaceUUID:      operation.GetCodespaceUuid(),
 		MetadataGeneration: a.nextRuntimeMetadataGeneration(),
@@ -1760,8 +1841,8 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 		},
 		Boot: RuntimeMetadataBoot{
 			OperationRVersion: operation.GetOperationRversion(),
-			Stage:             "ready",
-			StartedUnix:       now,
+			Stage:             stage,
+			StartedUnix:       startedUnix,
 			LastUpdateUnix:    now,
 		},
 	}
@@ -1771,15 +1852,23 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 		}
 	}
 	if a.metadataPublisher != nil {
+		if stage != RuntimeBootStageReady {
+			a.metadataPublisher.NotifyRuntimeMetadata(operation.GetCodespaceUuid())
+			return nil
+		}
 		if err := a.metadataPublisher.PublishRuntimeMetadata(ctx, operation.GetCodespaceUuid()); err != nil {
-			return fmt.Errorf("publish ready runtime metadata: %w", err)
+			return fmt.Errorf("publish runtime metadata stage %s: %w", stage, err)
 		}
 		return nil
 	}
 	if err := a.publishRuntimeMetadataDirect(ctx, snapshot); err != nil {
-		return fmt.Errorf("publish ready runtime metadata: %w", err)
+		return fmt.Errorf("publish runtime metadata stage %s: %w", stage, err)
 	}
 	return nil
+}
+
+func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.OperationPayload, instance *provisioner.Instance) error {
+	return a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, time.Now().Unix())
 }
 
 func (a *Agent) publishRuntimeMetadataDirect(ctx context.Context, snapshot RuntimeMetadataSnapshot) error {
@@ -1815,15 +1904,7 @@ func runtimeMetadataPayload(snapshot RuntimeMetadataSnapshot, endpoints []map[st
 		endpoints = []map[string]any{}
 	}
 	return map[string]any{
-		"runtime": map[string]any{
-			"internal_ssh": map[string]any{
-				"host":                 snapshot.InternalSSH.Host,
-				"port":                 snapshot.InternalSSH.Port,
-				"user":                 snapshot.InternalSSH.User,
-				"auth_mode":            snapshot.InternalSSH.AuthMode,
-				"host_key_fingerprint": snapshot.InternalSSH.HostKeyFingerprint,
-			},
-		},
+		"runtime":   runtimeMetadataRuntimePayload(snapshot.InternalSSH),
 		"endpoints": endpoints,
 		"boot": map[string]any{
 			"stage":              snapshot.Boot.Stage,
@@ -1832,6 +1913,29 @@ func runtimeMetadataPayload(snapshot RuntimeMetadataSnapshot, endpoints []map[st
 			"last_update_unix":   snapshot.Boot.LastUpdateUnix,
 		},
 	}
+}
+
+func runtimeMetadataRuntimePayload(internalSSH RuntimeMetadataInternalSSH) map[string]any {
+	payload := map[string]any{}
+	if !hasRuntimeMetadataInternalSSH(internalSSH) {
+		return payload
+	}
+	payload["internal_ssh"] = map[string]any{
+		"host":                 internalSSH.Host,
+		"port":                 internalSSH.Port,
+		"user":                 internalSSH.User,
+		"auth_mode":            internalSSH.AuthMode,
+		"host_key_fingerprint": internalSSH.HostKeyFingerprint,
+	}
+	return payload
+}
+
+func hasRuntimeMetadataInternalSSH(internalSSH RuntimeMetadataInternalSSH) bool {
+	return strings.TrimSpace(internalSSH.Host) != "" ||
+		internalSSH.Port != 0 ||
+		strings.TrimSpace(internalSSH.User) != "" ||
+		strings.TrimSpace(internalSSH.AuthMode) != "" ||
+		strings.TrimSpace(internalSSH.HostKeyFingerprint) != ""
 }
 
 func (a *Agent) nextRuntimeMetadataGeneration() int64 {

@@ -222,6 +222,9 @@ type gatewayManagerService struct {
 	ensureGitSSHKeyResponse *codespacev1.EnsureCodespaceGitSSHKeyResponse
 	metadataErr             error
 	metadataResponse        *codespacev1.ReportRuntimeMetadataResponse
+	metadataCalls           int
+	metadataStarted         chan struct{}
+	metadataRelease         chan struct{}
 	revalidateResponse      *codespacev1.RevalidateGatewaySessionResponse
 	revalidateCalls         int
 	revalidateStarted       chan struct{}
@@ -320,9 +323,18 @@ func (s *gatewayManagerService) ReportRuntimeMetadata(
 	request := *req.Msg
 	s.mu.Lock()
 	s.metadataRequest = &request
+	s.metadataCalls++
 	err := s.metadataErr
 	response := s.metadataResponse
+	started := s.metadataStarted
+	release := s.metadataRelease
 	s.mu.Unlock()
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		<-release
+	}
 	if err != nil {
 		return nil, err
 	}
