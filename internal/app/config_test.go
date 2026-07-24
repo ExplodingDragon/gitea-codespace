@@ -22,6 +22,8 @@ server:
   public_base_url: "https://codespace.example.com"
 gitea:
   url: "https://gitea.example.com"
+gateway:
+  gateway_session_revalidate_interval: "45s"
 manager:
   state_dir: "state"
   name: "yaml-manager"
@@ -63,6 +65,9 @@ provisioner:
 	}
 	if config.Manager.PollInterval.ToStdlib().Seconds() != 1 {
 		t.Fatalf("manager poll interval = %s", config.Manager.PollInterval.ToStdlib())
+	}
+	if config.Gateway.SessionRevalidateInterval.ToStdlib().Seconds() != 45 {
+		t.Fatalf("gateway session revalidate interval = %s", config.Gateway.SessionRevalidateInterval.ToStdlib())
 	}
 	if config.Provisioner.Incus.UnixSocket != "/var/lib/incus/unix.socket" {
 		t.Fatalf("incus unix socket = %q", config.Provisioner.Incus.UnixSocket)
@@ -121,6 +126,7 @@ func TestLoadConfigJSON(t *testing.T) {
 		t.Fatalf("bootstrap shell = %q", config.Provisioner.Bootstrap.Shell)
 	}
 	if config.Gateway.MaxInflightTotal != 4096 ||
+		config.Gateway.SessionRevalidateInterval.ToStdlib().Minutes() != 5 ||
 		config.Gateway.MaxInflightPerSession != 32 ||
 		config.Gateway.PublicMaxConnectionsPerEndpoint != 64 ||
 		config.Gateway.PublicMaxConnectionsPerIP != 16 ||

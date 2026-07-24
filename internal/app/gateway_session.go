@@ -113,6 +113,40 @@ func (r *gatewaySessionRegistry) LiveSessions(codespaceUUID string) int {
 	return r.live[codespaceUUID]
 }
 
+func (r *gatewaySessionRegistry) DeleteEndpoint(codespaceUUID, endpointID string) int {
+	if r == nil || codespaceUUID == "" || endpointID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	deleted := 0
+	for id, session := range r.sessions {
+		if session.codespaceUUID == codespaceUUID && session.endpointID == endpointID {
+			delete(r.sessions, id)
+			deleted++
+		}
+	}
+	return deleted
+}
+
+func (r *gatewaySessionRegistry) DeleteCodespace(codespaceUUID string) int {
+	if r == nil || codespaceUUID == "" {
+		return 0
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	deleted := 0
+	for id, session := range r.sessions {
+		if session.codespaceUUID == codespaceUUID {
+			delete(r.sessions, id)
+			deleted++
+		}
+	}
+	return deleted
+}
+
 func newGatewaySessionID() (string, error) {
 	var raw [32]byte
 	if _, err := rand.Read(raw[:]); err != nil {

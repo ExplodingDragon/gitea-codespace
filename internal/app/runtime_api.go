@@ -29,6 +29,7 @@ type runtimeAPIService struct {
 	routes         *gatewayRouteStore
 	controlPlane   *gatewayControlPlane
 	sourceResolver runtimeSourceResolver
+	metadata       runtimeMetadataNotifier
 }
 
 type runtimeSourceResolver interface {
@@ -70,12 +71,18 @@ func newRuntimeAPIService(
 	routes *gatewayRouteStore,
 	controlPlane *gatewayControlPlane,
 	sourceResolver runtimeSourceResolver,
+	metadata ...runtimeMetadataNotifier,
 ) *runtimeAPIService {
+	var notifier runtimeMetadataNotifier
+	if len(metadata) > 0 {
+		notifier = metadata[0]
+	}
 	return &runtimeAPIService{
 		state:          state,
 		routes:         routes,
 		controlPlane:   controlPlane,
 		sourceResolver: sourceResolver,
+		metadata:       notifier,
 	}
 }
 
@@ -361,21 +368,11 @@ func (s *runtimeAPIService) saveEndpointRoute(writer http.ResponseWriter, reques
 	writeJSON(writer, http.StatusOK, response)
 }
 
-func (s *runtimeAPIService) reportRuntimeMetadata(writer http.ResponseWriter, ctx context.Context, codespaceUUID string) bool {
-	if s.controlPlane == nil {
+func (s *runtimeAPIService) reportRuntimeMetadata(_ http.ResponseWriter, _ context.Context, codespaceUUID string) bool {
+	if s.metadata == nil {
 		return true
 	}
-	generation, metadataJSON, ok, err := s.state.LoadRuntimeMetadataRequest(codespaceUUID)
-	if err != nil {
-		writeRuntimeAPIError(writer, http.StatusServiceUnavailable, "runtime_unavailable")
-		return false
-	}
-	if !ok {
-		return true
-	}
-	if err := s.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadataJSON, generation); err != nil {
-		return true
-	}
+	s.metadata.NotifyRuntimeMetadata(codespaceUUID)
 	return true
 }
 

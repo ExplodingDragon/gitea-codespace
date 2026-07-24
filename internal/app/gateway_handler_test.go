@@ -6,6 +6,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -217,6 +218,200 @@ func TestGatewayPublicEndpointProxiesWebSocketRoute(t *testing.T) {
 	}
 }
 
+func TestGatewayPublicEndpointWebSocketClosesWhenRevalidationDenies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamClosed := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		defer close(upstreamClosed)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		publicEndpointResponse: allowedPublicEndpointResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	access := newTestGatewayAccess()
+	access.config.streamRevalidateInterval = time.Millisecond
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), access, controlPlane, gatewayOriginPolicy{}, nil, routes)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http")+"/p/"+codespaceUUID+"/web/socket", nil)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial websocket status = %d error = %v", response.StatusCode, err)
+		}
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	service.setPublicEndpointResponse(deniedPublicEndpointResponse("codespace_not_running"))
+	waitForPublicEndpointCalls(t, service, 2)
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatalf("expected websocket to close after public endpoint revalidation denied")
+	}
+	select {
+	case <-upstreamClosed:
+	case <-time.After(time.Second):
+		t.Fatalf("upstream websocket was not closed")
+	}
+}
+
+func TestGatewayPublicEndpointStreamingHTTPClosesWhenRevalidationDenies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamClosed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		if _, err := writer.Write([]byte("ready\n")); err != nil {
+			t.Errorf("write streaming response: %v", err)
+			return
+		}
+		flusher, ok := writer.(http.Flusher)
+		if !ok {
+			t.Errorf("streaming writer does not implement http.Flusher")
+			return
+		}
+		flusher.Flush()
+		<-request.Context().Done()
+		close(upstreamClosed)
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		publicEndpointResponse: allowedPublicEndpointResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	access := newTestGatewayAccess()
+	access.config.streamRevalidateInterval = time.Millisecond
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), access, controlPlane, gatewayOriginPolicy{}, nil, routes)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Get(gateway.URL + "/p/" + codespaceUUID + "/web/stream")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", response.StatusCode)
+	}
+	buf := make([]byte, len("ready\n"))
+	if _, err := io.ReadFull(response.Body, buf); err != nil {
+		t.Fatalf("read streaming response prefix: %v", err)
+	}
+
+	service.setPublicEndpointResponse(deniedPublicEndpointResponse("codespace_not_running"))
+	waitForPublicEndpointCalls(t, service, 2)
+	select {
+	case <-upstreamClosed:
+	case <-time.After(time.Second):
+		t.Fatalf("upstream streaming response was not closed")
+	}
+}
+
+func TestGatewayPublicEndpointStreamingHTTPClosesWhenRouteDeleted(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamClosed := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.WriteHeader(http.StatusOK)
+		if _, err := writer.Write([]byte("ready\n")); err != nil {
+			t.Errorf("write streaming response: %v", err)
+			return
+		}
+		flusher, ok := writer.(http.Flusher)
+		if !ok {
+			t.Errorf("streaming writer does not implement http.Flusher")
+			return
+		}
+		flusher.Flush()
+		<-request.Context().Done()
+		close(upstreamClosed)
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		publicEndpointResponse: allowedPublicEndpointResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, routes)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	client := http.Client{Timeout: time.Second}
+	response, err := client.Get(gateway.URL + "/p/" + codespaceUUID + "/web/stream")
+	if err != nil {
+		t.Fatalf("get stream: %v", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("stream status = %d", response.StatusCode)
+	}
+	buf := make([]byte, len("ready\n"))
+	if _, err := io.ReadFull(response.Body, buf); err != nil {
+		t.Fatalf("read streaming response prefix: %v", err)
+	}
+
+	routes.Delete(codespaceUUID, "web")
+	select {
+	case <-upstreamClosed:
+	case <-time.After(time.Second):
+		t.Fatalf("upstream streaming response was not closed")
+	}
+}
+
 func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 	t.Parallel()
 
@@ -290,6 +485,85 @@ func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 		t.Fatalf("revalidate rpc calls = %d", calls)
 	}
 
+}
+
+func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamClosed := make(chan struct{})
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		conn, err := upgrader.Upgrade(writer, request, nil)
+		if err != nil {
+			t.Errorf("upgrade websocket: %v", err)
+			return
+		}
+		defer conn.Close()
+		defer close(upstreamClosed)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer upstream.Close()
+
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "workspace",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+		public:         false,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:                42,
+					CodespaceUuid:         codespaceUUID,
+					EndpointId:            "workspace",
+					InteractionGeneration: 7,
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	access := newTestGatewayAccess()
+	access.config.streamRevalidateInterval = time.Millisecond
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), newGatewaySessionRegistry(), access, controlPlane, gatewayOriginPolicy{}, nil, routes)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	cookie := openGatewaySession(t, handler)
+	headers := http.Header{}
+	headers.Add("Cookie", cookie.String())
+	headers.Set("Origin", gateway.URL)
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http")+"/w/"+codespaceUUID+"/socket", headers)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial websocket status = %d error = %v", response.StatusCode, err)
+		}
+		t.Fatalf("dial websocket: %v", err)
+	}
+	defer conn.Close()
+
+	service.setRevalidateResponse(deniedRevalidateResponse("codespace_not_running"))
+	waitForRevalidateCalls(t, service, 2)
+	_ = conn.SetReadDeadline(time.Now().Add(time.Second))
+	if _, _, err := conn.ReadMessage(); err == nil {
+		t.Fatalf("expected websocket to close after session revalidation denied")
+	}
+	select {
+	case <-upstreamClosed:
+	case <-time.After(time.Second):
+		t.Fatalf("upstream websocket was not closed")
+	}
 }
 
 func TestGatewayOpenDeniedDoesNotCreateSession(t *testing.T) {
@@ -1780,6 +2054,62 @@ func newTestGatewayAccess() *gatewayAccessController {
 		publicMaxConnectionsPerIP:       16,
 		validationMaxInflight:           128,
 	})
+}
+
+func allowedPublicEndpointResponse() *codespacev1.ValidatePublicEndpointResponse {
+	return &codespacev1.ValidatePublicEndpointResponse{
+		Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{
+			Allowed: &codespacev1.PublicEndpointAllowed{},
+		},
+	}
+}
+
+func deniedPublicEndpointResponse(category string) *codespacev1.ValidatePublicEndpointResponse {
+	return &codespacev1.ValidatePublicEndpointResponse{
+		Outcome: &codespacev1.ValidatePublicEndpointResponse_Denied{
+			Denied: &codespacev1.FailureDetail{Category: category},
+		},
+	}
+}
+
+func allowedRevalidateResponse() *codespacev1.RevalidateGatewaySessionResponse {
+	return &codespacev1.RevalidateGatewaySessionResponse{
+		Outcome: &codespacev1.RevalidateGatewaySessionResponse_Allowed{
+			Allowed: &codespacev1.SessionAllowed{},
+		},
+	}
+}
+
+func deniedRevalidateResponse(category string) *codespacev1.RevalidateGatewaySessionResponse {
+	return &codespacev1.RevalidateGatewaySessionResponse{
+		Outcome: &codespacev1.RevalidateGatewaySessionResponse_Denied{
+			Denied: &codespacev1.FailureDetail{Category: category},
+		},
+	}
+}
+
+func waitForPublicEndpointCalls(t *testing.T, service *gatewayManagerService, calls int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if service.publicEndpointCallCount() >= calls {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("public endpoint rpc calls = %d, want at least %d", service.publicEndpointCallCount(), calls)
+}
+
+func waitForRevalidateCalls(t *testing.T, service *gatewayManagerService, calls int) {
+	t.Helper()
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if service.revalidateCallCount() >= calls {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("revalidate rpc calls = %d, want at least %d", service.revalidateCallCount(), calls)
 }
 
 func serveGatewayPublicRequest(handler http.Handler, path string, remoteAddr string, forwardedFor string) int {

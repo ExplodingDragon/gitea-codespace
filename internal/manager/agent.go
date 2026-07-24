@@ -65,8 +65,10 @@ type AgentConfig struct {
 	CleanupStateStore         CleanupStateStore
 	RuntimeCredentialStore    RuntimeCredentialStore
 	RuntimeMetadataStateStore RuntimeMetadataStateStore
+	RuntimeMetadataPublisher  RuntimeMetadataPublisher
 	RuntimeAPIBaseURL         string
 	SessionTracker            SessionTracker
+	AccessController          AccessController
 	ManagerServiceSettings    ManagerServiceSettingsStore
 }
 
@@ -86,6 +88,11 @@ type ManagerServiceSettingsStore interface {
 // SessionTracker reports authenticated live sessions by Codespace.
 type SessionTracker interface {
 	LiveSessions(codespaceUUID string) int
+}
+
+// AccessController closes local user traffic for one Codespace.
+type AccessController interface {
+	CloseCodespaceAccess(codespaceUUID string)
 }
 
 // OperationSnapshot stores one complete active operation context.
@@ -170,6 +177,11 @@ type RuntimeMetadataStateStore interface {
 	SaveRuntimeMetadataSnapshot(snapshot RuntimeMetadataSnapshot) error
 }
 
+// RuntimeMetadataPublisher publishes the current complete metadata snapshot.
+type RuntimeMetadataPublisher interface {
+	PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error
+}
+
 type operationContext struct {
 	operationRVersion int64
 	payload           *codespacev1.OperationPayload
@@ -236,7 +248,9 @@ type Agent struct {
 	cleanupStateStore   CleanupStateStore
 	credentialStore     RuntimeCredentialStore
 	metadataStateStore  RuntimeMetadataStateStore
+	metadataPublisher   RuntimeMetadataPublisher
 	sessionTracker      SessionTracker
+	accessController    AccessController
 	settingsStore       ManagerServiceSettingsStore
 	autoStopMu          sync.Mutex
 	autoStops           map[string]*autoStopState
@@ -266,7 +280,9 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		cleanupStateStore:   config.CleanupStateStore,
 		credentialStore:     config.RuntimeCredentialStore,
 		metadataStateStore:  config.RuntimeMetadataStateStore,
+		metadataPublisher:   config.RuntimeMetadataPublisher,
 		sessionTracker:      config.SessionTracker,
+		accessController:    config.AccessController,
 		settingsStore:       config.ManagerServiceSettings,
 		autoStops:           make(map[string]*autoStopState),
 		criticalErrors:      make(chan error, 1),
@@ -1498,6 +1514,7 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 		if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
 			return logErr
 		}
+		a.closeCodespaceAccess(operation.GetCodespaceUuid())
 		finalStatus = codespacev1.FinalStatus_FINAL_STATUS_FAILED
 	}
 	if ctx.Err() != nil {
@@ -1621,6 +1638,7 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 }
 
 func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.OperationPayload) error {
+	a.closeCodespaceAccess(operation.GetCodespaceUuid())
 	if err := a.provisioner.Stop(ctx, runtimeInstanceName(operation.GetCodespaceUuid())); err != nil {
 		return err
 	}
@@ -1629,6 +1647,7 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 }
 
 func (a *Agent) handleDelete(ctx context.Context, operation *codespacev1.OperationPayload, cleanupPending bool) error {
+	a.closeCodespaceAccess(operation.GetCodespaceUuid())
 	if cleanupPending {
 		if err := a.saveCleanupPending(operation.GetCodespaceUuid()); err != nil {
 			return err
@@ -1639,6 +1658,13 @@ func (a *Agent) handleDelete(ctx context.Context, operation *codespacev1.Operati
 	}
 	a.markRuntimeRemoved(operation.GetCodespaceUuid())
 	return nil
+}
+
+func (a *Agent) closeCodespaceAccess(codespaceUUID string) {
+	if a.accessController == nil || codespaceUUID == "" {
+		return
+	}
+	a.accessController.CloseCodespaceAccess(codespaceUUID)
 }
 
 func (a *Agent) requestGiteaToken(ctx context.Context, codespaceUUID string) (*codespacev1.RequestGiteaTokenResponse, error) {
@@ -1744,15 +1770,27 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 			return fmt.Errorf("save runtime metadata snapshot: %w", err)
 		}
 	}
-	metadata := runtimeMetadataPayload(snapshot, nil)
-	encoded, err := json.Marshal(metadata)
+	if a.metadataPublisher != nil {
+		if err := a.metadataPublisher.PublishRuntimeMetadata(ctx, operation.GetCodespaceUuid()); err != nil {
+			return fmt.Errorf("publish ready runtime metadata: %w", err)
+		}
+		return nil
+	}
+	if err := a.publishRuntimeMetadataDirect(ctx, snapshot); err != nil {
+		return fmt.Errorf("publish ready runtime metadata: %w", err)
+	}
+	return nil
+}
+
+func (a *Agent) publishRuntimeMetadataDirect(ctx context.Context, snapshot RuntimeMetadataSnapshot) error {
+	metadataJSON, err := RuntimeMetadataJSON(snapshot, nil)
 	if err != nil {
-		return fmt.Errorf("encode runtime metadata: %w", err)
+		return err
 	}
 	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
 		ProtocolVersion:    protocolVersion,
-		CodespaceUuid:      operation.GetCodespaceUuid(),
-		MetadataJson:       string(encoded),
+		CodespaceUuid:      snapshot.CodespaceUUID,
+		MetadataJson:       metadataJSON,
 		MetadataGeneration: snapshot.MetadataGeneration,
 	})
 	a.setManagerAuth(request.Header())
@@ -1760,6 +1798,16 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 		return fmt.Errorf("report runtime metadata rpc: %w", err)
 	}
 	return nil
+}
+
+// RuntimeMetadataJSON encodes one runtime metadata snapshot for ReportRuntimeMetadata.
+func RuntimeMetadataJSON(snapshot RuntimeMetadataSnapshot, endpoints []map[string]any) (string, error) {
+	metadata := runtimeMetadataPayload(snapshot, endpoints)
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return "", fmt.Errorf("encode runtime metadata: %w", err)
+	}
+	return string(encoded), nil
 }
 
 func runtimeMetadataPayload(snapshot RuntimeMetadataSnapshot, endpoints []map[string]any) map[string]any {

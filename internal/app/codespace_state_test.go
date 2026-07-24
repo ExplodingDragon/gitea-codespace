@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -20,6 +21,67 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/manager"
 )
+
+func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	readyUUID := "11111111-1111-4111-8111-111111111111"
+	cleanupUUID := "22222222-2222-4222-8222-222222222222"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      readyUUID,
+		MetadataGeneration: 1,
+		InternalSSH: manager.RuntimeMetadataInternalSSH{
+			Host:               "10.0.0.12",
+			Port:               2222,
+			User:               "codespace",
+			AuthMode:           "publickey",
+			HostKeyFingerprint: "SHA256:test",
+		},
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             "ready",
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save ready metadata: %v", err)
+	}
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      cleanupUUID,
+		MetadataGeneration: 1,
+		InternalSSH: manager.RuntimeMetadataInternalSSH{
+			Host:               "10.0.0.13",
+			Port:               2222,
+			User:               "codespace",
+			AuthMode:           "publickey",
+			HostKeyFingerprint: "SHA256:test",
+		},
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             "ready",
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save cleanup metadata: %v", err)
+	}
+	if err := store.SaveCleanupPending(cleanupUUID); err != nil {
+		t.Fatalf("save cleanup pending: %v", err)
+	}
+	if err := store.SaveRuntimeCredential("33333333-3333-4333-8333-333333333333", "runtime-token"); err != nil {
+		t.Fatalf("save runtime credential: %v", err)
+	}
+
+	uuids, err := store.LoadRuntimeMetadataCodespaceUUIDs()
+	if err != nil {
+		t.Fatalf("load runtime metadata uuids: %v", err)
+	}
+	if want := []string{readyUUID}; !reflect.DeepEqual(uuids, want) {
+		t.Fatalf("runtime metadata uuids = %#v, want %#v", uuids, want)
+	}
+}
 
 func TestValidateCodespaceStateFilesAcceptsVersionOne(t *testing.T) {
 	t.Parallel()

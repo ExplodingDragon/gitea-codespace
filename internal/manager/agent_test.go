@@ -136,6 +136,69 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	}
 }
 
+func TestAgentReadyMetadataUsesPublisher(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	metadataStore := &memoryRuntimeMetadataStateStore{}
+	publisher := &memoryRuntimeMetadataPublisher{}
+	agent := New(AgentConfig{
+		BaseURL:                   "http://127.0.0.1",
+		RuntimeMetadataGeneration: 1,
+		RuntimeMetadataStateStore: metadataStore,
+		RuntimeMetadataPublisher:  publisher,
+	}, http.DefaultClient, nil)
+	err := agent.reportReadyMetadata(
+		context.Background(),
+		&codespacev1.OperationPayload{
+			CodespaceUuid:     codespaceUUID,
+			OperationRversion: 7,
+		},
+		&provisioner.Instance{
+			InternalSSHHost:        "10.0.0.12",
+			InternalSSHPort:        2222,
+			InternalSSHUser:        "dev",
+			InternalSSHAuthMode:    "publickey",
+			InternalSSHFingerprint: "SHA256:runtime",
+		},
+	)
+	if err != nil {
+		t.Fatalf("report ready metadata: %v", err)
+	}
+
+	snapshots := metadataStore.savedSnapshots()
+	if len(snapshots) != 1 || snapshots[0].CodespaceUUID != codespaceUUID || snapshots[0].Boot.OperationRVersion != 7 {
+		t.Fatalf("saved snapshots = %#v", snapshots)
+	}
+	if calls := publisher.calls(); len(calls) != 1 || calls[0] != codespaceUUID {
+		t.Fatalf("publisher calls = %#v", calls)
+	}
+}
+
+func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	access := &memoryAccessController{}
+	agent := New(AgentConfig{
+		BaseURL:          "http://127.0.0.1",
+		AccessController: access,
+	}, http.DefaultClient, provisioner.NewDummy())
+
+	stopOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	if err := agent.handleStop(context.Background(), stopOperation); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	deleteOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	if err := agent.handleDelete(context.Background(), deleteOperation, false); err != nil {
+		t.Fatalf("handle delete: %v", err)
+	}
+
+	if calls := access.calls(); len(calls) != 2 || calls[0] != codespaceUUID || calls[1] != codespaceUUID {
+		t.Fatalf("access close calls = %#v", calls)
+	}
+}
+
 func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 	t.Parallel()
 
@@ -2496,6 +2559,17 @@ type memoryRuntimeMetadataStateStore struct {
 	snapshots []RuntimeMetadataSnapshot
 }
 
+type memoryRuntimeMetadataPublisher struct {
+	mu             sync.Mutex
+	codespaceUUIDs []string
+	err            error
+}
+
+type memoryAccessController struct {
+	mu             sync.Mutex
+	codespaceUUIDs []string
+}
+
 type runtimeCredentialRecord struct {
 	codespaceUUID string
 	token         string
@@ -2577,6 +2651,38 @@ func (s *memoryRuntimeMetadataStateStore) savedSnapshots() []RuntimeMetadataSnap
 	defer s.mu.Unlock()
 
 	return append([]RuntimeMetadataSnapshot(nil), s.snapshots...)
+}
+
+func (p *memoryRuntimeMetadataPublisher) PublishRuntimeMetadata(_ context.Context, codespaceUUID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.err != nil {
+		return p.err
+	}
+	p.codespaceUUIDs = append(p.codespaceUUIDs, codespaceUUID)
+	return nil
+}
+
+func (p *memoryRuntimeMetadataPublisher) calls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.codespaceUUIDs...)
+}
+
+func (c *memoryAccessController) CloseCodespaceAccess(codespaceUUID string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.codespaceUUIDs = append(c.codespaceUUIDs, codespaceUUID)
+}
+
+func (c *memoryAccessController) calls() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]string(nil), c.codespaceUUIDs...)
 }
 
 func (s *memoryCleanupStateStore) SaveCleanupPending(codespaceUUID string) error {

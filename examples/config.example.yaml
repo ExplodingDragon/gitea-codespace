@@ -13,6 +13,7 @@ gitea:
 gateway:
   ssh_host: "codespace.example.com"
   ssh_port: 2222
+  gateway_session_revalidate_interval: "5m"
   gateway_max_inflight_total: 4096
   gateway_max_inflight_per_session: 32
   gateway_public_max_connections_per_endpoint: 64

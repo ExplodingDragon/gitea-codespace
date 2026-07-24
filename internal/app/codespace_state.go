@@ -344,6 +344,38 @@ func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error
 	return routes, nil
 }
 
+// LoadRuntimeMetadataCodespaceUUIDs returns Codespaces with a persisted metadata snapshot.
+func (s *CodespaceStateStore) LoadRuntimeMetadataCodespaceUUIDs() ([]string, error) {
+	dir, err := codespaceStateDir(s.stateDir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
+	}
+	codespaceUUIDs := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
+		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
+		if err != nil {
+			return nil, err
+		}
+		if state.CleanupPending || state.RuntimeMetadata == nil {
+			continue
+		}
+		codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
+	}
+	sort.Strings(codespaceUUIDs)
+	return codespaceUUIDs, nil
+}
+
 // SaveEndpointRoute stores one Endpoint route in the local Codespace snapshot.
 func (s *CodespaceStateStore) SaveEndpointRoute(route gatewayEndpointRoute) error {
 	route, err := normalizeGatewayEndpointRoute(route)

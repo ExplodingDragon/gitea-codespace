@@ -386,6 +386,20 @@ func (s *gatewayManagerService) revalidateCallCount() int {
 	return s.revalidateCalls
 }
 
+func (s *gatewayManagerService) setPublicEndpointResponse(response *codespacev1.ValidatePublicEndpointResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.publicEndpointResponse = response
+}
+
+func (s *gatewayManagerService) setRevalidateResponse(response *codespacev1.RevalidateGatewaySessionResponse) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.revalidateResponse = response
+}
+
 func newTestGatewayControlPlane(t *testing.T, service *gatewayManagerService) (*gatewayControlPlane, func()) {
 	t.Helper()
 

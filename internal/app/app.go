@@ -91,6 +91,10 @@ func RunWithConfig(output io.Writer, config Config) error {
 	if err != nil {
 		return fmt.Errorf("load codespace gateway routes: %w", err)
 	}
+	initialRuntimeMetadataUUIDs, err := codespaceStateStore.LoadRuntimeMetadataCodespaceUUIDs()
+	if err != nil {
+		return fmt.Errorf("load codespace runtime metadata snapshots: %w", err)
+	}
 	managerProvisioner, err := newProvisioner(config, credentials.ManagerID)
 	if err != nil {
 		return fmt.Errorf("create provisioner: %w", err)
@@ -108,6 +112,7 @@ func RunWithConfig(output io.Writer, config Config) error {
 	defer cancelProcess()
 	sessionRegistry := newGatewaySessionRegistry()
 	gatewayRoutes := newGatewayRouteStore()
+	gatewayRoutes.SetSessionRegistry(sessionRegistry)
 	for _, route := range initialGatewayRoutes {
 		if err := gatewayRoutes.Put(route); err != nil {
 			return fmt.Errorf("load gateway route %s/%s: %w", route.codespaceUUID, route.endpointID, err)
@@ -125,6 +130,12 @@ func RunWithConfig(output io.Writer, config Config) error {
 		credentials.ManagerSecret,
 		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
 	)
+	runtimeMetadataPublisher := newRuntimeMetadataPublisher(codespaceStateStore, gatewayControlPlane, 0)
+	runtimeMetadataPublisher.Run(ctx, initialRuntimeMetadataUUIDs)
+	managerServiceSettings := managerServiceSettingsStores{
+		gatewayBrowserAuth,
+		runtimeMetadataPublisher,
+	}
 
 	agent := manager.New(manager.AgentConfig{
 		BaseURL:                   strings.TrimRight(config.Gitea.URL, "/"),
@@ -157,14 +168,16 @@ func RunWithConfig(output io.Writer, config Config) error {
 		CleanupStateStore:         codespaceStateStore,
 		RuntimeCredentialStore:    codespaceStateStore,
 		RuntimeMetadataStateStore: codespaceStateStore,
+		RuntimeMetadataPublisher:  runtimeMetadataPublisher,
 		RuntimeAPIBaseURL:         config.Server.RuntimeAPIURL,
 		SessionTracker:            sessionRegistry,
-		ManagerServiceSettings:    gatewayBrowserAuth,
+		AccessController:          gatewayRoutes,
+		ManagerServiceSettings:    managerServiceSettings,
 	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
 
 	processHealth := newProcessHealth()
 	runtimeAPIServer := &http.Server{
-		Handler:           newRuntimeAPIHandler(processHealth, newRuntimeAPIService(codespaceStateStore, gatewayRoutes, gatewayControlPlane, runtimeSourceResolverFor(managerProvisioner))),
+		Handler:           newRuntimeAPIHandler(processHealth, newRuntimeAPIService(codespaceStateStore, gatewayRoutes, gatewayControlPlane, runtimeSourceResolverFor(managerProvisioner), runtimeMetadataPublisher)),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
@@ -622,12 +635,34 @@ func handleGatewayWorkspace(
 		})
 		return
 	}
-	route, ok := routes.Get(session.codespaceUUID, session.endpointID)
+	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
 	if !ok {
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway route unavailable"})
 		return
 	}
-	proxyGatewayEndpoint(writer, request, route, upstreamPath, gatewayProxyRequestContext{
+	defer releaseRoute()
+	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
+		routeRequest,
+		access.config.streamRevalidateInterval,
+		"revalidate gateway endpoint session",
+		func(ctx context.Context) (gatewayAccessDecision, error) {
+			decision, validationFull, err := access.revalidateEndpointSession(
+				ctx,
+				session.userID,
+				session.codespaceUUID,
+				session.endpointID,
+				func(ctx context.Context) (gatewayAccessDecision, error) {
+					return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+				},
+			)
+			if validationFull {
+				return gatewayAccessDecision{}, errGatewayAccessLimitReached
+			}
+			return decision, err
+		},
+	)
+	defer cancelProxyRevalidation()
+	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, gatewayProxyRequestContext{
 		codespaceUUID:  session.codespaceUUID,
 		endpointID:     session.endpointID,
 		access:         "authenticated",
@@ -700,12 +735,36 @@ func handleGatewayPublicEndpoint(
 		})
 		return
 	}
-	route, ok := routes.Get(codespaceUUID, endpointID)
+	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, codespaceUUID, endpointID)
 	if !ok || !route.public {
+		if ok {
+			releaseRoute()
+		}
 		http.NotFound(writer, request)
 		return
 	}
-	proxyGatewayEndpoint(writer, request, route, upstreamPath, gatewayProxyRequestContext{
+	defer releaseRoute()
+	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
+		routeRequest,
+		access.config.streamRevalidateInterval,
+		"revalidate public gateway endpoint",
+		func(ctx context.Context) (gatewayAccessDecision, error) {
+			decision, validationFull, err := access.revalidatePublicEndpoint(
+				ctx,
+				codespaceUUID,
+				endpointID,
+				func(ctx context.Context) (gatewayAccessDecision, error) {
+					return controlPlane.validatePublicEndpoint(ctx, codespaceUUID, endpointID)
+				},
+			)
+			if validationFull {
+				return gatewayAccessDecision{}, errGatewayAccessLimitReached
+			}
+			return decision, err
+		},
+	)
+	defer cancelProxyRevalidation()
+	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, gatewayProxyRequestContext{
 		codespaceUUID:  codespaceUUID,
 		endpointID:     endpointID,
 		access:         "public",
@@ -829,6 +888,40 @@ func proxyGatewayEndpoint(
 		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": "gateway upstream unavailable"})
 	}
 	proxy.ServeHTTP(writer, request)
+}
+
+func withGatewayProxyRevalidation(
+	request *http.Request,
+	interval time.Duration,
+	logMessage string,
+	validate func(context.Context) (gatewayAccessDecision, error),
+) (*http.Request, context.CancelFunc) {
+	if interval <= 0 {
+		interval = defaultGatewaySessionRevalidateInterval
+	}
+	ctx, cancel := context.WithCancel(request.Context())
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				decision, err := validate(ctx)
+				if err != nil {
+					log.Printf("%s: %v", logMessage, err)
+					cancel()
+					return
+				}
+				if !decision.allowed {
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return request.WithContext(ctx), cancel
 }
 
 func gatewayExternalScheme(request *http.Request, originPolicy gatewayOriginPolicy) string {

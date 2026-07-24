@@ -114,13 +114,14 @@ type GiteaConfig struct {
 
 // GatewayConfig stores user-facing gateway settings.
 type GatewayConfig struct {
-	SSHHost                         string `json:"ssh_host" yaml:"ssh_host"`
-	SSHPort                         int    `json:"ssh_port" yaml:"ssh_port"`
-	MaxInflightTotal                int    `json:"gateway_max_inflight_total" yaml:"gateway_max_inflight_total"`
-	MaxInflightPerSession           int    `json:"gateway_max_inflight_per_session" yaml:"gateway_max_inflight_per_session"`
-	PublicMaxConnectionsPerEndpoint int    `json:"gateway_public_max_connections_per_endpoint" yaml:"gateway_public_max_connections_per_endpoint"`
-	PublicMaxConnectionsPerIP       int    `json:"gateway_public_max_connections_per_ip" yaml:"gateway_public_max_connections_per_ip"`
-	ValidationMaxInflight           int    `json:"gateway_validation_max_inflight" yaml:"gateway_validation_max_inflight"`
+	SSHHost                         string   `json:"ssh_host" yaml:"ssh_host"`
+	SSHPort                         int      `json:"ssh_port" yaml:"ssh_port"`
+	SessionRevalidateInterval       Duration `json:"gateway_session_revalidate_interval" yaml:"gateway_session_revalidate_interval"`
+	MaxInflightTotal                int      `json:"gateway_max_inflight_total" yaml:"gateway_max_inflight_total"`
+	MaxInflightPerSession           int      `json:"gateway_max_inflight_per_session" yaml:"gateway_max_inflight_per_session"`
+	PublicMaxConnectionsPerEndpoint int      `json:"gateway_public_max_connections_per_endpoint" yaml:"gateway_public_max_connections_per_endpoint"`
+	PublicMaxConnectionsPerIP       int      `json:"gateway_public_max_connections_per_ip" yaml:"gateway_public_max_connections_per_ip"`
+	ValidationMaxInflight           int      `json:"gateway_validation_max_inflight" yaml:"gateway_validation_max_inflight"`
 }
 
 // ManagerConfig stores embedded manager behavior and capabilities.
@@ -192,6 +193,7 @@ func DefaultConfig() Config {
 		Gateway: GatewayConfig{
 			SSHHost:                         "gateway.example.com",
 			SSHPort:                         22,
+			SessionRevalidateInterval:       Duration(5 * time.Minute),
 			MaxInflightTotal:                4096,
 			MaxInflightPerSession:           32,
 			PublicMaxConnectionsPerEndpoint: 64,
@@ -368,6 +370,9 @@ func (c Config) Validate() error {
 	if c.Gateway.MaxInflightPerSession > c.Gateway.MaxInflightTotal {
 		return fmt.Errorf("gateway.gateway_max_inflight_per_session must not exceed gateway.gateway_max_inflight_total")
 	}
+	if interval := c.Gateway.SessionRevalidateInterval.ToStdlib(); interval < time.Second || interval > time.Hour {
+		return fmt.Errorf("gateway.gateway_session_revalidate_interval must be between 1s and 1h")
+	}
 	if c.Gateway.PublicMaxConnectionsPerEndpoint < 1 || c.Gateway.PublicMaxConnectionsPerEndpoint > 10000 {
 		return fmt.Errorf("gateway.gateway_public_max_connections_per_endpoint must be between 1 and 10000")
 	}
@@ -426,6 +431,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Gateway.MaxInflightPerSession == 0 {
 		c.Gateway.MaxInflightPerSession = defaults.Gateway.MaxInflightPerSession
+	}
+	if c.Gateway.SessionRevalidateInterval == 0 {
+		c.Gateway.SessionRevalidateInterval = defaults.Gateway.SessionRevalidateInterval
 	}
 	if c.Gateway.PublicMaxConnectionsPerEndpoint == 0 {
 		c.Gateway.PublicMaxConnectionsPerEndpoint = defaults.Gateway.PublicMaxConnectionsPerEndpoint

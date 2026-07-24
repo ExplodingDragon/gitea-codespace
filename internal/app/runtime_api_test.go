@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
@@ -340,7 +341,11 @@ func TestRuntimeAPIEndpointReportsRuntimeMetadata(t *testing.T) {
 	service := &gatewayManagerService{}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	handler := newRuntimeAPIHandler(newProcessHealth(), newRuntimeAPIService(store, routes, controlPlane, nil))
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publisher.Run(ctx, nil)
+	handler := newRuntimeAPIHandler(newProcessHealth(), newRuntimeAPIService(store, routes, controlPlane, nil, publisher))
 
 	request := runtimeAPIRequest(t, http.MethodPost, runtimeEndpointAPIPrefix+"app-3000", token, `{
 		"label": "App 3000",
@@ -354,9 +359,10 @@ func TestRuntimeAPIEndpointReportsRuntimeMetadata(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("create status = %d body=%s", response.Code, response.Body.String())
 	}
-	if service.metadataRequest.GetCodespaceUuid() != codespaceUUID ||
-		service.metadataRequest.GetMetadataGeneration() != 2 {
-		t.Fatalf("metadata request = %#v", service.metadataRequest)
+	metadataRequest := waitForMetadataRequest(t, service)
+	if metadataRequest.GetCodespaceUuid() != codespaceUUID ||
+		metadataRequest.GetMetadataGeneration() != 2 {
+		t.Fatalf("metadata request = %#v", metadataRequest)
 	}
 	var metadata struct {
 		Endpoints []struct {
@@ -368,7 +374,7 @@ func TestRuntimeAPIEndpointReportsRuntimeMetadata(t *testing.T) {
 			Stage string `json:"stage"`
 		} `json:"boot"`
 	}
-	if err := json.Unmarshal([]byte(service.metadataRequest.GetMetadataJson()), &metadata); err != nil {
+	if err := json.Unmarshal([]byte(metadataRequest.GetMetadataJson()), &metadata); err != nil {
 		t.Fatalf("decode metadata json: %v", err)
 	}
 	if len(metadata.Endpoints) != 1 ||
@@ -395,7 +401,11 @@ func TestRuntimeAPIEndpointKeepsLocalSuccessWhenMetadataReportFails(t *testing.T
 	service := &gatewayManagerService{metadataErr: errors.New("metadata temporarily unavailable")}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	handler := newRuntimeAPIHandler(newProcessHealth(), newRuntimeAPIService(store, routes, controlPlane, nil))
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publisher.Run(ctx, nil)
+	handler := newRuntimeAPIHandler(newProcessHealth(), newRuntimeAPIService(store, routes, controlPlane, nil, publisher))
 
 	request := runtimeAPIRequest(t, http.MethodPost, runtimeEndpointAPIPrefix+"app-3000", token, `{
 		"label": "App 3000",
@@ -409,12 +419,96 @@ func TestRuntimeAPIEndpointKeepsLocalSuccessWhenMetadataReportFails(t *testing.T
 	if response.Code != http.StatusOK {
 		t.Fatalf("create status = %d body=%s", response.Code, response.Body.String())
 	}
-	if service.metadataRequest == nil || service.metadataRequest.GetMetadataGeneration() != 2 {
-		t.Fatalf("metadata report was not attempted with generation 2: %#v", service.metadataRequest)
+	metadataRequest := waitForMetadataRequest(t, service)
+	if metadataRequest.GetMetadataGeneration() != 2 {
+		t.Fatalf("metadata report was not attempted with generation 2: %#v", metadataRequest)
 	}
 	route, ok := routes.Get(codespaceUUID, "app-3000")
 	if !ok || route.upstreamHost != "10.0.0.12:3000" {
 		t.Fatalf("route after metadata failure = %#v ok=%v", route, ok)
+	}
+}
+
+func TestRuntimeMetadataPublisherRetriesLatestSnapshot(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	saveRuntimeMetadataSnapshotForTest(t, store, codespaceUUID, 1)
+	service := &gatewayManagerService{metadataErr: errors.New("metadata temporarily unavailable")}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publisher.Run(ctx, nil)
+
+	publisher.NotifyRuntimeMetadata(codespaceUUID)
+	waitForMetadataGeneration(t, service, 1)
+	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "app-3000",
+		label:          "App 3000",
+		upstreamScheme: "http",
+		upstreamHost:   "10.0.0.12:3000",
+		public:         true,
+	}); err != nil {
+		t.Fatalf("save endpoint route: %v", err)
+	}
+	publisher.NotifyRuntimeMetadata(codespaceUUID)
+	service.mu.Lock()
+	service.metadataErr = nil
+	service.mu.Unlock()
+
+	request := waitForMetadataGeneration(t, service, 2)
+	if !strings.Contains(request.GetMetadataJson(), `"endpoint_id":"app-3000"`) {
+		t.Fatalf("metadata did not use latest snapshot: %s", request.GetMetadataJson())
+	}
+}
+
+func TestRuntimeMetadataPublisherPublishesCurrentSnapshot(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	saveRuntimeMetadataSnapshotForTest(t, store, codespaceUUID, 3)
+	service := &gatewayManagerService{}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+
+	if err := publisher.PublishRuntimeMetadata(context.Background(), codespaceUUID); err != nil {
+		t.Fatalf("publish runtime metadata: %v", err)
+	}
+	request := waitForMetadataGeneration(t, service, 3)
+	if request.GetCodespaceUuid() != codespaceUUID {
+		t.Fatalf("metadata codespace uuid = %q", request.GetCodespaceUuid())
+	}
+}
+
+func TestRuntimeMetadataPublisherRefreshesPersistedSnapshots(t *testing.T) {
+	t.Parallel()
+
+	stateDir := t.TempDir()
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	saveRuntimeMetadataSnapshotForTest(t, store, codespaceUUID, 5)
+	service := &gatewayManagerService{}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	publisher.Run(ctx, nil)
+
+	if err := publisher.SaveManagerServiceSettings(manager.ManagerServiceSettings{RuntimeMetadataRefreshInterval: time.Millisecond}); err != nil {
+		t.Fatalf("save manager service settings: %v", err)
+	}
+	request := waitForMetadataGeneration(t, service, 5)
+	if request.GetCodespaceUuid() != codespaceUUID {
+		t.Fatalf("metadata refresh codespace uuid = %q", request.GetCodespaceUuid())
 	}
 }
 
@@ -795,6 +889,40 @@ func saveRuntimeMetadataSnapshotForTest(t *testing.T, store *CodespaceStateStore
 	}); err != nil {
 		t.Fatalf("save runtime metadata snapshot: %v", err)
 	}
+}
+
+func waitForMetadataRequest(t *testing.T, service *gatewayManagerService) *codespacev1.ReportRuntimeMetadataRequest {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		service.mu.Lock()
+		request := service.metadataRequest
+		service.mu.Unlock()
+		if request != nil {
+			return request
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("metadata request was not sent")
+	return nil
+}
+
+func waitForMetadataGeneration(t *testing.T, service *gatewayManagerService, generation int64) *codespacev1.ReportRuntimeMetadataRequest {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		service.mu.Lock()
+		request := service.metadataRequest
+		service.mu.Unlock()
+		if request != nil && request.GetMetadataGeneration() == generation {
+			return request
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("metadata generation %d was not sent", generation)
+	return nil
 }
 
 func newTestAuthorizedKey(t *testing.T) (string, []byte) {

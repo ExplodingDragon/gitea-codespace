@@ -13,8 +13,11 @@ import (
 
 var errGatewayAccessLimitReached = errors.New("gateway access limit reached")
 
+const defaultGatewaySessionRevalidateInterval = 5 * time.Minute
+
 type gatewayAccessConfig struct {
 	allowedTTL                      time.Duration
+	streamRevalidateInterval        time.Duration
 	maxInflightTotal                int
 	maxInflightPerSession           int
 	publicMaxConnectionsPerEndpoint int
@@ -83,6 +86,9 @@ func newGatewayAccessController(config gatewayAccessConfig) *gatewayAccessContro
 	if config.allowedTTL <= 0 {
 		config.allowedTTL = time.Second
 	}
+	if config.streamRevalidateInterval <= 0 {
+		config.streamRevalidateInterval = defaultGatewaySessionRevalidateInterval
+	}
 	return &gatewayAccessController{
 		config:          config,
 		cache:           newGatewayAccessCache(config.allowedTTL),
@@ -96,6 +102,7 @@ func newGatewayAccessController(config gatewayAccessConfig) *gatewayAccessContro
 func newGatewayAccessControllerFromConfig(config GatewayConfig) *gatewayAccessController {
 	return newGatewayAccessController(gatewayAccessConfig{
 		allowedTTL:                      time.Second,
+		streamRevalidateInterval:        config.SessionRevalidateInterval.ToStdlib(),
 		maxInflightTotal:                config.MaxInflightTotal,
 		maxInflightPerSession:           config.MaxInflightPerSession,
 		publicMaxConnectionsPerEndpoint: config.PublicMaxConnectionsPerEndpoint,
@@ -222,6 +229,36 @@ func (c *gatewayAccessController) validateEndpointSession(
 	return c.validateAccess(ctx, key, now, validate)
 }
 
+func (c *gatewayAccessController) revalidatePublicEndpoint(
+	ctx context.Context,
+	codespaceUUID string,
+	endpointID string,
+	validate func(context.Context) (gatewayAccessDecision, error),
+) (gatewayAccessDecision, bool, error) {
+	key := gatewayAuthorizationKey{
+		kind:          gatewayAuthorizationKindPublic,
+		codespaceUUID: codespaceUUID,
+		endpointID:    endpointID,
+	}
+	return c.validateAccessUncached(ctx, key, validate)
+}
+
+func (c *gatewayAccessController) revalidateEndpointSession(
+	ctx context.Context,
+	userID int64,
+	codespaceUUID string,
+	endpointID string,
+	validate func(context.Context) (gatewayAccessDecision, error),
+) (gatewayAccessDecision, bool, error) {
+	key := gatewayAuthorizationKey{
+		kind:          gatewayAuthorizationKindEndpoint,
+		userID:        userID,
+		codespaceUUID: codespaceUUID,
+		endpointID:    endpointID,
+	}
+	return c.validateAccessUncached(ctx, key, validate)
+}
+
 func (c *gatewayAccessController) validateAccess(
 	ctx context.Context,
 	key gatewayAuthorizationKey,
@@ -248,6 +285,29 @@ func (c *gatewayAccessController) validateAccess(
 	if err == nil && decision.allowed {
 		c.cache.MarkAllowed(key, time.Now())
 	}
+	c.finishValidation(key, call, decision, err)
+	return decision, false, err
+}
+
+func (c *gatewayAccessController) validateAccessUncached(
+	ctx context.Context,
+	key gatewayAuthorizationKey,
+	validate func(context.Context) (gatewayAccessDecision, error),
+) (gatewayAccessDecision, bool, error) {
+	call, leader, ok := c.beginValidation(key)
+	if !ok {
+		return gatewayAccessDecision{}, true, errGatewayAccessLimitReached
+	}
+	if !leader {
+		select {
+		case <-call.done:
+			return call.decision, false, call.err
+		case <-ctx.Done():
+			return gatewayAccessDecision{}, false, ctx.Err()
+		}
+	}
+
+	decision, err := validate(ctx)
 	c.finishValidation(key, call, decision, err)
 	return decision, false, err
 }
