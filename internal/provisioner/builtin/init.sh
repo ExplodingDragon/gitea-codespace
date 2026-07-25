@@ -1,11 +1,17 @@
 set -eu
 
 write_result() {
+  outcome="${1:-done}"
   tmp="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"done","stage":"initialize-system"}\n' > "$tmp"
+  printf '{"outcome":"%s","stage":"initialize-system"}\n' "$outcome" > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$CODESPACE_RESULT"
+}
+
+fail_unrecoverable() {
+  write_result unrecoverable_failed
+  exit 0
 }
 
 cleanup_policy_rc() {
@@ -139,9 +145,10 @@ seed_private_key="$runtime_seed_dir/id_ed25519"
 seed_public_key="$runtime_seed_dir/id_ed25519.pub"
 seed_known_hosts="$runtime_seed_dir/known_hosts"
 
-for seed_file in "$seed_token" "$seed_private_key" "$seed_public_key" "$seed_known_hosts"; do
+for seed_file in "$seed_token" "$seed_private_key" "$seed_public_key"; do
   [ -s "$seed_file" ] || exit 25
 done
+[ -f "$seed_known_hosts" ] || exit 25
 
 install -d -m 0755 -o 0 -g 0 "$runtime_dir"
 install -d -m 0700 -o "$codespace_uid" -g "$codespace_gid" "$runtime_dir/git" "$runtime_dir/runtime"
@@ -150,6 +157,90 @@ install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_token" "$token_fi
 install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_private_key" "$private_key_file"
 install -m 0644 -o "$codespace_uid" -g "$codespace_gid" "$seed_public_key" "$public_key_file"
 install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_known_hosts" "$known_hosts_file"
+
+git_user() {
+  if [ -n "${GIT_SSH_COMMAND:-}" ]; then
+    sudo -u "$codespace_user" env GIT_SSH_COMMAND="$GIT_SSH_COMMAND" git "$@"
+  else
+    sudo -u "$codespace_user" git "$@"
+  fi
+}
+
+ensure_git_ssh() {
+  [ -f "$private_key_file" ] || return 1
+  [ -s "$known_hosts_file" ] || return 1
+  export GIT_SSH_COMMAND="ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes"
+}
+
+configure_git_credentials() {
+  repo_url="$1"
+  if [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ]; then
+    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
+  fi
+  if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
+    git_user config --global user.name "$GITEA_GIT_USER_NAME" || return 1
+  fi
+  if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
+    git_user config --global user.email "$GITEA_GIT_USER_EMAIL" || return 1
+  fi
+  if [ "$repo_url" = "${GITEA_REPO_CLONE_SSH_URL:-}" ] && [ -n "$repo_url" ]; then
+    ensure_git_ssh || return 1
+  fi
+}
+
+configure_workspace_credentials() {
+  workspace="$1"
+  remote_url="$(git_user -C "$workspace" remote get-url origin)" || return 1
+  configure_git_credentials "$remote_url" || return 1
+  case "$remote_url" in
+    http://*|https://*)
+      [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ] || return 1
+      git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
+      ;;
+    *)
+      ensure_git_ssh || return 1
+      ;;
+  esac
+  if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
+    git_user -C "$workspace" config user.name "$GITEA_GIT_USER_NAME" || return 1
+  fi
+  if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
+    git_user -C "$workspace" config user.email "$GITEA_GIT_USER_EMAIL" || return 1
+  fi
+}
+
+restore_existing_workspace() {
+  workspace="$1"
+  [ -d "$workspace/.git" ] || return 1
+  configure_workspace_credentials "$workspace" || return 1
+  if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
+    current="$(git_user -C "$workspace" rev-parse HEAD)" || return 1
+    [ "$current" = "$GITEA_COMMIT_SHA" ] || return 1
+  fi
+}
+
+prepare_workspace_from_repo() {
+  repo_url="$1"
+  workspace="$2"
+  temp_workspace="${CODESPACE_WORKSPACES_DIR}/.gitea-create-${CODESPACE_UUID}"
+  rm -rf "$temp_workspace"
+  configure_git_credentials "$repo_url" || return 1
+  git_user clone "$repo_url" "$temp_workspace" || return 1
+  git_user -C "$temp_workspace" remote set-url origin "$repo_url" || return 1
+  configure_workspace_credentials "$temp_workspace" || return 1
+  if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
+    if [ -n "${GITEA_START_REF:-}" ]; then
+      git_user -C "$temp_workspace" fetch origin "$GITEA_START_REF" --tags --prune || return 1
+    else
+      git_user -C "$temp_workspace" fetch --all --tags --prune || return 1
+    fi
+    git_user -C "$temp_workspace" checkout --detach "$GITEA_COMMIT_SHA" || return 1
+    current="$(git_user -C "$temp_workspace" rev-parse HEAD)" || return 1
+    [ "$current" = "$GITEA_COMMIT_SHA" ] || return 1
+  fi
+  [ ! -e "$workspace" ] || return 1
+  mv "$temp_workspace" "$workspace" || return 1
+}
 
 cat >/usr/local/bin/gitea-codespace-git-credential <<'EOF'
 #!/bin/sh
@@ -205,5 +296,27 @@ chmod 0440 /etc/sudoers.d/gitea-codespace
 if command -v visudo >/dev/null 2>&1; then
   visudo -cf /etc/sudoers.d/gitea-codespace >/dev/null
 fi
+
+if [ "${CODESPACE_OPERATION:-}" = "create" ]; then
+  repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
+  fallback_url="${GITEA_REPO_CLONE_SSH_URL:-}"
+  if [ "${GITEA_GIT_PROTOCOL:-http}" = "ssh" ] && [ -n "${GITEA_REPO_CLONE_SSH_URL:-}" ]; then
+    repo_url="$GITEA_REPO_CLONE_SSH_URL"
+    fallback_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
+  fi
+  [ -n "$repo_url" ] || fail_unrecoverable
+  workspace="${CODESPACE_WORKSPACES_DIR}/${GITEA_REPO_NAME:-repo}"
+  if [ -d "$workspace/.git" ]; then
+    restore_existing_workspace "$workspace" || fail_unrecoverable
+  elif ! prepare_workspace_from_repo "$repo_url" "$workspace"; then
+    if [ -n "$fallback_url" ] && [ "$fallback_url" != "$repo_url" ]; then
+      prepare_workspace_from_repo "$fallback_url" "$workspace" || fail_unrecoverable
+    else
+      fail_unrecoverable
+    fi
+  fi
+  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
+fi
+
 printf 'CODESPACE_CREDENTIAL_UID=%s\nCODESPACE_CREDENTIAL_GID=%s\nCODESPACE_USER=%s\n' "$codespace_uid" "$codespace_gid" "$codespace_user" >> "$CODESPACE_ENV"
-write_result
+write_result done

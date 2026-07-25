@@ -149,22 +149,24 @@ type ScriptOperation string
 const (
 	// ScriptOperationCreate prepares a new workspace from a repository payload.
 	ScriptOperationCreate ScriptOperation = "create"
-	// ScriptOperationResume restores an existing workspace without repository payload.
+	// ScriptOperationResume starts an existing workspace without repository payload.
 	ScriptOperationResume ScriptOperation = "resume"
+	// ScriptOperationStop stops a running workspace.
+	ScriptOperationStop ScriptOperation = "stop"
 )
 
-// ScriptConfig stores the init/start/resume script sources.
+// ScriptConfig stores the init/start/stop script sources.
 type ScriptConfig struct {
-	Init   string
-	Start  string
-	Resume string
+	Init  string
+	Start string
+	Stop  string
 }
 
 // ScriptSnapshot stores one complete lifecycle script suite fixed for an operation.
 type ScriptSnapshot struct {
-	Init   ScriptFileSnapshot
-	Start  ScriptFileSnapshot
-	Resume ScriptFileSnapshot
+	Init  ScriptFileSnapshot
+	Start ScriptFileSnapshot
+	Stop  ScriptFileSnapshot
 }
 
 // ScriptFileSnapshot stores one script and its content digest.
@@ -173,20 +175,14 @@ type ScriptFileSnapshot struct {
 	SHA256  string
 }
 
-// SystemIdentity stores the non-root identity produced by init.
+// SystemIdentity stores the non-root identity and create workspace produced by init.
 type SystemIdentity struct {
 	UID       uint32
 	GID       uint32
 	SharedEnv map[string]string
 }
 
-// WorkspaceStatus stores the workspace path produced by prepare.
-type WorkspaceStatus struct {
-	Workdir   string
-	SharedEnv map[string]string
-}
-
-// RuntimeAccess stores the shared environment produced by activate.
+// RuntimeAccess stores the shared environment produced by start.
 type RuntimeAccess struct {
 	SharedEnv map[string]string
 }
@@ -245,8 +241,8 @@ type Provisioner interface {
 	ReadEndpointManifest(ctx context.Context, instanceName string) ([]RuntimeEndpointDeclaration, error)
 	RuntimeResourceUsage(ctx context.Context, instanceName string) (RuntimeResourceUsage, error)
 	InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error)
-	PrepareWorkspace(ctx context.Context, instanceName string, request BootstrapRequest) (WorkspaceStatus, error)
-	ActivateRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error)
+	StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error)
+	StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error)
 	Stop(ctx context.Context, instanceName string) error
 	Delete(ctx context.Context, instanceName string) error
 }

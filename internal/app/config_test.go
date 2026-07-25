@@ -291,14 +291,14 @@ func TestScriptsConfigValidation(t *testing.T) {
 	dir := t.TempDir()
 	initPath := writeScriptForTest(t, dir, "init.sh")
 	startPath := writeScriptForTest(t, dir, "start.sh")
-	resumePath := writeScriptForTest(t, dir, "resume.sh")
+	stopPath := writeScriptForTest(t, dir, "stop.sh")
 
 	config := DefaultConfig()
 	config.applyDefaults()
 	config.Scripts = ScriptsConfig{
-		Init:   initPath,
-		Start:  startPath,
-		Resume: resumePath,
+		Init:  initPath,
+		Start: startPath,
+		Stop:  stopPath,
 	}
 	if err := config.Validate(); err != nil {
 		t.Fatalf("custom scripts validation: %v", err)
@@ -307,9 +307,9 @@ func TestScriptsConfigValidation(t *testing.T) {
 	config = DefaultConfig()
 	config.applyDefaults()
 	config.Scripts = ScriptsConfig{
-		Init:   "builtin",
-		Start:  startPath,
-		Resume: resumePath,
+		Init:  "builtin",
+		Start: startPath,
+		Stop:  stopPath,
 	}
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected mixed scripts validation error")

@@ -8,7 +8,7 @@ test: test-scripts
 test-scripts:
 	sh -n examples/devcontainer/init.sh
 	sh -n examples/devcontainer/start.sh
-	sh -n examples/devcontainer/resume.sh
+	sh -n examples/devcontainer/stop.sh
 
 .PHONY: test-e2e
 test-e2e:

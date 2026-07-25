@@ -1,18 +1,42 @@
 set -eu
 
 write_result() {
+  outcome="${1:-done}"
   tmp="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"done","stage":"%s"}\n' "$1" > "$tmp"
+  printf '{"outcome":"%s","stage":"start-environment"}\n' "$outcome" > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$CODESPACE_RESULT"
 }
 
-repo_url="$GITEA_REPO_CLONE_HTTP_URL"
-if [ "$GITEA_GIT_PROTOCOL" = "ssh" ] && [ -n "$GITEA_REPO_CLONE_SSH_URL" ]; then
-  repo_url="$GITEA_REPO_CLONE_SSH_URL"
-fi
+fail_unrecoverable() {
+  write_result unrecoverable_failed
+  exit 0
+}
+
 codespace_user="${CODESPACE_USER:-codespace}"
+runtime_dir="${CODESPACE_RUNTIME_DIR:-/var/lib/gitea-codespace}"
+runtime_seed_dir="${CODESPACE_RUNTIME_SEED_DIR:-$runtime_dir/seed}"
+token_file="${CODESPACE_GITEA_TOKEN_FILE:-$runtime_dir/gitea-token}"
+private_key_file="${CODESPACE_GIT_SSH_PRIVATE_KEY:-$runtime_dir/git/id_ed25519}"
+public_key_file="${CODESPACE_GIT_SSH_PUBLIC_KEY:-$runtime_dir/git/id_ed25519.pub}"
+known_hosts_file="${CODESPACE_GIT_SSH_KNOWN_HOSTS:-$runtime_dir/git/known_hosts}"
+seed_token="$runtime_seed_dir/gitea-token"
+seed_private_key="$runtime_seed_dir/id_ed25519"
+seed_public_key="$runtime_seed_dir/id_ed25519.pub"
+seed_known_hosts="$runtime_seed_dir/known_hosts"
+
+for seed_file in "$seed_token" "$seed_private_key" "$seed_public_key"; do
+  [ -s "$seed_file" ] || fail_unrecoverable
+done
+[ -f "$seed_known_hosts" ] || fail_unrecoverable
+codespace_uid="$(id -u "$codespace_user")" || fail_unrecoverable
+codespace_gid="$(id -g "$codespace_user")" || fail_unrecoverable
+install -d -m 0700 -o "$codespace_uid" -g "$codespace_gid" "$runtime_dir/git"
+install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_token" "$token_file"
+install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_private_key" "$private_key_file"
+install -m 0644 -o "$codespace_uid" -g "$codespace_gid" "$seed_public_key" "$public_key_file"
+install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_known_hosts" "$known_hosts_file"
 
 git_user() {
   if [ -n "${GIT_SSH_COMMAND:-}" ]; then
@@ -23,61 +47,24 @@ git_user() {
 }
 
 ensure_git_ssh() {
-  [ -f /var/lib/gitea-codespace/git/id_ed25519 ] || exit 33
-  [ -s /var/lib/gitea-codespace/git/known_hosts ] || exit 33
-  export GIT_SSH_COMMAND='ssh -i /var/lib/gitea-codespace/git/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/var/lib/gitea-codespace/git/known_hosts -o StrictHostKeyChecking=yes'
+  [ -f "$private_key_file" ] || return 1
+  [ -s "$known_hosts_file" ] || return 1
+  export GIT_SSH_COMMAND="ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes"
 }
 
-workspace="${CODESPACE_WORKSPACES_DIR}/${CODESPACE_REPO_NAME:-repo}"
-if [ "$CODESPACE_SCRIPT_PHASE" = "prepare" ]; then
-  if [ -z "$repo_url" ]; then
-    exit 30
-  fi
-  mkdir -p "$CODESPACE_WORKSPACES_DIR"
-  chown "$codespace_user:$codespace_user" "$CODESPACE_WORKSPACES_DIR" || chown "$codespace_user" "$CODESPACE_WORKSPACES_DIR"
-  if [ -n "$GITEA_REPO_CLONE_HTTP_URL" ]; then
-    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential'
-  fi
-  if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
-    git_user config --global user.name "$GITEA_GIT_USER_NAME"
-  fi
-  if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
-    git_user config --global user.email "$GITEA_GIT_USER_EMAIL"
-  fi
-  if [ "$repo_url" = "$GITEA_REPO_CLONE_SSH_URL" ] && [ -n "$repo_url" ]; then
-    ensure_git_ssh
-  fi
-  if [ ! -d "$workspace/.git" ]; then
-    git_user clone "$repo_url" "$workspace"
-  fi
-  git_user -C "$workspace" remote set-url origin "$repo_url"
-  if [ -n "$GITEA_REPO_CLONE_HTTP_URL" ]; then
-    git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential'
-  fi
-  if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
-    git_user -C "$workspace" config user.name "$GITEA_GIT_USER_NAME"
-  fi
-  if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
-    git_user -C "$workspace" config user.email "$GITEA_GIT_USER_EMAIL"
-  fi
-  if [ -n "$GITEA_COMMIT_SHA" ]; then
-    if [ -n "$GITEA_START_REF" ]; then
-      git_user -C "$workspace" fetch origin "$GITEA_START_REF" --tags --prune
-    else
-      git_user -C "$workspace" fetch --all --tags --prune
-    fi
-    git_user -C "$workspace" checkout --detach "$GITEA_COMMIT_SHA"
-    current="$(git_user -C "$workspace" rev-parse HEAD)"
-    if [ "$current" != "$GITEA_COMMIT_SHA" ]; then
-      exit 31
-    fi
-  fi
-  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
-  write_result prepare-workspace
-  exit 0
-fi
-if [ "$CODESPACE_SCRIPT_PHASE" = "activate" ]; then
-  write_result start-environment
-  exit 0
-fi
-exit 32
+workspace="${CODESPACE_WORKSPACE_DIR:-${CODESPACE_WORKSPACES_DIR}/${CODESPACE_REPO_NAME:-repo}}"
+[ -d "$workspace/.git" ] || fail_unrecoverable
+remote_url="$(git_user -C "$workspace" remote get-url origin)" || fail_unrecoverable
+case "$remote_url" in
+  http://*|https://*)
+    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
+    git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
+    ;;
+  *)
+    ensure_git_ssh || fail_unrecoverable
+    git_user -C "$workspace" config core.sshCommand "ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes" || fail_unrecoverable
+    ;;
+esac
+
+printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
+write_result done

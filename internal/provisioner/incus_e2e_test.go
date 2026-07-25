@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -208,6 +209,9 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	request := incusE2EBootstrapRequest(codespaceUUID, instanceName, instance.Workdir, ScriptOperationCreate)
 	workspace := runIncusE2ELifecycleStart(t, ctx, provisioner, instance, request)
 
+	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
+		t.Fatalf("stop e2e lifecycle runtime: %v", err)
+	}
 	if err := provisioner.Stop(ctx, instanceName); err != nil {
 		t.Fatalf("stop e2e lifecycle instance: %v", err)
 	}
@@ -217,9 +221,12 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume e2e lifecycle instance: %v", err)
 	}
-	resumeRequest := incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace.Workdir, ScriptOperationResume)
+	resumeRequest := incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationResume)
 	runIncusE2ELifecycleResume(t, ctx, provisioner, resumed, resumeRequest)
 
+	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
+		t.Fatalf("stop resumed e2e lifecycle runtime: %v", err)
+	}
 	if err := provisioner.Stop(ctx, instanceName); err != nil {
 		t.Fatalf("stop resumed e2e lifecycle instance: %v", err)
 	}
@@ -229,12 +236,13 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	assertIncusE2EInstanceAbsent(t, ctx, provisioner, codespaceUUID)
 }
 
-func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) WorkspaceStatus {
+func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) string {
 	t.Helper()
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e lifecycle credentials: %v", err)
 	}
-	if _, err := provisioner.InitializeSystem(ctx, instance.Name, request); err != nil {
+	identity, err := provisioner.InitializeSystem(ctx, instance.Name, request)
+	if err != nil {
 		t.Fatalf("initialize e2e lifecycle system: %v", err)
 	}
 	status, err := provisioner.CheckCredentials(ctx, instance.Name)
@@ -244,20 +252,22 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	if !status.GiteaTokenPresent {
 		t.Fatalf("credential status = %#v", status)
 	}
-	workspace, err := provisioner.PrepareWorkspace(ctx, instance.Name, request)
-	if err != nil {
-		t.Fatalf("prepare e2e lifecycle workspace: %v", err)
+	workspace := identity.SharedEnv["CODESPACE_WORKSPACE_DIR"]
+	if !filepath.IsAbs(workspace) {
+		t.Fatalf("create workspace = %q", workspace)
 	}
-	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, workspace.Workdir)
-	gitStatus, err := provisioner.CheckWorkspaceGit(ctx, instance.Name, workspace.Workdir)
+	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, workspace)
+	gitStatus, err := provisioner.CheckWorkspaceGit(ctx, instance.Name, workspace)
 	if err != nil {
 		t.Fatalf("check e2e lifecycle workspace git: %v", err)
 	}
 	if gitStatus.OriginURL == "" || !gitStatus.CredentialConfigured {
 		t.Fatalf("workspace git status = %#v", gitStatus)
 	}
-	if _, err := provisioner.ActivateRuntime(ctx, instance.Name, request); err != nil {
-		t.Fatalf("activate e2e lifecycle runtime: %v", err)
+	startRequest := request
+	startRequest.Workdir = workspace
+	if _, err := provisioner.StartRuntime(ctx, instance.Name, startRequest); err != nil {
+		t.Fatalf("start e2e lifecycle runtime: %v", err)
 	}
 	return workspace
 }
@@ -267,19 +277,9 @@ func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e resume credentials: %v", err)
 	}
-	if _, err := provisioner.InitializeSystem(ctx, instance.Name, request); err != nil {
-		t.Fatalf("initialize e2e resume system: %v", err)
-	}
-	workspace, err := provisioner.PrepareWorkspace(ctx, instance.Name, request)
-	if err != nil {
-		t.Fatalf("prepare e2e resume workspace: %v", err)
-	}
-	if workspace.Workdir != request.Workdir {
-		t.Fatalf("resume workspace = %q, want %q", workspace.Workdir, request.Workdir)
-	}
-	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, workspace.Workdir)
-	if _, err := provisioner.ActivateRuntime(ctx, instance.Name, request); err != nil {
-		t.Fatalf("activate e2e resume runtime: %v", err)
+	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, request.Workdir)
+	if _, err := provisioner.StartRuntime(ctx, instance.Name, request); err != nil {
+		t.Fatalf("start e2e resume runtime: %v", err)
 	}
 }
 

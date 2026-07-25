@@ -61,14 +61,7 @@ func (p *DummyProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec)
 		}
 		p.instances[instance.Name] = instance
 	}
-	if p.tokens[instance.Name] == "" {
-		p.tokens[instance.Name] = "gcs_dummy"
-	}
-	instance.Workdir = "/codespace/" + repoDirName(spec.RepoFullName)
-	instance.RuntimeState = RuntimeStateRunning
-
-	copyValue := *instance
-	return &copyValue, nil
+	return p.startInstanceLocked(instance), nil
 }
 
 // StartExisting starts one existing instance.
@@ -86,14 +79,24 @@ func (p *DummyProvisioner) StartExisting(ctx context.Context, spec InstanceSpec)
 	if !ok {
 		return nil, fmt.Errorf("instance %s does not exist", spec.Name)
 	}
+	return p.startInstanceLocked(instance), nil
+}
+
+func (p *DummyProvisioner) startInstanceLocked(instance *Instance) *Instance {
 	if p.tokens[instance.Name] == "" {
 		p.tokens[instance.Name] = "gcs_dummy"
 	}
 	instance.Workdir = "/codespace/" + repoDirName(instance.RepoFullName)
 	instance.RuntimeState = RuntimeStateRunning
+	return copyInstance(instance)
+}
 
+func copyInstance(instance *Instance) *Instance {
+	if instance == nil {
+		return nil
+	}
 	copyValue := *instance
-	return &copyValue, nil
+	return &copyValue
 }
 
 // ListInstances returns all local dummy instances.
@@ -106,8 +109,7 @@ func (p *DummyProvisioner) ListInstances(ctx context.Context) ([]*Instance, erro
 
 	instances := make([]*Instance, 0, len(p.instances))
 	for _, instance := range p.instances {
-		copyValue := *instance
-		instances = append(instances, &copyValue)
+		instances = append(instances, copyInstance(instance))
 	}
 	return instances, nil
 }
@@ -227,9 +229,6 @@ func (p *DummyProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceN
 	if len(request.GitSSHPrivateKey) == 0 || len(request.GitSSHPublicKey) == 0 {
 		return fmt.Errorf("git ssh key seed is empty")
 	}
-	if len(request.GitSSHKnownHosts) == 0 {
-		return fmt.Errorf("git ssh known hosts seed is empty")
-	}
 	p.mu.Lock()
 	p.tokens[instanceName] = request.GiteaToken
 	p.privateKey[instanceName] = append([]byte(nil), request.GitSSHPrivateKey...)
@@ -272,7 +271,7 @@ func (p *DummyProvisioner) RuntimeResourceUsage(ctx context.Context, instanceNam
 	}, nil
 }
 
-// InitializeSystem simulates init.sh.
+// InitializeSystem simulates init.sh, including create workspace initialization.
 func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
@@ -283,28 +282,36 @@ func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName st
 	if request.CodespaceUUID == "" {
 		return SystemIdentity{}, fmt.Errorf("codespace uuid is empty")
 	}
-	return SystemIdentity{UID: 1000, GID: 1000, SharedEnv: map[string]string{}}, nil
+	sharedEnv := map[string]string{}
+	if request.Operation == ScriptOperationCreate {
+		workdir := request.Workdir
+		if workdir == "" {
+			workdir = "/codespace/" + repoDirName(request.RepoFullName)
+		}
+		sharedEnv["CODESPACE_WORKSPACE_DIR"] = workdir
+	}
+	return SystemIdentity{UID: 1000, GID: 1000, SharedEnv: sharedEnv}, nil
 }
 
-// PrepareWorkspace simulates start.sh/resume.sh prepare.
-func (p *DummyProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request BootstrapRequest) (WorkspaceStatus, error) {
+// StartRuntime simulates start.sh for an existing workspace.
+func (p *DummyProvisioner) StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
 	if err := ctx.Err(); err != nil {
-		return WorkspaceStatus{}, err
+		return RuntimeAccess{}, err
 	}
 	if instanceName == "" {
-		return WorkspaceStatus{}, fmt.Errorf("instance name is empty")
+		return RuntimeAccess{}, fmt.Errorf("instance name is empty")
 	}
 	if request.CodespaceUUID == "" {
-		return WorkspaceStatus{}, fmt.Errorf("codespace uuid is empty")
+		return RuntimeAccess{}, fmt.Errorf("codespace uuid is empty")
 	}
 	if request.Workdir == "" {
-		return WorkspaceStatus{}, fmt.Errorf("workdir is empty")
+		return RuntimeAccess{}, fmt.Errorf("workdir is empty")
 	}
-	return WorkspaceStatus{Workdir: request.Workdir, SharedEnv: map[string]string{}}, nil
+	return RuntimeAccess{SharedEnv: map[string]string{}}, nil
 }
 
-// ActivateRuntime simulates start.sh/resume.sh activate.
-func (p *DummyProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+// StopRuntime simulates stop.sh.
+func (p *DummyProvisioner) StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
 	if err := ctx.Err(); err != nil {
 		return RuntimeAccess{}, err
 	}

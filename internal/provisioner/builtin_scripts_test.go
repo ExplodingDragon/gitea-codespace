@@ -14,9 +14,12 @@ import (
 func TestBuiltinStartHTTPDoesNotUseGitSSH(t *testing.T) {
 	t.Parallel()
 
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	workspace := filepath.Join(workspaceRoot, "repo")
+	writeTestWorkspace(t, workspace, "https://gitea.example.com/owner/repo.git", "user-head\n")
 	result := runBuiltinScriptForTest(t, builtinStartScript, map[string]string{
-		"CODESPACE_SCRIPT_PHASE":    "prepare",
-		"CODESPACE_WORKSPACES_DIR":  filepath.Join(t.TempDir(), "workspaces"),
+		"CODESPACE_WORKSPACES_DIR":  workspaceRoot,
+		"CODESPACE_WORKSPACE_DIR":   workspace,
 		"CODESPACE_REPO_NAME":       "repo",
 		"GITEA_GIT_PROTOCOL":        "http",
 		"GITEA_REPO_CLONE_HTTP_URL": "https://gitea.example.com/owner/repo.git",
@@ -25,31 +28,36 @@ func TestBuiltinStartHTTPDoesNotUseGitSSH(t *testing.T) {
 		"GITEA_START_REF":           "",
 	})
 
-	if err := validateScriptResult(result.resultContent, "prepare-workspace"); err != nil {
+	if err := validateScriptResult(result.resultContent, "start-environment"); err != nil {
 		t.Fatalf("validate result: %v", err)
 	}
 	if strings.Contains(result.commandLog, "curl ") ||
 		strings.Contains(result.commandLog, "ssh-keygen ") ||
 		strings.Contains(result.commandLog, "known_hosts") {
-		t.Fatalf("HTTP prepare used Git SSH path:\n%s", result.commandLog)
+		t.Fatalf("HTTP start used Git SSH path:\n%s", result.commandLog)
 	}
 	if !strings.Contains(result.commandLog, "credential.helper") {
-		t.Fatalf("HTTP prepare did not configure credential helper:\n%s", result.commandLog)
+		t.Fatalf("HTTP start did not configure credential helper:\n%s", result.commandLog)
 	}
 	if !strings.Contains(result.envContent, "CODESPACE_WORKSPACE_DIR=") {
 		t.Fatalf("shared env = %q", result.envContent)
 	}
-	if _, err := os.Stat(filepath.Join(result.workspaceRoot, "repo", ".devcontainer", "devcontainer.json")); err != nil {
-		t.Fatalf("devcontainer file was not preserved as workspace content: %v", err)
+	if strings.Contains(result.commandLog, " clone ") ||
+		strings.Contains(result.commandLog, " fetch ") ||
+		strings.Contains(result.commandLog, " checkout ") {
+		t.Fatalf("start changed workspace:\n%s", result.commandLog)
 	}
 }
 
-func TestBuiltinStartFallsBackToHTTPWhenSSHURLIsEmpty(t *testing.T) {
+func TestBuiltinStartUsesExistingRemote(t *testing.T) {
 	t.Parallel()
 
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	workspace := filepath.Join(workspaceRoot, "repo")
+	writeTestWorkspace(t, workspace, "https://gitea.example.com/owner/repo.git", "user-head\n")
 	result := runBuiltinScriptForTest(t, builtinStartScript, map[string]string{
-		"CODESPACE_SCRIPT_PHASE":    "prepare",
-		"CODESPACE_WORKSPACES_DIR":  filepath.Join(t.TempDir(), "workspaces"),
+		"CODESPACE_WORKSPACES_DIR":  workspaceRoot,
+		"CODESPACE_WORKSPACE_DIR":   workspace,
 		"CODESPACE_REPO_NAME":       "repo",
 		"GITEA_GIT_PROTOCOL":        "ssh",
 		"GITEA_REPO_CLONE_HTTP_URL": "https://gitea.example.com/owner/repo.git",
@@ -58,20 +66,18 @@ func TestBuiltinStartFallsBackToHTTPWhenSSHURLIsEmpty(t *testing.T) {
 		"GITEA_START_REF":           "",
 	})
 
-	if err := validateScriptResult(result.resultContent, "prepare-workspace"); err != nil {
+	if err := validateScriptResult(result.resultContent, "start-environment"); err != nil {
 		t.Fatalf("validate result: %v", err)
-	}
-	if !strings.Contains(result.commandLog, "git clone https://gitea.example.com/owner/repo.git") {
-		t.Fatalf("SSH protocol without SSH URL did not fall back to HTTP clone:\n%s", result.commandLog)
 	}
 	if strings.Contains(result.commandLog, "curl ") ||
 		strings.Contains(result.commandLog, "ssh-keygen ") ||
-		strings.Contains(result.commandLog, "known_hosts") {
-		t.Fatalf("fallback HTTP prepare used Git SSH path:\n%s", result.commandLog)
+		strings.Contains(result.commandLog, "known_hosts") ||
+		strings.Contains(result.commandLog, " clone ") {
+		t.Fatalf("start did not use existing HTTP remote:\n%s", result.commandLog)
 	}
 }
 
-func TestBuiltinResumeKeepsWorkspaceHEAD(t *testing.T) {
+func TestBuiltinStartKeepsWorkspaceHEAD(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
@@ -86,18 +92,17 @@ func TestBuiltinResumeKeepsWorkspaceHEAD(t *testing.T) {
 		t.Fatalf("write head: %v", err)
 	}
 
-	result := runBuiltinScriptForTest(t, builtinResumeScript, map[string]string{
-		"CODESPACE_SCRIPT_PHASE":   "prepare",
+	result := runBuiltinScriptForTest(t, builtinStartScript, map[string]string{
 		"CODESPACE_WORKSPACES_DIR": workspaceRoot,
 		"CODESPACE_WORKSPACE_DIR":  workspace,
 	})
 
-	if err := validateScriptResult(result.resultContent, "prepare-workspace"); err != nil {
+	if err := validateScriptResult(result.resultContent, "start-environment"); err != nil {
 		t.Fatalf("validate result: %v", err)
 	}
 	if strings.Contains(result.commandLog, " fetch ") ||
 		strings.Contains(result.commandLog, " checkout ") {
-		t.Fatalf("resume changed repository HEAD path:\n%s", result.commandLog)
+		t.Fatalf("start changed repository HEAD path:\n%s", result.commandLog)
 	}
 	head, err := os.ReadFile(filepath.Join(workspace, ".git", "HEAD"))
 	if err != nil {
@@ -130,7 +135,13 @@ func TestBuiltinInitScriptDeclaresSystemDependencies(t *testing.T) {
 		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_token" "$token_file"`,
 		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_private_key" "$private_key_file"`,
 		`install -m 0644 -o "$codespace_uid" -g "$codespace_gid" "$seed_public_key" "$public_key_file"`,
+		`[ -f "$seed_known_hosts" ] || exit 25`,
 		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_known_hosts" "$known_hosts_file"`,
+		`if [ "${CODESPACE_OPERATION:-}" = "create" ]; then`,
+		`restore_existing_workspace "$workspace"`,
+		`prepare_workspace_from_repo "$repo_url" "$workspace"`,
+		`git_user clone "$repo_url" "$temp_workspace"`,
+		`write_result unrecoverable_failed`,
 		`printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$codespace_user" > /etc/sudoers.d/gitea-codespace`,
 		"visudo -cf /etc/sudoers.d/gitea-codespace",
 		"CODESPACE_CREDENTIAL_UID=%s",
@@ -140,67 +151,66 @@ func TestBuiltinInitScriptDeclaresSystemDependencies(t *testing.T) {
 	}
 }
 
-func TestDevcontainerExampleStartResumeAndPortForward(t *testing.T) {
+func TestDevcontainerExampleStartStopAndPortForward(t *testing.T) {
 	t.Parallel()
 
 	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
-	startPrepare := runDevcontainerExampleScriptForTest(t, "start.sh", map[string]string{
-		"CODESPACE_SCRIPT_PHASE":    "prepare",
+	workspace := filepath.Join(workspaceRoot, "repo")
+	writeTestWorkspace(t, workspace, "https://gitea.example.com/owner/repo.git", "user-head\n")
+	start := runDevcontainerExampleScriptForTest(t, "start.sh", map[string]string{
 		"CODESPACE_WORKSPACES_DIR":  workspaceRoot,
+		"CODESPACE_WORKSPACE_DIR":   workspace,
 		"CODESPACE_REPO_NAME":       "repo",
 		"GITEA_GIT_PROTOCOL":        "http",
 		"GITEA_REPO_CLONE_HTTP_URL": "https://gitea.example.com/owner/repo.git",
 		"GITEA_COMMIT_SHA":          "0123456789abcdef0123456789abcdef01234567",
 		"GITEA_START_REF":           "refs/heads/main",
 	})
-	if err := validateScriptResult(startPrepare.resultContent, "prepare-workspace"); err != nil {
-		t.Fatalf("validate start prepare result: %v", err)
+	if err := validateScriptResult(start.resultContent, "start-environment"); err != nil {
+		t.Fatalf("validate start result: %v", err)
 	}
-	startEnv := parseSharedEnvForTest(startPrepare.envContent)
-	workspace := filepath.Join(workspaceRoot, "repo")
-	if startEnv["CODESPACE_WORKSPACE_DIR"] != workspace || startEnv["DEVCONTAINER_EXAMPLE_CONTAINER_ID"] != "container-1" {
+	startEnv := parseSharedEnvForTest(start.envContent)
+	if startEnv["CODESPACE_WORKSPACE_DIR"] != workspace {
 		t.Fatalf("start shared env = %#v", startEnv)
 	}
-	if !strings.Contains(startPrepare.commandLog, "devcontainer up --workspace-folder "+workspace) {
-		t.Fatalf("start did not run devcontainer up:\n%s", startPrepare.commandLog)
+	if startEnv["DEVCONTAINER_EXAMPLE_CONTAINER_ID"] != "container-1" ||
+		startEnv["CODESPACE_INTERNAL_SSH_PORT"] != "" ||
+		startEnv["CODESPACE_INTERNAL_SSH_USER"] != "" ||
+		startEnv["CODESPACE_INTERNAL_SSH_HOST_KEY_FINGERPRINT"] != "" {
+		t.Fatalf("start shared env = %#v", startEnv)
+	}
+	if !strings.Contains(start.commandLog, "devcontainer up") ||
+		strings.Contains(start.commandLog, "git clone") ||
+		strings.Contains(start.commandLog, "git checkout") ||
+		strings.Contains(start.commandLog, "socat TCP-LISTEN:2222") ||
+		strings.Contains(start.commandLog, "sshd") {
+		t.Fatalf("start did not use unified devcontainer path:\n%s", start.commandLog)
 	}
 
-	startActivate := runDevcontainerExampleScriptForTest(t, "start.sh", map[string]string{
-		"CODESPACE_SCRIPT_PHASE":            "activate",
-		"CODESPACE_UUID":                    "codespace-devcontainer-test",
+	restart := runDevcontainerExampleScriptForTest(t, "start.sh", map[string]string{
 		"CODESPACE_WORKSPACE_DIR":           workspace,
-		"DEVCONTAINER_EXAMPLE_CONTAINER_ID": startEnv["DEVCONTAINER_EXAMPLE_CONTAINER_ID"],
+		"DEVCONTAINER_EXAMPLE_CONTAINER_ID": "container-1",
 	})
-	if err := validateScriptResult(startActivate.resultContent, "start-environment"); err != nil {
-		t.Fatalf("validate start activate result: %v", err)
+	if err := validateScriptResult(restart.resultContent, "start-environment"); err != nil {
+		t.Fatalf("validate restart result: %v", err)
 	}
-	activateEnv := parseSharedEnvForTest(startActivate.envContent)
-	if activateEnv["DEVCONTAINER_EXAMPLE_CONTAINER_ID"] != "container-1" ||
-		activateEnv["CODESPACE_INTERNAL_SSH_PORT"] != "" ||
-		activateEnv["CODESPACE_INTERNAL_SSH_USER"] != "" ||
-		activateEnv["CODESPACE_INTERNAL_SSH_HOST_KEY_FINGERPRINT"] != "" {
-		t.Fatalf("activate shared env = %#v", activateEnv)
+	if strings.Contains(restart.commandLog, "devcontainer up") ||
+		strings.Contains(restart.commandLog, "git checkout") {
+		t.Fatalf("restart rebuilt container or changed HEAD:\n%s", restart.commandLog)
 	}
-	if !strings.Contains(startActivate.commandLog, "docker start container-1") ||
-		strings.Contains(startActivate.commandLog, "socat TCP-LISTEN:2222") ||
-		strings.Contains(startActivate.commandLog, "sshd") {
-		t.Fatalf("activate did not restore container cleanly:\n%s", startActivate.commandLog)
+	if !strings.Contains(restart.commandLog, "docker start container-1") {
+		t.Fatalf("restart did not start existing container:\n%s", restart.commandLog)
 	}
 
-	resumePrepare := runDevcontainerExampleScriptForTest(t, "resume.sh", map[string]string{
-		"CODESPACE_SCRIPT_PHASE":            "prepare",
+	stop := runDevcontainerExampleScriptForTest(t, "stop.sh", map[string]string{
 		"CODESPACE_WORKSPACE_DIR":           workspace,
-		"DEVCONTAINER_EXAMPLE_CONTAINER_ID": startEnv["DEVCONTAINER_EXAMPLE_CONTAINER_ID"],
+		"DEVCONTAINER_EXAMPLE_CONTAINER_ID": "container-1",
 	})
-	if err := validateScriptResult(resumePrepare.resultContent, "prepare-workspace"); err != nil {
-		t.Fatalf("validate resume prepare result: %v", err)
+	if err := validateScriptResult(stop.resultContent, "stop-environment"); err != nil {
+		t.Fatalf("validate stop result: %v", err)
 	}
-	if strings.Contains(resumePrepare.commandLog, "devcontainer up") ||
-		strings.Contains(resumePrepare.commandLog, "git checkout") {
-		t.Fatalf("resume prepare rebuilt container or changed HEAD:\n%s", resumePrepare.commandLog)
-	}
-	if !strings.Contains(resumePrepare.commandLog, "docker start container-1") {
-		t.Fatalf("resume prepare did not start existing container:\n%s", resumePrepare.commandLog)
+	if !strings.Contains(stop.commandLog, "docker stop container-1") {
+		t.Fatalf("stop did not stop container:\n%s", stop.commandLog)
 	}
 }
 
@@ -231,6 +241,8 @@ func runBuiltinScriptForTest(t *testing.T, script string, environment map[string
 	if err := os.WriteFile(envPath, nil, 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
+	seedDir := filepath.Join(dir, "runtime", "seed")
+	writeTestRuntimeSeed(t, seedDir)
 
 	workspaceRoot := environment["CODESPACE_WORKSPACES_DIR"]
 	if workspaceRoot == "" {
@@ -239,6 +251,8 @@ func runBuiltinScriptForTest(t *testing.T, script string, environment map[string
 	}
 	environment["CODESPACE_RESULT"] = resultPath
 	environment["CODESPACE_ENV"] = envPath
+	environment["CODESPACE_RUNTIME_DIR"] = filepath.Join(dir, "runtime")
+	environment["CODESPACE_RUNTIME_SEED_DIR"] = seedDir
 	environment["GITEA_TEST_LOG"] = commandLog
 
 	command := exec.Command("sh", scriptPath)
@@ -275,8 +289,12 @@ func runDevcontainerExampleScriptForTest(t *testing.T, name string, environment 
 	if err := os.WriteFile(envPath, nil, 0o600); err != nil {
 		t.Fatalf("write env: %v", err)
 	}
+	seedDir := filepath.Join(dir, "runtime", "seed")
+	writeTestRuntimeSeed(t, seedDir)
 	environment["CODESPACE_RESULT"] = resultPath
 	environment["CODESPACE_ENV"] = envPath
+	environment["CODESPACE_RUNTIME_DIR"] = filepath.Join(dir, "runtime")
+	environment["CODESPACE_RUNTIME_SEED_DIR"] = seedDir
 	environment["GITEA_TEST_LOG"] = commandLog
 	environment["GITEA_TEST_CONTAINER_ID_FILE"] = filepath.Join(dir, "container-id")
 	environment["DEVCONTAINER_EXAMPLE_AUTHORIZED_KEY_FILE"] = filepath.Join(dir, "authorized_keys")
@@ -305,6 +323,39 @@ func runDevcontainerExampleScriptForTest(t *testing.T, name string, environment 
 func installBuiltinScriptFakes(t *testing.T, binDir string) {
 	t.Helper()
 
+	writeExecutableForTest(t, filepath.Join(binDir, "id"), `#!/bin/sh
+set -eu
+case "${1:-}" in
+  -u|-g) printf '1000\n' ;;
+  *) exit 0 ;;
+esac
+`)
+	writeExecutableForTest(t, filepath.Join(binDir, "install"), `#!/bin/sh
+set -eu
+directory=0
+args=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    -d) directory=1; shift ;;
+    -m|-o|-g) shift 2 ;;
+    -*) shift ;;
+    *) args="${args}
+$1"; shift ;;
+  esac
+done
+set -- $args
+if [ "$directory" = "1" ]; then
+  mkdir -p "$@"
+  exit 0
+fi
+while [ "$#" -gt 2 ]; do
+  shift
+done
+src="$1"
+dst="$2"
+mkdir -p "$(dirname "$dst")"
+cp "$src" "$dst"
+`)
 	writeExecutableForTest(t, filepath.Join(binDir, "sudo"), `#!/bin/sh
 set -eu
 if [ "${1:-}" = "-u" ]; then
@@ -436,6 +487,36 @@ func writeExecutableForTest(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
 		t.Fatalf("write executable %s: %v", path, err)
+	}
+}
+
+func writeTestWorkspace(t *testing.T, workspace, origin, head string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Join(workspace, ".git"), 0o755); err != nil {
+		t.Fatalf("create workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git", "origin"), []byte(origin+"\n"), 0o644); err != nil {
+		t.Fatalf("write origin: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, ".git", "HEAD"), []byte(head), 0o644); err != nil {
+		t.Fatalf("write head: %v", err)
+	}
+}
+
+func writeTestRuntimeSeed(t *testing.T, seedDir string) {
+	t.Helper()
+	if err := os.MkdirAll(seedDir, 0o700); err != nil {
+		t.Fatalf("create seed dir: %v", err)
+	}
+	for name, content := range map[string]string{
+		"gitea-token":    "token\n",
+		"id_ed25519":     "private-key\n",
+		"id_ed25519.pub": "public-key\n",
+		"known_hosts":    "",
+	} {
+		if err := os.WriteFile(filepath.Join(seedDir, name), []byte(content), 0o600); err != nil {
+			t.Fatalf("write seed %s: %v", name, err)
+		}
 	}
 }
 

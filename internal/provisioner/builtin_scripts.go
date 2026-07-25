@@ -11,5 +11,5 @@ var builtinInitScript string
 //go:embed builtin/start.sh
 var builtinStartScript string
 
-//go:embed builtin/resume.sh
-var builtinResumeScript string
+//go:embed builtin/stop.sh
+var builtinStopScript string

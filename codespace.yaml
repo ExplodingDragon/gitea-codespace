@@ -55,7 +55,7 @@ runtime:
   scripts:
     init: "builtin"
     start: "builtin"
-    resume: "builtin"
+    stop: "builtin"
   incus:
     connect:
       unix_socket: "/var/lib/incus/unix.socket"

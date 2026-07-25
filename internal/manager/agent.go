@@ -49,7 +49,7 @@ const (
 	RuntimeBootStagePrepareRuntime = "prepare-runtime"
 	// RuntimeBootStageInitializeSystem means the Manager is preparing system credentials.
 	RuntimeBootStageInitializeSystem = "initialize-system"
-	// RuntimeBootStagePrepareWorkspace means credentials are written and workspace setup can proceed.
+	// RuntimeBootStagePrepareWorkspace means the workspace path is known for this startup.
 	RuntimeBootStagePrepareWorkspace = "prepare-workspace"
 	// RuntimeBootStageStartEnvironment means the workspace environment is starting.
 	RuntimeBootStageStartEnvironment = "start-environment"
@@ -2366,13 +2366,13 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	case *codespacev1.OperationPayload_Resume:
 		err = a.handleResume(ctx, operation, command.Resume, scripts)
 	case *codespacev1.OperationPayload_Stop:
-		err = a.handleStop(ctx, operation)
+		err = a.handleStop(ctx, operation, scripts)
 	case *codespacev1.OperationPayload_Delete:
 		err = a.handleDelete(ctx, operation, true)
 	case *codespacev1.OperationPayload_AbortCreate:
 		err = a.handleDelete(ctx, operation, false)
 	case *codespacev1.OperationPayload_AbortResume:
-		err = a.handleStop(ctx, operation)
+		err = a.handleStop(ctx, operation, scripts)
 	default:
 		err = fmt.Errorf("operation command is missing")
 	}
@@ -2492,8 +2492,8 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(giteaToken string) provisioner.BootstrapRequest {
-		return a.createBootstrapRequest(operation, payload, startupInput, instance, giteaToken, scripts)
+	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(instance *provisioner.Instance, token *codespacev1.RequestGiteaTokenResponse) provisioner.BootstrapRequest {
+		return a.createBootstrapRequest(operation, payload, startupInput, instance, token, scripts)
 	})
 }
 
@@ -2512,8 +2512,13 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(giteaToken string) provisioner.BootstrapRequest {
-		return a.resumeBootstrapRequest(operation, startupInput, instance, giteaToken, scripts)
+	workdir, err := a.loadRuntimeWorkdir(operation.GetCodespaceUuid())
+	if err != nil {
+		return err
+	}
+	instance.Workdir = workdir
+	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(instance *provisioner.Instance, token *codespacev1.RequestGiteaTokenResponse) provisioner.BootstrapRequest {
+		return a.resumeBootstrapRequest(operation, startupInput, instance, token, scripts)
 	})
 }
 
@@ -2522,7 +2527,7 @@ func (a *Agent) runStartupOperation(
 	operation *codespacev1.OperationPayload,
 	settings *codespacev1.EffectiveCodespaceRuntimeSettings,
 	instance *provisioner.Instance,
-	newBootstrapRequest func(giteaToken string) provisioner.BootstrapRequest,
+	newRequest func(instance *provisioner.Instance, token *codespacev1.RequestGiteaTokenResponse) provisioner.BootstrapRequest,
 ) error {
 	codespaceUUID := operation.GetCodespaceUuid()
 	a.applyRuntimeSettings(codespaceUUID, settings, time.Now())
@@ -2552,36 +2557,38 @@ func (a *Agent) runStartupOperation(
 	}); err != nil {
 		return err
 	}
-	request := newBootstrapRequest("")
+	request := newRequest(instance, token)
 	request.LogSink = logSink
-	identity, err := a.provisioner.InitializeSystem(ctx, instance.Name, request)
-	if err != nil {
-		return err
-	}
-	if err := a.saveScriptEnvironment(codespaceUUID, identity.SharedEnv); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
-		return err
+	if request.Operation == provisioner.ScriptOperationCreate {
+		identity, err := a.provisioner.InitializeSystem(ctx, instance.Name, request)
+		if err != nil {
+			return err
+		}
+		if err := a.saveScriptEnvironment(codespaceUUID, identity.SharedEnv); err != nil {
+			return err
+		}
+		if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
+			return err
+		}
+		workdir, err := workdirFromSharedEnv(identity.SharedEnv)
+		if err != nil {
+			return err
+		}
+		instance.Workdir = workdir
+		request = newRequest(instance, token)
+		request.LogSink = logSink
+	} else {
+		if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
+			return err
+		}
 	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
-		return err
-	}
-	request = newBootstrapRequest(token.GetToken())
-	request.ServerURL = token.GetServerUrl()
-	request.LogSink = logSink
-	workspace, err := a.provisioner.PrepareWorkspace(ctx, instance.Name, request)
-	if err != nil {
-		return err
-	}
-	instance.Workdir = workspace.Workdir
-	if err := a.saveScriptEnvironment(codespaceUUID, workspace.SharedEnv); err != nil {
 		return err
 	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
 		return err
 	}
-	access, err := a.provisioner.ActivateRuntime(ctx, instance.Name, request)
+	access, err := a.provisioner.StartRuntime(ctx, instance.Name, request)
 	if err != nil {
 		return err
 	}
@@ -2604,79 +2611,96 @@ func (a *Agent) runStartupOperation(
 	return nil
 }
 
-func (a *Agent) createBootstrapRequest(
+func workdirFromSharedEnv(sharedEnv map[string]string) (string, error) {
+	workdir := strings.TrimSpace(sharedEnv["CODESPACE_WORKSPACE_DIR"])
+	if !filepath.IsAbs(workdir) {
+		return "", fmt.Errorf("CODESPACE_WORKSPACE_DIR must be absolute")
+	}
+	return workdir, nil
+}
+
+func (a *Agent) loadRuntimeWorkdir(codespaceUUID string) (string, error) {
+	if a.scriptEnvStateStore == nil {
+		return "", fmt.Errorf("script environment store is missing")
+	}
+	environment, ok, err := a.scriptEnvStateStore.LoadScriptEnvironment(codespaceUUID)
+	if err != nil {
+		return "", fmt.Errorf("load script environment %s: %w", codespaceUUID, err)
+	}
+	if !ok {
+		return "", fmt.Errorf("script environment is missing for codespace %s", codespaceUUID)
+	}
+	return workdirFromSharedEnv(environment)
+}
+
+func (a *Agent) bootstrapRequest(
 	operation *codespacev1.OperationPayload,
-	payload *codespacev1.CreateOperationPayload,
 	startupInput StartupInput,
 	instance *provisioner.Instance,
-	giteaToken string,
+	token *codespacev1.RequestGiteaTokenResponse,
 	scripts provisioner.ScriptSnapshot,
 ) provisioner.BootstrapRequest {
 	return provisioner.BootstrapRequest{
 		CodespaceUUID:       operation.GetCodespaceUuid(),
 		CodespaceName:       runtimeInstanceName(operation.GetCodespaceUuid()),
-		CodespaceOwnerName:  payload.GetCodespaceOwnerName(),
 		UserID:              startupInput.UserIdentity.UserID,
 		UserName:            startupInput.UserIdentity.Username,
 		UserDisplayName:     startupInput.UserIdentity.DisplayName,
 		GitUserName:         startupInput.UserIdentity.GitUserName,
 		GitUserEmail:        startupInput.UserIdentity.GitUserEmail,
 		RuntimeUserName:     startupInput.RuntimeUserName,
-		GiteaToken:          giteaToken,
-		RepoCloneHTTPURL:    payload.GetRepoCloneHttpUrl(),
-		RepoCloneSSHURL:     payload.GetRepoCloneSshUrl(),
-		RepoWebURL:          payload.GetRepoWebUrl(),
-		RepoID:              payload.GetRepoId(),
-		RepoFullName:        payload.GetRepoFullName(),
-		RepoName:            payload.GetRepoName(),
-		OwnerID:             payload.GetOwnerId(),
-		OwnerName:           payload.GetOwnerName(),
-		OwnerType:           repositoryOwnerTypeName(payload.GetOwnerType()),
-		OwnerDisplayName:    payload.GetOwnerDisplayName(),
-		StartRef:            payload.GetStartRef(),
-		RefType:             gitRefTypeName(payload.GetRefType()),
-		RefName:             payload.GetRefName(),
-		CommitSHA:           payload.GetCommitSha(),
+		GiteaToken:          token.GetToken(),
+		ServerURL:           token.GetServerUrl(),
 		Workdir:             instance.Workdir,
 		EnvironmentTag:      startupInput.EnvironmentTag,
-		GitProtocol:         gitProtocolName(payload.GetGitProtocol()),
 		RepoConfigPresent:   startupInput.RepositoryConfig.Present,
 		RepoConfigPath:      startupInput.RepositoryConfig.Path,
 		RepoConfigContent:   append([]byte(nil), startupInput.RepositoryConfig.Content...),
 		RepoConfigSourceRef: startupInput.RepositoryConfig.SourceRef,
 		RepoConfigSHA256:    startupInput.RepositoryConfig.ContentSHA256,
-		Operation:           provisioner.ScriptOperationCreate,
 		Scripts:             scripts,
 	}
+}
+
+func (a *Agent) createBootstrapRequest(
+	operation *codespacev1.OperationPayload,
+	payload *codespacev1.CreateOperationPayload,
+	startupInput StartupInput,
+	instance *provisioner.Instance,
+	token *codespacev1.RequestGiteaTokenResponse,
+	scripts provisioner.ScriptSnapshot,
+) provisioner.BootstrapRequest {
+	request := a.bootstrapRequest(operation, startupInput, instance, token, scripts)
+	request.CodespaceOwnerName = payload.GetCodespaceOwnerName()
+	request.RepoCloneHTTPURL = payload.GetRepoCloneHttpUrl()
+	request.RepoCloneSSHURL = payload.GetRepoCloneSshUrl()
+	request.RepoWebURL = payload.GetRepoWebUrl()
+	request.RepoID = payload.GetRepoId()
+	request.RepoFullName = payload.GetRepoFullName()
+	request.RepoName = payload.GetRepoName()
+	request.OwnerID = payload.GetOwnerId()
+	request.OwnerName = payload.GetOwnerName()
+	request.OwnerType = repositoryOwnerTypeName(payload.GetOwnerType())
+	request.OwnerDisplayName = payload.GetOwnerDisplayName()
+	request.StartRef = payload.GetStartRef()
+	request.RefType = gitRefTypeName(payload.GetRefType())
+	request.RefName = payload.GetRefName()
+	request.CommitSHA = payload.GetCommitSha()
+	request.GitProtocol = gitProtocolName(payload.GetGitProtocol())
+	request.Operation = provisioner.ScriptOperationCreate
+	return request
 }
 
 func (a *Agent) resumeBootstrapRequest(
 	operation *codespacev1.OperationPayload,
 	startupInput StartupInput,
 	instance *provisioner.Instance,
-	giteaToken string,
+	token *codespacev1.RequestGiteaTokenResponse,
 	scripts provisioner.ScriptSnapshot,
 ) provisioner.BootstrapRequest {
-	return provisioner.BootstrapRequest{
-		CodespaceUUID:       operation.GetCodespaceUuid(),
-		CodespaceName:       runtimeInstanceName(operation.GetCodespaceUuid()),
-		UserID:              startupInput.UserIdentity.UserID,
-		UserName:            startupInput.UserIdentity.Username,
-		UserDisplayName:     startupInput.UserIdentity.DisplayName,
-		GitUserName:         startupInput.UserIdentity.GitUserName,
-		GitUserEmail:        startupInput.UserIdentity.GitUserEmail,
-		RuntimeUserName:     startupInput.RuntimeUserName,
-		GiteaToken:          giteaToken,
-		Workdir:             instance.Workdir,
-		EnvironmentTag:      startupInput.EnvironmentTag,
-		RepoConfigPresent:   startupInput.RepositoryConfig.Present,
-		RepoConfigPath:      startupInput.RepositoryConfig.Path,
-		RepoConfigContent:   append([]byte(nil), startupInput.RepositoryConfig.Content...),
-		RepoConfigSourceRef: startupInput.RepositoryConfig.SourceRef,
-		RepoConfigSHA256:    startupInput.RepositoryConfig.ContentSHA256,
-		Operation:           provisioner.ScriptOperationResume,
-		Scripts:             scripts,
-	}
+	request := a.bootstrapRequest(operation, startupInput, instance, token, scripts)
+	request.Operation = provisioner.ScriptOperationResume
+	return request
 }
 
 func gitProtocolName(protocol codespacev1.GitProtocol) string {
@@ -3080,8 +3104,23 @@ func (a *Agent) checkRuntimeWorkspaceAccess(ctx context.Context, checker workspa
 	return nil
 }
 
-func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.OperationPayload) error {
+func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.OperationPayload, scripts provisioner.ScriptSnapshot) error {
 	a.closeCodespaceAccess(operation.GetCodespaceUuid())
+	stopRequest := provisioner.BootstrapRequest{
+		CodespaceUUID: operation.GetCodespaceUuid(),
+		CodespaceName: runtimeInstanceName(operation.GetCodespaceUuid()),
+		Operation:     provisioner.ScriptOperationStop,
+		Scripts:       scripts,
+		LogSink:       &operationLogSink{agent: a, operation: operation},
+	}
+	if workdir, err := a.loadRuntimeWorkdir(operation.GetCodespaceUuid()); err == nil {
+		stopRequest.Workdir = workdir
+	} else {
+		log.Printf("skip stop script workspace context for %s: %v", operation.GetCodespaceUuid(), err)
+	}
+	if _, err := a.provisioner.StopRuntime(ctx, runtimeInstanceName(operation.GetCodespaceUuid()), stopRequest); err != nil {
+		log.Printf("codespace stop script failed for %s: %v", operation.GetCodespaceUuid(), err)
+	}
 	if err := a.provisioner.Stop(ctx, runtimeInstanceName(operation.GetCodespaceUuid())); err != nil {
 		return err
 	}

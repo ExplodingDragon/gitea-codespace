@@ -186,11 +186,11 @@ type ManagerConfig struct {
 	HTTPTimeout     Duration
 }
 
-// ScriptsConfig stores the create/resume script entry points.
+// ScriptsConfig stores the init/start/stop script entry points.
 type ScriptsConfig struct {
-	Init   string `yaml:"init"`
-	Start  string `yaml:"start"`
-	Resume string `yaml:"resume"`
+	Init  string `yaml:"init"`
+	Start string `yaml:"start"`
+	Stop  string `yaml:"stop"`
 }
 
 // IncusConfig stores Incus connection settings.
@@ -396,9 +396,9 @@ func DefaultConfig() Config {
 				SSHKeyType: "ed25519",
 			},
 			Scripts: ScriptsConfig{
-				Init:   "builtin",
-				Start:  "builtin",
-				Resume: "builtin",
+				Init:  "builtin",
+				Start: "builtin",
+				Stop:  "builtin",
 			},
 			Incus: RuntimeIncusConfig{
 				Connect: RuntimeIncusConnectConfig{
@@ -1168,8 +1168,8 @@ func (c *ScriptsConfig) applyDefaults(defaults ScriptsConfig) {
 	if strings.TrimSpace(c.Start) == "" {
 		c.Start = defaults.Start
 	}
-	if strings.TrimSpace(c.Resume) == "" {
-		c.Resume = defaults.Resume
+	if strings.TrimSpace(c.Stop) == "" {
+		c.Stop = defaults.Stop
 	}
 }
 
@@ -1260,7 +1260,7 @@ func (c *Config) resolveRelativePaths(configPath string) {
 	}
 	c.Runtime.Scripts.Init = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Init)
 	c.Runtime.Scripts.Start = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Start)
-	c.Runtime.Scripts.Resume = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Resume)
+	c.Runtime.Scripts.Stop = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Stop)
 	c.syncRuntimeFields()
 }
 
@@ -1280,7 +1280,7 @@ func (c ScriptsConfig) Validate() error {
 	}{
 		{name: "runtime.scripts.init", value: c.Init},
 		{name: "runtime.scripts.start", value: c.Start},
-		{name: "runtime.scripts.resume", value: c.Resume},
+		{name: "runtime.scripts.stop", value: c.Stop},
 	}
 	builtinCount := 0
 	customCount := 0
@@ -1303,7 +1303,7 @@ func (c ScriptsConfig) Validate() error {
 		}
 	}
 	if builtinCount != 0 && customCount != 0 {
-		return fmt.Errorf("runtime.scripts.init, runtime.scripts.start, and runtime.scripts.resume must all be builtin or all be local file paths")
+		return fmt.Errorf("runtime.scripts.init, runtime.scripts.start, and runtime.scripts.stop must all be builtin or all be local file paths")
 	}
 	return nil
 }

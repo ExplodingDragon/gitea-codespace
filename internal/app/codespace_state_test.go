@@ -116,9 +116,9 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 		},
 	}
 	scripts := provisioner.ScriptSnapshot{
-		Init:   provisioner.ScriptFileSnapshot{SHA256: "init-sha", Content: "init content"},
-		Start:  provisioner.ScriptFileSnapshot{SHA256: "start-sha", Content: "start content"},
-		Resume: provisioner.ScriptFileSnapshot{SHA256: "resume-sha", Content: "resume content"},
+		Init:  provisioner.ScriptFileSnapshot{SHA256: "init-sha", Content: "init content"},
+		Start: provisioner.ScriptFileSnapshot{SHA256: "start-sha", Content: "start content"},
+		Stop:  provisioner.ScriptFileSnapshot{SHA256: "stop-sha", Content: "stop content"},
 	}
 	if err := store.SaveActiveOperation(manager.OperationSnapshot{Payload: operation, Scripts: scripts}); err != nil {
 		t.Fatalf("save active operation: %v", err)

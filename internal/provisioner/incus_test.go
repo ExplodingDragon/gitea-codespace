@@ -95,28 +95,39 @@ func TestIncusInstanceFromAPISkipsMissingCodespaceUUID(t *testing.T) {
 func TestRuntimeCredentialSeedUsesFixedPathsAndModes(t *testing.T) {
 	t.Parallel()
 
-	files, err := runtimeCredentialSeedFiles(RuntimeCredentialSeedRequest{
-		CodespaceUUID:    "codespace-uuid",
-		GiteaToken:       "gitea-token",
-		GitSSHPrivateKey: []byte("private-key"),
-		GitSSHPublicKey:  []byte("public-key"),
-		GitSSHKnownHosts: []string{"known-hosts"},
-	})
-	if err != nil {
-		t.Fatalf("runtime credential seed files: %v", err)
-	}
-	want := []bootstrapCredentialFile{
-		{
-			path:    runtimeSeedGiteaToken,
-			content: "gitea-token",
-			mode:    runtimeCredentialFileMode,
-		},
-		{path: runtimeSeedGitSSHPrivateKey, content: "private-key", mode: runtimeCredentialFileMode},
-		{path: runtimeSeedGitSSHPublicKey, content: "public-key", mode: 0o644},
-		{path: runtimeSeedGitSSHKnownHosts, content: "known-hosts\n", mode: runtimeCredentialFileMode},
-	}
-	if !reflect.DeepEqual(files, want) {
-		t.Fatalf("credential seed files = %#v", files)
+	for _, tc := range []struct {
+		name              string
+		knownHosts        []string
+		knownHostsContent string
+	}{
+		{name: "with known hosts", knownHosts: []string{"known-hosts"}, knownHostsContent: "known-hosts\n"},
+		{name: "without known hosts", knownHostsContent: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			files, err := runtimeCredentialSeedFiles(RuntimeCredentialSeedRequest{
+				CodespaceUUID:    "codespace-uuid",
+				GiteaToken:       "gitea-token",
+				GitSSHPrivateKey: []byte("private-key"),
+				GitSSHPublicKey:  []byte("public-key"),
+				GitSSHKnownHosts: tc.knownHosts,
+			})
+			if err != nil {
+				t.Fatalf("runtime credential seed files: %v", err)
+			}
+			want := []bootstrapCredentialFile{
+				{
+					path:    runtimeSeedGiteaToken,
+					content: "gitea-token",
+					mode:    runtimeCredentialFileMode,
+				},
+				{path: runtimeSeedGitSSHPrivateKey, content: "private-key", mode: runtimeCredentialFileMode},
+				{path: runtimeSeedGitSSHPublicKey, content: "public-key", mode: 0o644},
+				{path: runtimeSeedGitSSHKnownHosts, content: tc.knownHostsContent, mode: runtimeCredentialFileMode},
+			}
+			if !reflect.DeepEqual(files, want) {
+				t.Fatalf("credential seed files = %#v", files)
+			}
+		})
 	}
 }
 
@@ -700,22 +711,22 @@ func TestLoadScriptSetReadsCompleteCustomSuite(t *testing.T) {
 	dir := t.TempDir()
 	initPath := filepath.Join(dir, "init.sh")
 	startPath := filepath.Join(dir, "start.sh")
-	resumePath := filepath.Join(dir, "resume.sh")
-	for _, path := range []string{initPath, startPath, resumePath} {
+	stopPath := filepath.Join(dir, "stop.sh")
+	for _, path := range []string{initPath, startPath, stopPath} {
 		if err := os.WriteFile(path, []byte("echo ok\n"), 0o600); err != nil {
 			t.Fatalf("write script: %v", err)
 		}
 	}
-	scripts, err := LoadScripts(ScriptConfig{Init: initPath, Start: startPath, Resume: resumePath})
+	scripts, err := LoadScripts(ScriptConfig{Init: initPath, Start: startPath, Stop: stopPath})
 	if err != nil {
 		t.Fatalf("load scripts: %v", err)
 	}
 	if scripts.Init.Content != "echo ok\n" ||
 		scripts.Start.Content != "echo ok\n" ||
-		scripts.Resume.Content != "echo ok\n" ||
+		scripts.Stop.Content != "echo ok\n" ||
 		scripts.Init.SHA256 == "" ||
 		scripts.Start.SHA256 == "" ||
-		scripts.Resume.SHA256 == "" {
+		scripts.Stop.SHA256 == "" {
 		t.Fatalf("scripts = %#v", scripts)
 	}
 }

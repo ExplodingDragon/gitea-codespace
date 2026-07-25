@@ -288,9 +288,9 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 }
 
 type appE2EIncusScripts struct {
-	init   string
-	start  string
-	resume string
+	init  string
+	start string
+	stop  string
 }
 
 func appE2ECreateOperation(codespaceUUID string, version int64) *codespacev1.OperationPayload {
@@ -335,7 +335,7 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 	config.Server.ShutdownTimeout = Duration(5 * time.Second)
 	config.Scripts.Init = scripts.init
 	config.Scripts.Start = scripts.start
-	config.Scripts.Resume = scripts.resume
+	config.Scripts.Stop = scripts.stop
 	config.Provisioner.Kind = "incus"
 	config.Incus.Endpoint = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE"))
 	config.Incus.UnixSocket = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET"))
@@ -399,9 +399,9 @@ func writeAppE2EIncusScripts(t *testing.T) appE2EIncusScripts {
 	t.Helper()
 	dir := t.TempDir()
 	scripts := map[string]string{
-		"init.sh":   appE2EIncusInitScript,
-		"start.sh":  appE2EIncusStartScript,
-		"resume.sh": appE2EIncusResumeScript,
+		"init.sh":  appE2EIncusInitScript,
+		"start.sh": appE2EIncusStartScript,
+		"stop.sh":  appE2EIncusStopScript,
 	}
 	result := appE2EIncusScripts{}
 	for name, content := range scripts {
@@ -414,8 +414,8 @@ func writeAppE2EIncusScripts(t *testing.T) appE2EIncusScripts {
 			result.init = path
 		case "start.sh":
 			result.start = path
-		case "resume.sh":
-			result.resume = path
+		case "stop.sh":
+			result.stop = path
 		}
 	}
 	return result
@@ -531,7 +531,10 @@ printf 'username=codespace\n'
 printf 'password=%s\n\n' "$(cat /var/lib/gitea-codespace/gitea-token)"
 EOF
 chmod 0755 /usr/local/bin/gitea-codespace-git-credential
-printf '%s\n' 'CODESPACE_CREDENTIAL_UID=1000' 'CODESPACE_CREDENTIAL_GID=1000' >> "$CODESPACE_ENV"
+workspace="/workspaces/${CODESPACE_REPO_NAME:-repo}"
+mkdir -p "$workspace/.git"
+chown -R 1000:1000 "$workspace"
+printf '%s\n' 'CODESPACE_CREDENTIAL_UID=1000' 'CODESPACE_CREDENTIAL_GID=1000' "CODESPACE_WORKSPACE_DIR=${workspace}" >> "$CODESPACE_ENV"
 write_result done
 `
 
@@ -540,54 +543,26 @@ set -eu
 write_result() {
   tmp="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"done","stage":"%s"}\n' "$1" > "$tmp"
+  printf '{"outcome":"done","stage":"start-environment"}\n' > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$CODESPACE_RESULT"
 }
-prepare_workspace() {
-  workspace="${CODESPACE_WORKSPACE_DIR:-/workspaces/${CODESPACE_REPO_NAME:-repo}}"
-  mkdir -p "$workspace/.git"
-  chown -R 1000:1000 "$workspace"
-  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
-  write_result prepare-workspace
-}
-start_environment() {
-  write_result start-environment
-}
-case "$CODESPACE_SCRIPT_PHASE" in
-  prepare) prepare_workspace ;;
-  activate) start_environment ;;
-  *) exit 64 ;;
-esac
+[ -n "${CODESPACE_WORKSPACE_DIR:-}" ] || exit 65
+[ -d "$CODESPACE_WORKSPACE_DIR/.git" ] || exit 66
+printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$CODESPACE_WORKSPACE_DIR" >> "$CODESPACE_ENV"
+write_result
 `
 
-const appE2EIncusResumeScript = `
+const appE2EIncusStopScript = `
 set -eu
 write_result() {
   tmp="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"done","stage":"%s"}\n' "$1" > "$tmp"
+  printf '{"outcome":"done","stage":"stop-environment"}\n' > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$CODESPACE_RESULT"
 }
-prepare_workspace() {
-  workspace="${CODESPACE_WORKSPACE_DIR:-}"
-  if [ -z "$workspace" ]; then
-    exit 65
-  fi
-  mkdir -p "$workspace/.git"
-  chown -R 1000:1000 "$workspace"
-  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
-  write_result prepare-workspace
-}
-start_environment() {
-  write_result start-environment
-}
-case "$CODESPACE_SCRIPT_PHASE" in
-  prepare) prepare_workspace ;;
-  activate) start_environment ;;
-  *) exit 64 ;;
-esac
+write_result
 `
 
 type appE2EManagerService struct {

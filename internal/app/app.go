@@ -181,9 +181,9 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 		return processStateSnapshot{}, fmt.Errorf("load gateway ssh host key: %w", err)
 	}
 	scriptSnapshot, err := provisioner.LoadScripts(provisioner.ScriptConfig{
-		Init:   config.Scripts.Init,
-		Start:  config.Scripts.Start,
-		Resume: config.Scripts.Resume,
+		Init:  config.Scripts.Init,
+		Start: config.Scripts.Start,
+		Stop:  config.Scripts.Stop,
 	})
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load lifecycle scripts: %w", err)
@@ -389,9 +389,9 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 				Group:    config.Provisioner.Bootstrap.Group,
 			},
 			Scripts: provisioner.ScriptConfig{
-				Init:   config.Scripts.Init,
-				Start:  config.Scripts.Start,
-				Resume: config.Scripts.Resume,
+				Init:  config.Scripts.Init,
+				Start: config.Scripts.Start,
+				Stop:  config.Scripts.Stop,
 			},
 		})
 	default:

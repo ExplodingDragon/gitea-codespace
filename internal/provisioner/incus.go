@@ -433,7 +433,7 @@ func (p *IncusProvisioner) StartExisting(ctx context.Context, spec InstanceSpec)
 	return p.startExistingInstance(ctx, spec, *instance)
 }
 
-// InitializeSystem runs init.sh and returns the credential file identity.
+// InitializeSystem runs init.sh and returns the credential file identity and create workspace.
 func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
@@ -460,44 +460,37 @@ func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName st
 	return SystemIdentity{UID: uid, GID: gid, SharedEnv: copyStringMap(env)}, nil
 }
 
-// PrepareWorkspace runs start.sh/resume.sh prepare and returns the workspace path.
-func (p *IncusProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request BootstrapRequest) (WorkspaceStatus, error) {
-	if err := ctx.Err(); err != nil {
-		return WorkspaceStatus{}, err
-	}
-	if instanceName == "" {
-		return WorkspaceStatus{}, fmt.Errorf("instance name is empty")
-	}
+// StartRuntime runs start.sh and returns shared environment.
+func (p *IncusProvisioner) StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
 	scripts := p.scriptsForRequest(request)
-	scriptName, script := p.scriptForOperation(scripts, request.Operation)
-	env, err := p.runLifecycleScript(ctx, instanceName, scriptName, script, "prepare-workspace", request)
-	if err != nil {
-		return WorkspaceStatus{}, err
-	}
-	workdir := strings.TrimSpace(env["CODESPACE_WORKSPACE_DIR"])
-	if !filepath.IsAbs(workdir) {
-		return WorkspaceStatus{}, fmt.Errorf("CODESPACE_WORKSPACE_DIR must be absolute")
-	}
-	return WorkspaceStatus{Workdir: workdir, SharedEnv: copyStringMap(env)}, nil
+	return p.runRuntimeAccessScript(ctx, instanceName, request, "start.sh", scripts.Start.Content, "start-environment")
 }
 
-// ActivateRuntime runs start.sh/resume.sh activate and returns shared environment.
-func (p *IncusProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+// StopRuntime runs stop.sh and returns shared environment.
+func (p *IncusProvisioner) StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+	scripts := p.scriptsForRequest(request)
+	return p.runRuntimeAccessScript(ctx, instanceName, request, "stop.sh", scripts.Stop.Content, "stop-environment")
+}
+
+func (p *IncusProvisioner) runRuntimeAccessScript(
+	ctx context.Context,
+	instanceName string,
+	request BootstrapRequest,
+	scriptName string,
+	script string,
+	stage string,
+) (RuntimeAccess, error) {
 	if err := ctx.Err(); err != nil {
 		return RuntimeAccess{}, err
 	}
 	if instanceName == "" {
 		return RuntimeAccess{}, fmt.Errorf("instance name is empty")
 	}
-	scripts := p.scriptsForRequest(request)
-	scriptName, script := p.scriptForOperation(scripts, request.Operation)
-	env, err := p.runLifecycleScript(ctx, instanceName, scriptName, script, "start-environment", request)
+	env, err := p.runLifecycleScript(ctx, instanceName, scriptName, script, stage, request)
 	if err != nil {
 		return RuntimeAccess{}, err
 	}
-	return RuntimeAccess{
-		SharedEnv: copyStringMap(env),
-	}, nil
+	return RuntimeAccess{SharedEnv: copyStringMap(env)}, nil
 }
 
 func (p *IncusProvisioner) scriptsForRequest(request BootstrapRequest) ScriptSnapshot {
@@ -505,13 +498,6 @@ func (p *IncusProvisioner) scriptsForRequest(request BootstrapRequest) ScriptSna
 		return request.Scripts
 	}
 	return p.scripts
-}
-
-func (p *IncusProvisioner) scriptForOperation(scripts ScriptSnapshot, operation ScriptOperation) (string, string) {
-	if operation == ScriptOperationResume {
-		return "resume.sh", scripts.Resume.Content
-	}
-	return "start.sh", scripts.Start.Content
 }
 
 // CheckCredentials reads the current runtime credential files from the instance.
@@ -685,10 +671,9 @@ func runtimeCredentialSeedFiles(request RuntimeCredentialSeedRequest) ([]bootstr
 		return nil, fmt.Errorf("git ssh public key is empty")
 	}
 	content := strings.TrimSpace(strings.Join(request.GitSSHKnownHosts, "\n"))
-	if content == "" {
-		return nil, fmt.Errorf("git ssh known hosts are empty")
+	if content != "" {
+		content += "\n"
 	}
-	content += "\n"
 	return []bootstrapCredentialFile{
 		{path: runtimeSeedGiteaToken, content: request.GiteaToken, mode: runtimeCredentialFileMode},
 		{path: runtimeSeedGitSSHPrivateKey, content: string(request.GitSSHPrivateKey), mode: runtimeCredentialFileMode},

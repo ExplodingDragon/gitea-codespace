@@ -3,20 +3,41 @@ set -eu
 write_result() {
   tmp="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"%s","stage":"%s"}\n' "$1" "$2" > "$tmp"
+  printf '{"outcome":"%s","stage":"start-environment"}\n' "$1" > "$tmp"
   chmod 600 "$tmp"
   mv "$tmp" "$CODESPACE_RESULT"
 }
 
 fail_recoverable() {
-  write_result recoverable_failed "$1"
+  write_result recoverable_failed
   exit 0
 }
 
 fail_unrecoverable() {
-  write_result unrecoverable_failed "$1"
+  write_result unrecoverable_failed
   exit 0
 }
+
+runtime_dir="${CODESPACE_RUNTIME_DIR:-/var/lib/gitea-codespace}"
+runtime_seed_dir="${CODESPACE_RUNTIME_SEED_DIR:-$runtime_dir/seed}"
+token_file="${CODESPACE_GITEA_TOKEN_FILE:-$runtime_dir/gitea-token}"
+private_key_file="${CODESPACE_GIT_SSH_PRIVATE_KEY:-$runtime_dir/git/id_ed25519}"
+public_key_file="${CODESPACE_GIT_SSH_PUBLIC_KEY:-$runtime_dir/git/id_ed25519.pub}"
+known_hosts_file="${CODESPACE_GIT_SSH_KNOWN_HOSTS:-$runtime_dir/git/known_hosts}"
+seed_token="$runtime_seed_dir/gitea-token"
+seed_private_key="$runtime_seed_dir/id_ed25519"
+seed_public_key="$runtime_seed_dir/id_ed25519.pub"
+seed_known_hosts="$runtime_seed_dir/known_hosts"
+
+for seed_file in "$seed_token" "$seed_private_key" "$seed_public_key"; do
+  [ -s "$seed_file" ] || fail_unrecoverable
+done
+[ -f "$seed_known_hosts" ] || fail_unrecoverable
+install -d -m 0700 -o codespace -g codespace "$runtime_dir/git"
+install -m 0600 -o codespace -g codespace "$seed_token" "$token_file"
+install -m 0600 -o codespace -g codespace "$seed_private_key" "$private_key_file"
+install -m 0644 -o codespace -g codespace "$seed_public_key" "$public_key_file"
+install -m 0600 -o codespace -g codespace "$seed_known_hosts" "$known_hosts_file"
 
 git_user() {
   if [ -n "${GIT_SSH_COMMAND:-}" ]; then
@@ -27,76 +48,58 @@ git_user() {
 }
 
 ensure_git_ssh() {
-  [ -f /var/lib/gitea-codespace/git/id_ed25519 ] || fail_recoverable prepare-workspace
-  [ -s /var/lib/gitea-codespace/git/known_hosts ] || fail_recoverable prepare-workspace
-  export GIT_SSH_COMMAND='ssh -i /var/lib/gitea-codespace/git/id_ed25519 -o IdentitiesOnly=yes -o UserKnownHostsFile=/var/lib/gitea-codespace/git/known_hosts -o StrictHostKeyChecking=yes'
+  [ -f "$private_key_file" ] || fail_recoverable
+  [ -s "$known_hosts_file" ] || fail_recoverable
+  export GIT_SSH_COMMAND="ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes"
 }
 
 container_id_from_workspace() {
   docker ps -a --filter "label=devcontainer.local_folder=${1}" --format '{{.ID}}' | head -n 1
 }
 
-activate_container() {
-  container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
-  if [ -z "$container_id" ]; then
-    container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
+ensure_docker() {
+  if docker info >/dev/null 2>&1; then
+    return 0
   fi
-  [ -n "$container_id" ] || fail_unrecoverable start-environment
-  docker start "$container_id" >/dev/null || fail_recoverable start-environment
-  printf '%s\n' \
-    "DEVCONTAINER_EXAMPLE_CONTAINER_ID=${container_id}" \
-    >> "$CODESPACE_ENV"
-  write_result done start-environment
+  if command -v dockerd >/dev/null 2>&1; then
+    nohup dockerd >/var/log/gitea-codespace-dockerd.log 2>&1 &
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      docker info >/dev/null 2>&1 && return 0
+      sleep 1
+    done
+  fi
+  return 1
 }
 
-repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
-repo_ssh_url="${GITEA_REPO_CLONE_SSH_URL:-}"
-if [ "${GITEA_GIT_PROTOCOL:-http}" = "ssh" ] && [ -n "$repo_ssh_url" ]; then
-  repo_url="$repo_ssh_url"
-fi
-
-if [ "$CODESPACE_SCRIPT_PHASE" = "prepare" ]; then
-  [ -n "$repo_url" ] || fail_unrecoverable prepare-workspace
-  workspace="${CODESPACE_WORKSPACES_DIR}/${CODESPACE_REPO_NAME:-repo}"
-  mkdir -p "$CODESPACE_WORKSPACES_DIR"
-  chown codespace:codespace "$CODESPACE_WORKSPACES_DIR"
-  if [ -n "$GITEA_REPO_CLONE_HTTP_URL" ]; then
-    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential'
-  fi
-  if [ "$repo_url" = "$repo_ssh_url" ] && [ -n "$repo_url" ]; then
+[ -n "${CODESPACE_WORKSPACE_DIR:-}" ] || fail_unrecoverable
+[ -d "$CODESPACE_WORKSPACE_DIR/.git" ] || fail_unrecoverable
+remote_url="$(git_user -C "$CODESPACE_WORKSPACE_DIR" remote get-url origin)" || fail_unrecoverable
+case "$remote_url" in
+  http://*|https://*)
+    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
+    git_user -C "$CODESPACE_WORKSPACE_DIR" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
+    ;;
+  *)
     ensure_git_ssh
-  fi
-  if [ ! -d "$workspace/.git" ]; then
-    git_user clone "$repo_url" "$workspace" || fail_recoverable prepare-workspace
-  fi
-  git_user -C "$workspace" remote set-url origin "$repo_url" || fail_recoverable prepare-workspace
-  if [ -n "$GITEA_REPO_CLONE_HTTP_URL" ]; then
-    git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential'
-  fi
-  if [ -n "$GITEA_COMMIT_SHA" ]; then
-    if [ -n "$GITEA_START_REF" ]; then
-      git_user -C "$workspace" fetch origin "$GITEA_START_REF" --tags --prune || fail_recoverable prepare-workspace
-    else
-      git_user -C "$workspace" fetch --all --tags --prune || fail_recoverable prepare-workspace
-    fi
-    git_user -C "$workspace" checkout --detach "$GITEA_COMMIT_SHA" || fail_recoverable prepare-workspace
-    current="$(git_user -C "$workspace" rev-parse HEAD)"
-    [ "$current" = "$GITEA_COMMIT_SHA" ] || fail_unrecoverable prepare-workspace
-  fi
-  sudo -u codespace devcontainer up --workspace-folder "$workspace" || fail_recoverable prepare-workspace
-  container_id="$(container_id_from_workspace "$workspace")"
-  [ -n "$container_id" ] || fail_recoverable prepare-workspace
-  printf '%s\n' \
-    "CODESPACE_WORKSPACE_DIR=${workspace}" \
-    "DEVCONTAINER_EXAMPLE_CONTAINER_ID=${container_id}" \
-    >> "$CODESPACE_ENV"
-  write_result done prepare-workspace
-  exit 0
+    git_user -C "$CODESPACE_WORKSPACE_DIR" config core.sshCommand "ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes" || fail_unrecoverable
+    ;;
+esac
+
+ensure_docker || fail_recoverable
+container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
+if [ -z "$container_id" ]; then
+  container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
+fi
+if [ -n "$container_id" ]; then
+  docker start "$container_id" >/dev/null || fail_recoverable
+else
+  sudo -u codespace devcontainer up --workspace-folder "$CODESPACE_WORKSPACE_DIR" || fail_recoverable
+  container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
+  [ -n "$container_id" ] || fail_recoverable
 fi
 
-if [ "$CODESPACE_SCRIPT_PHASE" = "activate" ]; then
-  activate_container
-  exit 0
-fi
-
-fail_unrecoverable start-environment
+printf '%s\n' \
+  "CODESPACE_WORKSPACE_DIR=${CODESPACE_WORKSPACE_DIR}" \
+  "DEVCONTAINER_EXAMPLE_CONTAINER_ID=${container_id}" \
+  >> "$CODESPACE_ENV"
+write_result done

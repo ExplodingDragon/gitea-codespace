@@ -518,7 +518,7 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 	select {
 	case <-provisioner.started:
 	case <-time.After(time.Second):
-		t.Fatalf("create operation did not reach prepare")
+		t.Fatalf("create operation did not reach prepare-workspace boot stage")
 	}
 
 	service.setOperation(&codespacev1.OperationPayload{
@@ -599,7 +599,7 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 	select {
 	case <-provisioner.started:
 	case <-time.After(time.Second):
-		t.Fatalf("create operation did not reach prepare")
+		t.Fatalf("create operation did not reach prepare-workspace boot stage")
 	}
 
 	service.setOperation(&codespacev1.OperationPayload{
@@ -673,7 +673,10 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 		OperationStateStore:       stateStore,
 		RuntimeMetadataStateStore: &memoryRuntimeMetadataStateStore{},
 		StartupInputStateStore:    startupInputStoreForTest(codespaceUUID),
-		RuntimeMetadataPublisher:  publisher,
+		ScriptEnvironmentStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
+			codespaceUUID: {"CODESPACE_WORKSPACE_DIR": "/codespace/owner/repo"},
+		}},
+		RuntimeMetadataPublisher: publisher,
 	}, server.Client(), runtimeProvisioner)
 
 	if err := agent.pollOnce(context.Background()); err != nil {
@@ -682,7 +685,7 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 	select {
 	case <-runtimeProvisioner.started:
 	case <-time.After(time.Second):
-		t.Fatalf("resume operation did not reach prepare")
+		t.Fatalf("resume operation did not reach start")
 	}
 
 	service.setOperation(&codespacev1.OperationPayload{
@@ -838,7 +841,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 	select {
 	case <-provisioner.started:
 	case <-time.After(time.Second):
-		t.Fatalf("create operation did not reach prepare")
+		t.Fatalf("create operation did not reach prepare-workspace boot stage")
 	}
 
 	service.setOperation(&codespacev1.OperationPayload{
@@ -929,7 +932,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 	}
 }
 
-func TestAgentRecoverableScriptFailurePausesOperation(t *testing.T) {
+func TestAgentRecoverableInitScriptFailurePausesOperation(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
@@ -972,12 +975,12 @@ func TestAgentRecoverableScriptFailurePausesOperation(t *testing.T) {
 		CleanupWorkers:            1,
 		RuntimeMetadataGeneration: 1,
 		OperationStateStore:       stateStore,
-	}, server.Client(), &prepareFailureProvisioner{
+	}, server.Client(), &initFailureProvisioner{
 		credentialTrackingProvisioner: newCredentialTrackingProvisioner(),
 		err: &provisioner.ScriptFailureError{
 			Kind:    provisioner.ScriptFailureRecoverable,
 			Outcome: "recoverable_failed",
-			Stage:   RuntimeBootStagePrepareWorkspace,
+			Stage:   RuntimeBootStageInitializeSystem,
 		},
 	})
 
@@ -1042,7 +1045,7 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	}, http.DefaultClient, provisioner.NewDummy())
 
 	stopOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
-	if err := agent.handleStop(context.Background(), stopOperation); err != nil {
+	if err := agent.handleStop(context.Background(), stopOperation, provisioner.ScriptSnapshot{}); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
 	deleteOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
@@ -1106,6 +1109,9 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 		CleanupWorkers:            1,
 		RuntimeMetadataGeneration: 1,
 		StartupInputStateStore:    startupInputStoreForTest(codespaceUUID),
+		ScriptEnvironmentStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
+			codespaceUUID: {"CODESPACE_WORKSPACE_DIR": "/codespace/owner/repo"},
+		}},
 	}, server.Client(), trackedProvisioner)
 
 	if err := agent.pollOnce(context.Background()); err != nil {
@@ -1440,13 +1446,13 @@ func TestAgentReusesScriptSnapshotAfterLeasePause(t *testing.T) {
 	}
 	waitFinalized(t, service.finalized)
 
-	requests := provisioner.prepareRequests()
+	requests := provisioner.startupRequests()
 	if len(requests) < 2 {
-		t.Fatalf("prepare requests = %d", len(requests))
+		t.Fatalf("startup requests = %d", len(requests))
 	}
-	if requests[0].Scripts.Start.Content != initialScripts.Start.Content ||
-		requests[1].Scripts.Start.Content != initialScripts.Start.Content {
-		t.Fatalf("prepare script snapshots = %#v", requests)
+	if requests[0].Scripts.Init.Content != initialScripts.Init.Content ||
+		requests[1].Scripts.Init.Content != initialScripts.Init.Content {
+		t.Fatalf("startup script snapshots = %#v", requests)
 	}
 }
 
@@ -3850,7 +3856,7 @@ type blockingProvisioner struct {
 	started chan struct{}
 	stopped chan struct{}
 	release chan struct{}
-	prepare []provisioner.BootstrapRequest
+	startup []provisioner.BootstrapRequest
 }
 
 type stopBlockingProvisioner struct {
@@ -3892,7 +3898,7 @@ type workspaceGitRepairProvisioner struct {
 	workdir   string
 }
 
-type prepareFailureProvisioner struct {
+type initFailureProvisioner struct {
 	*credentialTrackingProvisioner
 	err error
 }
@@ -3980,19 +3986,19 @@ func (p *credentialTrackingProvisioner) InitializeSystem(ctx context.Context, in
 	return p.base.InitializeSystem(ctx, instanceName, request)
 }
 
-func (p *credentialTrackingProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.WorkspaceStatus, error) {
-	return p.base.PrepareWorkspace(ctx, instanceName, request)
-}
-
-func (p *prepareFailureProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.WorkspaceStatus, error) {
+func (p *initFailureProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
-		return provisioner.WorkspaceStatus{}, err
+		return provisioner.SystemIdentity{}, err
 	}
-	return provisioner.WorkspaceStatus{}, p.err
+	return provisioner.SystemIdentity{}, p.err
 }
 
-func (p *credentialTrackingProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.ActivateRuntime(ctx, instanceName, request)
+func (p *credentialTrackingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StartRuntime(ctx, instanceName, request)
+}
+
+func (p *credentialTrackingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StopRuntime(ctx, instanceName, request)
 }
 
 func (p *credentialTrackingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4075,12 +4081,12 @@ func (p *credentialRepairProvisioner) InitializeSystem(ctx context.Context, inst
 	return p.base.InitializeSystem(ctx, instanceName, request)
 }
 
-func (p *credentialRepairProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.WorkspaceStatus, error) {
-	return p.base.PrepareWorkspace(ctx, instanceName, request)
+func (p *credentialRepairProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StartRuntime(ctx, instanceName, request)
 }
 
-func (p *credentialRepairProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.ActivateRuntime(ctx, instanceName, request)
+func (p *credentialRepairProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StopRuntime(ctx, instanceName, request)
 }
 
 func (p *credentialRepairProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4160,26 +4166,39 @@ func (p *blockingProvisioner) RuntimeResourceUsage(ctx context.Context, instance
 }
 
 func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
+	if request.Operation == provisioner.ScriptOperationCreate {
+		p.mu.Lock()
+		p.startup = append(p.startup, request)
+		p.mu.Unlock()
+		p.once.Do(func() {
+			close(p.started)
+		})
+		select {
+		case <-ctx.Done():
+			return provisioner.SystemIdentity{}, ctx.Err()
+		case <-p.release:
+		}
+	}
 	return p.base.InitializeSystem(ctx, instanceName, request)
 }
 
-func (p *blockingProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.WorkspaceStatus, error) {
+func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
 	p.mu.Lock()
-	p.prepare = append(p.prepare, request)
+	p.startup = append(p.startup, request)
 	p.mu.Unlock()
 	p.once.Do(func() {
 		close(p.started)
 	})
 	select {
 	case <-ctx.Done():
-		return provisioner.WorkspaceStatus{}, ctx.Err()
+		return provisioner.RuntimeAccess{}, ctx.Err()
 	case <-p.release:
 	}
-	return p.base.PrepareWorkspace(ctx, instanceName, request)
+	return p.base.StartRuntime(ctx, instanceName, request)
 }
 
-func (p *blockingProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.ActivateRuntime(ctx, instanceName, request)
+func (p *blockingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StopRuntime(ctx, instanceName, request)
 }
 
 func (p *blockingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4207,12 +4226,12 @@ func (p *blockingProvisioner) Delete(ctx context.Context, instanceName string) e
 	return p.base.Delete(ctx, instanceName)
 }
 
-func (p *blockingProvisioner) prepareRequests() []provisioner.BootstrapRequest {
+func (p *blockingProvisioner) startupRequests() []provisioner.BootstrapRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	requests := make([]provisioner.BootstrapRequest, len(p.prepare))
-	copy(requests, p.prepare)
+	requests := make([]provisioner.BootstrapRequest, len(p.startup))
+	copy(requests, p.startup)
 	return requests
 }
 
@@ -4248,12 +4267,12 @@ func (p *nonDeletingProvisioner) InitializeSystem(ctx context.Context, instanceN
 	return p.base.InitializeSystem(ctx, instanceName, request)
 }
 
-func (p *nonDeletingProvisioner) PrepareWorkspace(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.WorkspaceStatus, error) {
-	return p.base.PrepareWorkspace(ctx, instanceName, request)
+func (p *nonDeletingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StartRuntime(ctx, instanceName, request)
 }
 
-func (p *nonDeletingProvisioner) ActivateRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.ActivateRuntime(ctx, instanceName, request)
+func (p *nonDeletingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	return p.base.StopRuntime(ctx, instanceName, request)
 }
 
 func (p *nonDeletingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4332,9 +4351,9 @@ func provisionerSpec(codespaceUUID string) provisioner.InstanceSpec {
 
 func scriptSnapshotForTest(prefix string) provisioner.ScriptSnapshot {
 	return provisioner.ScriptSnapshot{
-		Init:   provisioner.ScriptFileSnapshot{SHA256: prefix + "-init-sha", Content: prefix + " init"},
-		Start:  provisioner.ScriptFileSnapshot{SHA256: prefix + "-start-sha", Content: prefix + " start"},
-		Resume: provisioner.ScriptFileSnapshot{SHA256: prefix + "-resume-sha", Content: prefix + " resume"},
+		Init:  provisioner.ScriptFileSnapshot{SHA256: prefix + "-init-sha", Content: prefix + " init"},
+		Start: provisioner.ScriptFileSnapshot{SHA256: prefix + "-start-sha", Content: prefix + " start"},
+		Stop:  provisioner.ScriptFileSnapshot{SHA256: prefix + "-stop-sha", Content: prefix + " stop"},
 	}
 }
 

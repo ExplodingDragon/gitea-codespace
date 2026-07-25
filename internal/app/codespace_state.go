@@ -64,9 +64,9 @@ type codespaceActiveOperation struct {
 }
 
 type codespaceScriptSnapshot struct {
-	Init   codespaceScriptFileSnapshot `json:"init"`
-	Start  codespaceScriptFileSnapshot `json:"start"`
-	Resume codespaceScriptFileSnapshot `json:"resume"`
+	Init  codespaceScriptFileSnapshot `json:"init"`
+	Start codespaceScriptFileSnapshot `json:"start"`
+	Stop  codespaceScriptFileSnapshot `json:"stop"`
 }
 
 type codespaceScriptFileSnapshot struct {
@@ -841,13 +841,13 @@ func (s *CodespaceStateStore) SaveActiveOperation(snapshot manager.OperationSnap
 }
 
 func codespaceScriptSnapshotFromProvisioner(snapshot provisioner.ScriptSnapshot) *codespaceScriptSnapshot {
-	if snapshot.Init.Content == "" && snapshot.Start.Content == "" && snapshot.Resume.Content == "" {
+	if snapshot.Init.Content == "" && snapshot.Start.Content == "" && snapshot.Stop.Content == "" {
 		return nil
 	}
 	return &codespaceScriptSnapshot{
-		Init:   codespaceScriptFileSnapshot{SHA256: snapshot.Init.SHA256, Content: snapshot.Init.Content},
-		Start:  codespaceScriptFileSnapshot{SHA256: snapshot.Start.SHA256, Content: snapshot.Start.Content},
-		Resume: codespaceScriptFileSnapshot{SHA256: snapshot.Resume.SHA256, Content: snapshot.Resume.Content},
+		Init:  codespaceScriptFileSnapshot{SHA256: snapshot.Init.SHA256, Content: snapshot.Init.Content},
+		Start: codespaceScriptFileSnapshot{SHA256: snapshot.Start.SHA256, Content: snapshot.Start.Content},
+		Stop:  codespaceScriptFileSnapshot{SHA256: snapshot.Stop.SHA256, Content: snapshot.Stop.Content},
 	}
 }
 
@@ -864,9 +864,9 @@ func provisionerScriptSnapshotFromState(snapshot *codespaceScriptSnapshot) provi
 			SHA256:  snapshot.Start.SHA256,
 			Content: snapshot.Start.Content,
 		},
-		Resume: provisioner.ScriptFileSnapshot{
-			SHA256:  snapshot.Resume.SHA256,
-			Content: snapshot.Resume.Content,
+		Stop: provisioner.ScriptFileSnapshot{
+			SHA256:  snapshot.Stop.SHA256,
+			Content: snapshot.Stop.Content,
 		},
 	}
 }
@@ -1242,9 +1242,9 @@ func validateCodespaceScriptSnapshot(snapshot *codespaceScriptSnapshot) error {
 		return nil
 	}
 	for name, script := range map[string]codespaceScriptFileSnapshot{
-		"init":   snapshot.Init,
-		"start":  snapshot.Start,
-		"resume": snapshot.Resume,
+		"init":  snapshot.Init,
+		"start": snapshot.Start,
+		"stop":  snapshot.Stop,
 	} {
 		if strings.TrimSpace(script.Content) == "" {
 			return fmt.Errorf("active operation script %s content is required", name)

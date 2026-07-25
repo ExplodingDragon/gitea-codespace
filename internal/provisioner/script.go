@@ -26,8 +26,6 @@ const (
 	scriptResultDone                = "done"
 	scriptResultRecoverableFailed   = "recoverable_failed"
 	scriptResultUnrecoverableFailed = "unrecoverable_failed"
-	scriptPhasePrepare              = "prepare"
-	scriptPhaseActivate             = "activate"
 	defaultWorkspaceRoot            = "/workspaces"
 )
 
@@ -74,42 +72,39 @@ func IsRecoverableScriptFailure(err error) bool {
 
 // LoadScripts reads the configured lifecycle script suite and records content digests.
 func LoadScripts(config ScriptConfig) (ScriptSnapshot, error) {
-	initPath := strings.TrimSpace(config.Init)
-	startPath := strings.TrimSpace(config.Start)
-	resumePath := strings.TrimSpace(config.Resume)
-	if initPath == "" {
-		initPath = scriptBuiltin
+	paths := []string{
+		normalizedScriptPath(config.Init),
+		normalizedScriptPath(config.Start),
+		normalizedScriptPath(config.Stop),
 	}
-	if startPath == "" {
-		startPath = scriptBuiltin
-	}
-	if resumePath == "" {
-		resumePath = scriptBuiltin
-	}
-	if initPath == scriptBuiltin && startPath == scriptBuiltin && resumePath == scriptBuiltin {
-		return newScriptSnapshot(builtinInitScript, builtinStartScript, builtinResumeScript), nil
+	if paths[0] == scriptBuiltin && paths[1] == scriptBuiltin && paths[2] == scriptBuiltin {
+		return newScriptSnapshot(builtinInitScript, builtinStartScript, builtinStopScript), nil
 	}
 
-	initScript, err := readScriptFile(initPath)
-	if err != nil {
-		return ScriptSnapshot{}, err
+	scripts := make([]string, len(paths))
+	for i, path := range paths {
+		script, err := readScriptFile(path)
+		if err != nil {
+			return ScriptSnapshot{}, err
+		}
+		scripts[i] = script
 	}
-	startScript, err := readScriptFile(startPath)
-	if err != nil {
-		return ScriptSnapshot{}, err
-	}
-	resumeScript, err := readScriptFile(resumePath)
-	if err != nil {
-		return ScriptSnapshot{}, err
-	}
-	return newScriptSnapshot(initScript, startScript, resumeScript), nil
+	return newScriptSnapshot(scripts[0], scripts[1], scripts[2]), nil
 }
 
-func newScriptSnapshot(initScript, startScript, resumeScript string) ScriptSnapshot {
+func normalizedScriptPath(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return scriptBuiltin
+	}
+	return path
+}
+
+func newScriptSnapshot(initScript, startScript, stopScript string) ScriptSnapshot {
 	return ScriptSnapshot{
-		Init:   newScriptFileSnapshot(initScript),
-		Start:  newScriptFileSnapshot(startScript),
-		Resume: newScriptFileSnapshot(resumeScript),
+		Init:  newScriptFileSnapshot(initScript),
+		Start: newScriptFileSnapshot(startScript),
+		Stop:  newScriptFileSnapshot(stopScript),
 	}
 }
 
@@ -124,10 +119,10 @@ func newScriptFileSnapshot(content string) ScriptFileSnapshot {
 func scriptSnapshotComplete(snapshot ScriptSnapshot) bool {
 	return snapshot.Init.Content != "" &&
 		snapshot.Start.Content != "" &&
-		snapshot.Resume.Content != "" &&
+		snapshot.Stop.Content != "" &&
 		snapshot.Init.SHA256 != "" &&
 		snapshot.Start.SHA256 != "" &&
-		snapshot.Resume.SHA256 != ""
+		snapshot.Stop.SHA256 != ""
 }
 
 func readScriptFile(path string) (string, error) {
@@ -323,12 +318,6 @@ func (p *IncusProvisioner) readRuntimeFile(ctx context.Context, instanceName, pa
 }
 
 func (p *IncusProvisioner) predefinedScriptEnv(request BootstrapRequest, stage, resultPath string) map[string]string {
-	phase := ""
-	if stage == "prepare-workspace" {
-		phase = scriptPhasePrepare
-	} else if stage == "start-environment" {
-		phase = scriptPhaseActivate
-	}
 	repoURL := request.RepoCloneHTTPURL
 	if request.GitProtocol == "ssh" && request.RepoCloneSSHURL != "" {
 		repoURL = request.RepoCloneSSHURL
@@ -344,7 +333,6 @@ func (p *IncusProvisioner) predefinedScriptEnv(request BootstrapRequest, stage, 
 		"CODESPACE_NAME":                    request.CodespaceName,
 		"CODESPACE_OWNER_NAME":              request.CodespaceOwnerName,
 		"CODESPACE_OPERATION":               string(request.Operation),
-		"CODESPACE_SCRIPT_PHASE":            phase,
 		"CODESPACE_USER":                    runtimeUserName,
 		"CODESPACE_RESULT":                  resultPath,
 		"CODESPACE_ENV":                     runtimeSharedEnvFilePath,
