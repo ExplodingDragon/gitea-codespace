@@ -13,7 +13,7 @@ import (
 
 const (
 	managerRootStateFormatVersion = 1
-	managerRootStateFileName      = "manager.json"
+	managerRootStateFileName      = "root-state.json"
 )
 
 // ManagerRootState stores the root Manager state directory snapshot.
@@ -45,8 +45,8 @@ func (s *ManagerRootStateStore) SaveInventoryGeneration(generation int64) error 
 	})
 }
 
-// LoadManagerRootState loads and validates manager.json from stateDir.
-func LoadManagerRootState(stateDir string, credentials ManagerCredentials) (ManagerRootState, error) {
+// LoadManagerRootState loads and validates root-state.json from stateDir.
+func LoadManagerRootState(stateDir string, identity ManagerIdentity) (ManagerRootState, error) {
 	path, err := managerRootStatePath(stateDir)
 	if err != nil {
 		return ManagerRootState{}, err
@@ -59,13 +59,13 @@ func LoadManagerRootState(stateDir string, credentials ManagerCredentials) (Mana
 	if err := json.Unmarshal(content, &state); err != nil {
 		return ManagerRootState{}, fmt.Errorf("decode manager root state %s: %w", path, err)
 	}
-	if err := state.Validate(credentials); err != nil {
+	if err := state.Validate(identity); err != nil {
 		return ManagerRootState{}, fmt.Errorf("validate manager root state %s: %w", path, err)
 	}
 	return state, nil
 }
 
-// SaveManagerRootState stores manager.json in stateDir.
+// SaveManagerRootState stores root-state.json in stateDir.
 func SaveManagerRootState(stateDir string, state ManagerRootState) error {
 	path, err := managerRootStatePath(stateDir)
 	if err != nil {
@@ -78,16 +78,16 @@ func SaveManagerRootState(stateDir string, state ManagerRootState) error {
 	return writeJSONFileAtomic(path, state)
 }
 
-// Validate checks whether manager.json matches the local credentials.
-func (s ManagerRootState) Validate(credentials ManagerCredentials) error {
+// Validate checks whether root-state.json matches the local identity.
+func (s ManagerRootState) Validate(identity ManagerIdentity) error {
 	if err := s.validateFields(); err != nil {
 		return err
 	}
-	if credentials.ManagerID <= 0 {
-		return fmt.Errorf("credential manager_id is required")
+	if identity.ManagerID <= 0 {
+		return fmt.Errorf("identity manager_id is required")
 	}
-	if s.ManagerID != credentials.ManagerID {
-		return fmt.Errorf("manager_id %d does not match credentials manager_id %d", s.ManagerID, credentials.ManagerID)
+	if s.ManagerID != identity.ManagerID {
+		return fmt.Errorf("manager_id %d does not match identity manager_id %d", s.ManagerID, identity.ManagerID)
 	}
 	return nil
 }

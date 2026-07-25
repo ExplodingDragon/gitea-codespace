@@ -13,14 +13,13 @@ import (
 
 const (
 	managerCredentialsFormatVersion = 1
-	managerCredentialsFileName      = "manager-credentials.json"
+	managerCredentialsFileName      = "credentials.json"
 )
 
-// ManagerCredentials stores the local ManagerService identity.
+// ManagerCredentials stores the local ManagerService secret.
 type ManagerCredentials struct {
-	FormatVersion int    `json:"format_version"`
-	ManagerID     int64  `json:"manager_id"`
-	ManagerSecret string `json:"manager_secret"`
+	StateFormatVersion int    `json:"state_format_version"`
+	ManagerSecret      string `json:"manager_secret"`
 }
 
 // LoadManagerCredentials loads the ManagerService identity from stateDir.
@@ -49,7 +48,7 @@ func SaveManagerCredentials(stateDir string, credentials ManagerCredentials) err
 	if err != nil {
 		return err
 	}
-	credentials.FormatVersion = managerCredentialsFormatVersion
+	credentials.StateFormatVersion = managerCredentialsFormatVersion
 	if err := credentials.Validate(); err != nil {
 		return err
 	}
@@ -61,11 +60,8 @@ func SaveManagerCredentials(stateDir string, credentials ManagerCredentials) err
 
 // Validate checks whether the credential file is usable.
 func (c ManagerCredentials) Validate() error {
-	if c.FormatVersion != managerCredentialsFormatVersion {
-		return fmt.Errorf("format_version must be %d", managerCredentialsFormatVersion)
-	}
-	if c.ManagerID <= 0 {
-		return fmt.Errorf("manager_id is required")
+	if c.StateFormatVersion != managerCredentialsFormatVersion {
+		return fmt.Errorf("state_format_version must be %d", managerCredentialsFormatVersion)
 	}
 	if strings.TrimSpace(c.ManagerSecret) == "" {
 		return fmt.Errorf("manager_secret is required")

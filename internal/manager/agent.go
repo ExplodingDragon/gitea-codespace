@@ -5,23 +5,22 @@ package manager
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/base64"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
 	"connectrpc.com/connect"
-
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/provisioner"
+	"golang.org/x/crypto/ssh"
 )
 
 const (
@@ -29,8 +28,9 @@ const (
 	managerSecretHeader = "x-codespace-manager-secret"
 	protocolVersion     = 1
 
-	defaultInventoryInterval = time.Minute
-	maxInventoryInstances    = 10000
+	defaultInventoryInterval        = time.Minute
+	maxInventoryInstances           = 10000
+	runtimeHealthFailuresBeforeStop = 3
 
 	// RuntimeBootStagePrepareRuntime means the Manager has started preparing the runtime.
 	RuntimeBootStagePrepareRuntime = "prepare-runtime"
@@ -61,48 +61,103 @@ func IsRuntimeBootStage(stage string) bool {
 	return ok
 }
 
-// RuntimeBootStageRequiresInternalSSH reports whether stage must include internal SSH metadata.
-func RuntimeBootStageRequiresInternalSSH(stage string) bool {
-	return stage == RuntimeBootStageReady
+// RuntimeBootStageProto converts the local boot stage name to the control-plane enum.
+func RuntimeBootStageProto(stage string) (codespacev1.RuntimeBootStage, bool) {
+	switch stage {
+	case RuntimeBootStagePrepareRuntime:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_RUNTIME, true
+	case RuntimeBootStageInitializeSystem:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM, true
+	case RuntimeBootStagePrepareWorkspace:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, true
+	case RuntimeBootStageStartEnvironment:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, true
+	case RuntimeBootStagePublishRuntime:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_RUNTIME, true
+	case RuntimeBootStageReady:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, true
+	default:
+		return codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_UNSPECIFIED, false
+	}
+}
+
+// RuntimeMetadataProto builds the typed Runtime Metadata request payload.
+func RuntimeMetadataProto(snapshot RuntimeMetadataSnapshot, endpoints []*codespacev1.RuntimeEndpoint) (*codespacev1.RuntimeMetadata, error) {
+	stage, ok := RuntimeBootStageProto(snapshot.Boot.Stage)
+	if !ok {
+		return nil, fmt.Errorf("boot stage is invalid")
+	}
+	if endpoints == nil {
+		endpoints = []*codespacev1.RuntimeEndpoint{}
+	}
+	return &codespacev1.RuntimeMetadata{
+		Endpoints: endpoints,
+		Boot: &codespacev1.RuntimeBoot{
+			OperationRversion: snapshot.Boot.OperationRVersion,
+			Stage:             stage,
+			StartedUnix:       snapshot.Boot.StartedUnix,
+			LastUpdateUnix:    snapshot.Boot.LastUpdateUnix,
+		},
+		ResourceUsage: runtimeResourceUsageProto(snapshot.ResourceUsage),
+	}, nil
+}
+
+func runtimeResourceUsageProto(usage provisioner.RuntimeResourceUsage) *codespacev1.RuntimeResourceUsage {
+	return &codespacev1.RuntimeResourceUsage{
+		Cpu: &codespacev1.RuntimeCPUUsage{
+			UsedMillicores:  usage.CPUUsedMillicores,
+			LimitMillicores: usage.CPULimitMillicores,
+		},
+		Memory: &codespacev1.RuntimeMemoryUsage{
+			UsedBytes:  usage.MemoryUsedBytes,
+			LimitBytes: usage.MemoryLimitBytes,
+		},
+		Disk: &codespacev1.RuntimeDiskUsage{
+			UsedBytes:  usage.DiskUsedBytes,
+			LimitBytes: usage.DiskLimitBytes,
+		},
+		ObservedUnix: usage.ObservedUnix,
+	}
 }
 
 // AgentConfig configures the Manager worker.
 type AgentConfig struct {
-	BaseURL                   string
-	ManagerID                 int64
-	ManagerSecret             string
-	Name                      string
-	GatewayURL                string
-	GatewaySSHAddr            string
-	GatewaySSHHostKeyAlgo     string
-	GatewaySSHHostKeySHA256   string
-	GatewaySSHHostKeyUnix     int64
-	Version                   string
-	Tags                      []string
-	PollInterval              time.Duration
-	DeclareInterval           time.Duration
-	CapacityTotal             int32
-	CapacityAvailable         int32
-	CleanupCapacityAvailable  int32
-	MaxOperations             int32
-	HTTPTimeout               time.Duration
-	RuntimeMetadataGeneration int64
-	InventoryGeneration       int64
-	InitialRuntimeGenerations map[string]int64
-	InitialRuntimeTransitions []RuntimeTransitionSnapshot
-	InitialCleanupPendings    []string
-	InitialOperations         []OperationSnapshot
-	OperationStateStore       OperationStateStore
-	InventoryStateStore       InventoryStateStore
-	RuntimeStateStore         RuntimeStateStore
-	CleanupStateStore         CleanupStateStore
-	RuntimeCredentialStore    RuntimeCredentialStore
-	RuntimeMetadataStateStore RuntimeMetadataStateStore
-	RuntimeMetadataPublisher  RuntimeMetadataPublisher
-	RuntimeAPIBaseURL         string
-	SessionTracker            SessionTracker
-	AccessController          AccessController
-	ManagerServiceSettings    ManagerServiceSettingsStore
+	BaseURL                     string
+	ManagerID                   int64
+	ManagerSecret               string
+	Name                        string
+	GatewayURL                  string
+	GatewaySSHAddr              string
+	GatewaySSHHostKeyAlgo       string
+	GatewaySSHHostKeySHA256     string
+	GatewaySSHHostKeyUnix       int64
+	Version                     string
+	Tags                        []string
+	PollInterval                time.Duration
+	DeclareInterval             time.Duration
+	CapacityTotal               int32
+	StartupWorkers              int32
+	CleanupWorkers              int32
+	HTTPTimeout                 time.Duration
+	RuntimeMetadataGeneration   int64
+	InventoryGeneration         int64
+	Scripts                     provisioner.ScriptSnapshot
+	InitialRuntimeGenerations   map[string]int64
+	InitialRuntimeTransitions   []RuntimeTransitionSnapshot
+	InitialCleanupPendings      []string
+	InitialOperations           []OperationSnapshot
+	OperationStateStore         OperationStateStore
+	InventoryStateStore         InventoryStateStore
+	RuntimeStateStore           RuntimeStateStore
+	CleanupStateStore           CleanupStateStore
+	ScriptEnvironmentStateStore ScriptEnvironmentStateStore
+	RuntimeMetadataStateStore   RuntimeMetadataStateStore
+	RuntimeEndpointApplier      RuntimeEndpointApplier
+	RuntimeHealthStateStore     RuntimeHealthStateStore
+	RuntimeMetadataPublisher    RuntimeMetadataPublisher
+	SessionTracker              SessionTracker
+	AccessController            AccessController
+	ManagerServiceSettings      ManagerServiceSettingsStore
 }
 
 // ManagerServiceSettings contains the current server-selected ManagerService values.
@@ -132,6 +187,7 @@ type AccessController interface {
 type OperationSnapshot struct {
 	Payload     *codespacev1.OperationPayload
 	WorkerStage OperationWorkerStage
+	Scripts     provisioner.ScriptSnapshot
 }
 
 // OperationWorkerStage stores the local worker stage for one active operation.
@@ -175,26 +231,20 @@ type CleanupStateStore interface {
 	ClearCodespaceState(codespaceUUID string) error
 }
 
-// RuntimeCredentialStore persists the verifier for the Runtime HTTP API token.
-type RuntimeCredentialStore interface {
-	SaveRuntimeCredential(codespaceUUID, token string) error
+// ScriptEnvironmentStateStore persists the latest normalized shared script environment.
+type ScriptEnvironmentStateStore interface {
+	SaveScriptEnvironment(codespaceUUID string, environment map[string]string) error
+	LoadScriptEnvironment(codespaceUUID string) (map[string]string, bool, error)
 }
 
 // RuntimeMetadataSnapshot stores the current complete runtime metadata base owned by a Codespace.
 type RuntimeMetadataSnapshot struct {
 	CodespaceUUID      string
 	MetadataGeneration int64
-	InternalSSH        RuntimeMetadataInternalSSH
+	InstanceName       string
+	Workdir            string
 	Boot               RuntimeMetadataBoot
-}
-
-// RuntimeMetadataInternalSSH stores the internal SSH endpoint observed by the Manager.
-type RuntimeMetadataInternalSSH struct {
-	Host               string
-	Port               int
-	User               string
-	AuthMode           string
-	HostKeyFingerprint string
+	ResourceUsage      provisioner.RuntimeResourceUsage
 }
 
 // RuntimeMetadataBoot stores the boot stage accepted for the current runtime.
@@ -210,15 +260,48 @@ type RuntimeMetadataStateStore interface {
 	SaveRuntimeMetadataSnapshot(snapshot RuntimeMetadataSnapshot) error
 }
 
+// RuntimeEndpointRoute stores one endpoint route derived from a runtime manifest.
+type RuntimeEndpointRoute struct {
+	CodespaceUUID  string
+	EndpointID     string
+	Label          string
+	UpstreamScheme string
+	UpstreamHost   string
+	Public         bool
+}
+
+// RuntimeEndpointApplier applies a complete runtime endpoint route set.
+type RuntimeEndpointApplier interface {
+	ApplyRuntimeEndpointRoutes(codespaceUUID string, routes []RuntimeEndpointRoute) error
+}
+
+// RuntimeHealthStateStore loads ready runtime metadata used by health checks.
+type RuntimeHealthStateStore interface {
+	LoadRuntimeMetadataSnapshot(codespaceUUID string) (RuntimeMetadataSnapshot, bool, error)
+}
+
 // RuntimeMetadataPublisher publishes the current complete metadata snapshot.
 type RuntimeMetadataPublisher interface {
 	NotifyRuntimeMetadata(codespaceUUID string)
 	PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error
 }
 
+type runtimeMetadataForgetter interface {
+	ForgetRuntimeMetadata(codespaceUUID string)
+}
+
+type workspaceGitChecker interface {
+	CheckWorkspaceGit(ctx context.Context, instanceName string, workdir string) (provisioner.WorkspaceGitStatus, error)
+}
+
+type workspaceAccessChecker interface {
+	CheckWorkspaceAccess(ctx context.Context, instanceName string, workdir string) error
+}
+
 type operationContext struct {
 	operationRVersion int64
 	payload           *codespacev1.OperationPayload
+	scripts           provisioner.ScriptSnapshot
 	running           bool
 	cancel            context.CancelFunc
 	leaseTimer        *time.Timer
@@ -263,32 +346,38 @@ type autoStopRequest struct {
 
 // Agent runs one Codespace Manager against the Gitea ManagerService.
 type Agent struct {
-	config              AgentConfig
-	client              codespacev1connect.ManagerServiceClient
-	provisioner         provisioner.Provisioner
-	metadataGeneration  int64
-	metadataMu          sync.Mutex
-	inventoryGeneration int64
-	inventoryMu         sync.Mutex
-	runtimeMu           sync.Mutex
-	runtimeGenerations  map[string]int64
-	runtimeTransitions  map[string]RuntimeTransitionSnapshot
-	cleanupPendings     map[string]struct{}
-	activeMu            sync.Mutex
-	activeOperations    map[string]*operationContext
-	stateStore          OperationStateStore
-	inventoryStore      InventoryStateStore
-	runtimeStateStore   RuntimeStateStore
-	cleanupStateStore   CleanupStateStore
-	credentialStore     RuntimeCredentialStore
-	metadataStateStore  RuntimeMetadataStateStore
-	metadataPublisher   RuntimeMetadataPublisher
-	sessionTracker      SessionTracker
-	accessController    AccessController
-	settingsStore       ManagerServiceSettingsStore
-	autoStopMu          sync.Mutex
-	autoStops           map[string]*autoStopState
-	criticalErrors      chan error
+	config               AgentConfig
+	client               codespacev1connect.ManagerServiceClient
+	provisioner          provisioner.Provisioner
+	metadataGeneration   int64
+	metadataMu           sync.Mutex
+	inventoryGeneration  int64
+	inventoryMu          sync.Mutex
+	runtimeMu            sync.Mutex
+	runtimeGenerations   map[string]int64
+	runtimeTransitions   map[string]RuntimeTransitionSnapshot
+	cleanupPendings      map[string]struct{}
+	activeMu             sync.Mutex
+	activeOperations     map[string]*operationContext
+	fetchReservedStartup int32
+	fetchReservedCleanup int32
+	stateStore           OperationStateStore
+	inventoryStore       InventoryStateStore
+	runtimeStateStore    RuntimeStateStore
+	cleanupStateStore    CleanupStateStore
+	scriptEnvStateStore  ScriptEnvironmentStateStore
+	metadataStateStore   RuntimeMetadataStateStore
+	endpointApplier      RuntimeEndpointApplier
+	runtimeHealthStore   RuntimeHealthStateStore
+	metadataPublisher    RuntimeMetadataPublisher
+	sessionTracker       SessionTracker
+	accessController     AccessController
+	settingsStore        ManagerServiceSettingsStore
+	autoStopMu           sync.Mutex
+	autoStops            map[string]*autoStopState
+	healthFailures       map[string]int
+	healthCandidates     map[string]struct{}
+	criticalErrors       chan error
 }
 
 // New creates one Manager worker.
@@ -312,13 +401,17 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		inventoryStore:      config.InventoryStateStore,
 		runtimeStateStore:   config.RuntimeStateStore,
 		cleanupStateStore:   config.CleanupStateStore,
-		credentialStore:     config.RuntimeCredentialStore,
+		scriptEnvStateStore: config.ScriptEnvironmentStateStore,
 		metadataStateStore:  config.RuntimeMetadataStateStore,
+		endpointApplier:     config.RuntimeEndpointApplier,
+		runtimeHealthStore:  config.RuntimeHealthStateStore,
 		metadataPublisher:   config.RuntimeMetadataPublisher,
 		sessionTracker:      config.SessionTracker,
 		accessController:    config.AccessController,
 		settingsStore:       config.ManagerServiceSettings,
 		autoStops:           make(map[string]*autoStopState),
+		healthFailures:      make(map[string]int),
+		healthCandidates:    make(map[string]struct{}),
 		criticalErrors:      make(chan error, 1),
 	}
 	for codespaceUUID, generation := range config.InitialRuntimeGenerations {
@@ -354,6 +447,7 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		agent.activeOperations[codespaceUUID] = &operationContext{
 			operationRVersion: operationRVersion,
 			payload:           snapshot.Payload,
+			scripts:           snapshot.Scripts,
 			running:           false,
 		}
 	}
@@ -482,6 +576,8 @@ func runContextError(err error) error {
 }
 
 func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeState) error {
+	instances, listErr := a.provisioner.ListInstances(ctx)
+	capacity := a.fetchCapacity(instances, listErr)
 	request := connect.NewRequest(&codespacev1.DeclareManagerRequest{
 		ProtocolVersion:                    protocolVersion,
 		GatewayUrl:                         a.config.GatewayURL,
@@ -494,7 +590,7 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 		GatewaySshHostKeyFingerprintSha256: a.config.GatewaySSHHostKeySHA256,
 		GatewaySshHostKeyUpdatedUnix:       a.config.GatewaySSHHostKeyUnix,
 		CapacityTotal:                      a.config.CapacityTotal,
-		CapacityAvailable:                  a.config.CapacityAvailable,
+		CapacityAvailable:                  capacity.startup,
 	})
 	a.setManagerAuth(request.Header())
 	response, err := a.client.DeclareManager(ctx, request)
@@ -516,16 +612,17 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 func (a *Agent) pollOnce(ctx context.Context) error {
 	requestStarted := time.Now()
 	requestOperationVersions := a.currentOperationVersions()
+	instances, listErr := a.provisioner.ListInstances(ctx)
+	capacity := a.reserveFetchCapacity(instances, listErr)
+	defer a.releaseFetchReservation(capacity)
+	capacity = a.applyStartupAdmission(ctx, capacity)
 	request := connect.NewRequest(&codespacev1.FetchOperationsRequest{
-		ProtocolVersion:   protocolVersion,
-		CapacityAvailable: a.config.CapacityAvailable,
-		AcceptedOperationTypes: []codespacev1.AcceptedOperationType{
-			codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_CREATE,
-			codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_RESUME,
-		},
-		MaxOperations:            a.maxOperations(),
+		ProtocolVersion:          protocolVersion,
+		CapacityAvailable:        capacity.startup,
+		AcceptedOperationTypes:   capacity.acceptedOperationTypes(),
+		MaxOperations:            capacity.maxOperations(),
 		ObservedOperations:       a.observedOperations(),
-		CleanupCapacityAvailable: a.config.CleanupCapacityAvailable,
+		CleanupCapacityAvailable: capacity.cleanup,
 	})
 	a.setManagerAuth(request.Header())
 	response, err := a.client.FetchOperations(ctx, request)
@@ -543,7 +640,7 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 		if !ok {
 			continue
 		}
-		duration := leaseDurationFromRequestStart(requestStarted, operation.GetLeaseValidForMilliseconds())
+		duration := operationLeaseDurationFromRequestStart(requestStarted, operation)
 		if err := a.startOperation(ctx, operation, duration); err != nil {
 			return fmt.Errorf("start operation %s version %d: %w", operation.GetCodespaceUuid(), operation.GetOperationRversion(), err)
 		}
@@ -567,6 +664,26 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 	return nil
 }
 
+func (a *Agent) applyStartupAdmission(ctx context.Context, capacity fetchCapacity) fetchCapacity {
+	if capacity.startup <= 0 {
+		return capacity
+	}
+	checker, ok := a.provisioner.(provisioner.StartupAdmissionChecker)
+	if !ok {
+		return capacity
+	}
+	admission, err := checker.CheckStartupAdmission(ctx)
+	if err != nil {
+		log.Printf("check startup admission: %v", err)
+		capacity.acceptCreate = false
+		capacity.acceptResume = true
+		return capacity
+	}
+	capacity.acceptCreate = admission.CreateAvailable
+	capacity.acceptResume = admission.ResumeAvailable
+	return capacity
+}
+
 func (a *Agent) reportInventoryOnce(ctx context.Context) error {
 	instances, err := a.provisioner.ListInstances(ctx)
 	if err != nil {
@@ -580,6 +697,8 @@ func (a *Agent) reportInventoryOnce(ctx context.Context) error {
 		return err
 	}
 	refs := a.runtimeInstanceRefs(instances)
+	nextHealthCandidates := runtimeHealthCandidates(refs)
+	healthCandidates := a.currentRuntimeHealthCandidates()
 	a.updateRuntimeObservations(refs)
 	runtimeStates := runtimeStatesByUUID(refs)
 	requestOperationVersions := a.currentOperationVersions()
@@ -596,7 +715,11 @@ func (a *Agent) reportInventoryOnce(ctx context.Context) error {
 	if a.currentInventoryGeneration() != generation {
 		return nil
 	}
-	return a.applyInventoryResults(ctx, generation, runtimeStates, requestOperationVersions, response.Msg.GetResults())
+	if err := a.applyInventoryResults(ctx, generation, runtimeStates, requestOperationVersions, healthCandidates, response.Msg.GetResults()); err != nil {
+		return err
+	}
+	a.replaceRuntimeHealthCandidates(nextHealthCandidates)
+	return nil
 }
 
 func (a *Agent) nextInventoryGeneration() (int64, error) {
@@ -682,6 +805,37 @@ func runtimeStatesByUUID(refs []*codespacev1.RuntimeInstanceRef) map[string]code
 		states[ref.GetCodespaceUuid()] = ref.GetRuntimeState()
 	}
 	return states
+}
+
+func runtimeHealthCandidates(refs []*codespacev1.RuntimeInstanceRef) map[string]struct{} {
+	candidates := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if ref == nil ||
+			ref.GetCodespaceUuid() == "" ||
+			ref.GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING {
+			continue
+		}
+		candidates[ref.GetCodespaceUuid()] = struct{}{}
+	}
+	return candidates
+}
+
+func (a *Agent) currentRuntimeHealthCandidates() map[string]struct{} {
+	a.autoStopMu.Lock()
+	defer a.autoStopMu.Unlock()
+
+	candidates := make(map[string]struct{}, len(a.healthCandidates))
+	for codespaceUUID := range a.healthCandidates {
+		candidates[codespaceUUID] = struct{}{}
+	}
+	return candidates
+}
+
+func (a *Agent) replaceRuntimeHealthCandidates(candidates map[string]struct{}) {
+	a.autoStopMu.Lock()
+	defer a.autoStopMu.Unlock()
+
+	a.healthCandidates = candidates
 }
 
 func (a *Agent) updateRuntimeObservations(refs []*codespacev1.RuntimeInstanceRef) {
@@ -871,6 +1025,9 @@ func (a *Agent) markRuntimeRemoved(codespaceUUID string) {
 	if codespaceUUID == "" {
 		return
 	}
+	if forgetter, ok := a.metadataPublisher.(runtimeMetadataForgetter); ok {
+		forgetter.ForgetRuntimeMetadata(codespaceUUID)
+	}
 	a.autoStopMu.Lock()
 	defer a.autoStopMu.Unlock()
 
@@ -961,6 +1118,7 @@ func (a *Agent) applyInventoryResults(
 	generation int64,
 	runtimeStates map[string]codespacev1.RuntimeState,
 	requestOperationVersions map[string]int64,
+	healthCandidates map[string]struct{},
 	results []*codespacev1.RuntimeInstanceResult,
 ) error {
 	for _, result := range results {
@@ -970,86 +1128,122 @@ func (a *Agent) applyInventoryResults(
 		if a.currentInventoryGeneration() != generation {
 			return nil
 		}
-		codespaceUUID := result.GetCodespaceUuid()
-		if result.GetRuntimeSettings() != nil {
-			a.applyRuntimeSettings(codespaceUUID, result.GetRuntimeSettings(), time.Now())
+		if err := a.applyInventoryResult(ctx, runtimeStates, requestOperationVersions, healthCandidates, result); err != nil {
+			return err
 		}
-		switch {
-		case result.GetCleanupLocalRuntime() != nil:
+	}
+	return nil
+}
+
+func (a *Agent) applyInventoryResult(
+	ctx context.Context,
+	runtimeStates map[string]codespacev1.RuntimeState,
+	requestOperationVersions map[string]int64,
+	healthCandidates map[string]struct{},
+	result *codespacev1.RuntimeInstanceResult,
+) error {
+	codespaceUUID := result.GetCodespaceUuid()
+	if result.GetRuntimeSettings() != nil {
+		a.applyRuntimeSettings(codespaceUUID, result.GetRuntimeSettings(), time.Now())
+	}
+	switch {
+	case result.GetCleanupLocalRuntime() != nil:
+		if err := a.saveCleanupPending(codespaceUUID); err != nil {
+			return err
+		}
+		if err := a.clearOperationContext(codespaceUUID, 0); err != nil {
+			return err
+		}
+		if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
+			return err
+		}
+	case result.GetStopLocalRuntime() != nil:
+		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetStopLocalRuntime().GetCurrentOperationRversion())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if !a.operationVersionAtMost(codespaceUUID, result.GetStopLocalRuntime().GetCurrentOperationRversion()) {
+			return nil
+		}
+		if err := a.provisioner.Stop(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
+			return fmt.Errorf("stop local runtime %s: %w", codespaceUUID, err)
+		}
+	case result.GetClearOperationContext() != nil:
+		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetClearOperationContext().GetCurrentOperationRversion())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		if err := a.clearOperationContext(codespaceUUID, result.GetClearOperationContext().GetCurrentOperationRversion()); err != nil {
+			return err
+		}
+	case result.GetRefetchOperation() != nil:
+		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetRefetchOperation().GetCurrentOperationRversion())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		log.Printf("inventory requested operation refetch for %s version %d", codespaceUUID, result.GetRefetchOperation().GetCurrentOperationRversion())
+	case result.GetReportRuntimeTransition() != nil:
+		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetReportRuntimeTransition().GetCurrentOperationRversion())
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return nil
+		}
+		runtimeState := runtimeStates[codespaceUUID]
+		runtimeGeneration, reported, err := a.reportRuntimeTransition(ctx, codespaceUUID, runtimeState, result.GetReportRuntimeTransition().GetCurrentOperationRversion())
+		if err != nil {
+			return err
+		}
+		if !reported {
+			return nil
+		}
+		if runtimeState == codespacev1.RuntimeState_RUNTIME_STATE_FAILED {
 			if err := a.saveCleanupPending(codespaceUUID); err != nil {
-				return err
-			}
-			if err := a.clearOperationContext(codespaceUUID, 0); err != nil {
 				return err
 			}
 			if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
 				return err
 			}
-		case result.GetStopLocalRuntime() != nil:
-			ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetStopLocalRuntime().GetCurrentOperationRversion())
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			if !a.operationVersionAtMost(codespaceUUID, result.GetStopLocalRuntime().GetCurrentOperationRversion()) {
-				continue
-			}
-			if err := a.provisioner.Stop(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
-				return fmt.Errorf("stop local runtime %s: %w", codespaceUUID, err)
-			}
-		case result.GetClearOperationContext() != nil:
-			ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetClearOperationContext().GetCurrentOperationRversion())
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			if err := a.clearOperationContext(codespaceUUID, result.GetClearOperationContext().GetCurrentOperationRversion()); err != nil {
-				return err
-			}
-		case result.GetRefetchOperation() != nil:
-			ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetRefetchOperation().GetCurrentOperationRversion())
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			log.Printf("inventory requested operation refetch for %s version %d", codespaceUUID, result.GetRefetchOperation().GetCurrentOperationRversion())
-		case result.GetReportRuntimeTransition() != nil:
-			ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, result.GetReportRuntimeTransition().GetCurrentOperationRversion())
-			if err != nil {
-				return err
-			}
-			if !ok {
-				continue
-			}
-			runtimeState := runtimeStates[codespaceUUID]
-			runtimeGeneration, reported, err := a.reportRuntimeTransition(ctx, codespaceUUID, runtimeState, result.GetReportRuntimeTransition().GetCurrentOperationRversion())
-			if err != nil {
-				return err
-			}
-			if !reported {
-				continue
-			}
-			if runtimeState == codespacev1.RuntimeState_RUNTIME_STATE_FAILED {
-				if err := a.saveCleanupPending(codespaceUUID); err != nil {
-					return err
-				}
-				if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
-					return err
-				}
-				continue
-			}
-			if err := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
-				return fmt.Errorf("clear runtime transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, err)
-			}
+			return nil
+		}
+		if err := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
+			return fmt.Errorf("clear runtime transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, err)
+		}
+	default:
+		if err := a.repairStableRunningRuntime(ctx, codespaceUUID, runtimeStates, requestOperationVersions, healthCandidates); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func (a *Agent) repairStableRunningRuntime(
+	ctx context.Context,
+	codespaceUUID string,
+	runtimeStates map[string]codespacev1.RuntimeState,
+	requestOperationVersions map[string]int64,
+	healthCandidates map[string]struct{},
+) error {
+	if runtimeStates[codespaceUUID] != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING || requestOperationVersions[codespaceUUID] != 0 {
+		return nil
+	}
+	if err := a.repairStableRunningCredentials(ctx, codespaceUUID); err != nil {
+		return err
+	}
+	if _, ok := healthCandidates[codespaceUUID]; !ok {
+		return nil
+	}
+	return a.checkStableRunningHealth(ctx, codespaceUUID)
 }
 
 func (a *Agent) validateOperationResponseVersion(
@@ -1085,6 +1279,136 @@ func (a *Agent) validateOperationResponseVersion(
 	return true, nil
 }
 
+func (a *Agent) repairStableRunningCredentials(ctx context.Context, codespaceUUID string) error {
+	if a.provisioner == nil || codespaceUUID == "" {
+		return nil
+	}
+	instanceName := runtimeInstanceName(codespaceUUID)
+	status, err := a.provisioner.CheckCredentials(ctx, instanceName)
+	if err != nil {
+		return fmt.Errorf("check runtime credentials %s: %w", codespaceUUID, err)
+	}
+	if !status.GiteaTokenPresent {
+		token, err := a.requestGiteaToken(ctx, codespaceUUID)
+		if err != nil {
+			return err
+		}
+		if err := a.provisioner.WriteCredentials(ctx, instanceName, provisioner.CredentialRequest{
+			CodespaceUUID: codespaceUUID,
+			GiteaToken:    token.GetToken(),
+		}); err != nil {
+			return fmt.Errorf("repair gitea token %s: %w", codespaceUUID, err)
+		}
+	}
+	if err := a.checkStableRunningWorkspaceGit(ctx, codespaceUUID, instanceName); err != nil {
+		a.closeCodespaceAccess(codespaceUUID)
+		if stopErr := a.provisioner.Stop(ctx, instanceName); stopErr != nil {
+			return fmt.Errorf("stop runtime with invalid workspace git credentials %s: %w", codespaceUUID, stopErr)
+		}
+		runtimeGeneration, reported, reportErr := a.reportRuntimeTransition(ctx, codespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED, 0)
+		if reportErr != nil {
+			return reportErr
+		}
+		if reported {
+			if clearErr := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); clearErr != nil {
+				return fmt.Errorf("clear stopped transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, clearErr)
+			}
+		}
+		return nil
+	}
+	if err := a.syncRuntimeEndpointManifest(ctx, codespaceUUID, &provisioner.Instance{
+		CodespaceUUID: codespaceUUID,
+		Name:          instanceName,
+	}); err != nil {
+		return fmt.Errorf("sync runtime endpoint manifest %s: %w", codespaceUUID, err)
+	}
+	return nil
+}
+
+func (a *Agent) checkStableRunningWorkspaceGit(ctx context.Context, codespaceUUID string, instanceName string) error {
+	checker, ok := a.provisioner.(workspaceGitChecker)
+	if !ok || a.scriptEnvStateStore == nil {
+		return nil
+	}
+	environment, ok, err := a.scriptEnvStateStore.LoadScriptEnvironment(codespaceUUID)
+	if err != nil {
+		return fmt.Errorf("load script environment %s: %w", codespaceUUID, err)
+	}
+	if !ok {
+		return fmt.Errorf("script environment is missing")
+	}
+	workdir := strings.TrimSpace(environment["CODESPACE_WORKSPACE_DIR"])
+	if workdir == "" {
+		return fmt.Errorf("workspace path is missing")
+	}
+	status, err := checker.CheckWorkspaceGit(ctx, instanceName, workdir)
+	if err != nil {
+		return fmt.Errorf("check workspace git %s: %w", codespaceUUID, err)
+	}
+	if !status.CredentialConfigured {
+		return fmt.Errorf("workspace git credentials are not configured for origin %q", status.OriginURL)
+	}
+	return nil
+}
+
+func (a *Agent) checkStableRunningHealth(ctx context.Context, codespaceUUID string) error {
+	checker, ok := a.provisioner.(workspaceAccessChecker)
+	if a.runtimeHealthStore == nil || !ok || codespaceUUID == "" {
+		return nil
+	}
+	snapshot, ok, err := a.runtimeHealthStore.LoadRuntimeMetadataSnapshot(codespaceUUID)
+	if err != nil {
+		return fmt.Errorf("load runtime metadata for health %s: %w", codespaceUUID, err)
+	}
+	if !ok || snapshot.Boot.Stage != RuntimeBootStageReady {
+		a.clearRuntimeHealthFailure(codespaceUUID)
+		return nil
+	}
+	if err := a.checkRuntimeWorkspaceAccess(ctx, checker, snapshot); err == nil {
+		a.clearRuntimeHealthFailure(codespaceUUID)
+		return nil
+	} else if failures := a.recordRuntimeHealthFailure(codespaceUUID); failures < runtimeHealthFailuresBeforeStop {
+		a.closeCodespaceAccess(codespaceUUID)
+		log.Printf("runtime health check failed for %s (%d/%d): %v", codespaceUUID, failures, runtimeHealthFailuresBeforeStop, err)
+		return nil
+	} else {
+		a.closeCodespaceAccess(codespaceUUID)
+		log.Printf("runtime health check failed for %s (%d/%d), stopping runtime: %v", codespaceUUID, failures, runtimeHealthFailuresBeforeStop, err)
+	}
+
+	instanceName := runtimeInstanceName(codespaceUUID)
+	if err := a.provisioner.Stop(ctx, instanceName); err != nil {
+		return fmt.Errorf("stop unhealthy runtime %s: %w", codespaceUUID, err)
+	}
+	a.markRuntimeStopped(codespaceUUID)
+	runtimeGeneration, reported, err := a.reportRuntimeTransition(ctx, codespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED, 0)
+	if err != nil {
+		return err
+	}
+	if reported {
+		if err := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
+			return fmt.Errorf("clear unhealthy stopped transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, err)
+		}
+	}
+	a.clearRuntimeHealthFailure(codespaceUUID)
+	return nil
+}
+
+func (a *Agent) recordRuntimeHealthFailure(codespaceUUID string) int {
+	a.autoStopMu.Lock()
+	defer a.autoStopMu.Unlock()
+
+	a.healthFailures[codespaceUUID]++
+	return a.healthFailures[codespaceUUID]
+}
+
+func (a *Agent) clearRuntimeHealthFailure(codespaceUUID string) {
+	a.autoStopMu.Lock()
+	defer a.autoStopMu.Unlock()
+
+	delete(a.healthFailures, codespaceUUID)
+}
+
 func (a *Agent) cleanupLocalRuntime(ctx context.Context, codespaceUUID string) error {
 	if err := a.provisioner.Delete(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
 		return fmt.Errorf("cleanup local runtime %s: %w", codespaceUUID, err)
@@ -1104,8 +1428,10 @@ func (a *Agent) cleanupLocalRuntime(ctx context.Context, codespaceUUID string) e
 	a.runtimeMu.Lock()
 	delete(a.runtimeTransitions, codespaceUUID)
 	delete(a.runtimeGenerations, codespaceUUID)
-	delete(a.cleanupPendings, codespaceUUID)
 	a.runtimeMu.Unlock()
+	a.activeMu.Lock()
+	delete(a.cleanupPendings, codespaceUUID)
+	a.activeMu.Unlock()
 	a.markRuntimeRemoved(codespaceUUID)
 	return nil
 }
@@ -1133,9 +1459,9 @@ func (a *Agent) saveCleanupPending(codespaceUUID string) error {
 			message:  fmt.Sprintf("save cleanup pending %s: %v", codespaceUUID, err),
 		}
 	}
-	a.runtimeMu.Lock()
+	a.activeMu.Lock()
 	a.cleanupPendings[codespaceUUID] = struct{}{}
-	a.runtimeMu.Unlock()
+	a.activeMu.Unlock()
 	return nil
 }
 
@@ -1146,20 +1472,22 @@ func (a *Agent) clearDeleteCleanupState(codespaceUUID string) error {
 		}
 	}
 	a.runtimeMu.Lock()
-	delete(a.cleanupPendings, codespaceUUID)
 	delete(a.runtimeTransitions, codespaceUUID)
 	delete(a.runtimeGenerations, codespaceUUID)
 	a.runtimeMu.Unlock()
+	a.activeMu.Lock()
+	delete(a.cleanupPendings, codespaceUUID)
+	a.activeMu.Unlock()
 	return nil
 }
 
 func (a *Agent) runCleanupPendings(ctx context.Context) error {
-	a.runtimeMu.Lock()
+	a.activeMu.Lock()
 	codespaceUUIDs := make([]string, 0, len(a.cleanupPendings))
 	for codespaceUUID := range a.cleanupPendings {
 		codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
 	}
-	a.runtimeMu.Unlock()
+	a.activeMu.Unlock()
 
 	for _, codespaceUUID := range codespaceUUIDs {
 		if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
@@ -1288,11 +1616,170 @@ func (a *Agent) currentOperationVersion(codespaceUUID string) int64 {
 	return current.operationRVersion
 }
 
-func (a *Agent) maxOperations() int32 {
-	if a.config.MaxOperations > 0 {
-		return a.config.MaxOperations
+type fetchCapacity struct {
+	startup      int32
+	cleanup      int32
+	acceptCreate bool
+	acceptResume bool
+}
+
+func (c fetchCapacity) acceptedOperationTypes() []codespacev1.AcceptedOperationType {
+	if c.startup <= 0 {
+		return nil
 	}
-	return 1
+	types := make([]codespacev1.AcceptedOperationType, 0, 2)
+	if c.acceptCreate {
+		types = append(types, codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_CREATE)
+	}
+	if c.acceptResume {
+		types = append(types, codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_RESUME)
+	}
+	return types
+}
+
+func (c fetchCapacity) maxOperations() int32 {
+	total := c.startup + c.cleanup
+	switch {
+	case total <= 0:
+		return 1
+	case total > 256:
+		return 256
+	default:
+		return total
+	}
+}
+
+func (a *Agent) fetchCapacity(instances []*provisioner.Instance, listErr error) fetchCapacity {
+	if listErr != nil {
+		return fetchCapacity{}
+	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+	return a.fetchCapacityLocked(instances)
+}
+
+func (a *Agent) reserveFetchCapacity(instances []*provisioner.Instance, listErr error) fetchCapacity {
+	if listErr != nil {
+		return fetchCapacity{}
+	}
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+
+	capacity := a.fetchCapacityLocked(instances)
+	a.fetchReservedStartup += capacity.startup
+	a.fetchReservedCleanup += capacity.cleanup
+	return capacity
+}
+
+func (a *Agent) releaseFetchReservation(capacity fetchCapacity) {
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+
+	a.fetchReservedStartup = positiveInt32(a.fetchReservedStartup - capacity.startup)
+	a.fetchReservedCleanup = positiveInt32(a.fetchReservedCleanup - capacity.cleanup)
+}
+
+func (a *Agent) fetchCapacityLocked(instances []*provisioner.Instance) fetchCapacity {
+	snapshot := a.operationCapacitySnapshotLocked()
+	runtimeSlots := positiveInt32(a.runtimeSlotsAvailable(instances, snapshot.startup) - a.fetchReservedStartup)
+	startupSlots := positiveInt32(a.startupWorkers() - int32(len(snapshot.startup)) - a.fetchReservedStartup)
+	cleanupSlots := positiveInt32(a.cleanupWorkers() - int32(len(snapshot.cleanup)) - int32(len(snapshot.cleanupPendings)) - a.fetchReservedCleanup)
+	return fetchCapacity{
+		startup:      minInt32(runtimeSlots, startupSlots),
+		cleanup:      cleanupSlots,
+		acceptCreate: true,
+		acceptResume: true,
+	}
+}
+
+type operationCapacitySnapshot struct {
+	startup         map[string]struct{}
+	cleanup         map[string]struct{}
+	cleanupPendings map[string]struct{}
+}
+
+func (a *Agent) operationCapacitySnapshot() operationCapacitySnapshot {
+	a.activeMu.Lock()
+	defer a.activeMu.Unlock()
+
+	return a.operationCapacitySnapshotLocked()
+}
+
+func (a *Agent) operationCapacitySnapshotLocked() operationCapacitySnapshot {
+	snapshot := operationCapacitySnapshot{
+		startup:         make(map[string]struct{}),
+		cleanup:         make(map[string]struct{}),
+		cleanupPendings: make(map[string]struct{}, len(a.cleanupPendings)),
+	}
+	for codespaceUUID, operation := range a.activeOperations {
+		if operation == nil || !operation.running || operation.payload == nil {
+			continue
+		}
+		switch operation.payload.GetCommand().(type) {
+		case *codespacev1.OperationPayload_Create, *codespacev1.OperationPayload_Resume:
+			snapshot.startup[codespaceUUID] = struct{}{}
+		case *codespacev1.OperationPayload_Stop,
+			*codespacev1.OperationPayload_Delete,
+			*codespacev1.OperationPayload_AbortCreate,
+			*codespacev1.OperationPayload_AbortResume:
+			snapshot.cleanup[codespaceUUID] = struct{}{}
+		}
+	}
+	for codespaceUUID := range a.cleanupPendings {
+		if _, active := snapshot.cleanup[codespaceUUID]; active {
+			continue
+		}
+		snapshot.cleanupPendings[codespaceUUID] = struct{}{}
+	}
+	return snapshot
+}
+
+func (a *Agent) runtimeSlotsAvailable(instances []*provisioner.Instance, activeStartup map[string]struct{}) int32 {
+	occupied := make(map[string]struct{}, len(instances)+len(activeStartup))
+	for _, instance := range instances {
+		if instance == nil || instance.CodespaceUUID == "" {
+			continue
+		}
+		switch instance.RuntimeState {
+		case provisioner.RuntimeStateCreating, provisioner.RuntimeStateRunning:
+			occupied[instance.CodespaceUUID] = struct{}{}
+		}
+	}
+	for codespaceUUID := range activeStartup {
+		occupied[codespaceUUID] = struct{}{}
+	}
+	return positiveInt32(a.config.CapacityTotal - int32(len(occupied)))
+}
+
+func (a *Agent) startupWorkers() int32 {
+	if a.config.StartupWorkers > 0 {
+		return a.config.StartupWorkers
+	}
+	if a.config.CapacityTotal > 0 && a.config.CapacityTotal < 4 {
+		return a.config.CapacityTotal
+	}
+	return 4
+}
+
+func (a *Agent) cleanupWorkers() int32 {
+	if a.config.CleanupWorkers > 0 {
+		return a.config.CleanupWorkers
+	}
+	return 4
+}
+
+func positiveInt32(value int32) int32 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func minInt32(left, right int32) int32 {
+	if left < right {
+		return left
+	}
+	return right
 }
 
 func (a *Agent) observedOperations() []*codespacev1.ObservedOperation {
@@ -1332,9 +1819,18 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 			return nil
 		}
 		if current.running {
-			a.activeMu.Unlock()
-			return nil
+			if canAbortRunningOperation(current.payload, operation) {
+				current.payload = operation
+				a.stopLeaseLocked(current)
+			} else {
+				a.activeMu.Unlock()
+				return nil
+			}
 		}
+	}
+	scripts := a.config.Scripts
+	if ok && current.operationRVersion == operationRVersion && current.scripts.Init.Content != "" {
+		scripts = current.scripts
 	}
 	a.activeMu.Unlock()
 
@@ -1342,6 +1838,7 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 		if err := a.stateStore.SaveActiveOperation(OperationSnapshot{
 			Payload:     operation,
 			WorkerStage: OperationWorkerStageActive,
+			Scripts:     scripts,
 		}); err != nil {
 			return err
 		}
@@ -1349,12 +1846,36 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 
 	a.activeMu.Lock()
 	if current, ok := a.activeOperations[codespaceUUID]; ok {
-		if current.operationRVersion == operationRVersion && !current.running {
-			current.payload = operation
+		if current.operationRVersion == operationRVersion && current.payload == operation {
 			current.running = true
 			operationCtx := a.startLeaseLocked(ctx, codespaceUUID, current, leaseDuration)
 			a.activeMu.Unlock()
-			a.runOperation(operationCtx, operation)
+			a.runOperation(operationCtx, operation, scripts)
+			return nil
+		}
+		if current.operationRVersion == operationRVersion && !current.running {
+			current.payload = operation
+			if current.scripts.Init.Content == "" {
+				current.scripts = scripts
+			}
+			current.running = true
+			operationCtx := a.startLeaseLocked(ctx, codespaceUUID, current, leaseDuration)
+			a.activeMu.Unlock()
+			a.runOperation(operationCtx, operation, scripts)
+			return nil
+		}
+		if current.operationRVersion == operationRVersion && canAbortRunningOperation(current.payload, operation) {
+			if current.running {
+				current.payload = operation
+				a.stopLeaseLocked(current)
+			}
+			if current.scripts.Init.Content == "" {
+				current.scripts = scripts
+			}
+			current.running = true
+			operationCtx := a.startLeaseLocked(ctx, codespaceUUID, current, leaseDuration)
+			a.activeMu.Unlock()
+			a.runOperation(operationCtx, operation, scripts)
 			return nil
 		}
 		a.activeMu.Unlock()
@@ -1366,13 +1887,14 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 	operationContext := &operationContext{
 		operationRVersion: operationRVersion,
 		payload:           operation,
+		scripts:           scripts,
 		running:           true,
 	}
 	operationCtx := a.startLeaseLocked(ctx, codespaceUUID, operationContext, leaseDuration)
 	a.activeOperations[codespaceUUID] = operationContext
 	a.activeMu.Unlock()
 
-	a.runOperation(operationCtx, operation)
+	a.runOperation(operationCtx, operation, scripts)
 	return nil
 }
 
@@ -1393,32 +1915,33 @@ func (a *Agent) resumeRenewedOperation(ctx context.Context, lease *codespacev1.R
 	}
 	current.running = true
 	payload := current.payload
+	scripts := current.scripts
 	operationCtx := a.startLeaseLocked(ctx, lease.GetCodespaceUuid(), current, leaseDuration)
 	a.activeMu.Unlock()
 
-	a.runOperation(operationCtx, payload)
+	a.runOperation(operationCtx, payload, scripts)
 	return nil
 }
 
-func (a *Agent) runOperation(ctx context.Context, operation *codespacev1.OperationPayload) {
+func (a *Agent) runOperation(ctx context.Context, operation *codespacev1.OperationPayload, scripts provisioner.ScriptSnapshot) {
 	codespaceUUID := operation.GetCodespaceUuid()
 	operationRVersion := operation.GetOperationRversion()
 	go func() {
-		if err := a.handleOperation(ctx, operation); err != nil {
+		if err := a.handleOperation(ctx, operation, scripts); err != nil {
 			critical := isManagerCriticalError(err)
 			if ctx.Err() != nil && isStartupOperation(operation) {
 				if stopErr := a.provisioner.Stop(context.Background(), runtimeInstanceName(codespaceUUID)); stopErr != nil {
 					log.Printf("stop paused operation %s version %d: %v", codespaceUUID, operationRVersion, stopErr)
 				}
 			}
-			a.pauseOperation(codespaceUUID, operationRVersion)
+			a.pauseOperation(codespaceUUID, operationRVersion, operation)
 			log.Printf("handle operation %s version %d: %v", codespaceUUID, operationRVersion, err)
 			if critical {
 				a.reportCriticalError(fmt.Errorf("operation %s version %d: %w", codespaceUUID, operationRVersion, err))
 			}
 			return
 		}
-		a.finishOperation(codespaceUUID, operationRVersion)
+		a.finishOperation(codespaceUUID, operationRVersion, operation)
 	}()
 }
 
@@ -1429,31 +1952,35 @@ func (a *Agent) reportCriticalError(err error) {
 	}
 }
 
-func (a *Agent) finishOperation(codespaceUUID string, operationRVersion int64) {
-	if a.stateStore != nil {
+func (a *Agent) finishOperation(codespaceUUID string, operationRVersion int64, operation *codespacev1.OperationPayload) {
+	a.activeMu.Lock()
+	matched := false
+	if current, ok := a.activeOperations[codespaceUUID]; ok && current.operationRVersion == operationRVersion && current.payload == operation {
+		a.stopLeaseLocked(current)
+		delete(a.activeOperations, codespaceUUID)
+		matched = true
+	}
+	a.activeMu.Unlock()
+
+	if matched && a.stateStore != nil {
 		if err := a.stateStore.DeleteActiveOperation(codespaceUUID, operationRVersion); err != nil {
 			log.Printf("delete operation state %s version %d: %v", codespaceUUID, operationRVersion, err)
 		}
 	}
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	if current, ok := a.activeOperations[codespaceUUID]; ok && current.operationRVersion == operationRVersion {
-		a.stopLeaseLocked(current)
-		delete(a.activeOperations, codespaceUUID)
-	}
 }
 
-func (a *Agent) pauseOperation(codespaceUUID string, operationRVersion int64) {
+func (a *Agent) pauseOperation(codespaceUUID string, operationRVersion int64, operation *codespacev1.OperationPayload) {
 	a.activeMu.Lock()
 	current, ok := a.activeOperations[codespaceUUID]
-	if ok && current.operationRVersion == operationRVersion {
+	if ok && current.operationRVersion == operationRVersion && current.payload == operation {
 		a.stopLeaseLocked(current)
 		current.running = false
 	}
 	var payload *codespacev1.OperationPayload
-	if ok && current.operationRVersion == operationRVersion {
+	var scripts provisioner.ScriptSnapshot
+	if ok && current.operationRVersion == operationRVersion && current.payload == operation {
 		payload = current.payload
+		scripts = current.scripts
 	}
 	a.activeMu.Unlock()
 
@@ -1461,6 +1988,7 @@ func (a *Agent) pauseOperation(codespaceUUID string, operationRVersion int64) {
 		if err := a.stateStore.SaveActiveOperation(OperationSnapshot{
 			Payload:     payload,
 			WorkerStage: OperationWorkerStageLeasePaused,
+			Scripts:     scripts,
 		}); err != nil {
 			log.Printf("pause operation state %s version %d: %v", codespaceUUID, operationRVersion, err)
 		}
@@ -1471,10 +1999,12 @@ func (a *Agent) startLeaseLocked(ctx context.Context, codespaceUUID string, oper
 	a.stopLeaseLocked(operation)
 	operationCtx, cancel := context.WithCancel(ctx)
 	operation.cancel = cancel
-	operation.leaseTimer = time.AfterFunc(leaseDuration, func() {
-		log.Printf("operation %s version %d local lease expired", codespaceUUID, operation.operationRVersion)
-		cancel()
-	})
+	if leaseDuration > 0 {
+		operation.leaseTimer = time.AfterFunc(leaseDuration, func() {
+			log.Printf("operation %s version %d local lease expired", codespaceUUID, operation.operationRVersion)
+			cancel()
+		})
+	}
 	return operationCtx
 }
 
@@ -1514,7 +2044,14 @@ func leaseDurationFromRequestStart(requestStarted time.Time, leaseMillis int64) 
 	return duration
 }
 
-func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.OperationPayload) error {
+func operationLeaseDurationFromRequestStart(requestStarted time.Time, operation *codespacev1.OperationPayload) time.Duration {
+	if isAbortOperation(operation) {
+		return 0
+	}
+	return leaseDurationFromRequestStart(requestStarted, operation.GetLeaseValidForMilliseconds())
+}
+
+func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.OperationPayload, scripts provisioner.ScriptSnapshot) error {
 	if err := a.updateLog(ctx, operation, "operation started"); err != nil {
 		return err
 	}
@@ -1522,9 +2059,9 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	var err error
 	switch command := operation.GetCommand().(type) {
 	case *codespacev1.OperationPayload_Create:
-		err = a.handleCreate(ctx, operation, command.Create)
+		err = a.handleCreate(ctx, operation, command.Create, scripts)
 	case *codespacev1.OperationPayload_Resume:
-		err = a.handleResume(ctx, operation, command.Resume)
+		err = a.handleResume(ctx, operation, command.Resume, scripts)
 	case *codespacev1.OperationPayload_Stop:
 		err = a.handleStop(ctx, operation)
 	case *codespacev1.OperationPayload_Delete:
@@ -1538,11 +2075,24 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	}
 
 	finalStatus := codespacev1.FinalStatus_FINAL_STATUS_DONE
+	if isAbortOperation(operation) {
+		finalStatus = codespacev1.FinalStatus_FINAL_STATUS_FAILED
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if isManagerCriticalError(err) {
+			return err
+		}
+		if isStartupOperation(operation) && isRuntimeMetadataHardFailure(err) {
+			return a.handleRuntimeMetadataHardFailure(ctx, operation, err)
+		}
+		if provisioner.IsRecoverableScriptFailure(err) {
+			if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
+				return logErr
+			}
+			a.closeCodespaceAccess(operation.GetCodespaceUuid())
 			return err
 		}
 		if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
@@ -1583,17 +2133,46 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	return nil
 }
 
+func (a *Agent) handleRuntimeMetadataHardFailure(ctx context.Context, operation *codespacev1.OperationPayload, err error) error {
+	codespaceUUID := operation.GetCodespaceUuid()
+	if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
+		return logErr
+	}
+	a.closeCodespaceAccess(codespaceUUID)
+	outcome, finalizeErr := a.finalize(ctx, operation, codespacev1.FinalStatus_FINAL_STATUS_FAILED, operationType(operation))
+	if finalizeErr != nil {
+		return finalizeErr
+	}
+	if outcome == finalizeOutcomeResourceAbsent {
+		a.handleResourceAbsentFinal(ctx, operation)
+	}
+	if err := a.saveCleanupPending(codespaceUUID); err != nil {
+		return err
+	}
+	if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
+		return err
+	}
+	return nil
+}
+
+func isRuntimeMetadataHardFailure(err error) bool {
+	switch failureCategory(err) {
+	case failureGenerationConflict, failureVersionExhausted:
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *Agent) handleResourceAbsentFinal(ctx context.Context, operation *codespacev1.OperationPayload) {
 	if ctx.Err() != nil {
 		return
 	}
-	a.finishOperation(operation.GetCodespaceUuid(), operation.GetOperationRversion())
+	a.finishOperation(operation.GetCodespaceUuid(), operation.GetOperationRversion(), operation)
 	a.triggerResourceAbsentInventory(context.Background(), operation)
 }
 
-func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.CreateOperationPayload) error {
-	a.applyRuntimeSettings(operation.GetCodespaceUuid(), payload.GetRuntimeSettings(), time.Now())
-	startedUnix := time.Now().Unix()
+func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.CreateOperationPayload, scripts provisioner.ScriptSnapshot) error {
 	instance, err := a.provisioner.CreateOrStart(ctx, provisioner.InstanceSpec{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		Name:          runtimeInstanceName(operation.GetCodespaceUuid()),
@@ -1603,62 +2182,12 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
-		return err
-	}
-	token, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid())
-	if err != nil {
-		return err
-	}
-	runtimeToken, err := a.prepareRuntimeCredential(operation.GetCodespaceUuid())
-	if err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageInitializeSystem, startedUnix); err != nil {
-		return err
-	}
-	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
-		CodespaceUUID: operation.GetCodespaceUuid(),
-		GiteaToken:    token.GetToken(),
-		RuntimeToken:  runtimeToken,
-	}); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
-		return err
-	}
-	if err := a.provisioner.Bootstrap(ctx, instance.Name, provisioner.BootstrapRequest{
-		CodespaceUUID:     operation.GetCodespaceUuid(),
-		GiteaToken:        token.GetToken(),
-		RuntimeToken:      runtimeToken,
-		RuntimeAPIBaseURL: a.config.RuntimeAPIBaseURL,
-		ServerURL:         token.GetServerUrl(),
-		RepoCloneHTTPURL:  payload.GetRepoCloneHttpUrl(),
-		RepoCloneSSHURL:   payload.GetRepoCloneSshUrl(),
-		RepoFullName:      payload.GetRepoFullName(),
-		StartRef:          payload.GetStartRef(),
-		CommitSHA:         payload.GetCommitSha(),
-		Workdir:           instance.Workdir,
-		GitProtocol:       payload.GetGitProtocol().String(),
-	}); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePublishRuntime, startedUnix); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
-		return err
-	}
-	a.markRuntimeReady(operation.GetCodespaceUuid())
-	return nil
+	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(giteaToken string) provisioner.BootstrapRequest {
+		return a.createBootstrapRequest(operation, payload, instance, giteaToken, scripts)
+	})
 }
 
-func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.ResumeOperationPayload) error {
-	a.applyRuntimeSettings(operation.GetCodespaceUuid(), payload.GetRuntimeSettings(), time.Now())
-	startedUnix := time.Now().Unix()
+func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.ResumeOperationPayload, scripts provisioner.ScriptSnapshot) error {
 	instance, err := a.provisioner.StartExisting(ctx, provisioner.InstanceSpec{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		Name:          runtimeInstanceName(operation.GetCodespaceUuid()),
@@ -1666,14 +2195,33 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
+	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, func(giteaToken string) provisioner.BootstrapRequest {
+		return a.resumeBootstrapRequest(operation, instance, giteaToken, scripts)
+	})
+}
+
+func (a *Agent) runStartupOperation(
+	ctx context.Context,
+	operation *codespacev1.OperationPayload,
+	settings *codespacev1.EffectiveCodespaceRuntimeSettings,
+	instance *provisioner.Instance,
+	newBootstrapRequest func(giteaToken string) provisioner.BootstrapRequest,
+) error {
+	codespaceUUID := operation.GetCodespaceUuid()
+	a.applyRuntimeSettings(codespaceUUID, settings, time.Now())
+	startedUnix := time.Now().Unix()
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
 		return err
 	}
-	token, err := a.requestGiteaToken(ctx, operation.GetCodespaceUuid())
+	request := newBootstrapRequest("")
+	identity, err := a.provisioner.InitializeSystem(ctx, instance.Name, request)
 	if err != nil {
 		return err
 	}
-	runtimeToken, err := a.prepareRuntimeCredential(operation.GetCodespaceUuid())
+	if err := a.saveScriptEnvironment(codespaceUUID, identity.SharedEnv); err != nil {
+		return err
+	}
+	token, err := a.requestGiteaToken(ctx, codespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -1681,16 +2229,43 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 		return err
 	}
 	if err := a.provisioner.WriteCredentials(ctx, instance.Name, provisioner.CredentialRequest{
-		CodespaceUUID: operation.GetCodespaceUuid(),
+		CodespaceUUID: codespaceUUID,
 		GiteaToken:    token.GetToken(),
-		RuntimeToken:  runtimeToken,
+		UID:           identity.UID,
+		GID:           identity.GID,
 	}); err != nil {
+		return err
+	}
+	if err := a.ensureRuntimeGitSSHKey(ctx, codespaceUUID, instance.Name, identity); err != nil {
 		return err
 	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
 		return err
 	}
+	request = newBootstrapRequest(token.GetToken())
+	request.ServerURL = token.GetServerUrl()
+	workspace, err := a.provisioner.PrepareWorkspace(ctx, instance.Name, request)
+	if err != nil {
+		return err
+	}
+	instance.Workdir = workspace.Workdir
+	if err := a.saveScriptEnvironment(codespaceUUID, workspace.SharedEnv); err != nil {
+		return err
+	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
+		return err
+	}
+	access, err := a.provisioner.ActivateRuntime(ctx, instance.Name, request)
+	if err != nil {
+		return err
+	}
+	if err := a.saveScriptEnvironment(codespaceUUID, access.SharedEnv); err != nil {
+		return err
+	}
+	if err := a.validateRuntimeReady(ctx, codespaceUUID, instance); err != nil {
+		return err
+	}
+	if err := a.syncRuntimeEndpointManifest(ctx, codespaceUUID, instance); err != nil {
 		return err
 	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePublishRuntime, startedUnix); err != nil {
@@ -1699,7 +2274,226 @@ func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.Operati
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
 		return err
 	}
-	a.markRuntimeReady(operation.GetCodespaceUuid())
+	a.markRuntimeReady(codespaceUUID)
+	return nil
+}
+
+func (a *Agent) createBootstrapRequest(
+	operation *codespacev1.OperationPayload,
+	payload *codespacev1.CreateOperationPayload,
+	instance *provisioner.Instance,
+	giteaToken string,
+	scripts provisioner.ScriptSnapshot,
+) provisioner.BootstrapRequest {
+	return provisioner.BootstrapRequest{
+		CodespaceUUID:      operation.GetCodespaceUuid(),
+		CodespaceName:      runtimeInstanceName(operation.GetCodespaceUuid()),
+		CodespaceOwnerName: payload.GetCodespaceOwnerName(),
+		GiteaToken:         giteaToken,
+		RepoCloneHTTPURL:   payload.GetRepoCloneHttpUrl(),
+		RepoCloneSSHURL:    payload.GetRepoCloneSshUrl(),
+		RepoWebURL:         payload.GetRepoWebUrl(),
+		RepoID:             payload.GetRepoId(),
+		RepoFullName:       payload.GetRepoFullName(),
+		RepoName:           payload.GetRepoName(),
+		OwnerID:            payload.GetOwnerId(),
+		OwnerName:          payload.GetOwnerName(),
+		OwnerType:          payload.GetOwnerType(),
+		OwnerDisplayName:   payload.GetOwnerDisplayName(),
+		StartRef:           payload.GetStartRef(),
+		RefType:            payload.GetRefType(),
+		RefName:            payload.GetRefName(),
+		CommitSHA:          payload.GetCommitSha(),
+		Workdir:            instance.Workdir,
+		GitProtocol:        gitProtocolName(payload.GetGitProtocol()),
+		Operation:          provisioner.ScriptOperationCreate,
+		Scripts:            scripts,
+	}
+}
+
+func (a *Agent) resumeBootstrapRequest(
+	operation *codespacev1.OperationPayload,
+	instance *provisioner.Instance,
+	giteaToken string,
+	scripts provisioner.ScriptSnapshot,
+) provisioner.BootstrapRequest {
+	return provisioner.BootstrapRequest{
+		CodespaceUUID: operation.GetCodespaceUuid(),
+		CodespaceName: runtimeInstanceName(operation.GetCodespaceUuid()),
+		GiteaToken:    giteaToken,
+		Workdir:       instance.Workdir,
+		Operation:     provisioner.ScriptOperationResume,
+		Scripts:       scripts,
+	}
+}
+
+func gitProtocolName(protocol codespacev1.GitProtocol) string {
+	switch protocol {
+	case codespacev1.GitProtocol_GIT_PROTOCOL_SSH:
+		return "ssh"
+	default:
+		return "http"
+	}
+}
+
+func (a *Agent) ensureRuntimeGitSSHKey(ctx context.Context, codespaceUUID, instanceName string, identity provisioner.SystemIdentity) error {
+	key, err := a.provisioner.EnsureGitSSHKey(ctx, instanceName, provisioner.GitSSHKeyRequest{
+		UID: identity.UID,
+		GID: identity.GID,
+	})
+	if err != nil {
+		return fmt.Errorf("ensure runtime git ssh key %s: %w", codespaceUUID, err)
+	}
+	publicKey, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(key.PublicKey)))
+	if err != nil {
+		return fmt.Errorf("parse runtime git ssh public key %s: %w", codespaceUUID, err)
+	}
+	lines, err := a.ensureCodespaceGitSSHKey(ctx, codespaceUUID, publicKey.Marshal())
+	if err != nil {
+		return err
+	}
+	if err := a.provisioner.WriteGitSSHKnownHosts(ctx, instanceName, lines, provisioner.GitSSHKeyRequest{
+		UID: identity.UID,
+		GID: identity.GID,
+	}); err != nil {
+		return fmt.Errorf("write runtime git ssh known hosts %s: %w", codespaceUUID, err)
+	}
+	return nil
+}
+
+func (a *Agent) ensureCodespaceGitSSHKey(ctx context.Context, codespaceUUID string, publicKey []byte) ([]string, error) {
+	request := connect.NewRequest(&codespacev1.EnsureCodespaceGitSSHKeyRequest{
+		ProtocolVersion: protocolVersion,
+		CodespaceUuid:   codespaceUUID,
+		PublicKey:       publicKey,
+	})
+	a.setManagerAuth(request.Header())
+	response, err := a.client.EnsureCodespaceGitSSHKey(ctx, request)
+	if err != nil {
+		return nil, fmt.Errorf("ensure codespace git ssh key rpc: %w", err)
+	}
+	return append([]string(nil), response.Msg.GetKnownHostsLines()...), nil
+}
+
+func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID string, instance *provisioner.Instance) error {
+	if a.endpointApplier == nil {
+		return nil
+	}
+	if instance == nil {
+		return fmt.Errorf("runtime instance is required")
+	}
+	host, err := a.runtimeEndpointHost(ctx, codespaceUUID, instance)
+	if err != nil {
+		return err
+	}
+	declarations, err := a.provisioner.ReadEndpointManifest(ctx, instance.Name)
+	if err != nil {
+		return fmt.Errorf("read runtime endpoint manifest: %w", err)
+	}
+	routes := make([]RuntimeEndpointRoute, 0, len(declarations))
+	for _, declaration := range declarations {
+		if declaration.UpstreamPort < 1 || declaration.UpstreamPort > 65535 {
+			return fmt.Errorf("endpoint %s upstream_port is invalid", declaration.EndpointID)
+		}
+		routes = append(routes, RuntimeEndpointRoute{
+			CodespaceUUID:  codespaceUUID,
+			EndpointID:     declaration.EndpointID,
+			Label:          declaration.Label,
+			UpstreamScheme: declaration.UpstreamScheme,
+			UpstreamHost:   net.JoinHostPort(host, fmt.Sprintf("%d", declaration.UpstreamPort)),
+			Public:         declaration.Public,
+		})
+	}
+	if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
+		return fmt.Errorf("apply runtime endpoint routes: %w", err)
+	}
+	return nil
+}
+
+func (a *Agent) runtimeEndpointHost(ctx context.Context, codespaceUUID string, instance *provisioner.Instance) (string, error) {
+	host := strings.TrimSpace(instance.CommunicationHost)
+	if host != "" {
+		return host, nil
+	}
+	instances, err := a.provisioner.ListInstances(ctx)
+	if err != nil {
+		return "", fmt.Errorf("list instances for endpoint host: %w", err)
+	}
+	for _, candidate := range instances {
+		if candidate == nil || candidate.CodespaceUUID != codespaceUUID {
+			continue
+		}
+		host = strings.TrimSpace(candidate.CommunicationHost)
+		if host != "" {
+			return host, nil
+		}
+	}
+	return "", fmt.Errorf("runtime communication host is unavailable")
+}
+
+func (a *Agent) saveScriptEnvironment(codespaceUUID string, environment map[string]string) error {
+	if a.scriptEnvStateStore == nil {
+		return nil
+	}
+	if err := a.scriptEnvStateStore.SaveScriptEnvironment(codespaceUUID, environment); err != nil {
+		return &categorizedError{
+			category: failureLocalStateCommit,
+			message:  fmt.Sprintf("save script environment %s: %v", codespaceUUID, err),
+		}
+	}
+	return nil
+}
+
+func (a *Agent) validateRuntimeWorkspaceAccess(ctx context.Context, instance *provisioner.Instance) error {
+	if instance == nil {
+		return fmt.Errorf("runtime instance is nil")
+	}
+	checker, ok := a.provisioner.(workspaceAccessChecker)
+	if !ok {
+		return nil
+	}
+	return a.checkRuntimeWorkspaceAccess(ctx, checker, RuntimeMetadataSnapshot{
+		InstanceName: instance.Name,
+		Workdir:      instance.Workdir,
+	})
+}
+
+func (a *Agent) validateRuntimeReady(ctx context.Context, codespaceUUID string, instance *provisioner.Instance) error {
+	if instance == nil {
+		return fmt.Errorf("runtime instance is nil")
+	}
+	if !filepath.IsAbs(strings.TrimSpace(instance.Workdir)) {
+		return fmt.Errorf("runtime workspace path must be absolute")
+	}
+	if err := a.validateRuntimeWorkspaceAccess(ctx, instance); err != nil {
+		return err
+	}
+	checker, ok := a.provisioner.(workspaceGitChecker)
+	if !ok {
+		return nil
+	}
+	status, err := checker.CheckWorkspaceGit(ctx, instance.Name, instance.Workdir)
+	if err != nil {
+		return fmt.Errorf("check workspace git %s: %w", codespaceUUID, err)
+	}
+	if !status.CredentialConfigured {
+		return fmt.Errorf("workspace git credentials are not configured for origin %q", status.OriginURL)
+	}
+	return nil
+}
+
+func (a *Agent) checkRuntimeWorkspaceAccess(ctx context.Context, checker workspaceAccessChecker, snapshot RuntimeMetadataSnapshot) error {
+	instanceName := strings.TrimSpace(snapshot.InstanceName)
+	if instanceName == "" {
+		return fmt.Errorf("runtime instance name is missing")
+	}
+	workdir := strings.TrimSpace(snapshot.Workdir)
+	if !filepath.IsAbs(workdir) {
+		return fmt.Errorf("runtime workspace path must be absolute")
+	}
+	if err := checker.CheckWorkspaceAccess(ctx, instanceName, workdir); err != nil {
+		return fmt.Errorf("check workspace access %s: %w", snapshot.CodespaceUUID, err)
+	}
 	return nil
 }
 
@@ -1744,28 +2538,6 @@ func (a *Agent) requestGiteaToken(ctx context.Context, codespaceUUID string) (*c
 		return nil, fmt.Errorf("request gitea token rpc: %w", err)
 	}
 	return response.Msg, nil
-}
-
-func (a *Agent) prepareRuntimeCredential(codespaceUUID string) (string, error) {
-	token, err := newRuntimeToken()
-	if err != nil {
-		return "", err
-	}
-	if a.credentialStore == nil {
-		return token, nil
-	}
-	if err := a.credentialStore.SaveRuntimeCredential(codespaceUUID, token); err != nil {
-		return "", fmt.Errorf("save runtime credential: %w", err)
-	}
-	return token, nil
-}
-
-func newRuntimeToken() (string, error) {
-	var random [32]byte
-	if _, err := rand.Read(random[:]); err != nil {
-		return "", fmt.Errorf("generate runtime token: %w", err)
-	}
-	return base64.RawURLEncoding.EncodeToString(random[:]), nil
 }
 
 func (a *Agent) requestIdleStop(
@@ -1832,19 +2604,21 @@ func (a *Agent) reportBootMetadata(
 	snapshot := RuntimeMetadataSnapshot{
 		CodespaceUUID:      operation.GetCodespaceUuid(),
 		MetadataGeneration: a.nextRuntimeMetadataGeneration(),
-		InternalSSH: RuntimeMetadataInternalSSH{
-			Host:               instance.InternalSSHHost,
-			Port:               instance.InternalSSHPort,
-			User:               instance.InternalSSHUser,
-			AuthMode:           instance.InternalSSHAuthMode,
-			HostKeyFingerprint: instance.InternalSSHFingerprint,
-		},
+		InstanceName:       instance.Name,
+		Workdir:            instance.Workdir,
 		Boot: RuntimeMetadataBoot{
 			OperationRVersion: operation.GetOperationRversion(),
 			Stage:             stage,
 			StartedUnix:       startedUnix,
 			LastUpdateUnix:    now,
 		},
+	}
+	if a.provisioner != nil {
+		if usage, err := a.provisioner.RuntimeResourceUsage(ctx, instance.Name); err == nil {
+			snapshot.ResourceUsage = usage
+		} else {
+			log.Printf("sample runtime resource usage %s: %v", operation.GetCodespaceUuid(), err)
+		}
 	}
 	if a.metadataStateStore != nil {
 		if err := a.metadataStateStore.SaveRuntimeMetadataSnapshot(snapshot); err != nil {
@@ -1872,70 +2646,21 @@ func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.
 }
 
 func (a *Agent) publishRuntimeMetadataDirect(ctx context.Context, snapshot RuntimeMetadataSnapshot) error {
-	metadataJSON, err := RuntimeMetadataJSON(snapshot, nil)
+	metadata, err := RuntimeMetadataProto(snapshot, nil)
 	if err != nil {
 		return err
 	}
 	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
 		ProtocolVersion:    protocolVersion,
 		CodespaceUuid:      snapshot.CodespaceUUID,
-		MetadataJson:       metadataJSON,
 		MetadataGeneration: snapshot.MetadataGeneration,
+		Metadata:           metadata,
 	})
 	a.setManagerAuth(request.Header())
 	if _, err := a.client.ReportRuntimeMetadata(ctx, request); err != nil {
 		return fmt.Errorf("report runtime metadata rpc: %w", err)
 	}
 	return nil
-}
-
-// RuntimeMetadataJSON encodes one runtime metadata snapshot for ReportRuntimeMetadata.
-func RuntimeMetadataJSON(snapshot RuntimeMetadataSnapshot, endpoints []map[string]any) (string, error) {
-	metadata := runtimeMetadataPayload(snapshot, endpoints)
-	encoded, err := json.Marshal(metadata)
-	if err != nil {
-		return "", fmt.Errorf("encode runtime metadata: %w", err)
-	}
-	return string(encoded), nil
-}
-
-func runtimeMetadataPayload(snapshot RuntimeMetadataSnapshot, endpoints []map[string]any) map[string]any {
-	if endpoints == nil {
-		endpoints = []map[string]any{}
-	}
-	return map[string]any{
-		"runtime":   runtimeMetadataRuntimePayload(snapshot.InternalSSH),
-		"endpoints": endpoints,
-		"boot": map[string]any{
-			"stage":              snapshot.Boot.Stage,
-			"operation_rversion": snapshot.Boot.OperationRVersion,
-			"started_unix":       snapshot.Boot.StartedUnix,
-			"last_update_unix":   snapshot.Boot.LastUpdateUnix,
-		},
-	}
-}
-
-func runtimeMetadataRuntimePayload(internalSSH RuntimeMetadataInternalSSH) map[string]any {
-	payload := map[string]any{}
-	if !hasRuntimeMetadataInternalSSH(internalSSH) {
-		return payload
-	}
-	payload["internal_ssh"] = map[string]any{
-		"host":                 internalSSH.Host,
-		"port":                 internalSSH.Port,
-		"user":                 internalSSH.User,
-		"auth_mode":            internalSSH.AuthMode,
-		"host_key_fingerprint": internalSSH.HostKeyFingerprint,
-	}
-	return payload
-}
-
-func hasRuntimeMetadataInternalSSH(internalSSH RuntimeMetadataInternalSSH) bool {
-	return strings.TrimSpace(internalSSH.Host) != "" ||
-		internalSSH.Port != 0 ||
-		strings.TrimSpace(internalSSH.User) != "" ||
-		strings.TrimSpace(internalSSH.AuthMode) != "" ||
-		strings.TrimSpace(internalSSH.HostKeyFingerprint) != ""
 }
 
 func (a *Agent) nextRuntimeMetadataGeneration() int64 {
@@ -2091,6 +2816,29 @@ func isStartupOperation(operation *codespacev1.OperationPayload) bool {
 		*codespacev1.OperationPayload_AbortCreate,
 		*codespacev1.OperationPayload_AbortResume:
 		return true
+	default:
+		return false
+	}
+}
+
+func isAbortOperation(operation *codespacev1.OperationPayload) bool {
+	switch operation.GetCommand().(type) {
+	case *codespacev1.OperationPayload_AbortCreate,
+		*codespacev1.OperationPayload_AbortResume:
+		return true
+	default:
+		return false
+	}
+}
+
+func canAbortRunningOperation(current, next *codespacev1.OperationPayload) bool {
+	switch current.GetCommand().(type) {
+	case *codespacev1.OperationPayload_Create:
+		_, ok := next.GetCommand().(*codespacev1.OperationPayload_AbortCreate)
+		return ok
+	case *codespacev1.OperationPayload_Resume:
+		_, ok := next.GetCommand().(*codespacev1.OperationPayload_AbortResume)
+		return ok
 	default:
 		return false
 	}

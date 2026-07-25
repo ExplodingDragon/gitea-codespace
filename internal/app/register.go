@@ -9,15 +9,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"path/filepath"
 	"strings"
+	"time"
 
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
 
-// Register registers the manager with Gitea and writes codespace.yaml.
+// Register registers the manager with Gitea and writes the state directory.
 func Register(output io.Writer, input io.Reader, configPath string) error {
 	if output == nil {
 		return fmt.Errorf("output is nil")
@@ -34,7 +34,7 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	}
 
 	reader := bufio.NewReader(input)
-	giteaURL, err := promptRequired(output, reader, "Gitea URL", config.Gitea.URL)
+	giteaURL, err := promptRequired(output, reader, "Gitea URL", "")
 	if err != nil {
 		return err
 	}
@@ -42,18 +42,13 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if err != nil {
 		return err
 	}
-	managerName, err := promptRequired(output, reader, "Manager name", config.Manager.Name)
-	if err != nil {
-		return err
-	}
 
-	config.Gitea.URL = strings.TrimRight(giteaURL, "/")
-	config.Manager.Name = managerName
+	giteaURL = strings.TrimRight(strings.TrimSpace(giteaURL), "/")
 	if strings.TrimSpace(config.Manager.GatewayURL) == "" {
 		config.Manager.GatewayURL = config.Server.PublicBaseURL
 	}
 
-	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, config.Gitea.URL)
+	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, giteaURL)
 	ctx, cancel := context.WithTimeout(context.Background(), config.Manager.HTTPTimeout.ToStdlib())
 	defer cancel()
 	response, err := client.RegisterManager(ctx, connect.NewRequest(&codespacev1.RegisterManagerRequest{
@@ -64,8 +59,14 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		return fmt.Errorf("register manager rpc: %w", err)
 	}
 
+	if err := SaveManagerIdentity(config.Manager.StateDir, ManagerIdentity{
+		GiteaURL:       giteaURL,
+		ManagerID:      response.Msg.GetManagerId(),
+		RegisteredUnix: time.Now().Unix(),
+	}); err != nil {
+		return err
+	}
 	if err := SaveManagerCredentials(config.Manager.StateDir, ManagerCredentials{
-		ManagerID:     response.Msg.GetManagerId(),
 		ManagerSecret: response.Msg.GetManagerSecret(),
 	}); err != nil {
 		return err
@@ -77,16 +78,7 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		return err
 	}
 
-	savePath := configPath
-	if strings.TrimSpace(savePath) == "" {
-		savePath = defaultRegisterConfigPath
-	} else {
-		savePath = filepath.Join(filepath.Dir(savePath), defaultRegisterConfigPath)
-	}
-	if err := SaveRegisterConfig(savePath, config); err != nil {
-		return err
-	}
-	fmt.Fprintf(output, "registered manager %d and wrote %s\n", response.Msg.GetManagerId(), savePath)
+	fmt.Fprintf(output, "registered manager %d and wrote state %s\n", response.Msg.GetManagerId(), config.Manager.StateDir)
 	return nil
 }
 

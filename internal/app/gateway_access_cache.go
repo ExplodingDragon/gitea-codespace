@@ -13,7 +13,10 @@ import (
 
 var errGatewayAccessLimitReached = errors.New("gateway access limit reached")
 
-const defaultGatewaySessionRevalidateInterval = 5 * time.Minute
+const (
+	defaultGatewaySessionRevalidateInterval = 5 * time.Minute
+	defaultGatewayAccessCacheMaxKeys        = 65536
+)
 
 type gatewayAccessConfig struct {
 	allowedTTL                      time.Duration
@@ -60,6 +63,7 @@ type gatewayRequestReservation struct {
 type gatewayAccessCache struct {
 	mu      sync.Mutex
 	ttl     time.Duration
+	maxKeys int
 	allowed map[gatewayAuthorizationKey]time.Time
 }
 
@@ -345,8 +349,12 @@ func (c *gatewayAccessController) finishValidation(
 }
 
 func newGatewayAccessCache(ttl time.Duration) *gatewayAccessCache {
+	if ttl <= 0 {
+		ttl = time.Second
+	}
 	return &gatewayAccessCache{
 		ttl:     ttl,
+		maxKeys: defaultGatewayAccessCacheMaxKeys,
 		allowed: make(map[gatewayAuthorizationKey]time.Time),
 	}
 }
@@ -373,7 +381,35 @@ func (c *gatewayAccessCache) MarkAllowed(key gatewayAuthorizationKey, now time.T
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if _, exists := c.allowed[key]; !exists && c.maxKeys > 0 && len(c.allowed) >= c.maxKeys {
+		c.pruneExpiredLocked(now)
+		if len(c.allowed) >= c.maxKeys {
+			c.pruneOldestLocked()
+		}
+	}
 	c.allowed[key] = now.Add(c.ttl)
+}
+
+func (c *gatewayAccessCache) pruneExpiredLocked(now time.Time) {
+	for key, expires := range c.allowed {
+		if expires.IsZero() || !now.Before(expires) {
+			delete(c.allowed, key)
+		}
+	}
+}
+
+func (c *gatewayAccessCache) pruneOldestLocked() {
+	var oldestKey gatewayAuthorizationKey
+	var oldest time.Time
+	for key, expires := range c.allowed {
+		if oldest.IsZero() || expires.Before(oldest) {
+			oldestKey = key
+			oldest = expires
+		}
+	}
+	if !oldest.IsZero() {
+		delete(c.allowed, oldestKey)
+	}
 }
 
 func decrementGatewayCounter[K comparable](values map[K]int, key K) {

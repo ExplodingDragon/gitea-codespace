@@ -133,6 +133,46 @@ func TestGatewayRouteStoreCancelsLeasesForDelete(t *testing.T) {
 	assertGatewayRouteProxyCancelled(t, request)
 }
 
+func TestGatewayRouteStoreCancelsWorkspaceFallbackWhenRouteAppears(t *testing.T) {
+	t.Parallel()
+
+	store := newGatewayRouteStore()
+	sessions := newGatewaySessionRegistry()
+	store.SetSessionRegistry(sessions)
+	store.SetWorkspaceTerminal(newGatewayWorkspaceTerminal(nil, nil))
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	_, request, release, ok := store.BeginWorkspaceTerminal(httptest.NewRequest("GET", "/w/", nil), codespaceUUID)
+	if !ok {
+		t.Fatalf("begin workspace fallback failed")
+	}
+	defer release()
+	sessionID, err := sessions.Create(gatewayOpenTokenBinding{
+		userID:        42,
+		codespaceUUID: codespaceUUID,
+		endpointID:    "workspace",
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, "workspace", time.Now()); !ok {
+		t.Fatalf("session did not authenticate before route update")
+	}
+
+	if err := store.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "workspace",
+		label:          "Workspace",
+		upstreamScheme: "http",
+		upstreamHost:   "10.0.0.12:3000",
+	}); err != nil {
+		t.Fatalf("put workspace route: %v", err)
+	}
+	assertGatewayRouteProxyCancelled(t, request)
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, "workspace", time.Now()); ok {
+		t.Fatalf("session authenticated after workspace fallback route update")
+	}
+}
+
 func TestGatewayRouteStoreCloseCodespaceAccessCancelsLeasesAndSessions(t *testing.T) {
 	t.Parallel()
 

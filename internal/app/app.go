@@ -46,14 +46,16 @@ func Run(output io.Writer, configPath string) error {
 
 // RunWithConfig starts the Manager worker and the process health endpoint.
 func RunWithConfig(output io.Writer, config Config) error {
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return runWithConfigContext(ctx, output, config)
+}
+
+func runWithConfigContext(ctx context.Context, output io.Writer, config Config) error {
 	if output == nil {
 		return fmt.Errorf("output is nil")
 	}
 
-	credentials, err := LoadManagerCredentials(config.Manager.StateDir)
-	if err != nil {
-		return fmt.Errorf("load manager credentials: %w", err)
-	}
 	stateLock, err := acquireStateDirLock(config.Manager.StateDir)
 	if err != nil {
 		return fmt.Errorf("acquire manager state dir lock: %w", err)
@@ -63,41 +65,10 @@ func RunWithConfig(output io.Writer, config Config) error {
 			log.Printf("release manager state dir lock: %v", err)
 		}
 	}()
-	rootState, err := LoadManagerRootState(config.Manager.StateDir, credentials)
+
+	state, err := loadProcessState(config)
 	if err != nil {
-		return fmt.Errorf("load manager root state: %w", err)
-	}
-	if err := ValidateCodespaceStateFiles(config.Manager.StateDir); err != nil {
-		return fmt.Errorf("validate codespace state files: %w", err)
-	}
-	codespaceStateStore := NewCodespaceStateStore(config.Manager.StateDir)
-	initialOperations, err := codespaceStateStore.LoadActiveOperations()
-	if err != nil {
-		return fmt.Errorf("load codespace active operations: %w", err)
-	}
-	initialRuntimeGenerations, err := codespaceStateStore.LoadRuntimeGenerations()
-	if err != nil {
-		return fmt.Errorf("load codespace runtime generations: %w", err)
-	}
-	initialRuntimeTransitions, err := codespaceStateStore.LoadRuntimeTransitionPendings()
-	if err != nil {
-		return fmt.Errorf("load codespace runtime transitions: %w", err)
-	}
-	initialCleanupPendings, err := codespaceStateStore.LoadCleanupPendings()
-	if err != nil {
-		return fmt.Errorf("load codespace cleanup pendings: %w", err)
-	}
-	initialGatewayRoutes, err := codespaceStateStore.LoadGatewayRoutes()
-	if err != nil {
-		return fmt.Errorf("load codespace gateway routes: %w", err)
-	}
-	initialRuntimeMetadataUUIDs, err := codespaceStateStore.LoadRuntimeMetadataCodespaceUUIDs()
-	if err != nil {
-		return fmt.Errorf("load codespace runtime metadata snapshots: %w", err)
-	}
-	managerProvisioner, err := newProvisioner(config, credentials.ManagerID)
-	if err != nil {
-		return fmt.Errorf("create provisioner: %w", err)
+		return err
 	}
 
 	listeners, err := openProcessListeners(config)
@@ -106,100 +77,22 @@ func RunWithConfig(output io.Writer, config Config) error {
 	}
 	defer listeners.Close()
 
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	ctx, cancelProcess := context.WithCancel(ctx)
 	defer cancelProcess()
-	sessionRegistry := newGatewaySessionRegistry()
-	gatewayRoutes := newGatewayRouteStore()
-	gatewayRoutes.SetSessionRegistry(sessionRegistry)
-	for _, route := range initialGatewayRoutes {
-		if err := gatewayRoutes.Put(route); err != nil {
-			return fmt.Errorf("load gateway route %s/%s: %w", route.codespaceUUID, route.endpointID, err)
-		}
-	}
-	gatewayAccess := newGatewayAccessControllerFromConfig(config.Gateway)
-	gatewayBrowserAuth := newGatewayBrowserAuth()
-	gatewayOrigin, err := newGatewayOriginPolicy(config.Manager.GatewayURL)
+
+	runtime, err := newProcessRuntime(ctx, config, state)
 	if err != nil {
-		return fmt.Errorf("configure gateway origin: %w", err)
-	}
-	gatewayControlPlane := newGatewayControlPlane(
-		strings.TrimRight(config.Gitea.URL, "/"),
-		credentials.ManagerID,
-		credentials.ManagerSecret,
-		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
-	)
-	runtimeMetadataPublisher := newRuntimeMetadataPublisher(codespaceStateStore, gatewayControlPlane, 0)
-	runtimeMetadataPublisher.Run(ctx, initialRuntimeMetadataUUIDs)
-	managerServiceSettings := managerServiceSettingsStores{
-		gatewayBrowserAuth,
-		runtimeMetadataPublisher,
+		return err
 	}
 
-	agent := manager.New(manager.AgentConfig{
-		BaseURL:                   strings.TrimRight(config.Gitea.URL, "/"),
-		ManagerID:                 credentials.ManagerID,
-		ManagerSecret:             credentials.ManagerSecret,
-		Name:                      config.Manager.Name,
-		GatewayURL:                config.Manager.GatewayURL,
-		GatewaySSHAddr:            config.Manager.GatewaySSHAddr,
-		GatewaySSHHostKeyAlgo:     config.Manager.GatewaySSHHostKeyAlgorithm,
-		GatewaySSHHostKeySHA256:   config.Manager.GatewaySSHHostKeyFingerprintSHA256,
-		GatewaySSHHostKeyUnix:     config.Manager.GatewaySSHHostKeyUpdatedUnix,
-		Version:                   config.Manager.Version,
-		Tags:                      append([]string(nil), config.Manager.Tags...),
-		PollInterval:              config.Manager.PollInterval.ToStdlib(),
-		DeclareInterval:           config.Manager.DeclareInterval.ToStdlib(),
-		CapacityTotal:             config.Manager.CapacityTotal,
-		CapacityAvailable:         config.Manager.CapacityAvailable,
-		CleanupCapacityAvailable:  config.Manager.CleanupCapacityAvailable,
-		MaxOperations:             config.Manager.MaxOperations,
-		HTTPTimeout:               config.Manager.HTTPTimeout.ToStdlib(),
-		RuntimeMetadataGeneration: 1,
-		InventoryGeneration:       rootState.InventoryGeneration,
-		InitialRuntimeGenerations: initialRuntimeGenerations,
-		InitialRuntimeTransitions: initialRuntimeTransitions,
-		InitialCleanupPendings:    initialCleanupPendings,
-		InitialOperations:         initialOperations,
-		OperationStateStore:       codespaceStateStore,
-		InventoryStateStore:       NewManagerRootStateStore(config.Manager.StateDir, credentials.ManagerID),
-		RuntimeStateStore:         codespaceStateStore,
-		CleanupStateStore:         codespaceStateStore,
-		RuntimeCredentialStore:    codespaceStateStore,
-		RuntimeMetadataStateStore: codespaceStateStore,
-		RuntimeMetadataPublisher:  runtimeMetadataPublisher,
-		RuntimeAPIBaseURL:         config.Server.RuntimeAPIURL,
-		SessionTracker:            sessionRegistry,
-		AccessController:          gatewayRoutes,
-		ManagerServiceSettings:    managerServiceSettings,
-	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
-
-	processHealth := newProcessHealth()
-	runtimeAPIServer := &http.Server{
-		Handler:           newRuntimeAPIHandler(processHealth, newRuntimeAPIService(codespaceStateStore, gatewayRoutes, gatewayControlPlane, runtimeSourceResolverFor(managerProvisioner), runtimeMetadataPublisher)),
-		ReadHeaderTimeout: 10 * time.Second,
-	}
-	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
-		processHealth,
-		sessionRegistry,
-		gatewayAccess,
-		gatewayControlPlane,
-		gatewayOrigin,
-		gatewayBrowserAuth,
-		gatewayRoutes,
-	))
-
-	errorChannel := make(chan error, 4)
-	go serveHTTP(ctx, errorChannel, "runtime api", runtimeAPIServer, listeners.RuntimeAPI)
-	go serveHTTP(ctx, errorChannel, "gateway http", gatewayServer, listeners.GatewayHTTP)
-	go serveSSH(ctx, errorChannel, listeners.GatewaySSH)
-	fmt.Fprintf(output, "codespace runtime api listening on %s\n", listeners.RuntimeAPI.Addr())
+	errorChannel := make(chan error, 3)
+	go serveHTTP(ctx, errorChannel, "gateway http", runtime.gatewayServer, listeners.GatewayHTTP)
+	go serveSSH(ctx, errorChannel, listeners.GatewaySSH, runtime.gatewaySSHServer)
 	fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
 	fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
 
 	go func() {
-		if err := agent.Run(ctx); err != nil {
+		if err := runtime.agent.Run(ctx); err != nil {
 			errorChannel <- fmt.Errorf("manager: %w", err)
 		}
 	}()
@@ -211,32 +104,217 @@ func RunWithConfig(output io.Writer, config Config) error {
 		runErr = err
 		cancelProcess()
 	}
-	processHealth.Fail()
+	runtime.processHealth.Fail()
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), config.Server.ShutdownTimeout.ToStdlib())
 	defer cancel()
-	if err := runtimeAPIServer.Shutdown(shutdownContext); err != nil {
-		return fmt.Errorf("shutdown runtime api server: %w", err)
-	}
-	if err := gatewayServer.Shutdown(shutdownContext); err != nil {
+	if err := runtime.gatewayServer.Shutdown(shutdownContext); err != nil {
 		return fmt.Errorf("shutdown gateway server: %w", err)
 	}
 	listeners.Close()
 	return runErr
 }
 
+type processStateSnapshot struct {
+	identity                    ManagerIdentity
+	credentials                 ManagerCredentials
+	rootState                   ManagerRootState
+	codespaceStateStore         *CodespaceStateStore
+	initialOperations           []manager.OperationSnapshot
+	initialRuntimeGenerations   map[string]int64
+	initialRuntimeTransitions   []manager.RuntimeTransitionSnapshot
+	initialCleanupPendings      []string
+	initialGatewayRoutes        []gatewayEndpointRoute
+	initialRuntimeMetadataUUIDs []string
+	gatewaySSHHostKey           gatewaySSHHostKey
+	scriptSnapshot              provisioner.ScriptSnapshot
+}
+
+func loadProcessState(config Config) (processStateSnapshot, error) {
+	identity, err := LoadManagerIdentity(config.Manager.StateDir)
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load manager identity: %w", err)
+	}
+	credentials, err := LoadManagerCredentials(config.Manager.StateDir)
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load manager credentials: %w", err)
+	}
+	rootState, err := LoadManagerRootState(config.Manager.StateDir, identity)
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load manager root state: %w", err)
+	}
+	if err := ValidateCodespaceStateFiles(config.Manager.StateDir); err != nil {
+		return processStateSnapshot{}, fmt.Errorf("validate codespace state files: %w", err)
+	}
+	codespaceStateStore := NewCodespaceStateStore(config.Manager.StateDir)
+	initialOperations, err := codespaceStateStore.LoadActiveOperations()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace active operations: %w", err)
+	}
+	initialRuntimeGenerations, err := codespaceStateStore.LoadRuntimeGenerations()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace runtime generations: %w", err)
+	}
+	initialRuntimeTransitions, err := codespaceStateStore.LoadRuntimeTransitionPendings()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace runtime transitions: %w", err)
+	}
+	initialCleanupPendings, err := codespaceStateStore.LoadCleanupPendings()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace cleanup pendings: %w", err)
+	}
+	initialGatewayRoutes, err := codespaceStateStore.LoadGatewayRoutes()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace gateway routes: %w", err)
+	}
+	initialRuntimeMetadataUUIDs, err := codespaceStateStore.LoadRuntimeMetadataCodespaceUUIDs()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace runtime metadata snapshots: %w", err)
+	}
+	gatewaySSHHostKey, err := loadOrCreateGatewaySSHHostKey(config.Manager.StateDir)
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load gateway ssh host key: %w", err)
+	}
+	scriptSnapshot, err := provisioner.LoadScripts(provisioner.ScriptConfig{
+		Init:   config.Scripts.Init,
+		Start:  config.Scripts.Start,
+		Resume: config.Scripts.Resume,
+	})
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load lifecycle scripts: %w", err)
+	}
+	return processStateSnapshot{
+		identity:                    identity,
+		credentials:                 credentials,
+		rootState:                   rootState,
+		codespaceStateStore:         codespaceStateStore,
+		initialOperations:           initialOperations,
+		initialRuntimeGenerations:   initialRuntimeGenerations,
+		initialRuntimeTransitions:   initialRuntimeTransitions,
+		initialCleanupPendings:      initialCleanupPendings,
+		initialGatewayRoutes:        initialGatewayRoutes,
+		initialRuntimeMetadataUUIDs: initialRuntimeMetadataUUIDs,
+		gatewaySSHHostKey:           gatewaySSHHostKey,
+		scriptSnapshot:              scriptSnapshot,
+	}, nil
+}
+
+type processRuntime struct {
+	agent            *manager.Agent
+	processHealth    *processHealth
+	gatewayServer    *http.Server
+	gatewaySSHServer *gatewaySSHServer
+}
+
+func newProcessRuntime(ctx context.Context, config Config, state processStateSnapshot) (*processRuntime, error) {
+	managerProvisioner, err := newProvisioner(config, state.identity.ManagerID)
+	if err != nil {
+		return nil, fmt.Errorf("create provisioner: %w", err)
+	}
+	gatewayBackend, ok := managerProvisioner.(gatewayWorkspaceBackend)
+	if !ok {
+		return nil, fmt.Errorf("provisioner does not support gateway workspace access")
+	}
+
+	sessionRegistry := newGatewaySessionRegistryFromConfig(config.Gateway)
+	gatewayRoutes := newGatewayRouteStore()
+	gatewayRoutes.SetWorkspaceTerminal(newGatewayWorkspaceTerminal(state.codespaceStateStore, gatewayBackend))
+	state.codespaceStateStore.SetSessionRegistry(sessionRegistry)
+	gatewayRoutes.SetSessionRegistry(sessionRegistry)
+	for _, route := range state.initialGatewayRoutes {
+		if err := gatewayRoutes.Put(route); err != nil {
+			return nil, fmt.Errorf("load gateway route %s/%s: %w", route.codespaceUUID, route.endpointID, err)
+		}
+	}
+	gatewayAccess := newGatewayAccessControllerFromConfig(config.Gateway)
+	gatewayBrowserAuth := newGatewayBrowserAuth()
+	gatewayOrigin, err := newGatewayOriginPolicy(config.Manager.GatewayURL)
+	if err != nil {
+		return nil, fmt.Errorf("configure gateway origin: %w", err)
+	}
+	gatewayControlPlane := newGatewayControlPlane(
+		strings.TrimRight(state.identity.GiteaURL, "/"),
+		state.identity.ManagerID,
+		state.credentials.ManagerSecret,
+		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
+	)
+	runtimeMetadataPublisher := newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
+	runtimeMetadataPublisher.Run(ctx, state.initialRuntimeMetadataUUIDs)
+	managerServiceSettings := managerServiceSettingsStores{
+		gatewayBrowserAuth,
+		runtimeMetadataPublisher,
+	}
+	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
+
+	agent := manager.New(manager.AgentConfig{
+		BaseURL:                     strings.TrimRight(state.identity.GiteaURL, "/"),
+		ManagerID:                   state.identity.ManagerID,
+		ManagerSecret:               state.credentials.ManagerSecret,
+		Name:                        config.Manager.Name,
+		GatewayURL:                  config.Manager.GatewayURL,
+		GatewaySSHAddr:              config.Manager.GatewaySSHAddr,
+		GatewaySSHHostKeyAlgo:       state.gatewaySSHHostKey.algorithm,
+		GatewaySSHHostKeySHA256:     state.gatewaySSHHostKey.fingerprintSHA256,
+		GatewaySSHHostKeyUnix:       state.gatewaySSHHostKey.updatedUnix,
+		Version:                     config.Manager.Version,
+		Tags:                        config.templateTags(),
+		PollInterval:                config.Manager.PollInterval.ToStdlib(),
+		DeclareInterval:             config.Manager.DeclareInterval.ToStdlib(),
+		CapacityTotal:               config.Manager.CapacityTotal,
+		StartupWorkers:              config.Manager.StartupWorkers,
+		CleanupWorkers:              config.Manager.CleanupWorkers,
+		HTTPTimeout:                 config.Manager.HTTPTimeout.ToStdlib(),
+		RuntimeMetadataGeneration:   1,
+		InventoryGeneration:         state.rootState.InventoryGeneration,
+		Scripts:                     state.scriptSnapshot,
+		InitialRuntimeGenerations:   state.initialRuntimeGenerations,
+		InitialRuntimeTransitions:   state.initialRuntimeTransitions,
+		InitialCleanupPendings:      state.initialCleanupPendings,
+		InitialOperations:           state.initialOperations,
+		OperationStateStore:         state.codespaceStateStore,
+		InventoryStateStore:         NewManagerRootStateStore(config.Manager.StateDir, state.identity.ManagerID),
+		RuntimeStateStore:           state.codespaceStateStore,
+		CleanupStateStore:           state.codespaceStateStore,
+		ScriptEnvironmentStateStore: state.codespaceStateStore,
+		RuntimeMetadataStateStore:   state.codespaceStateStore,
+		RuntimeEndpointApplier:      endpointApplier,
+		RuntimeHealthStateStore:     state.codespaceStateStore,
+		RuntimeMetadataPublisher:    runtimeMetadataPublisher,
+		SessionTracker:              sessionRegistry,
+		AccessController:            gatewayRoutes,
+		ManagerServiceSettings:      managerServiceSettings,
+	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
+
+	processHealth := newProcessHealth()
+	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
+		processHealth,
+		sessionRegistry,
+		gatewayAccess,
+		gatewayControlPlane,
+		gatewayOrigin,
+		gatewayBrowserAuth,
+		gatewayRoutes,
+	))
+	gatewaySSHServer, err := newGatewaySSHServer(state.gatewaySSHHostKey.signer, state.codespaceStateStore, gatewayRoutes, gatewayBackend, gatewayControlPlane, sessionRegistry, gatewayAccess, config.Gateway)
+	if err != nil {
+		return nil, fmt.Errorf("create gateway ssh server: %w", err)
+	}
+	return &processRuntime{
+		agent:            agent,
+		processHealth:    processHealth,
+		gatewayServer:    gatewayServer,
+		gatewaySSHServer: gatewaySSHServer,
+	}, nil
+}
+
 type processListeners struct {
-	RuntimeAPI  net.Listener
 	GatewayHTTP net.Listener
 	GatewaySSH  net.Listener
 }
 
 func openProcessListeners(config Config) (*processListeners, error) {
-	runtimeAPI, err := net.Listen("tcp", config.Server.RuntimeAPIListenAddr)
-	if err != nil {
-		return nil, fmt.Errorf("listen runtime api %s: %w", config.Server.RuntimeAPIListenAddr, err)
-	}
-	listeners := &processListeners{RuntimeAPI: runtimeAPI}
+	listeners := &processListeners{}
+	var err error
 	defer func() {
 		if err != nil {
 			listeners.Close()
@@ -258,9 +336,6 @@ func (l *processListeners) Close() {
 	if l == nil {
 		return
 	}
-	if l.RuntimeAPI != nil {
-		_ = l.RuntimeAPI.Close()
-	}
 	if l.GatewayHTTP != nil {
 		_ = l.GatewayHTTP.Close()
 	}
@@ -279,37 +354,28 @@ func serveHTTP(ctx context.Context, errorChannel chan<- error, name string, serv
 	}
 }
 
-func serveSSH(ctx context.Context, errorChannel chan<- error, listener net.Listener) {
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if errors.Is(err, net.ErrClosed) && ctx.Err() != nil {
-				return
-			}
-			errorChannel <- fmt.Errorf("gateway ssh listener: %w", err)
-			return
-		}
-		_ = conn.Close()
-	}
-}
-
 func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, error) {
 	switch strings.ToLower(strings.TrimSpace(config.Provisioner.Kind)) {
 	case "dummy":
 		return provisioner.NewDummy(), nil
 	case "incus":
 		return provisioner.NewIncus(provisioner.IncusConfig{
-			ManagerID:              managerID,
-			Project:                config.Provisioner.Incus.Project,
-			Remote:                 config.Provisioner.Incus.Remote,
-			UnixSocket:             config.Provisioner.Incus.UnixSocket,
-			CodespaceRoot:          config.Provisioner.CodespaceRoot,
-			CommunicationInterface: config.Provisioner.Incus.CommunicationInterface,
+			ManagerID:     managerID,
+			Project:       config.Incus.Project,
+			Remote:        config.Incus.Endpoint,
+			UnixSocket:    config.Incus.UnixSocket,
+			Templates:     provisionerTemplates(config.Templates),
+			CodespaceRoot: config.Provisioner.CodespaceRoot,
 			Bootstrap: provisioner.BootstrapConfig{
 				Shell:   config.Provisioner.Bootstrap.Shell,
 				HomeDir: config.Provisioner.Bootstrap.HomeDir,
 				User:    config.Provisioner.Bootstrap.User,
 				Group:   config.Provisioner.Bootstrap.Group,
+			},
+			Scripts: provisioner.ScriptConfig{
+				Init:   config.Scripts.Init,
+				Start:  config.Scripts.Start,
+				Resume: config.Scripts.Resume,
 			},
 		})
 	default:
@@ -317,12 +383,20 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 	}
 }
 
-func runtimeSourceResolverFor(managerProvisioner provisioner.Provisioner) runtimeSourceResolver {
-	resolver, ok := managerProvisioner.(runtimeSourceResolver)
-	if !ok {
-		return nil
+func provisionerTemplates(templates map[string]TemplateConfig) map[string]provisioner.IncusTemplateConfig {
+	result := make(map[string]provisioner.IncusTemplateConfig, len(templates))
+	for tag, template := range templates {
+		result[tag] = provisioner.IncusTemplateConfig{
+			Image:                  template.Image,
+			InstanceType:           template.InstanceType,
+			CPU:                    template.CPU,
+			MemoryLimit:            template.MemoryLimit,
+			RootDiskSize:           template.RootDiskSize,
+			Profiles:               append([]string(nil), template.Profiles...),
+			CommunicationInterface: template.CommunicationInterface,
+		}
 	}
-	return resolver
+	return result
 }
 
 type healthStatus int32
@@ -362,11 +436,7 @@ func (h *processHealth) writeHealthz(writer http.ResponseWriter) {
 	}
 }
 
-func newRuntimeAPIHandler(health *processHealth, services ...*runtimeAPIService) http.Handler {
-	var runtimeAPI *runtimeAPIService
-	if len(services) > 0 {
-		runtimeAPI = services[0]
-	}
+func newProcessInfoHandler(health *processHealth) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		if request.URL.Path != "/" {
@@ -381,10 +451,6 @@ func newRuntimeAPIHandler(health *processHealth, services ...*runtimeAPIService)
 	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		health.writeHealthz(writer)
 	})
-	if runtimeAPI != nil {
-		mux.HandleFunc(runtimeGitSSHKeyAPIPath, runtimeAPI.handleGitSSHKey)
-		mux.HandleFunc(runtimeEndpointAPIPrefix, runtimeAPI.handleEndpoint)
-	}
 	return loggingMiddleware(mux)
 }
 
@@ -439,6 +505,12 @@ func newGatewayHandlerWithOriginAndBrowserAuth(
 	})
 	mux.HandleFunc("/.gitea-codespace/open", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayOpen(writer, request, sessions, access, controlPlane, originPolicy)
+	})
+	mux.HandleFunc("/.gitea-codespace/assets/", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
+	})
+	mux.HandleFunc("/.gitea-codespace/terminal", func(writer http.ResponseWriter, request *http.Request) {
+		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
 	})
 	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
@@ -519,10 +591,19 @@ func handleGatewayOpen(
 		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway host binding mismatch"})
 		return
 	}
-	sessionID, err := sessions.Create(decision.binding, time.Now())
+	replaceSessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
+	sessionID, err := sessions.CreateReplacingAny(decision.binding, replaceSessionIDs, time.Now())
 	if err != nil {
 		log.Printf("create gateway session: %v", err)
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
+		if errors.Is(err, errGatewaySessionAmbiguous) {
+			writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is ambiguous"})
+			return
+		}
+		if errors.Is(err, errGatewaySessionLimitReached) {
+			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway session limit reached"})
+			return
+		}
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway session unavailable"})
 		return
 	}
@@ -574,15 +655,19 @@ func handleGatewayWorkspace(
 		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway source is not allowed"})
 		return
 	}
-	sessionID, ok := gatewaySessionIDFromRequest(request, originPolicy)
-	if !ok {
+	sessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
+	if len(sessionIDs) == 0 {
 		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
 			return
 		}
 		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is required"})
 		return
 	}
-	session, ok := sessions.Authenticate(sessionID, codespaceUUID, endpointID, time.Now())
+	session, ok, ambiguous := sessions.AuthenticateAny(sessionIDs, codespaceUUID, endpointID, time.Now())
+	if ambiguous {
+		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is ambiguous"})
+		return
+	}
 	if !ok {
 		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
 			return
@@ -624,7 +709,10 @@ func handleGatewayWorkspace(
 		writeJSON(writer, http.StatusForbidden, map[string]any{"error": decision.deniedCategory})
 		return
 	}
-	end := sessions.Begin(session.codespaceUUID)
+	requestContext, cancelRequest := context.WithCancel(request.Context())
+	defer cancelRequest()
+	request = request.WithContext(requestContext)
+	end := sessions.BeginSessionCancelable(session.id, session.codespaceUUID, cancelRequest)
 	defer end()
 
 	if routes == nil {
@@ -637,6 +725,35 @@ func handleGatewayWorkspace(
 	}
 	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
 	if !ok {
+		if session.endpointID == "workspace" {
+			terminal, terminalRequest, releaseTerminal, terminalOK := routes.BeginWorkspaceTerminal(request, session.codespaceUUID)
+			if terminalOK {
+				defer releaseTerminal()
+				terminalRequest, cancelTerminalRevalidation := withGatewayProxyRevalidation(
+					terminalRequest,
+					access.config.streamRevalidateInterval,
+					"revalidate gateway web ssh session",
+					func(ctx context.Context) (gatewayAccessDecision, error) {
+						decision, validationFull, err := access.revalidateEndpointSession(
+							ctx,
+							session.userID,
+							session.codespaceUUID,
+							session.endpointID,
+							func(ctx context.Context) (gatewayAccessDecision, error) {
+								return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+							},
+						)
+						if validationFull {
+							return gatewayAccessDecision{}, errGatewayAccessLimitReached
+						}
+						return decision, err
+					},
+				)
+				defer cancelTerminalRevalidation()
+				terminal.ServeHTTP(writer, terminalRequest, session.codespaceUUID, upstreamPath)
+				return
+			}
+		}
 		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway route unavailable"})
 		return
 	}
@@ -693,6 +810,13 @@ func handleGatewayPublicEndpoint(
 		return
 	}
 	clearGatewayReservedCookies(writer)
+	if routes != nil {
+		route, ok := routes.Get(codespaceUUID, endpointID)
+		if !ok || !route.public {
+			http.NotFound(writer, request)
+			return
+		}
+	}
 	reservation, limitStatus := access.reservePublic(codespaceUUID, endpointID, gatewayPeerIP(request))
 	if limitStatus != 0 {
 		if limitStatus == http.StatusTooManyRequests {
@@ -805,6 +929,9 @@ func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayO
 		return "", "", "", false
 	}
 	if !pathOK && request.URL.Path != "/w/" {
+		if strings.HasPrefix(request.URL.Path, "/.gitea-codespace/") {
+			return hostBinding.codespaceUUID, hostBinding.endpointID, request.URL.Path, true
+		}
 		return "", "", "", false
 	}
 	if !pathOK {
@@ -1014,7 +1141,7 @@ func setGatewaySessionCookie(writer http.ResponseWriter, sessionID string, origi
 	http.SetCookie(writer, cookie)
 }
 
-func gatewaySessionIDFromRequest(request *http.Request, originPolicy gatewayOriginPolicy) (string, bool) {
+func gatewaySessionIDsFromRequest(request *http.Request, originPolicy gatewayOriginPolicy) []string {
 	name := gatewaySessionCookieName
 	if strings.EqualFold(originPolicy.scheme, "https") {
 		name = gatewaySecureSessionCookieName
@@ -1025,13 +1152,11 @@ func gatewaySessionIDFromRequest(request *http.Request, originPolicy gatewayOrig
 			values[cookie.Value] = struct{}{}
 		}
 	}
-	if len(values) != 1 {
-		return "", false
-	}
+	ids := make([]string, 0, len(values))
 	for value := range values {
-		return value, true
+		ids = append(ids, value)
 	}
-	return "", false
+	return ids
 }
 
 func clearGatewayReservedCookies(writer http.ResponseWriter) {

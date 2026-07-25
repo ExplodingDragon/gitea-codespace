@@ -28,37 +28,35 @@ func TestRegisterWritesManagerCredentials(t *testing.T) {
 	defer server.Close()
 
 	workdir := t.TempDir()
-	input := bytes.NewBufferString(server.URL + "\nregistration-token\nregistered-manager\n")
+	input := bytes.NewBufferString(server.URL + "\nregistration-token\n")
 	var output bytes.Buffer
 	if err := Register(&output, input, filepath.Join(workdir, "existing.json")); err != nil {
 		t.Fatalf("register: %v", err)
 	}
 
 	configPath := filepath.Join(workdir, defaultRegisterConfigPath)
-	if _, err := os.Stat(configPath); err != nil {
-		t.Fatalf("stat generated config: %v", err)
+	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+		t.Fatalf("generated config exists or stat failed: %v", err)
 	}
-	config, err := LoadConfig(configPath)
+	stateDir := filepath.Join(workdir, "codespace-state")
+	identity, err := LoadManagerIdentity(stateDir)
 	if err != nil {
-		t.Fatalf("load generated config: %v", err)
+		t.Fatalf("load manager identity: %v", err)
 	}
-	if config.Gitea.URL != server.URL {
-		t.Fatalf("gitea url = %q", config.Gitea.URL)
+	if identity.GiteaURL != server.URL {
+		t.Fatalf("gitea url = %q", identity.GiteaURL)
 	}
-	if config.Manager.Name != "registered-manager" {
-		t.Fatalf("manager name = %q", config.Manager.Name)
+	if identity.ManagerID != 42 {
+		t.Fatalf("identity manager id = %d", identity.ManagerID)
 	}
-	credentials, err := LoadManagerCredentials(config.Manager.StateDir)
+	credentials, err := LoadManagerCredentials(stateDir)
 	if err != nil {
 		t.Fatalf("load manager credentials: %v", err)
-	}
-	if credentials.ManagerID != 42 {
-		t.Fatalf("manager id = %d", credentials.ManagerID)
 	}
 	if credentials.ManagerSecret != "manager-secret" {
 		t.Fatalf("manager secret = %q", credentials.ManagerSecret)
 	}
-	rootState, err := LoadManagerRootState(config.Manager.StateDir, credentials)
+	rootState, err := LoadManagerRootState(stateDir, identity)
 	if err != nil {
 		t.Fatalf("load manager root state: %v", err)
 	}

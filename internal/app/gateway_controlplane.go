@@ -141,12 +141,12 @@ func (c *gatewayControlPlane) ensureCodespaceGitSSHKey(ctx context.Context, code
 	return append([]string(nil), response.Msg.GetKnownHostsLines()...), nil
 }
 
-func (c *gatewayControlPlane) reportRuntimeMetadata(ctx context.Context, codespaceUUID, metadataJSON string, metadataGeneration int64) error {
+func (c *gatewayControlPlane) reportRuntimeMetadata(ctx context.Context, codespaceUUID string, metadata *codespacev1.RuntimeMetadata, metadataGeneration int64) error {
 	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
 		ProtocolVersion:    gatewayProtocolVersion,
 		CodespaceUuid:      codespaceUUID,
-		MetadataJson:       metadataJSON,
 		MetadataGeneration: metadataGeneration,
+		Metadata:           metadata,
 	})
 	c.setManagerAuth(request.Header())
 	if _, err := c.client.ReportRuntimeMetadata(ctx, request); err != nil {

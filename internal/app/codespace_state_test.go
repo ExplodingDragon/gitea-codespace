@@ -5,6 +5,7 @@ package app
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +21,7 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/manager"
+	"gitea.dev/codespace/internal/provisioner"
 )
 
 func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *testing.T) {
@@ -32,13 +34,6 @@ func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *test
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      readyUUID,
 		MetadataGeneration: 1,
-		InternalSSH: manager.RuntimeMetadataInternalSSH{
-			Host:               "10.0.0.12",
-			Port:               2222,
-			User:               "codespace",
-			AuthMode:           "publickey",
-			HostKeyFingerprint: "SHA256:test",
-		},
 		Boot: manager.RuntimeMetadataBoot{
 			OperationRVersion: 7,
 			Stage:             "ready",
@@ -51,13 +46,6 @@ func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *test
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      cleanupUUID,
 		MetadataGeneration: 1,
-		InternalSSH: manager.RuntimeMetadataInternalSSH{
-			Host:               "10.0.0.13",
-			Port:               2222,
-			User:               "codespace",
-			AuthMode:           "publickey",
-			HostKeyFingerprint: "SHA256:test",
-		},
 		Boot: manager.RuntimeMetadataBoot{
 			OperationRVersion: 7,
 			Stage:             "ready",
@@ -69,9 +57,6 @@ func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *test
 	}
 	if err := store.SaveCleanupPending(cleanupUUID); err != nil {
 		t.Fatalf("save cleanup pending: %v", err)
-	}
-	if err := store.SaveRuntimeCredential("33333333-3333-4333-8333-333333333333", "runtime-token"); err != nil {
-		t.Fatalf("save runtime credential: %v", err)
 	}
 
 	uuids, err := store.LoadRuntimeMetadataCodespaceUUIDs()
@@ -132,7 +117,12 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 			},
 		},
 	}
-	if err := store.SaveActiveOperation(manager.OperationSnapshot{Payload: operation}); err != nil {
+	scripts := provisioner.ScriptSnapshot{
+		Init:   provisioner.ScriptFileSnapshot{SHA256: "init-sha", Content: "init content"},
+		Start:  provisioner.ScriptFileSnapshot{SHA256: "start-sha", Content: "start content"},
+		Resume: provisioner.ScriptFileSnapshot{SHA256: "resume-sha", Content: "resume content"},
+	}
+	if err := store.SaveActiveOperation(manager.OperationSnapshot{Payload: operation, Scripts: scripts}); err != nil {
 		t.Fatalf("save active operation: %v", err)
 	}
 	snapshots, err := store.LoadActiveOperations()
@@ -151,6 +141,9 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	if snapshots[0].WorkerStage != manager.OperationWorkerStageLeasePaused {
 		t.Fatalf("worker stage = %q", snapshots[0].WorkerStage)
 	}
+	if !reflect.DeepEqual(snapshots[0].Scripts, scripts) {
+		t.Fatalf("scripts = %#v", snapshots[0].Scripts)
+	}
 	statePath, err := codespaceStatePath(stateDir, operation.GetCodespaceUuid())
 	if err != nil {
 		t.Fatalf("codespace state path: %v", err)
@@ -166,6 +159,9 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	if state.ActiveOperation == nil || state.ActiveOperation.WorkerStage != string(manager.OperationWorkerStageLeasePaused) {
 		t.Fatalf("persisted worker stage = %#v", state.ActiveOperation)
 	}
+	if state.ActiveOperation.Scripts == nil || state.ActiveOperation.Scripts.Init.SHA256 != "init-sha" {
+		t.Fatalf("persisted scripts = %#v", state.ActiveOperation.Scripts)
+	}
 	if err := store.DeleteActiveOperation(operation.GetCodespaceUuid(), operation.GetOperationRversion()); err != nil {
 		t.Fatalf("delete active operation: %v", err)
 	}
@@ -175,6 +171,64 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	}
 	if len(snapshots) != 0 {
 		t.Fatalf("snapshots after delete = %d", len(snapshots))
+	}
+}
+
+func TestCodespaceStateStoreSavesScriptEnvironment(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{
+		"CUSTOM_VALUE": "one",
+		"PRIVATE":      "two=with=equals",
+	}); err != nil {
+		t.Fatalf("save script environment: %v", err)
+	}
+	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{
+		"CUSTOM_VALUE": "updated",
+	}); err != nil {
+		t.Fatalf("merge script environment: %v", err)
+	}
+	statePath, err := codespaceStatePath(stateDir, codespaceUUID)
+	if err != nil {
+		t.Fatalf("codespace state path: %v", err)
+	}
+	content, err := os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read codespace state: %v", err)
+	}
+	var state codespaceState
+	if err := json.Unmarshal(content, &state); err != nil {
+		t.Fatalf("decode codespace state: %v", err)
+	}
+	want := map[string]string{"CUSTOM_VALUE": "updated", "PRIVATE": "two=with=equals"}
+	if !reflect.DeepEqual(state.SharedEnvironment, want) {
+		t.Fatalf("shared environment = %#v", state.SharedEnvironment)
+	}
+	loaded, ok, err := store.LoadScriptEnvironment(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load script environment: %v", err)
+	}
+	if !ok || !reflect.DeepEqual(loaded, want) {
+		t.Fatalf("loaded script environment ok=%v value=%#v", ok, loaded)
+	}
+}
+
+func TestCodespaceStateStoreRejectsInvalidScriptEnvironment(t *testing.T) {
+	t.Parallel()
+
+	store := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
+	if err := store.SaveScriptEnvironment("11111111-1111-4111-8111-111111111111", map[string]string{
+		"BAD-NAME": "value",
+	}); err == nil {
+		t.Fatalf("expected invalid environment name error")
+	}
+	if err := store.SaveScriptEnvironment("11111111-1111-4111-8111-111111111111", map[string]string{
+		"GOOD_NAME": "bad\nvalue",
+	}); err == nil {
+		t.Fatalf("expected invalid environment value error")
 	}
 }
 
@@ -344,15 +398,18 @@ func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	store := NewCodespaceStateStore(stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "app-3000",
-		label:          " App 3000 ",
-		upstreamScheme: "HTTP",
-		upstreamHost:   "127.0.0.1:3000",
-		public:         true,
-	}); err != nil {
+	changed, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "app-3000",
+		Label:          " App 3000 ",
+		UpstreamScheme: "HTTP",
+		UpstreamHost:   "127.0.0.1:3000",
+		Public:         true,
+	}})
+	if err != nil {
 		t.Fatalf("save endpoint route: %v", err)
+	}
+	if !changed {
+		t.Fatalf("endpoint route save was not marked changed")
 	}
 	routes, err := store.LoadGatewayRoutes()
 	if err != nil {
@@ -371,8 +428,12 @@ func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
 		t.Fatalf("route = %#v", route)
 	}
 
-	if err := store.DeleteEndpointRoute(codespaceUUID, "app-3000"); err != nil {
-		t.Fatalf("delete endpoint route: %v", err)
+	changed, err = store.SaveRuntimeEndpointRoutes(codespaceUUID, nil)
+	if err != nil {
+		t.Fatalf("clear endpoint routes: %v", err)
+	}
+	if !changed {
+		t.Fatalf("endpoint route clear was not marked changed")
 	}
 	routes, err = store.LoadGatewayRoutes()
 	if err != nil {
@@ -390,6 +451,71 @@ func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
 	}
 }
 
+func TestValidateEndpointLabel(t *testing.T) {
+	t.Parallel()
+
+	valid64Runes := strings.Repeat("界", 64)
+	invalid65Runes := strings.Repeat("a", 65)
+	tests := []struct {
+		name  string
+		label string
+		valid bool
+	}{
+		{name: "trimmed ascii", label: " App 3000 ", valid: true},
+		{name: "one rune", label: "A", valid: true},
+		{name: "sixty four unicode runes", label: valid64Runes, valid: true},
+		{name: "chinese", label: "预览服务", valid: true},
+		{name: "empty after trim", label: " \t\n ", valid: false},
+		{name: "invalid utf8", label: string([]byte{0xff, 'A'}), valid: false},
+		{name: "sixty five runes", label: invalid65Runes, valid: false},
+		{name: "control character", label: "Bad\nLabel", valid: false},
+		{name: "less than", label: "Bad<Label", valid: false},
+		{name: "greater than", label: "Bad>Label", valid: false},
+	}
+
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := validateEndpointLabel(test.label)
+			if test.valid && err != nil {
+				t.Fatalf("expected valid label, got %v", err)
+			}
+			if !test.valid && err == nil {
+				t.Fatalf("expected invalid label")
+			}
+		})
+	}
+}
+
+func TestCodespaceStateStoreAllowsDuplicateEndpointLabels(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	var endpointRoutes []manager.RuntimeEndpointRoute
+	for _, endpointID := range []string{"app-3000", "app-3001"} {
+		endpointRoutes = append(endpointRoutes, manager.RuntimeEndpointRoute{
+			EndpointID:     endpointID,
+			Label:          "预览服务",
+			UpstreamScheme: "http",
+			UpstreamHost:   "127.0.0.1:3000",
+		})
+	}
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {
+		t.Fatalf("save endpoint routes: %v", err)
+	}
+	routes, err := store.LoadGatewayRoutes()
+	if err != nil {
+		t.Fatalf("load gateway routes: %v", err)
+	}
+	if len(routes) != 2 || routes[0].label != "预览服务" || routes[1].label != "预览服务" {
+		t.Fatalf("routes = %#v", routes)
+	}
+}
+
 func TestCodespaceStateStoreEndpointRoutePreservesRuntimeState(t *testing.T) {
 	t.Parallel()
 
@@ -404,17 +530,16 @@ func TestCodespaceStateStoreEndpointRoutePreservesRuntimeState(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime transition: %v", err)
 	}
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "workspace",
-		label:          "Workspace",
-		upstreamScheme: "http",
-		upstreamHost:   "localhost:8080",
-	}); err != nil {
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "workspace",
+		Label:          "Workspace",
+		UpstreamScheme: "http",
+		UpstreamHost:   "localhost:8080",
+	}}); err != nil {
 		t.Fatalf("save endpoint route: %v", err)
 	}
-	if err := store.DeleteEndpointRoute(codespaceUUID, "workspace"); err != nil {
-		t.Fatalf("delete endpoint route: %v", err)
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, nil); err != nil {
+		t.Fatalf("clear endpoint routes: %v", err)
 	}
 	generations, err := store.LoadRuntimeGenerations()
 	if err != nil {
@@ -431,33 +556,20 @@ func TestCodespaceStateStoreEndpointLimitAllowsUpdates(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	store := NewCodespaceStateStore(stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	routes := make([]manager.RuntimeEndpointRoute, 0, maxCodespaceEndpoints)
 	for i := 0; i < maxCodespaceEndpoints; i++ {
-		if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-			codespaceUUID:  codespaceUUID,
-			endpointID:     endpointIDForTest(i),
-			label:          "App",
-			upstreamScheme: "http",
-			upstreamHost:   "127.0.0.1:3000",
-		}); err != nil {
-			t.Fatalf("save endpoint %d: %v", i, err)
-		}
+		routes = append(routes, runtimeEndpointRouteForTest(endpointIDForTest(i), "App", "127.0.0.1:3000"))
 	}
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "extra",
-		label:          "Extra",
-		upstreamScheme: "http",
-		upstreamHost:   "127.0.0.1:3001",
-	}); !errors.Is(err, errEndpointLimitExceeded) {
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
+		t.Fatalf("save max endpoint routes: %v", err)
+	}
+	tooManyRoutes := append([]manager.RuntimeEndpointRoute(nil), routes...)
+	tooManyRoutes = append(tooManyRoutes, runtimeEndpointRouteForTest("extra", "Extra", "127.0.0.1:3001"))
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, tooManyRoutes); !errors.Is(err, errEndpointLimitExceeded) {
 		t.Fatalf("extra endpoint err = %v", err)
 	}
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     endpointIDForTest(0),
-		label:          "Updated",
-		upstreamScheme: "http",
-		upstreamHost:   "127.0.0.1:3002",
-	}); err != nil {
+	routes[0] = runtimeEndpointRouteForTest(endpointIDForTest(0), "Updated", "127.0.0.1:3002")
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
 		t.Fatalf("update existing endpoint at limit: %v", err)
 	}
 }
@@ -471,13 +583,6 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
-		InternalSSH: manager.RuntimeMetadataInternalSSH{
-			Host:               "10.0.0.12",
-			Port:               2222,
-			User:               "codespace",
-			AuthMode:           "publickey",
-			HostKeyFingerprint: "SHA256:test",
-		},
 		Boot: manager.RuntimeMetadataBoot{
 			OperationRVersion: 7,
 			Stage:             "ready",
@@ -487,38 +592,42 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 	}); err != nil {
 		t.Fatalf("save runtime metadata snapshot: %v", err)
 	}
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "app-3000",
-		label:          "App 3000",
-		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
-		public:         true,
-	}); err != nil {
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "app-3000",
+		Label:          "App 3000",
+		UpstreamScheme: "http",
+		UpstreamHost:   "10.0.0.12:3000",
+		Public:         true,
+	}}); err != nil {
 		t.Fatalf("save endpoint route: %v", err)
 	}
-	generation, metadataJSON, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
+	generation, metadata, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
 	if err != nil {
 		t.Fatalf("load runtime metadata request: %v", err)
 	}
 	if !ok || generation != 2 {
 		t.Fatalf("metadata ok=%v generation=%d", ok, generation)
 	}
-	if !strings.Contains(metadataJSON, `"endpoint_id":"app-3000"`) ||
-		!strings.Contains(metadataJSON, `"label":"App 3000"`) ||
-		!strings.Contains(metadataJSON, `"public":true`) ||
-		!strings.Contains(metadataJSON, `"stage":"ready"`) {
-		t.Fatalf("metadata json = %s", metadataJSON)
+	endpoints := metadata.GetEndpoints()
+	if len(endpoints) != 1 ||
+		endpoints[0].GetEndpointId() != "app-3000" ||
+		endpoints[0].GetLabel() != "App 3000" ||
+		!endpoints[0].GetPublic() ||
+		metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY {
+		t.Fatalf("metadata = %#v", metadata)
 	}
-	if err := store.SaveEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "app-3000",
-		label:          "App 3000",
-		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
-		public:         true,
-	}); err != nil {
+	changed, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "app-3000",
+		Label:          "App 3000",
+		UpstreamScheme: "http",
+		UpstreamHost:   "10.0.0.12:3000",
+		Public:         true,
+	}})
+	if err != nil {
 		t.Fatalf("resave endpoint route: %v", err)
+	}
+	if changed {
+		t.Fatalf("same endpoint route was marked changed")
 	}
 	generation, _, ok, err = store.LoadRuntimeMetadataRequest(codespaceUUID)
 	if err != nil {
@@ -529,7 +638,45 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 	}
 }
 
-func TestCodespaceStateStoreRuntimeMetadataAllowsNonReadyWithoutInternalSSH(t *testing.T) {
+func TestCodespaceStateStoreLoadsRuntimeMetadataSnapshot(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	snapshot := manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 3,
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}
+	if err := store.SaveRuntimeMetadataSnapshot(snapshot); err != nil {
+		t.Fatalf("save runtime metadata: %v", err)
+	}
+	loaded, ok, err := store.LoadRuntimeMetadataSnapshot(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load runtime metadata snapshot: %v", err)
+	}
+	if !ok || !reflect.DeepEqual(loaded, snapshot) {
+		t.Fatalf("loaded snapshot ok=%v value=%#v", ok, loaded)
+	}
+	if err := store.SaveCleanupPending(codespaceUUID); err != nil {
+		t.Fatalf("save cleanup pending: %v", err)
+	}
+	_, ok, err = store.LoadRuntimeMetadataSnapshot(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load cleanup snapshot: %v", err)
+	}
+	if ok {
+		t.Fatalf("cleanup pending snapshot was returned")
+	}
+}
+
+func TestCodespaceStateStoreRuntimeMetadataIncludesBootDuringStartup(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -547,24 +694,25 @@ func TestCodespaceStateStoreRuntimeMetadataAllowsNonReadyWithoutInternalSSH(t *t
 	}); err != nil {
 		t.Fatalf("save non-ready runtime metadata snapshot: %v", err)
 	}
-	_, metadataJSON, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
+	_, metadata, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
 	if err != nil {
 		t.Fatalf("load runtime metadata request: %v", err)
 	}
 	if !ok {
 		t.Fatalf("metadata request was missing")
 	}
-	if strings.Contains(metadataJSON, "internal_ssh") || !strings.Contains(metadataJSON, `"stage":"publish-runtime"`) {
-		t.Fatalf("metadata json = %s", metadataJSON)
+	if metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_RUNTIME {
+		t.Fatalf("metadata = %#v", metadata)
 	}
 }
 
-func TestCodespaceStateStoreRuntimeMetadataReadyRequiresInternalSSH(t *testing.T) {
+func TestCodespaceStateStoreRuntimeMetadataReadyKeepsRoutingLocal(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
 	store := NewCodespaceStateStore(stateDir)
-	err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      "11111111-1111-4111-8111-111111111111",
 		MetadataGeneration: 1,
 		Boot: manager.RuntimeMetadataBoot{
@@ -573,50 +721,104 @@ func TestCodespaceStateStoreRuntimeMetadataReadyRequiresInternalSSH(t *testing.T
 			StartedUnix:       10,
 			LastUpdateUnix:    11,
 		},
-	})
-	if err == nil || !strings.Contains(err.Error(), "ready runtime metadata requires internal ssh") {
-		t.Fatalf("ready metadata err = %v", err)
+	}); err != nil {
+		t.Fatalf("save ready runtime metadata: %v", err)
+	}
+	_, metadata, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
+	if err != nil {
+		t.Fatalf("load ready runtime metadata request: %v", err)
+	}
+	if !ok {
+		t.Fatalf("metadata request was missing")
+	}
+	if metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY {
+		t.Fatalf("metadata = %#v", metadata)
 	}
 }
 
-func TestCodespaceStateStoreRuntimeAPIOperation(t *testing.T) {
+func TestCodespaceStateStoreClosesSessionsWhenWorkspaceTargetChanges(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	sessions := newGatewaySessionRegistry()
+	store.SetSessionRegistry(sessions)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save first runtime metadata snapshot: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	release := sessions.BeginCancelable(codespaceUUID, cancel)
+	defer release()
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 2,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/other",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    12,
+		},
+	}); err != nil {
+		t.Fatalf("save changed runtime metadata snapshot: %v", err)
+	}
+	select {
+	case <-ctx.Done():
+	case <-time.After(time.Second):
+		t.Fatalf("session was not canceled after workspace target changed")
+	}
+}
+
+func TestCodespaceStateStoreRebasesRuntimeMetadataGeneration(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
 	store := NewCodespaceStateStore(stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	operation, err := store.RuntimeAPIOperation(codespaceUUID)
-	if err != nil {
-		t.Fatalf("runtime api operation without state: %v", err)
-	}
-	if operation != runtimeAPIOperationNone {
-		t.Fatalf("operation without state = %q", operation)
-	}
-	if err := store.SaveActiveOperation(manager.OperationSnapshot{Payload: &codespacev1.OperationPayload{
-		OperationRversion: 1,
-		CodespaceUuid:     codespaceUUID,
-		Command: &codespacev1.OperationPayload_Create{
-			Create: &codespacev1.CreateOperationPayload{},
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 2,
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
 		},
-	}}); err != nil {
-		t.Fatalf("save active operation: %v", err)
+	}); err != nil {
+		t.Fatalf("save runtime metadata snapshot: %v", err)
 	}
-	operation, err = store.RuntimeAPIOperation(codespaceUUID)
+	if err := store.RebaseRuntimeMetadataGeneration(codespaceUUID, 5); err != nil {
+		t.Fatalf("rebase runtime metadata generation: %v", err)
+	}
+	generation, metadata, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID)
 	if err != nil {
-		t.Fatalf("runtime api operation with create: %v", err)
+		t.Fatalf("load runtime metadata request: %v", err)
 	}
-	if operation != runtimeAPIOperationCreate {
-		t.Fatalf("operation with create = %q", operation)
+	if !ok || generation != 6 || metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY {
+		t.Fatalf("metadata generation=%d ok=%v metadata=%#v", generation, ok, metadata)
 	}
-	if err := store.SaveCleanupPending(codespaceUUID); err != nil {
-		t.Fatalf("save cleanup pending: %v", err)
+	if err := store.RebaseRuntimeMetadataGeneration(codespaceUUID, 3); err != nil {
+		t.Fatalf("rebase with older server generation: %v", err)
 	}
-	operation, err = store.RuntimeAPIOperation(codespaceUUID)
+	generation, _, ok, err = store.LoadRuntimeMetadataRequest(codespaceUUID)
 	if err != nil {
-		t.Fatalf("runtime api operation with cleanup: %v", err)
+		t.Fatalf("reload runtime metadata request: %v", err)
 	}
-	if operation != runtimeAPIOperationDelete {
-		t.Fatalf("operation with cleanup = %q", operation)
+	if !ok || generation != 6 {
+		t.Fatalf("metadata after older rebase generation=%d ok=%v", generation, ok)
 	}
 }
 
@@ -624,15 +826,56 @@ func endpointIDForTest(index int) string {
 	return fmt.Sprintf("app-%02d", index)
 }
 
-func TestCodespaceStateStoreRuntimeCredentialRoundTrip(t *testing.T) {
+func runtimeEndpointRouteForTest(endpointID, label, upstreamHost string) manager.RuntimeEndpointRoute {
+	return manager.RuntimeEndpointRoute{
+		EndpointID:     endpointID,
+		Label:          label,
+		UpstreamScheme: "http",
+		UpstreamHost:   upstreamHost,
+	}
+}
+
+func TestCodespaceStateStoreRuntimeEndpointRoutesReplaceSnapshot(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
 	store := NewCodespaceStateStore(stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	token := "runtime-token"
-	if err := store.SaveRuntimeCredential(codespaceUUID, token); err != nil {
-		t.Fatalf("save runtime credential: %v", err)
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save runtime metadata snapshot: %v", err)
+	}
+	routes := []manager.RuntimeEndpointRoute{
+		{
+			CodespaceUUID:  codespaceUUID,
+			EndpointID:     "web",
+			Label:          "Web",
+			UpstreamScheme: "http",
+			UpstreamHost:   "127.0.0.1:3000",
+			Public:         true,
+		},
+		{
+			CodespaceUUID:  codespaceUUID,
+			EndpointID:     "api",
+			Label:          "API",
+			UpstreamScheme: "http",
+			UpstreamHost:   "127.0.0.1:3001",
+		},
+	}
+	changed, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes)
+	if err != nil {
+		t.Fatalf("save runtime endpoint routes: %v", err)
+	}
+	if !changed {
+		t.Fatalf("runtime endpoint route save was not marked changed")
 	}
 	statePath, err := codespaceStatePath(stateDir, codespaceUUID)
 	if err != nil {
@@ -642,18 +885,33 @@ func TestCodespaceStateStoreRuntimeCredentialRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read state: %v", err)
 	}
-	if strings.Contains(string(content), token) {
-		t.Fatalf("runtime token was stored in clear text: %s", content)
+	var state codespaceState
+	if err := json.Unmarshal(content, &state); err != nil {
+		t.Fatalf("decode codespace state: %v", err)
 	}
-	resolved, ok, err := store.ResolveRuntimeToken(token)
+	if len(state.Endpoints) != 2 ||
+		state.Endpoints[0].EndpointID != "api" ||
+		state.Endpoints[1].EndpointID != "web" ||
+		state.RuntimeMetadata.MetadataGeneration != 2 {
+		t.Fatalf("state after endpoint routes = %#v", state)
+	}
+	changed, err = store.SaveRuntimeEndpointRoutes(codespaceUUID, nil)
 	if err != nil {
-		t.Fatalf("resolve runtime token: %v", err)
+		t.Fatalf("clear runtime endpoint routes: %v", err)
 	}
-	if !ok || resolved != codespaceUUID {
-		t.Fatalf("resolved=%q ok=%v", resolved, ok)
+	if !changed {
+		t.Fatalf("runtime endpoint route clear was not marked changed")
 	}
-	if _, ok, err := store.ResolveRuntimeToken("wrong-token"); err != nil || ok {
-		t.Fatalf("wrong token ok=%v err=%v", ok, err)
+	content, err = os.ReadFile(statePath)
+	if err != nil {
+		t.Fatalf("read cleared state: %v", err)
+	}
+	state = codespaceState{}
+	if err := json.Unmarshal(content, &state); err != nil {
+		t.Fatalf("decode cleared codespace state: %v", err)
+	}
+	if len(state.Endpoints) != 0 || state.RuntimeMetadata.MetadataGeneration != 3 {
+		t.Fatalf("state after clearing endpoint routes = %#v", state)
 	}
 }
 
@@ -823,7 +1081,6 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 	var output bytes.Buffer
 	config := DefaultConfig()
 	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Gitea.URL = server.URL
 	config.Manager.StateDir = stateDir
 	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)
@@ -840,17 +1097,7 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 
 func writeRunnableState(t *testing.T, stateDir string) {
 	t.Helper()
-	if err := SaveManagerCredentials(stateDir, ManagerCredentials{
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
-	}); err != nil {
-		t.Fatalf("save credentials: %v", err)
-	}
-	if err := SaveManagerRootState(stateDir, ManagerRootState{
-		ManagerID: 42,
-	}); err != nil {
-		t.Fatalf("save root state: %v", err)
-	}
+	saveManagerRegistrationForTest(t, stateDir, "https://gitea.example.com", 42)
 }
 
 func newLockTestManagerServer(t *testing.T, service *lockTestManagerService) *httptest.Server {

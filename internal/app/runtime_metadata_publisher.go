@@ -15,6 +15,7 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
+	"gitea.dev/codespace/internal/provisioner"
 )
 
 const defaultRuntimeMetadataRetryInterval = time.Second
@@ -24,9 +25,10 @@ type runtimeMetadataNotifier interface {
 }
 
 type runtimeMetadataPublisher struct {
-	state         *CodespaceStateStore
-	controlPlane  *gatewayControlPlane
-	retryInterval time.Duration
+	state                *CodespaceStateStore
+	controlPlane         *gatewayControlPlane
+	resourceUsageSampler runtimeResourceUsageSampler
+	retryInterval        time.Duration
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -37,21 +39,27 @@ type runtimeMetadataPublisher struct {
 	refreshStarted  bool
 }
 
+type runtimeResourceUsageSampler interface {
+	RuntimeResourceUsage(ctx context.Context, instanceName string) (provisioner.RuntimeResourceUsage, error)
+}
+
 type runtimeMetadataWorker struct {
 	wake      chan struct{}
+	stop      chan struct{}
 	publishMu sync.Mutex
 }
 
-func newRuntimeMetadataPublisher(state *CodespaceStateStore, controlPlane *gatewayControlPlane, retryInterval time.Duration) *runtimeMetadataPublisher {
+func newRuntimeMetadataPublisher(state *CodespaceStateStore, controlPlane *gatewayControlPlane, sampler runtimeResourceUsageSampler, retryInterval time.Duration) *runtimeMetadataPublisher {
 	if retryInterval <= 0 {
 		retryInterval = defaultRuntimeMetadataRetryInterval
 	}
 	return &runtimeMetadataPublisher{
-		state:         state,
-		controlPlane:  controlPlane,
-		retryInterval: retryInterval,
-		workers:       make(map[string]*runtimeMetadataWorker),
-		refreshWake:   make(chan struct{}, 1),
+		state:                state,
+		controlPlane:         controlPlane,
+		resourceUsageSampler: sampler,
+		retryInterval:        retryInterval,
+		workers:              make(map[string]*runtimeMetadataWorker),
+		refreshWake:          make(chan struct{}, 1),
 	}
 }
 
@@ -86,7 +94,8 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 	defer worker.publishMu.Unlock()
 
 	for {
-		generation, metadataJSON, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
+		p.refreshRuntimeResourceUsage(ctx, codespaceUUID)
+		generation, metadata, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
 		if err != nil {
 			if !waitRuntimeMetadataRetry(ctx, p.retryInterval) {
 				return fmt.Errorf("load runtime metadata %s: %w", codespaceUUID, err)
@@ -96,7 +105,7 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 		if !ok {
 			return fmt.Errorf("runtime metadata snapshot %s is missing", codespaceUUID)
 		}
-		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadataJSON, generation); err != nil {
+		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadata, generation); err != nil {
 			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
 				if handleErr != nil {
 					return handleErr
@@ -108,7 +117,6 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 			}
 			continue
 		}
-		p.NotifyRuntimeMetadata(codespaceUUID)
 		return nil
 	}
 }
@@ -119,7 +127,7 @@ func (p *runtimeMetadataPublisher) ensureWorker(codespaceUUID string) (*runtimeM
 
 	worker, ok := p.workers[codespaceUUID]
 	if !ok {
-		worker = &runtimeMetadataWorker{wake: make(chan struct{}, 1)}
+		worker = newRuntimeMetadataWorker()
 		p.workers[codespaceUUID] = worker
 		if p.ctx != nil {
 			go p.runWorker(p.ctx, codespaceUUID, worker)
@@ -145,7 +153,7 @@ func (p *runtimeMetadataPublisher) Run(ctx context.Context, codespaceUUIDs []str
 		if _, ok := p.workers[codespaceUUID]; ok {
 			continue
 		}
-		worker := &runtimeMetadataWorker{wake: make(chan struct{}, 1)}
+		worker := newRuntimeMetadataWorker()
 		p.workers[codespaceUUID] = worker
 		go p.runWorker(ctx, codespaceUUID, worker)
 		worker.notify()
@@ -199,45 +207,108 @@ func (p *runtimeMetadataPublisher) runWorker(ctx context.Context, codespaceUUID 
 		select {
 		case <-ctx.Done():
 			return
+		case <-worker.stop:
+			return
 		case <-worker.wake:
-			p.publishUntilCurrent(ctx, codespaceUUID, worker)
+			if !p.publishUntilCurrent(ctx, codespaceUUID, worker) {
+				p.removeWorker(codespaceUUID, worker, false)
+				return
+			}
 		}
 	}
 }
 
-func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, codespaceUUID string, worker *runtimeMetadataWorker) {
+func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, codespaceUUID string, worker *runtimeMetadataWorker) bool {
 	worker.publishMu.Lock()
 	defer worker.publishMu.Unlock()
 
 	for {
-		generation, metadataJSON, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
+		p.refreshRuntimeResourceUsage(ctx, codespaceUUID)
+		generation, metadata, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID)
 		if err != nil {
 			log.Printf("load runtime metadata %s: %v", codespaceUUID, err)
-			if !waitRuntimeMetadataRetry(ctx, p.retryInterval) {
-				return
+			if !waitRuntimeMetadataWorkerRetry(ctx, worker, p.retryInterval) {
+				return true
 			}
 			continue
 		}
 		if !ok {
-			return
+			return false
 		}
-		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadataJSON, generation); err != nil {
+		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadata, generation); err != nil {
 			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
 				if handleErr != nil {
 					log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, handleErr)
-					return
+					return true
 				}
 				continue
 			}
 			log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, err)
-			if !waitRuntimeMetadataRetry(ctx, p.retryInterval) {
-				return
+			if !waitRuntimeMetadataWorkerRetry(ctx, worker, p.retryInterval) {
+				return true
 			}
 			continue
 		}
 		if !worker.consumePendingWake() {
-			return
+			return true
 		}
+	}
+}
+
+func (p *runtimeMetadataPublisher) refreshRuntimeResourceUsage(ctx context.Context, codespaceUUID string) {
+	if p.resourceUsageSampler == nil {
+		return
+	}
+	snapshot, ok, err := p.state.LoadRuntimeMetadataSnapshot(codespaceUUID)
+	if err != nil {
+		log.Printf("load runtime metadata snapshot %s for resource usage: %v", codespaceUUID, err)
+		return
+	}
+	if !ok || snapshot.InstanceName == "" {
+		return
+	}
+	usage, err := p.resourceUsageSampler.RuntimeResourceUsage(ctx, snapshot.InstanceName)
+	if err != nil {
+		log.Printf("sample runtime resource usage %s: %v", codespaceUUID, err)
+		return
+	}
+	if _, err := p.state.UpdateRuntimeResourceUsage(codespaceUUID, usage); err != nil {
+		log.Printf("save runtime resource usage %s: %v", codespaceUUID, err)
+	}
+}
+
+func newRuntimeMetadataWorker() *runtimeMetadataWorker {
+	return &runtimeMetadataWorker{
+		wake: make(chan struct{}, 1),
+		stop: make(chan struct{}),
+	}
+}
+
+func (p *runtimeMetadataPublisher) ForgetRuntimeMetadata(codespaceUUID string) {
+	if p == nil {
+		return
+	}
+	p.mu.Lock()
+	worker := p.workers[codespaceUUID]
+	if worker != nil {
+		delete(p.workers, codespaceUUID)
+	}
+	p.mu.Unlock()
+	if worker != nil {
+		close(worker.stop)
+	}
+}
+
+func (p *runtimeMetadataPublisher) removeWorker(codespaceUUID string, worker *runtimeMetadataWorker, stop bool) {
+	p.mu.Lock()
+	if p.workers[codespaceUUID] != worker {
+		p.mu.Unlock()
+		return
+	}
+	delete(p.workers, codespaceUUID)
+	p.mu.Unlock()
+	if stop {
+		close(worker.stop)
 	}
 }
 
@@ -305,10 +376,23 @@ func (w *runtimeMetadataWorker) consumePendingWake() bool {
 }
 
 func waitRuntimeMetadataRetry(ctx context.Context, delay time.Duration) bool {
+	return waitRuntimeMetadataSignal(ctx, nil, delay)
+}
+
+func waitRuntimeMetadataWorkerRetry(ctx context.Context, worker *runtimeMetadataWorker, delay time.Duration) bool {
+	if worker == nil {
+		return waitRuntimeMetadataRetry(ctx, delay)
+	}
+	return waitRuntimeMetadataSignal(ctx, worker.stop, delay)
+}
+
+func waitRuntimeMetadataSignal(ctx context.Context, stop <-chan struct{}, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
+		return false
+	case <-stop:
 		return false
 	case <-timer.C:
 		return true

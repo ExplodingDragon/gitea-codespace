@@ -48,12 +48,12 @@ func TestProcessHealthzFail(t *testing.T) {
 	assertHealthzBody(t, response.Body.Bytes(), "fail")
 }
 
-func TestRuntimeAPIUsesProcessHealth(t *testing.T) {
+func TestProcessInfoUsesProcessHealth(t *testing.T) {
 	t.Parallel()
 
 	health := newProcessHealth()
 	health.Fail()
-	response := requestHealthz(t, newRuntimeAPIHandler(health))
+	response := requestHealthz(t, newProcessInfoHandler(health))
 
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status code = %d", response.Code)

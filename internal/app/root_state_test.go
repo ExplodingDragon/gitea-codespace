@@ -20,10 +20,12 @@ func TestManagerRootStateRoundTrip(t *testing.T) {
 		t.Fatalf("save root state: %v", err)
 	}
 
-	state, err := LoadManagerRootState(stateDir, ManagerCredentials{
-		FormatVersion: managerCredentialsFormatVersion,
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
+	state, err := LoadManagerRootState(stateDir, ManagerIdentity{
+		StateFormatVersion: managerIdentityFormatVersion,
+		ProtocolVersion:    currentProtocolVersion,
+		GiteaURL:           "https://gitea.example.com",
+		ManagerID:          42,
+		RegisteredUnix:     1,
 	})
 	if err != nil {
 		t.Fatalf("load root state: %v", err)
@@ -53,10 +55,12 @@ func TestManagerRootStateRejectsMismatch(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save root state: %v", err)
 	}
-	_, err := LoadManagerRootState(stateDir, ManagerCredentials{
-		FormatVersion: managerCredentialsFormatVersion,
-		ManagerID:     43,
-		ManagerSecret: "manager-secret",
+	_, err := LoadManagerRootState(stateDir, ManagerIdentity{
+		StateFormatVersion: managerIdentityFormatVersion,
+		ProtocolVersion:    currentProtocolVersion,
+		GiteaURL:           "https://gitea.example.com",
+		ManagerID:          43,
+		RegisteredUnix:     1,
 	})
 	if err == nil {
 		t.Fatalf("expected manager id mismatch error")
@@ -74,10 +78,12 @@ func TestManagerRootStateRejectsWrongFormat(t *testing.T) {
 	if err := os.WriteFile(path, []byte(`{"state_format_version":2,"manager_id":42,"inventory_generation":0}`), 0o600); err != nil {
 		t.Fatalf("write root state: %v", err)
 	}
-	_, err := LoadManagerRootState(stateDir, ManagerCredentials{
-		FormatVersion: managerCredentialsFormatVersion,
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
+	_, err := LoadManagerRootState(stateDir, ManagerIdentity{
+		StateFormatVersion: managerIdentityFormatVersion,
+		ProtocolVersion:    currentProtocolVersion,
+		GiteaURL:           "https://gitea.example.com",
+		ManagerID:          42,
+		RegisteredUnix:     1,
 	})
 	if err == nil {
 		t.Fatalf("expected wrong format error")

@@ -6,7 +6,9 @@ require (
 	connectrpc.com/connect v1.20.0
 	gitea.dev/codespace-proto-go v0.0.0
 	github.com/google/uuid v1.6.0
+	github.com/gorilla/websocket v1.5.3
 	github.com/lxc/incus/v6 v6.18.0
+	github.com/pkg/sftp v1.13.10
 	golang.org/x/crypto v0.43.0
 	golang.org/x/sys v0.37.0
 	google.golang.org/protobuf v1.36.11
@@ -26,7 +28,6 @@ require (
 	github.com/go-logr/logr v1.4.3 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
-	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/klauspost/compress v1.18.1 // indirect
 	github.com/klauspost/pgzip v1.2.6 // indirect
 	github.com/kr/fs v0.1.0 // indirect
@@ -38,7 +39,6 @@ require (
 	github.com/opencontainers/runtime-spec v1.2.1 // indirect
 	github.com/opencontainers/umoci v0.6.0 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/pkg/sftp v1.13.10 // indirect
 	github.com/rootless-containers/proto/go-proto v0.0.0-20230421021042-4cd87ebadd67 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
@@ -57,4 +57,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260723142905-de1e6ed29e51
+replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260725063526-fc9f9f7c59d9

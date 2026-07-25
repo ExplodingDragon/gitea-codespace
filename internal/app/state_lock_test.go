@@ -39,12 +39,7 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	if err := SaveManagerCredentials(stateDir, ManagerCredentials{
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
-	}); err != nil {
-		t.Fatalf("save credentials: %v", err)
-	}
+	saveManagerRegistrationForTest(t, stateDir, "https://gitea.example.com", 42)
 	lock, err := acquireStateDirLock(stateDir)
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
@@ -61,7 +56,6 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	var output bytes.Buffer
 	config := DefaultConfig()
 	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Gitea.URL = server.URL
 	config.Manager.StateDir = stateDir
 	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)
@@ -80,31 +74,90 @@ func TestRunWithConfigMissingRootStateFailsBeforeRPC(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	if err := SaveManagerCredentials(stateDir, ManagerCredentials{
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
-	}); err != nil {
-		t.Fatalf("save credentials: %v", err)
-	}
-
 	service := &lockTestManagerService{}
 	path, handler := codespacev1connect.NewManagerServiceHandler(service)
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	defer server.Close()
+	if err := SaveManagerIdentity(stateDir, ManagerIdentity{
+		GiteaURL:       server.URL,
+		ManagerID:      42,
+		RegisteredUnix: 1,
+	}); err != nil {
+		t.Fatalf("save identity: %v", err)
+	}
+	if err := SaveManagerCredentials(stateDir, ManagerCredentials{ManagerSecret: "manager-secret"}); err != nil {
+		t.Fatalf("save credentials: %v", err)
+	}
 
 	var output bytes.Buffer
 	config := DefaultConfig()
 	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Gitea.URL = server.URL
 	config.Manager.StateDir = stateDir
 	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
 	err := RunWithConfig(&output, config)
 	if err == nil {
 		t.Fatalf("expected missing root state error")
 	}
-	if !strings.Contains(err.Error(), "manager.json") {
+	if !strings.Contains(err.Error(), "root-state.json") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if service.calls.Load() != 0 {
+		t.Fatalf("manager service calls = %d", service.calls.Load())
+	}
+}
+
+func TestRunWithConfigMissingIdentityFailsBeforeRPC(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	service := &lockTestManagerService{}
+	server := newLockTestManagerServer(t, service)
+	defer server.Close()
+
+	var output bytes.Buffer
+	config := DefaultConfig()
+	config.Server.ListenAddr = "127.0.0.1:0"
+	config.Manager.StateDir = stateDir
+	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	err := RunWithConfig(&output, config)
+	if err == nil {
+		t.Fatalf("expected missing identity error")
+	}
+	if !strings.Contains(err.Error(), "identity.json") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if service.calls.Load() != 0 {
+		t.Fatalf("manager service calls = %d", service.calls.Load())
+	}
+}
+
+func TestRunWithConfigMissingCredentialsFailsBeforeRPC(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	service := &lockTestManagerService{}
+	server := newLockTestManagerServer(t, service)
+	defer server.Close()
+	if err := SaveManagerIdentity(stateDir, ManagerIdentity{
+		GiteaURL:       server.URL,
+		ManagerID:      42,
+		RegisteredUnix: 1,
+	}); err != nil {
+		t.Fatalf("save identity: %v", err)
+	}
+
+	var output bytes.Buffer
+	config := DefaultConfig()
+	config.Server.ListenAddr = "127.0.0.1:0"
+	config.Manager.StateDir = stateDir
+	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	err := RunWithConfig(&output, config)
+	if err == nil {
+		t.Fatalf("expected missing credentials error")
+	}
+	if !strings.Contains(err.Error(), "credentials.json") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if service.calls.Load() != 0 {
@@ -116,18 +169,6 @@ func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	if err := SaveManagerCredentials(stateDir, ManagerCredentials{
-		ManagerID:     42,
-		ManagerSecret: "manager-secret",
-	}); err != nil {
-		t.Fatalf("save credentials: %v", err)
-	}
-	if err := SaveManagerRootState(stateDir, ManagerRootState{
-		ManagerID: 42,
-	}); err != nil {
-		t.Fatalf("save root state: %v", err)
-	}
-
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen occupied address: %v", err)
@@ -140,14 +181,13 @@ func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	defer server.Close()
+	saveManagerRegistrationForTest(t, stateDir, server.URL, 42)
 
 	var output bytes.Buffer
 	config := DefaultConfig()
 	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Server.RuntimeAPIListenAddr = "127.0.0.1:0"
 	config.Server.GatewayListenAddr = occupied.Addr().String()
 	config.Server.GatewaySSHListenAddr = "127.0.0.1:0"
-	config.Gitea.URL = server.URL
 	config.Manager.StateDir = stateDir
 	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)

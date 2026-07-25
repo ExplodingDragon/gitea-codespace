@@ -108,7 +108,7 @@ func TestServeSSHReportsUnexpectedListenerClose(t *testing.T) {
 		t.Fatalf("listen: %v", err)
 	}
 	errorChannel := make(chan error, 1)
-	go serveSSH(context.Background(), errorChannel, listener)
+	go serveSSH(context.Background(), errorChannel, listener, nil)
 
 	if err := listener.Close(); err != nil {
 		t.Fatalf("close listener: %v", err)
@@ -128,7 +128,7 @@ func TestServeSSHIgnoresExpectedListenerClose(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	errorChannel := make(chan error, 1)
-	go serveSSH(ctx, errorChannel, listener)
+	go serveSSH(ctx, errorChannel, listener, nil)
 
 	cancel()
 	if err := listener.Close(); err != nil {

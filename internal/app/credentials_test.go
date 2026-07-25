@@ -14,7 +14,6 @@ func TestManagerCredentialsRoundTrip(t *testing.T) {
 
 	stateDir := filepath.Join(t.TempDir(), "state")
 	if err := SaveManagerCredentials(stateDir, ManagerCredentials{
-		ManagerID:     42,
 		ManagerSecret: "manager-secret",
 	}); err != nil {
 		t.Fatalf("save credentials: %v", err)
@@ -24,11 +23,8 @@ func TestManagerCredentialsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load credentials: %v", err)
 	}
-	if credentials.FormatVersion != managerCredentialsFormatVersion {
-		t.Fatalf("format version = %d", credentials.FormatVersion)
-	}
-	if credentials.ManagerID != 42 {
-		t.Fatalf("manager id = %d", credentials.ManagerID)
+	if credentials.StateFormatVersion != managerCredentialsFormatVersion {
+		t.Fatalf("state format version = %d", credentials.StateFormatVersion)
 	}
 	if credentials.ManagerSecret != "manager-secret" {
 		t.Fatalf("manager secret = %q", credentials.ManagerSecret)
@@ -51,7 +47,7 @@ func TestManagerCredentialsRejectWrongFormat(t *testing.T) {
 		t.Fatalf("create state dir: %v", err)
 	}
 	path := filepath.Join(stateDir, managerCredentialsFileName)
-	if err := os.WriteFile(path, []byte(`{"format_version":2,"manager_id":1,"manager_secret":"secret"}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"state_format_version":2,"manager_secret":"secret"}`), 0o600); err != nil {
 		t.Fatalf("write credentials: %v", err)
 	}
 	if _, err := LoadManagerCredentials(stateDir); err == nil {

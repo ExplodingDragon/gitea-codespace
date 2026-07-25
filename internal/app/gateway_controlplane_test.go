@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestGatewayControlPlaneValidateOpenTokenAllowed(t *testing.T) {
@@ -144,12 +145,27 @@ func TestGatewayControlPlaneReportRuntimeMetadata(t *testing.T) {
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
 
-	if err := controlPlane.reportRuntimeMetadata(context.Background(), "codespace-uuid", `{"endpoints":[]}`, 3); err != nil {
+	metadata := &codespacev1.RuntimeMetadata{
+		Endpoints: []*codespacev1.RuntimeEndpoint{},
+		Boot: &codespacev1.RuntimeBoot{
+			OperationRversion: 7,
+			Stage:             codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+		ResourceUsage: &codespacev1.RuntimeResourceUsage{
+			Cpu:          &codespacev1.RuntimeCPUUsage{UsedMillicores: 125, LimitMillicores: 1000},
+			Memory:       &codespacev1.RuntimeMemoryUsage{UsedBytes: 256, LimitBytes: 1024},
+			Disk:         &codespacev1.RuntimeDiskUsage{UsedBytes: 512, LimitBytes: 2048},
+			ObservedUnix: 11,
+		},
+	}
+	if err := controlPlane.reportRuntimeMetadata(context.Background(), "codespace-uuid", metadata, 3); err != nil {
 		t.Fatalf("report runtime metadata: %v", err)
 	}
 	if service.metadataRequest.GetProtocolVersion() != 1 ||
 		service.metadataRequest.GetCodespaceUuid() != "codespace-uuid" ||
-		service.metadataRequest.GetMetadataJson() != `{"endpoints":[]}` ||
+		!proto.Equal(service.metadataRequest.GetMetadata(), metadata) ||
 		service.metadataRequest.GetMetadataGeneration() != 3 {
 		t.Fatalf("metadata request = %#v", service.metadataRequest)
 	}
@@ -211,6 +227,7 @@ type gatewayManagerService struct {
 	metadataRequest         *codespacev1.ReportRuntimeMetadataRequest
 	revalidateRequest       *codespacev1.RevalidateGatewaySessionRequest
 	publicEndpointCalls     int
+	sshCalls                int
 	openTokenResponse       *codespacev1.ValidateOpenTokenResponse
 	openTokenCalls          int
 	openTokenStarted        chan struct{}
@@ -221,6 +238,7 @@ type gatewayManagerService struct {
 	sshResponse             *codespacev1.VerifySSHPublicKeyResponse
 	ensureGitSSHKeyResponse *codespacev1.EnsureCodespaceGitSSHKeyResponse
 	metadataErr             error
+	metadataErrs            []error
 	metadataResponse        *codespacev1.ReportRuntimeMetadataResponse
 	metadataCalls           int
 	metadataStarted         chan struct{}
@@ -236,9 +254,8 @@ func (s *gatewayManagerService) ValidateOpenToken(
 	req *connect.Request[codespacev1.ValidateOpenTokenRequest],
 ) (*connect.Response[codespacev1.ValidateOpenTokenResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
 	s.mu.Lock()
-	s.openTokenRequest = &request
+	s.openTokenRequest = cloneProtoForTest(req.Msg)
 	s.openTokenCalls++
 	response := s.openTokenResponse
 	started := s.openTokenStarted
@@ -261,9 +278,8 @@ func (s *gatewayManagerService) ValidatePublicEndpoint(
 	req *connect.Request[codespacev1.ValidatePublicEndpointRequest],
 ) (*connect.Response[codespacev1.ValidatePublicEndpointResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
 	s.mu.Lock()
-	s.publicEndpointRequest = &request
+	s.publicEndpointRequest = cloneProtoForTest(req.Msg)
 	s.publicEndpointCalls++
 	response := s.publicEndpointResponse
 	started := s.publicEndpointStarted
@@ -286,10 +302,9 @@ func (s *gatewayManagerService) VerifySSHPublicKey(
 	req *connect.Request[codespacev1.VerifySSHPublicKeyRequest],
 ) (*connect.Response[codespacev1.VerifySSHPublicKeyResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
-	request.PublicKey = append([]byte(nil), req.Msg.GetPublicKey()...)
 	s.mu.Lock()
-	s.sshRequest = &request
+	s.sshRequest = cloneProtoForTest(req.Msg)
+	s.sshCalls++
 	response := s.sshResponse
 	s.mu.Unlock()
 	if response != nil {
@@ -303,10 +318,8 @@ func (s *gatewayManagerService) EnsureCodespaceGitSSHKey(
 	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
 ) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
-	request.PublicKey = append([]byte(nil), req.Msg.GetPublicKey()...)
 	s.mu.Lock()
-	s.ensureGitSSHKeyRequest = &request
+	s.ensureGitSSHKeyRequest = cloneProtoForTest(req.Msg)
 	response := s.ensureGitSSHKeyResponse
 	s.mu.Unlock()
 	if response != nil {
@@ -320,11 +333,14 @@ func (s *gatewayManagerService) ReportRuntimeMetadata(
 	req *connect.Request[codespacev1.ReportRuntimeMetadataRequest],
 ) (*connect.Response[codespacev1.ReportRuntimeMetadataResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
 	s.mu.Lock()
-	s.metadataRequest = &request
+	s.metadataRequest = cloneProtoForTest(req.Msg)
 	s.metadataCalls++
 	err := s.metadataErr
+	if len(s.metadataErrs) > 0 {
+		err = s.metadataErrs[0]
+		s.metadataErrs = s.metadataErrs[1:]
+	}
 	response := s.metadataResponse
 	started := s.metadataStarted
 	release := s.metadataRelease
@@ -349,9 +365,8 @@ func (s *gatewayManagerService) RevalidateGatewaySession(
 	req *connect.Request[codespacev1.RevalidateGatewaySessionRequest],
 ) (*connect.Response[codespacev1.RevalidateGatewaySessionResponse], error) {
 	s.captureAuth(req.Header())
-	request := *req.Msg
 	s.mu.Lock()
-	s.revalidateRequest = &request
+	s.revalidateRequest = cloneProtoForTest(req.Msg)
 	s.revalidateCalls++
 	response := s.revalidateResponse
 	started := s.revalidateStarted
@@ -367,6 +382,10 @@ func (s *gatewayManagerService) RevalidateGatewaySession(
 		return connect.NewResponse(response), nil
 	}
 	return connect.NewResponse(&codespacev1.RevalidateGatewaySessionResponse{}), nil
+}
+
+func cloneProtoForTest[T proto.Message](message T) T {
+	return proto.Clone(message).(T)
 }
 
 func (s *gatewayManagerService) captureAuth(header http.Header) {

@@ -16,6 +16,8 @@ const (
 	failureManagerUnregistered  = "manager_unregistered"
 	failureOperationRegression  = "operation_version_regression"
 	failureLocalStateCommit     = "local_state_commit_failed"
+	failureGenerationConflict   = "generation_conflict"
+	failureVersionExhausted     = "version_exhausted"
 )
 
 type categorizedError struct {

@@ -1,19 +1,18 @@
 server:
   listen_addr: ":18080"
-  runtime_api_listen: ":18080"
-  runtime_api_url: "http://10.0.0.1:18080"
   gateway_listen: ":18081"
   gateway_ssh_listen: ":2222"
   public_base_url: "https://codespace.example.com"
   shutdown_timeout: "10s"
 
-gitea:
-  url: "https://gitea.example.com"
-
 gateway:
   ssh_host: "codespace.example.com"
   ssh_port: 2222
+  gateway_session_ttl: "8h"
+  gateway_session_idle_timeout: "30m"
   gateway_session_revalidate_interval: "5m"
+  gateway_max_sessions_per_codespace: 32
+  gateway_max_sessions_per_user: 128
   gateway_max_inflight_total: 4096
   gateway_max_inflight_per_session: 32
   gateway_public_max_connections_per_endpoint: 64
@@ -25,34 +24,56 @@ manager:
   name: "local-incus-manager"
   gateway_url: "https://codespace.example.com"
   gateway_ssh_addr: "codespace.example.com:2222"
-  gateway_ssh_host_key_algorithm: "ssh-ed25519"
-  gateway_ssh_host_key_fingerprint_sha256: "SHA256:replace-with-host-key-fingerprint"
-  gateway_ssh_host_key_updated_unix: 0
   version: "0.1.0"
   poll_interval: "750ms"
   declare_interval: "5s"
   capacity_total: 4
-  capacity_available: 4
-  cleanup_capacity_available: 4
-  max_operations: 4
+  startup_workers: 4
+  cleanup_workers: 4
   http_timeout: "15s"
-  tags:
-    - "default"
-    - "linux"
-    - "incus"
 
 scripts:
   init: "builtin"
   start: "builtin"
   resume: "builtin"
 
+incus:
+  endpoint: ""
+  unix_socket: "/var/lib/incus/unix.socket"
+  project: "default"
+
+templates:
+  default:
+    image: "images:debian/12"
+    instance_type: "container"
+    communication_nic: "eth0"
+    cpu: 1
+    memory: "1GiB"
+    root_disk_size: "10GiB"
+    profiles:
+      - "default"
+  linux:
+    image: "images:debian/12"
+    instance_type: "container"
+    communication_nic: "eth0"
+    cpu: 1
+    memory: "1GiB"
+    root_disk_size: "10GiB"
+    profiles:
+      - "default"
+  incus:
+    image: "images:debian/12"
+    instance_type: "container"
+    communication_nic: "eth0"
+    cpu: 1
+    memory: "1GiB"
+    root_disk_size: "10GiB"
+    profiles:
+      - "default"
+
 provisioner:
   kind: "incus"
   codespace_root: "/codespace"
-  incus:
-    unix_socket: "/var/lib/incus/unix.socket"
-    project: "default"
-    communication_interface: "eth0"
   bootstrap:
     shell: "/bin/sh"
     home_dir: "/root"

@@ -472,7 +472,7 @@ func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 		service.revalidateRequest.GetEndpoint().GetEndpointId() != "workspace" {
 		t.Fatalf("revalidate request = %#v", service.revalidateRequest)
 	}
-	if live := sessions.LiveSessions(codespaceUUID); live != 0 {
+	if live := sessions.LiveSessions(codespaceUUID); live != 1 {
 		t.Fatalf("live sessions after request = %d", live)
 	}
 
@@ -635,6 +635,336 @@ func TestGatewayOpenRejectsInvalidCodeRequestWithoutRPC(t *testing.T) {
 	}
 	if calls := service.openTokenCallCount(); calls != 0 {
 		t.Fatalf("open token rpc calls = %d", calls)
+	}
+}
+
+func TestGatewayOpenReturnsTooManyRequestsWhenSessionLimitReached(t *testing.T) {
+	t.Parallel()
+
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: "11111111-1111-4111-8111-111111111111",
+					EndpointId:    "workspace",
+				},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
+		SessionTTL:              Duration(time.Hour),
+		MaxSessionsPerCodespace: 1,
+		MaxSessionsPerUser:      1,
+	})
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+
+	openGatewaySession(t, handler)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/open?code=open-code", nil))
+	if response.Code != http.StatusTooManyRequests {
+		t.Fatalf("second open status = %d body=%s", response.Code, response.Body.String())
+	}
+	assertGatewayOpenHeaders(t, response)
+	if !strings.Contains(response.Body.String(), "gateway session limit reached") {
+		t.Fatalf("second open body = %s", response.Body.String())
+	}
+}
+
+func TestGatewayOpenCreatesConnectingSessionVisibleToAutoStop(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistry()
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/open?code=open-code", nil))
+	if response.Code != http.StatusSeeOther {
+		t.Fatalf("open status = %d body=%s", response.Code, response.Body.String())
+	}
+	if live := sessions.LiveSessions(codespaceUUID); live != 1 {
+		t.Fatalf("connecting live sessions after open = %d", live)
+	}
+}
+
+func TestGatewayOpenReplacesExistingSessionForSameBinding(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
+		SessionTTL:              Duration(time.Hour),
+		MaxSessionsPerCodespace: 1,
+		MaxSessionsPerUser:      1,
+	})
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+
+	oldCookie := openGatewaySession(t, handler)
+	secondRequest := httptest.NewRequest(http.MethodGet, "/open?code=open-code", nil)
+	secondRequest.Header.Add("Cookie", gatewaySessionCookieName+"="+oldCookie.Value+"; "+gatewaySessionCookieName+"=unknown")
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusSeeOther {
+		t.Fatalf("second open status = %d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	newCookies := secondResponse.Result().Cookies()
+	if len(newCookies) != 1 || newCookies[0].Name != gatewaySessionCookieName || newCookies[0].Value == "" {
+		t.Fatalf("replacement cookies = %#v", newCookies)
+	}
+	newCookie := newCookies[0]
+	if newCookie.Value == oldCookie.Value {
+		t.Fatalf("replacement session reused old cookie value")
+	}
+
+	oldResponse := httptest.NewRecorder()
+	oldRequest := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	oldRequest.AddCookie(oldCookie)
+	handler.ServeHTTP(oldResponse, oldRequest)
+	if oldResponse.Code != http.StatusUnauthorized {
+		t.Fatalf("old session status = %d body=%s", oldResponse.Code, oldResponse.Body.String())
+	}
+
+	newResponse := httptest.NewRecorder()
+	newRequest := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	newRequest.AddCookie(newCookie)
+	handler.ServeHTTP(newResponse, newRequest)
+	if newResponse.Code != http.StatusOK {
+		t.Fatalf("new session status = %d body=%s", newResponse.Code, newResponse.Body.String())
+	}
+}
+
+func TestGatewayOpenRejectsMultipleCurrentBindingSessionCookies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
+		SessionTTL:              Duration(time.Hour),
+		MaxSessionsPerCodespace: 10,
+		MaxSessionsPerUser:      10,
+	})
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+
+	firstCookie := openGatewaySession(t, handler)
+	secondCookie := openGatewaySession(t, handler)
+	request := httptest.NewRequest(http.MethodGet, "/open?code=open-code", nil)
+	request.Header.Add("Cookie", gatewaySessionCookieName+"="+firstCookie.Value+"; "+gatewaySessionCookieName+"="+secondCookie.Value)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("ambiguous open status = %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "gateway session is ambiguous") {
+		t.Fatalf("ambiguous open body = %s", response.Body.String())
+	}
+}
+
+func TestGatewayWorkspaceIgnoresUnknownAndOtherBindingSessionCookies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
+		SessionTTL:              Duration(time.Hour),
+		MaxSessionsPerCodespace: 10,
+		MaxSessionsPerUser:      10,
+	})
+	otherID, err := sessions.Create(gatewayOpenTokenBinding{
+		userID:        42,
+		codespaceUUID: codespaceUUID,
+		endpointID:    "web",
+	}, time.Now())
+	if err != nil {
+		t.Fatalf("create other binding session: %v", err)
+	}
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+	validCookie := openGatewaySession(t, handler)
+
+	request := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	request.Header.Add(
+		"Cookie",
+		gatewaySessionCookieName+"=unknown; "+
+			gatewaySessionCookieName+"="+otherID+"; "+
+			gatewaySessionCookieName+"="+validCookie.Value,
+	)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace mixed cookie status = %d body=%s", response.Code, response.Body.String())
+	}
+	if calls := service.revalidateCallCount(); calls != 1 {
+		t.Fatalf("revalidate rpc calls = %d", calls)
+	}
+}
+
+func TestGatewayWorkspaceRejectsMultipleCurrentBindingSessionCookies(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
+		SessionTTL:              Duration(time.Hour),
+		MaxSessionsPerCodespace: 10,
+		MaxSessionsPerUser:      10,
+	})
+	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
+	firstCookie := openGatewaySession(t, handler)
+	secondCookie := openGatewaySession(t, handler)
+
+	request := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	request.Header.Add("Cookie", gatewaySessionCookieName+"="+firstCookie.Value+"; "+gatewaySessionCookieName+"="+secondCookie.Value)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf("workspace ambiguous cookie status = %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "gateway session is ambiguous") {
+		t.Fatalf("workspace ambiguous body = %s", response.Body.String())
+	}
+	if calls := service.revalidateCallCount(); calls != 0 {
+		t.Fatalf("revalidate rpc calls = %d", calls)
+	}
+}
+
+func TestGatewayOpenReplacementCancelsOldSessionConnection(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	upstreamStarted := make(chan struct{})
+	upstreamCanceled := make(chan struct{})
+	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		close(upstreamStarted)
+		<-request.Context().Done()
+		close(upstreamCanceled)
+	}))
+	defer upstream.Close()
+	routes := newGatewayRouteStore()
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "workspace",
+		upstreamScheme: "http",
+		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(
+		newProcessHealth(),
+		newGatewaySessionRegistry(),
+		newTestGatewayAccess(),
+		controlPlane,
+		gatewayOriginPolicy{},
+		nil,
+		routes,
+	)
+
+	oldCookie := openGatewaySession(t, handler)
+	oldDone := make(chan int, 1)
+	go func() {
+		oldDone <- serveGatewayWorkspaceRequest(handler, "/w/"+codespaceUUID+"/", oldCookie)
+	}()
+	select {
+	case <-upstreamStarted:
+	case <-time.After(time.Second):
+		t.Fatalf("old session request did not reach upstream")
+	}
+
+	secondRequest := httptest.NewRequest(http.MethodGet, "/open?code=open-code", nil)
+	secondRequest.AddCookie(oldCookie)
+	secondResponse := httptest.NewRecorder()
+	handler.ServeHTTP(secondResponse, secondRequest)
+	if secondResponse.Code != http.StatusSeeOther {
+		t.Fatalf("replacement open status = %d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	select {
+	case <-upstreamCanceled:
+	case <-time.After(time.Second):
+		t.Fatalf("old upstream request was not canceled")
+	}
+	select {
+	case <-oldDone:
+	case <-time.After(time.Second):
+		t.Fatalf("old session handler did not return")
 	}
 }
 
@@ -1415,7 +1745,7 @@ func TestGatewayWorkspaceRejectsServiceWorkerWithoutRevalidate(t *testing.T) {
 	if calls := service.revalidateCallCount(); calls != 0 {
 		t.Fatalf("revalidate rpc calls = %d", calls)
 	}
-	if live := sessions.LiveSessions(codespaceUUID); live != 0 {
+	if live := sessions.LiveSessions(codespaceUUID); live != 1 {
 		t.Fatalf("live sessions after service worker request = %d", live)
 	}
 }
