@@ -19,7 +19,8 @@ type DummyProvisioner struct {
 	mu         sync.Mutex
 	instances  map[string]*Instance
 	tokens     map[string]string
-	gitKeys    map[string]string
+	privateKey map[string][]byte
+	publicKey  map[string][]byte
 	endpoints  map[string][]RuntimeEndpointDeclaration
 	knownHosts map[string][]string
 }
@@ -29,7 +30,8 @@ func NewDummy() *DummyProvisioner {
 	return &DummyProvisioner{
 		instances:  make(map[string]*Instance),
 		tokens:     make(map[string]string),
-		gitKeys:    make(map[string]string),
+		privateKey: make(map[string][]byte),
+		publicKey:  make(map[string][]byte),
 		endpoints:  make(map[string][]RuntimeEndpointDeclaration),
 		knownHosts: make(map[string][]string),
 	}
@@ -54,10 +56,13 @@ func (p *DummyProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec)
 			Name:              spec.Name,
 			RuntimeState:      RuntimeStateRunning,
 			RepoFullName:      spec.RepoFullName,
-			RepoTag:           spec.RepoTag,
+			EnvironmentTag:    spec.EnvironmentTag,
 			CommunicationHost: "127.0.0.1",
 		}
 		p.instances[instance.Name] = instance
+	}
+	if p.tokens[instance.Name] == "" {
+		p.tokens[instance.Name] = "gcs_dummy"
 	}
 	instance.Workdir = "/codespace/" + repoDirName(spec.RepoFullName)
 	instance.RuntimeState = RuntimeStateRunning
@@ -80,6 +85,9 @@ func (p *DummyProvisioner) StartExisting(ctx context.Context, spec InstanceSpec)
 	instance, ok := p.instances[spec.Name]
 	if !ok {
 		return nil, fmt.Errorf("instance %s does not exist", spec.Name)
+	}
+	if p.tokens[instance.Name] == "" {
+		p.tokens[instance.Name] = "gcs_dummy"
 	}
 	instance.Workdir = "/codespace/" + repoDirName(instance.RepoFullName)
 	instance.RuntimeState = RuntimeStateRunning
@@ -169,6 +177,8 @@ func (p *DummyProvisioner) CheckCredentials(ctx context.Context, instanceName st
 
 	return CredentialStatus{
 		GiteaTokenPresent: p.tokens[instanceName] != "",
+		GitSSHPrivateKey:  append([]byte(nil), p.privateKey[instanceName]...),
+		GitSSHPublicKey:   append([]byte(nil), p.publicKey[instanceName]...),
 	}, nil
 }
 
@@ -200,8 +210,8 @@ func (p *DummyProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceNam
 	return nil
 }
 
-// WriteCredentials simulates writing runtime credential files.
-func (p *DummyProvisioner) WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error {
+// SeedRuntimeCredentials simulates writing root-owned credential seed files.
+func (p *DummyProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -214,40 +224,17 @@ func (p *DummyProvisioner) WriteCredentials(ctx context.Context, instanceName st
 	if request.GiteaToken == "" {
 		return fmt.Errorf("gitea token is empty")
 	}
+	if len(request.GitSSHPrivateKey) == 0 || len(request.GitSSHPublicKey) == 0 {
+		return fmt.Errorf("git ssh key seed is empty")
+	}
+	if len(request.GitSSHKnownHosts) == 0 {
+		return fmt.Errorf("git ssh known hosts seed is empty")
+	}
 	p.mu.Lock()
 	p.tokens[instanceName] = request.GiteaToken
-	p.mu.Unlock()
-	return nil
-}
-
-// EnsureGitSSHKey simulates creating or reading a runtime Git SSH public key.
-func (p *DummyProvisioner) EnsureGitSSHKey(ctx context.Context, instanceName string, _ GitSSHKeyRequest) (GitSSHKey, error) {
-	if err := ctx.Err(); err != nil {
-		return GitSSHKey{}, err
-	}
-	if instanceName == "" {
-		return GitSSHKey{}, fmt.Errorf("instance name is empty")
-	}
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	publicKey := p.gitKeys[instanceName]
-	if publicKey == "" {
-		publicKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDEcPfoZieymdErRWBdJTkT8KUrcwXszAdtBNqYnPK0R"
-		p.gitKeys[instanceName] = publicKey
-	}
-	return GitSSHKey{PublicKey: publicKey}, nil
-}
-
-// WriteGitSSHKnownHosts simulates writing trusted Git SSH host keys.
-func (p *DummyProvisioner) WriteGitSSHKnownHosts(ctx context.Context, instanceName string, lines []string, _ GitSSHKeyRequest) error {
-	if err := ctx.Err(); err != nil {
-		return err
-	}
-	if instanceName == "" {
-		return fmt.Errorf("instance name is empty")
-	}
-	p.mu.Lock()
-	p.knownHosts[instanceName] = append([]string(nil), lines...)
+	p.privateKey[instanceName] = append([]byte(nil), request.GitSSHPrivateKey...)
+	p.publicKey[instanceName] = append([]byte(nil), request.GitSSHPublicKey...)
+	p.knownHosts[instanceName] = append([]string(nil), request.GitSSHKnownHosts...)
 	p.mu.Unlock()
 	return nil
 }

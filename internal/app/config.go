@@ -5,11 +5,14 @@ package app
 
 import (
 	"bytes"
-	"encoding/json"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -19,37 +22,14 @@ import (
 var defaultConfigNames = []string{
 	"codespace.yaml",
 	"codespace.yml",
-	"codespace.json",
 }
 
 const defaultRegisterConfigPath = "codespace.yaml"
 
+var gatewayDNSLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+
 // Duration stores one configuration duration value.
 type Duration time.Duration
-
-// UnmarshalJSON decodes one duration from string or integer nanoseconds.
-func (d *Duration) UnmarshalJSON(data []byte) error {
-	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
-		return nil
-	}
-
-	var text string
-	if err := json.Unmarshal(data, &text); err == nil {
-		parsed, parseErr := time.ParseDuration(text)
-		if parseErr != nil {
-			return fmt.Errorf("parse duration %q: %w", text, parseErr)
-		}
-		*d = Duration(parsed)
-		return nil
-	}
-
-	var raw int64
-	if err := json.Unmarshal(data, &raw); err != nil {
-		return fmt.Errorf("decode duration: %w", err)
-	}
-	*d = Duration(time.Duration(raw))
-	return nil
-}
 
 // UnmarshalYAML decodes one duration from string or integer nanoseconds.
 func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
@@ -71,11 +51,6 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 	return nil
 }
 
-// MarshalJSON encodes one duration as string.
-func (d Duration) MarshalJSON() ([]byte, error) {
-	return json.Marshal(time.Duration(d).String())
-}
-
 // MarshalYAML encodes one duration as string.
 func (d Duration) MarshalYAML() (any, error) {
 	return time.Duration(d).String(), nil
@@ -88,114 +63,306 @@ func (d Duration) ToStdlib() time.Duration {
 
 // Config stores runtime configuration.
 type Config struct {
-	Server      ServerConfig              `json:"server" yaml:"server"`
-	Gateway     GatewayConfig             `json:"gateway" yaml:"gateway"`
-	Manager     ManagerConfig             `json:"manager" yaml:"manager"`
-	Scripts     ScriptsConfig             `json:"scripts" yaml:"scripts"`
-	Incus       IncusConfig               `json:"incus" yaml:"incus"`
-	Templates   map[string]TemplateConfig `json:"templates" yaml:"templates"`
-	Provisioner ProvisionerConfig         `json:"provisioner" yaml:"provisioner"`
+	Version int           `yaml:"version"`
+	Node    NodeConfig    `yaml:"node"`
+	Gateway GatewayConfig `yaml:"gateway"`
+	Runtime RuntimeConfig `yaml:"runtime"`
+
+	Server              ServerConfig                        `yaml:"-"`
+	Manager             ManagerConfig                       `yaml:"-"`
+	Scripts             ScriptsConfig                       `yaml:"-"`
+	Incus               IncusConfig                         `yaml:"-"`
+	RuntimeEnvironments map[string]RuntimeEnvironmentConfig `yaml:"-"`
+	Provisioner         ProvisionerConfig                   `yaml:"-"`
+}
+
+// NodeConfig stores manager node behavior and local state.
+type NodeConfig struct {
+	StateDir        string   `yaml:"state_dir"`
+	Name            string   `yaml:"name"`
+	Version         string   `yaml:"version"`
+	PollInterval    Duration `yaml:"poll_interval"`
+	DeclareInterval Duration `yaml:"declare_interval"`
+	CapacityTotal   int32    `yaml:"capacity_total"`
+	StartupWorkers  int32    `yaml:"startup_workers"`
+	CleanupWorkers  int32    `yaml:"cleanup_workers"`
+	HTTPTimeout     Duration `yaml:"http_timeout"`
+	ShutdownTimeout Duration `yaml:"shutdown_timeout"`
 }
 
 // ServerConfig stores listener and public URL settings.
 type ServerConfig struct {
-	ListenAddr           string   `json:"listen_addr" yaml:"listen_addr"`
-	GatewayListenAddr    string   `json:"gateway_listen" yaml:"gateway_listen"`
-	GatewaySSHListenAddr string   `json:"gateway_ssh_listen" yaml:"gateway_ssh_listen"`
-	PublicBaseURL        string   `json:"public_base_url" yaml:"public_base_url"`
-	ShutdownTimeout      Duration `json:"shutdown_timeout" yaml:"shutdown_timeout"`
+	ListenAddr           string
+	GatewayListenAddr    string
+	GatewaySSHListenAddr string
+	PublicBaseURL        string
+	ShutdownTimeout      Duration
 }
 
 // GatewayConfig stores user-facing gateway settings.
 type GatewayConfig struct {
-	SSHHost                          string   `json:"ssh_host" yaml:"ssh_host"`
-	SSHPort                          int      `json:"ssh_port" yaml:"ssh_port"`
-	SessionTTL                       Duration `json:"gateway_session_ttl" yaml:"gateway_session_ttl"`
-	SessionIdleTimeout               Duration `json:"gateway_session_idle_timeout" yaml:"gateway_session_idle_timeout"`
-	SessionRevalidateInterval        Duration `json:"gateway_session_revalidate_interval" yaml:"gateway_session_revalidate_interval"`
-	MaxSessionsPerCodespace          int      `json:"gateway_max_sessions_per_codespace" yaml:"gateway_max_sessions_per_codespace"`
-	MaxSessionsPerUser               int      `json:"gateway_max_sessions_per_user" yaml:"gateway_max_sessions_per_user"`
-	MaxInflightTotal                 int      `json:"gateway_max_inflight_total" yaml:"gateway_max_inflight_total"`
-	MaxInflightPerSession            int      `json:"gateway_max_inflight_per_session" yaml:"gateway_max_inflight_per_session"`
-	SSHMaxChannelsPerConnection      int      `json:"gateway_ssh_max_channels_per_connection" yaml:"gateway_ssh_max_channels_per_connection"`
-	SSHAuthMaxAttemptsPerIP          int      `json:"ssh_auth_max_attempts_per_ip_per_minute" yaml:"ssh_auth_max_attempts_per_ip_per_minute"`
-	SSHAuthMaxAttemptsPerCodespace   int      `json:"ssh_auth_max_attempts_per_codespace_per_minute" yaml:"ssh_auth_max_attempts_per_codespace_per_minute"`
-	SSHAuthMaxAttemptsPerIPCodespace int      `json:"ssh_auth_max_attempts_per_ip_codespace_per_minute" yaml:"ssh_auth_max_attempts_per_ip_codespace_per_minute"`
-	SSHAuthMaxAttemptsPerPublicKey   int      `json:"ssh_auth_max_attempts_per_public_key_per_minute" yaml:"ssh_auth_max_attempts_per_public_key_per_minute"`
-	SSHAuthBackoffBase               Duration `json:"ssh_auth_backoff_base" yaml:"ssh_auth_backoff_base"`
-	SSHAuthBackoffMax                Duration `json:"ssh_auth_backoff_max" yaml:"ssh_auth_backoff_max"`
-	SSHAuthFailureWindow             Duration `json:"ssh_auth_failure_window" yaml:"ssh_auth_failure_window"`
-	PublicMaxConnectionsPerEndpoint  int      `json:"gateway_public_max_connections_per_endpoint" yaml:"gateway_public_max_connections_per_endpoint"`
-	PublicMaxConnectionsPerIP        int      `json:"gateway_public_max_connections_per_ip" yaml:"gateway_public_max_connections_per_ip"`
-	ValidationMaxInflight            int      `json:"gateway_validation_max_inflight" yaml:"gateway_validation_max_inflight"`
+	HTTP     GatewayHTTPConfig    `yaml:"http"`
+	SSH      GatewaySSHConfig     `yaml:"ssh"`
+	Sessions GatewaySessionConfig `yaml:"sessions"`
+	Limits   GatewayLimitsConfig  `yaml:"limits"`
+
+	SSHHost                          string   `yaml:"-"`
+	SSHPort                          int      `yaml:"-"`
+	SessionTTL                       Duration `yaml:"-"`
+	SessionIdleTimeout               Duration `yaml:"-"`
+	SessionRevalidateInterval        Duration `yaml:"-"`
+	MaxSessionsPerCodespace          int      `yaml:"-"`
+	MaxSessionsPerUser               int      `yaml:"-"`
+	MaxInflightTotal                 int      `yaml:"-"`
+	MaxInflightPerSession            int      `yaml:"-"`
+	SSHMaxChannelsPerConnection      int      `yaml:"-"`
+	SSHAuthMaxAttemptsPerIP          int      `yaml:"-"`
+	SSHAuthMaxAttemptsPerCodespace   int      `yaml:"-"`
+	SSHAuthMaxAttemptsPerIPCodespace int      `yaml:"-"`
+	SSHAuthMaxAttemptsPerPublicKey   int      `yaml:"-"`
+	SSHAuthBackoffBase               Duration `yaml:"-"`
+	SSHAuthBackoffMax                Duration `yaml:"-"`
+	SSHAuthFailureWindow             Duration `yaml:"-"`
+	PublicMaxConnectionsPerEndpoint  int      `yaml:"-"`
+	PublicMaxConnectionsPerIP        int      `yaml:"-"`
+	ValidationMaxInflight            int      `yaml:"-"`
+}
+
+// GatewayHTTPConfig stores gateway HTTP listener and public URL.
+type GatewayHTTPConfig struct {
+	Listen    string `yaml:"listen"`
+	PublicURL string `yaml:"public_url"`
+}
+
+// GatewaySSHConfig stores gateway SSH listener, public address and SSH limits.
+type GatewaySSHConfig struct {
+	Listen                   string               `yaml:"listen"`
+	PublicAddr               string               `yaml:"public_addr"`
+	MaxChannelsPerConnection int                  `yaml:"max_channels_per_connection"`
+	Auth                     GatewaySSHAuthConfig `yaml:"auth"`
+}
+
+// GatewaySSHAuthConfig stores SSH authentication rate limits.
+type GatewaySSHAuthConfig struct {
+	MaxAttemptsPerIP          int      `yaml:"max_attempts_per_ip_per_minute"`
+	MaxAttemptsPerCodespace   int      `yaml:"max_attempts_per_codespace_per_minute"`
+	MaxAttemptsPerIPCodespace int      `yaml:"max_attempts_per_ip_codespace_per_minute"`
+	MaxAttemptsPerPublicKey   int      `yaml:"max_attempts_per_public_key_per_minute"`
+	BackoffBase               Duration `yaml:"backoff_base"`
+	BackoffMax                Duration `yaml:"backoff_max"`
+	FailureWindow             Duration `yaml:"failure_window"`
+}
+
+// GatewaySessionConfig stores browser and SSH session limits.
+type GatewaySessionConfig struct {
+	TTL                Duration `yaml:"ttl"`
+	IdleTimeout        Duration `yaml:"idle_timeout"`
+	RevalidateInterval Duration `yaml:"revalidate_interval"`
+	MaxPerCodespace    int      `yaml:"max_per_codespace"`
+	MaxPerUser         int      `yaml:"max_per_user"`
+}
+
+// GatewayLimitsConfig stores gateway request and connection limits.
+type GatewayLimitsConfig struct {
+	MaxInflightTotal                int `yaml:"max_inflight_total"`
+	MaxInflightPerSession           int `yaml:"max_inflight_per_session"`
+	PublicMaxConnectionsPerEndpoint int `yaml:"public_max_connections_per_endpoint"`
+	PublicMaxConnectionsPerIP       int `yaml:"public_max_connections_per_ip"`
+	ValidationMaxInflight           int `yaml:"validation_max_inflight"`
 }
 
 // ManagerConfig stores embedded manager behavior and capabilities.
 type ManagerConfig struct {
-	StateDir        string   `json:"state_dir" yaml:"state_dir"`
-	Name            string   `json:"name" yaml:"name"`
-	GatewayURL      string   `json:"gateway_url" yaml:"gateway_url"`
-	GatewaySSHAddr  string   `json:"gateway_ssh_addr" yaml:"gateway_ssh_addr"`
-	Version         string   `json:"version" yaml:"version"`
-	PollInterval    Duration `json:"poll_interval" yaml:"poll_interval"`
-	DeclareInterval Duration `json:"declare_interval" yaml:"declare_interval"`
-	CapacityTotal   int32    `json:"capacity_total" yaml:"capacity_total"`
-	StartupWorkers  int32    `json:"startup_workers" yaml:"startup_workers"`
-	CleanupWorkers  int32    `json:"cleanup_workers" yaml:"cleanup_workers"`
-	HTTPTimeout     Duration `json:"http_timeout" yaml:"http_timeout"`
+	StateDir        string
+	Name            string
+	GatewayURL      string
+	GatewaySSHAddr  string
+	Version         string
+	PollInterval    Duration
+	DeclareInterval Duration
+	CapacityTotal   int32
+	StartupWorkers  int32
+	CleanupWorkers  int32
+	HTTPTimeout     Duration
 }
 
 // ScriptsConfig stores the create/resume script entry points.
 type ScriptsConfig struct {
-	Init   string `json:"init" yaml:"init"`
-	Start  string `json:"start" yaml:"start"`
-	Resume string `json:"resume" yaml:"resume"`
+	Init   string `yaml:"init"`
+	Start  string `yaml:"start"`
+	Resume string `yaml:"resume"`
 }
 
 // IncusConfig stores Incus connection settings.
 type IncusConfig struct {
-	Endpoint   string `json:"endpoint" yaml:"endpoint"`
-	UnixSocket string `json:"unix_socket" yaml:"unix_socket"`
-	Project    string `json:"project" yaml:"project"`
+	Endpoint      string
+	UnixSocket    string
+	Project       string
+	ProjectManage bool
+	StoragePool   string
+	NetworkName   string
+	NetworkManage bool
 }
 
-// TemplateConfig stores one repository tag to Incus template mapping.
-type TemplateConfig struct {
-	Image                  string   `json:"image" yaml:"image"`
-	InstanceType           string   `json:"instance_type" yaml:"instance_type"`
-	CommunicationInterface string   `json:"communication_nic" yaml:"communication_nic"`
-	CPU                    int32    `json:"cpu" yaml:"cpu"`
-	MemoryLimit            string   `json:"memory" yaml:"memory"`
-	RootDiskSize           string   `json:"root_disk_size" yaml:"root_disk_size"`
-	Profiles               []string `json:"profiles" yaml:"profiles"`
+// RuntimeEnvironmentConfig stores one repository tag to an internal runtime environment mapping.
+type RuntimeEnvironmentConfig struct {
+	Image                  string
+	InstanceType           string
+	CommunicationInterface string
+	CPU                    int32
+	MemoryLimit            string
+	RootDiskSize           string
+	Profiles               []string
+	SourceType             string
+	SourceRemote           string
+	SourceProject          string
+	SourceName             string
 }
 
 // ProvisionerConfig stores provisioner selection and runtime options.
 type ProvisionerConfig struct {
-	Kind          string          `json:"kind" yaml:"kind"`
-	CodespaceRoot string          `json:"codespace_root" yaml:"codespace_root"`
-	Bootstrap     BootstrapConfig `json:"bootstrap" yaml:"bootstrap"`
+	Kind          string
+	CodespaceRoot string
+	Bootstrap     BootstrapConfig
 }
 
 // BootstrapConfig stores codespace bootstrap execution settings.
 type BootstrapConfig struct {
-	Shell   string `json:"shell" yaml:"shell"`
-	HomeDir string `json:"home_dir" yaml:"home_dir"`
-	User    uint32 `json:"user" yaml:"user"`
-	Group   uint32 `json:"group" yaml:"group"`
+	Shell    string `yaml:"shell"`
+	HomeDir  string `yaml:"home_dir"`
+	UserName string `yaml:"user_name"`
+	User     uint32 `yaml:"user"`
+	Group    uint32 `yaml:"group"`
+}
+
+// RuntimeConfig stores backend driver and runtime environments.
+type RuntimeConfig struct {
+	Driver        string              `yaml:"driver"`
+	CodespaceRoot string              `yaml:"codespace_root"`
+	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
+	Git           RuntimeGitConfig    `yaml:"git"`
+	Scripts       ScriptsConfig       `yaml:"scripts"`
+	Incus         RuntimeIncusConfig  `yaml:"incus"`
+	Environments  []EnvironmentConfig `yaml:"environments"`
+}
+
+// RuntimeGitConfig stores Manager-local Git credential generation settings.
+type RuntimeGitConfig struct {
+	SSHKeyType string `yaml:"ssh_key_type"`
+}
+
+// RuntimeIncusConfig stores Incus connection and namespace settings.
+type RuntimeIncusConfig struct {
+	Connect RuntimeIncusConnectConfig `yaml:"connect"`
+	Project RuntimeIncusProjectConfig `yaml:"project"`
+	Storage RuntimeIncusStorageConfig `yaml:"storage"`
+	Network RuntimeIncusNetworkConfig `yaml:"network"`
+}
+
+// RuntimeIncusConnectConfig stores Incus client connection settings.
+type RuntimeIncusConnectConfig struct {
+	UnixSocket string `yaml:"unix_socket"`
+	RemoteAddr string `yaml:"remote_addr"`
+}
+
+// RuntimeIncusProjectConfig stores the Incus project used as namespace.
+type RuntimeIncusProjectConfig struct {
+	Name   string `yaml:"name"`
+	Manage bool   `yaml:"manage"`
+}
+
+// RuntimeIncusStorageConfig stores host storage selection.
+type RuntimeIncusStorageConfig struct {
+	Pool string `yaml:"pool"`
+}
+
+// RuntimeIncusNetworkConfig stores project-local network selection.
+type RuntimeIncusNetworkConfig struct {
+	Name   string `yaml:"name"`
+	Manage bool   `yaml:"manage"`
+}
+
+// EnvironmentConfig stores one Gitea tag to a backend runtime environment.
+type EnvironmentConfig struct {
+	Tag                    string                     `yaml:"tag"`
+	DisplayName            string                     `yaml:"display_name"`
+	Type                   string                     `yaml:"type"`
+	Source                 EnvironmentSourceConfig    `yaml:"source"`
+	Resources              EnvironmentResourcesConfig `yaml:"resources"`
+	Profiles               EnvironmentProfilesConfig  `yaml:"profiles"`
+	CommunicationInterface string                     `yaml:"communication_interface"`
+}
+
+// EnvironmentSourceConfig stores the base used to create one runtime.
+type EnvironmentSourceConfig struct {
+	Type    string `yaml:"type"`
+	Image   string `yaml:"image"`
+	Remote  string `yaml:"remote"`
+	Project string `yaml:"project"`
+	Name    string `yaml:"name"`
+}
+
+// EnvironmentResourcesConfig stores runtime resource limits.
+type EnvironmentResourcesConfig struct {
+	CPU      int32  `yaml:"cpu"`
+	Memory   string `yaml:"memory"`
+	RootDisk string `yaml:"root_disk"`
+}
+
+// EnvironmentProfilesConfig stores project-local Incus profiles.
+type EnvironmentProfilesConfig struct {
+	Use []string `yaml:"use"`
 }
 
 // DefaultConfig returns one runnable reference configuration.
 func DefaultConfig() Config {
-	return Config{
-		Server: ServerConfig{
-			ListenAddr:           ":18080",
-			GatewayListenAddr:    ":18081",
-			GatewaySSHListenAddr: ":2222",
-			PublicBaseURL:        "http://127.0.0.1:18081",
-			ShutdownTimeout:      Duration(10 * time.Second),
+	config := Config{
+		Version: 1,
+		Node: NodeConfig{
+			StateDir:        "codespace-state",
+			Name:            "codespace-manager",
+			Version:         "0.1.0",
+			PollInterval:    Duration(750 * time.Millisecond),
+			DeclareInterval: Duration(5 * time.Second),
+			CapacityTotal:   4,
+			StartupWorkers:  4,
+			CleanupWorkers:  4,
+			HTTPTimeout:     Duration(15 * time.Second),
+			ShutdownTimeout: Duration(10 * time.Second),
 		},
 		Gateway: GatewayConfig{
+			HTTP: GatewayHTTPConfig{
+				Listen:    ":18081",
+				PublicURL: "http://gateway.example.com:18081",
+			},
+			SSH: GatewaySSHConfig{
+				Listen:                   ":2222",
+				PublicAddr:               "gateway.example.com:22",
+				MaxChannelsPerConnection: 32,
+				Auth: GatewaySSHAuthConfig{
+					MaxAttemptsPerIP:          30,
+					MaxAttemptsPerCodespace:   20,
+					MaxAttemptsPerIPCodespace: 10,
+					MaxAttemptsPerPublicKey:   30,
+					BackoffBase:               Duration(time.Second),
+					BackoffMax:                Duration(30 * time.Second),
+					FailureWindow:             Duration(10 * time.Minute),
+				},
+			},
+			Sessions: GatewaySessionConfig{
+				TTL:                Duration(8 * time.Hour),
+				IdleTimeout:        Duration(30 * time.Minute),
+				RevalidateInterval: Duration(5 * time.Minute),
+				MaxPerCodespace:    32,
+				MaxPerUser:         128,
+			},
+			Limits: GatewayLimitsConfig{
+				MaxInflightTotal:                4096,
+				MaxInflightPerSession:           32,
+				PublicMaxConnectionsPerEndpoint: 64,
+				PublicMaxConnectionsPerIP:       16,
+				ValidationMaxInflight:           128,
+			},
 			SSHHost:                          "gateway.example.com",
 			SSHPort:                          22,
 			SessionTTL:                       Duration(8 * time.Hour),
@@ -217,42 +384,58 @@ func DefaultConfig() Config {
 			PublicMaxConnectionsPerIP:        16,
 			ValidationMaxInflight:            128,
 		},
-		Manager: ManagerConfig{
-			StateDir:        "codespace-state",
-			Name:            "codespace-manager",
-			Version:         "0.1.0",
-			PollInterval:    Duration(750 * time.Millisecond),
-			DeclareInterval: Duration(5 * time.Second),
-			CapacityTotal:   4,
-			StartupWorkers:  4,
-			CleanupWorkers:  4,
-			HTTPTimeout:     Duration(15 * time.Second),
-		},
-		Scripts: ScriptsConfig{
-			Init:   "builtin",
-			Start:  "builtin",
-			Resume: "builtin",
-		},
-		Templates: map[string]TemplateConfig{
-			"default": {
-				Image:                  "images:debian/12",
-				InstanceType:           "container",
-				CommunicationInterface: "eth0",
-				CPU:                    1,
-				MemoryLimit:            "1GiB",
-				RootDiskSize:           "10GiB",
-				Profiles:               []string{"default"},
-			},
-		},
-		Provisioner: ProvisionerConfig{
-			Kind:          "dummy",
+		Runtime: RuntimeConfig{
+			Driver:        "dummy",
 			CodespaceRoot: "/codespace",
 			Bootstrap: BootstrapConfig{
-				Shell:   "/bin/sh",
-				HomeDir: "/root",
+				Shell:    "/bin/sh",
+				HomeDir:  "/root",
+				UserName: "codespace",
+			},
+			Git: RuntimeGitConfig{
+				SSHKeyType: "ed25519",
+			},
+			Scripts: ScriptsConfig{
+				Init:   "builtin",
+				Start:  "builtin",
+				Resume: "builtin",
+			},
+			Incus: RuntimeIncusConfig{
+				Connect: RuntimeIncusConnectConfig{
+					UnixSocket: "/var/lib/incus/unix.socket",
+				},
+				Project: RuntimeIncusProjectConfig{
+					Name: "default",
+				},
+				Storage: RuntimeIncusStorageConfig{
+					Pool: "default",
+				},
+				Network: RuntimeIncusNetworkConfig{
+					Name: "incusbr0",
+				},
+			},
+			Environments: []EnvironmentConfig{
+				{
+					Tag:                    "default",
+					DisplayName:            "Default",
+					Type:                   "container",
+					CommunicationInterface: "eth0",
+					Source: EnvironmentSourceConfig{
+						Type:  "image",
+						Image: "images:debian/12",
+					},
+					Resources: EnvironmentResourcesConfig{
+						CPU:      1,
+						Memory:   "1GiB",
+						RootDisk: "10GiB",
+					},
+					Profiles: EnvironmentProfilesConfig{Use: []string{"default"}},
+				},
 			},
 		},
 	}
+	config.syncRuntimeFields()
+	return config
 }
 
 // DiscoverConfigPath returns one existing config path.
@@ -270,7 +453,7 @@ func DiscoverConfigPath(path string) (string, error) {
 	return "", fmt.Errorf("config file not found, tried %s", strings.Join(defaultConfigNames, ", "))
 }
 
-// LoadConfig loads one JSON or YAML config file.
+// LoadConfig loads one YAML config file.
 func LoadConfig(path string) (Config, error) {
 	configPath, err := DiscoverConfigPath(path)
 	if err != nil {
@@ -315,18 +498,14 @@ func decodeConfigFile(configPath string) (Config, error) {
 
 	config := DefaultConfig()
 	switch strings.ToLower(filepath.Ext(configPath)) {
-	case ".json":
-		decoder := json.NewDecoder(bytes.NewReader(content))
-		decoder.DisallowUnknownFields()
-		if err := decoder.Decode(&config); err != nil {
-			return Config{}, fmt.Errorf("decode json config %s: %w", configPath, err)
-		}
+	case ".yaml", ".yml", "":
 	default:
-		decoder := yaml.NewDecoder(bytes.NewReader(content))
-		decoder.KnownFields(true)
-		if err := decoder.Decode(&config); err != nil {
-			return Config{}, fmt.Errorf("decode yaml config %s: %w", configPath, err)
-		}
+		return Config{}, fmt.Errorf("config %s must be a yaml file", configPath)
+	}
+	decoder := yaml.NewDecoder(bytes.NewReader(content))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&config); err != nil {
+		return Config{}, fmt.Errorf("decode yaml config %s: %w", configPath, err)
 	}
 	return config, nil
 }
@@ -334,10 +513,13 @@ func decodeConfigFile(configPath string) (Config, error) {
 // Validate checks whether the config is usable.
 func (c Config) Validate() error {
 	for _, validate := range []func() error{
+		c.validateVersion,
+		c.validateEnvironments,
+		c.validateRuntimeGit,
 		c.Server.Validate,
 		c.Manager.Validate,
 		c.Provisioner.Validate,
-		c.validateTemplates,
+		c.validateRuntimeEnvironments,
 		c.Scripts.Validate,
 		c.Gateway.Validate,
 	} {
@@ -348,29 +530,145 @@ func (c Config) Validate() error {
 	return nil
 }
 
+func (c Config) validateRuntimeGit() error {
+	switch strings.ToLower(strings.TrimSpace(c.Runtime.Git.SSHKeyType)) {
+	case "ed25519", "rsa-4096":
+		return nil
+	default:
+		return fmt.Errorf("runtime.git.ssh_key_type must be ed25519 or rsa-4096")
+	}
+}
+
+func (c Config) validateVersion() error {
+	if c.Version != 1 {
+		return fmt.Errorf("version must be 1")
+	}
+	return nil
+}
+
+func (c Config) validateEnvironments() error {
+	if len(c.Runtime.Environments) == 0 {
+		return fmt.Errorf("runtime.environments must define at least one environment")
+	}
+	seen := map[string]struct{}{}
+	for _, environment := range c.Runtime.Environments {
+		tag := strings.TrimSpace(environment.Tag)
+		if tag == "" {
+			return fmt.Errorf("runtime.environments tag must not be empty")
+		}
+		if _, ok := seen[tag]; ok {
+			return fmt.Errorf("runtime.environments tag %q is duplicated", tag)
+		}
+		seen[tag] = struct{}{}
+	}
+	return nil
+}
+
 func (c *Config) applyDefaults() {
 	defaults := DefaultConfig()
 
-	c.Server.applyDefaults(defaults.Server)
+	if c.Version == 0 {
+		c.Version = defaults.Version
+	}
+	c.Node.applyDefaults(defaults.Node)
 	c.Gateway.applyDefaults(defaults.Gateway)
-	c.Manager.applyDefaults(defaults.Manager, c.Server, c.Gateway)
-	c.Scripts.applyDefaults(defaults.Scripts)
-	c.Provisioner.applyDefaults(defaults.Provisioner)
-	if len(c.Templates) == 0 {
-		c.Templates = cloneTemplates(defaults.Templates)
+	c.Runtime.applyDefaults(defaults.Runtime)
+	c.syncRuntimeFields()
+}
+
+func (c *Config) syncRuntimeFields() {
+	c.Server = ServerConfig{
+		ListenAddr:           c.Gateway.HTTP.Listen,
+		GatewayListenAddr:    c.Gateway.HTTP.Listen,
+		GatewaySSHListenAddr: c.Gateway.SSH.Listen,
+		PublicBaseURL:        c.Gateway.HTTP.PublicURL,
+		ShutdownTimeout:      c.Node.ShutdownTimeout,
+	}
+	c.Manager = ManagerConfig{
+		StateDir:        c.Node.StateDir,
+		Name:            c.Node.Name,
+		GatewayURL:      c.Gateway.HTTP.PublicURL,
+		GatewaySSHAddr:  c.Gateway.SSH.PublicAddr,
+		Version:         c.Node.Version,
+		PollInterval:    c.Node.PollInterval,
+		DeclareInterval: c.Node.DeclareInterval,
+		CapacityTotal:   c.Node.CapacityTotal,
+		StartupWorkers:  c.Node.StartupWorkers,
+		CleanupWorkers:  c.Node.CleanupWorkers,
+		HTTPTimeout:     c.Node.HTTPTimeout,
+	}
+	c.Scripts = c.Runtime.Scripts
+	c.Provisioner = ProvisionerConfig{
+		Kind:          c.Runtime.Driver,
+		CodespaceRoot: c.Runtime.CodespaceRoot,
+		Bootstrap:     c.Runtime.Bootstrap,
+	}
+	c.Incus = IncusConfig{
+		Endpoint:      c.Runtime.Incus.Connect.RemoteAddr,
+		UnixSocket:    c.Runtime.Incus.Connect.UnixSocket,
+		Project:       c.Runtime.Incus.Project.Name,
+		ProjectManage: c.Runtime.Incus.Project.Manage,
+		StoragePool:   c.Runtime.Incus.Storage.Pool,
+		NetworkName:   c.Runtime.Incus.Network.Name,
+		NetworkManage: c.Runtime.Incus.Network.Manage,
+	}
+	c.RuntimeEnvironments = runtimeEnvironmentsFromConfig(c.Runtime.Environments)
+}
+
+func (c Config) runtimeGitSSHKeyType() string {
+	switch strings.ToLower(strings.TrimSpace(c.Runtime.Git.SSHKeyType)) {
+	case "", "ed25519":
+		return "ed25519"
+	case "rsa-4096":
+		return "rsa-4096"
+	default:
+		return strings.TrimSpace(c.Runtime.Git.SSHKeyType)
+	}
+}
+
+func (c *NodeConfig) applyDefaults(defaults NodeConfig) {
+	if strings.TrimSpace(c.StateDir) == "" {
+		c.StateDir = defaults.StateDir
+	}
+	if strings.TrimSpace(c.Name) == "" {
+		c.Name = defaults.Name
+	}
+	if strings.TrimSpace(c.Version) == "" {
+		c.Version = defaults.Version
+	}
+	if c.PollInterval == 0 {
+		c.PollInterval = defaults.PollInterval
+	}
+	if c.DeclareInterval == 0 {
+		c.DeclareInterval = defaults.DeclareInterval
+	}
+	if c.CapacityTotal == 0 {
+		c.CapacityTotal = defaults.CapacityTotal
+	}
+	if c.StartupWorkers == 0 {
+		c.StartupWorkers = minInt32(c.CapacityTotal, defaults.StartupWorkers)
+	}
+	if c.CleanupWorkers == 0 {
+		c.CleanupWorkers = defaults.CleanupWorkers
+	}
+	if c.HTTPTimeout == 0 {
+		c.HTTPTimeout = defaults.HTTPTimeout
+	}
+	if c.ShutdownTimeout == 0 {
+		c.ShutdownTimeout = defaults.ShutdownTimeout
 	}
 }
 
 // Validate checks whether the server listeners and public URL are usable.
 func (c ServerConfig) Validate() error {
 	if strings.TrimSpace(c.GatewayListenAddr) == "" {
-		return fmt.Errorf("server.gateway_listen is required")
+		return fmt.Errorf("gateway.http.listen is required")
 	}
 	if strings.TrimSpace(c.GatewaySSHListenAddr) == "" {
-		return fmt.Errorf("server.gateway_ssh_listen is required")
+		return fmt.Errorf("gateway.ssh.listen is required")
 	}
 	if strings.TrimSpace(c.PublicBaseURL) == "" {
-		return fmt.Errorf("server.public_base_url is required")
+		return fmt.Errorf("gateway.http.public_url is required")
 	}
 	return nil
 }
@@ -396,25 +694,31 @@ func (c *ServerConfig) applyDefaults(defaults ServerConfig) {
 // Validate checks whether manager settings are usable.
 func (c ManagerConfig) Validate() error {
 	if strings.TrimSpace(c.StateDir) == "" {
-		return fmt.Errorf("manager.state_dir is required")
+		return fmt.Errorf("node.state_dir is required")
 	}
 	if strings.TrimSpace(c.Name) == "" {
-		return fmt.Errorf("manager.name is required")
+		return fmt.Errorf("node.name is required")
 	}
 	if strings.TrimSpace(c.GatewayURL) == "" {
-		return fmt.Errorf("manager.gateway_url is required")
+		return fmt.Errorf("gateway.http.public_url is required")
+	}
+	if _, err := normalizeManagerGatewayURL(c.GatewayURL); err != nil {
+		return fmt.Errorf("gateway.http.public_url is invalid: %w", err)
 	}
 	if strings.TrimSpace(c.GatewaySSHAddr) == "" {
-		return fmt.Errorf("manager.gateway_ssh_addr is required")
+		return fmt.Errorf("gateway.ssh.public_addr is required")
+	}
+	if _, err := normalizeManagerGatewaySSHAddr(c.GatewaySSHAddr); err != nil {
+		return fmt.Errorf("gateway.ssh.public_addr is invalid: %w", err)
 	}
 	if c.CapacityTotal < 1 || c.CapacityTotal > 10000 {
-		return fmt.Errorf("manager.capacity_total must be between 1 and 10000")
+		return fmt.Errorf("node.capacity_total must be between 1 and 10000")
 	}
 	if c.StartupWorkers < 1 || c.StartupWorkers > 256 {
-		return fmt.Errorf("manager.startup_workers must be between 1 and 256")
+		return fmt.Errorf("node.startup_workers must be between 1 and 256")
 	}
 	if c.CleanupWorkers < 1 || c.CleanupWorkers > 256 {
-		return fmt.Errorf("manager.cleanup_workers must be between 1 and 256")
+		return fmt.Errorf("node.cleanup_workers must be between 1 and 256")
 	}
 	return nil
 }
@@ -461,7 +765,7 @@ func (c *ManagerConfig) applyDefaults(defaults ManagerConfig, server ServerConfi
 // Validate checks whether provisioner settings are usable.
 func (c ProvisionerConfig) Validate() error {
 	if strings.TrimSpace(c.Kind) == "" {
-		return fmt.Errorf("provisioner.kind is required")
+		return fmt.Errorf("runtime.driver is required")
 	}
 	return nil
 }
@@ -481,45 +785,58 @@ func (c *ProvisionerConfig) applyDefaults(defaults ProvisionerConfig) {
 	}
 }
 
-func (c Config) validateTemplates() error {
-	if len(c.Templates) == 0 {
-		return fmt.Errorf("templates must define at least one tag")
+func (c Config) validateRuntimeEnvironments() error {
+	if len(c.RuntimeEnvironments) == 0 {
+		return fmt.Errorf("runtime.environments must define at least one environment")
 	}
-	for tag, template := range c.Templates {
+	for tag, environment := range c.RuntimeEnvironments {
 		tag = strings.TrimSpace(tag)
 		if tag == "" {
-			return fmt.Errorf("templates tag must not be empty")
+			return fmt.Errorf("runtime.environments tag must not be empty")
 		}
-		if err := template.validate(tag); err != nil {
+		if err := environment.validate(tag); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func (c TemplateConfig) validate(tag string) error {
-	if strings.TrimSpace(c.Image) == "" {
-		return fmt.Errorf("templates.%s.image is required", tag)
-	}
+func (c RuntimeEnvironmentConfig) validate(tag string) error {
 	switch strings.TrimSpace(c.InstanceType) {
 	case "container", "virtual-machine":
 	default:
-		return fmt.Errorf("templates.%s.instance_type must be container or virtual-machine", tag)
+		return fmt.Errorf("runtime.environments.%s.type must be lxc or vm", tag)
+	}
+	sourceType := strings.TrimSpace(c.SourceType)
+	if sourceType == "" {
+		sourceType = "image"
+	}
+	switch sourceType {
+	case "image":
+		if strings.TrimSpace(c.Image) == "" {
+			return fmt.Errorf("runtime.environments.%s.source.image is required", tag)
+		}
+	case "instance":
+		if strings.TrimSpace(c.SourceName) == "" {
+			return fmt.Errorf("runtime.environments.%s.source.name is required", tag)
+		}
+	default:
+		return fmt.Errorf("runtime.environments.%s.source.type must be image or instance", tag)
 	}
 	if strings.TrimSpace(c.CommunicationInterface) == "" {
-		return fmt.Errorf("templates.%s.communication_nic is required", tag)
+		return fmt.Errorf("runtime.environments.%s.communication_interface is required", tag)
 	}
 	if c.CPU < 1 {
-		return fmt.Errorf("templates.%s.cpu must be positive", tag)
+		return fmt.Errorf("runtime.environments.%s.resources.cpu must be positive", tag)
 	}
 	if strings.TrimSpace(c.MemoryLimit) == "" {
-		return fmt.Errorf("templates.%s.memory is required", tag)
+		return fmt.Errorf("runtime.environments.%s.resources.memory is required", tag)
 	}
 	if strings.TrimSpace(c.RootDiskSize) == "" {
-		return fmt.Errorf("templates.%s.root_disk_size is required", tag)
+		return fmt.Errorf("runtime.environments.%s.resources.root_disk is required", tag)
 	}
 	if len(c.Profiles) == 0 {
-		return fmt.Errorf("templates.%s.profiles is required", tag)
+		return fmt.Errorf("runtime.environments.%s.profiles.use is required", tag)
 	}
 	return nil
 }
@@ -527,128 +844,320 @@ func (c TemplateConfig) validate(tag string) error {
 // Validate checks whether gateway settings are usable.
 func (c GatewayConfig) Validate() error {
 	if c.MaxInflightTotal < 1 || c.MaxInflightTotal > 1000000 {
-		return fmt.Errorf("gateway.gateway_max_inflight_total must be between 1 and 1000000")
+		return fmt.Errorf("gateway.limits.max_inflight_total must be between 1 and 1000000")
 	}
 	if c.MaxInflightPerSession < 1 || c.MaxInflightPerSession > 1024 {
-		return fmt.Errorf("gateway.gateway_max_inflight_per_session must be between 1 and 1024")
+		return fmt.Errorf("gateway.limits.max_inflight_per_session must be between 1 and 1024")
 	}
 	if c.MaxInflightPerSession > c.MaxInflightTotal {
-		return fmt.Errorf("gateway.gateway_max_inflight_per_session must not exceed gateway.gateway_max_inflight_total")
+		return fmt.Errorf("gateway.limits.max_inflight_per_session must not exceed gateway.limits.max_inflight_total")
 	}
 	if c.SSHMaxChannelsPerConnection < 1 || c.SSHMaxChannelsPerConnection > 1024 {
-		return fmt.Errorf("gateway.gateway_ssh_max_channels_per_connection must be between 1 and 1024")
+		return fmt.Errorf("gateway.ssh.max_channels_per_connection must be between 1 and 1024")
 	}
 	if c.SSHAuthMaxAttemptsPerIP < 1 {
-		return fmt.Errorf("gateway.ssh_auth_max_attempts_per_ip_per_minute must be at least 1")
+		return fmt.Errorf("gateway.ssh.auth.max_attempts_per_ip_per_minute must be at least 1")
 	}
 	if c.SSHAuthMaxAttemptsPerCodespace < 1 {
-		return fmt.Errorf("gateway.ssh_auth_max_attempts_per_codespace_per_minute must be at least 1")
+		return fmt.Errorf("gateway.ssh.auth.max_attempts_per_codespace_per_minute must be at least 1")
 	}
 	if c.SSHAuthMaxAttemptsPerIPCodespace < 1 {
-		return fmt.Errorf("gateway.ssh_auth_max_attempts_per_ip_codespace_per_minute must be at least 1")
+		return fmt.Errorf("gateway.ssh.auth.max_attempts_per_ip_codespace_per_minute must be at least 1")
 	}
 	if c.SSHAuthMaxAttemptsPerPublicKey < 1 {
-		return fmt.Errorf("gateway.ssh_auth_max_attempts_per_public_key_per_minute must be at least 1")
+		return fmt.Errorf("gateway.ssh.auth.max_attempts_per_public_key_per_minute must be at least 1")
 	}
 	if base := c.SSHAuthBackoffBase.ToStdlib(); base < time.Second {
-		return fmt.Errorf("gateway.ssh_auth_backoff_base must be at least 1s")
+		return fmt.Errorf("gateway.ssh.auth.backoff_base must be at least 1s")
 	}
 	if max := c.SSHAuthBackoffMax.ToStdlib(); max < c.SSHAuthBackoffBase.ToStdlib() {
-		return fmt.Errorf("gateway.ssh_auth_backoff_max must not be less than gateway.ssh_auth_backoff_base")
+		return fmt.Errorf("gateway.ssh.auth.backoff_max must not be less than gateway.ssh.auth.backoff_base")
 	}
 	if window := c.SSHAuthFailureWindow.ToStdlib(); window < time.Minute {
-		return fmt.Errorf("gateway.ssh_auth_failure_window must be at least 1m")
+		return fmt.Errorf("gateway.ssh.auth.failure_window must be at least 1m")
 	}
 	if timeout := c.SessionIdleTimeout.ToStdlib(); timeout < time.Second {
-		return fmt.Errorf("gateway.gateway_session_idle_timeout must be at least 1s")
+		return fmt.Errorf("gateway.sessions.idle_timeout must be at least 1s")
 	}
 	if ttl := c.SessionTTL.ToStdlib(); ttl < time.Minute {
-		return fmt.Errorf("gateway.gateway_session_ttl must be at least 1m")
+		return fmt.Errorf("gateway.sessions.ttl must be at least 1m")
 	}
 	if interval := c.SessionRevalidateInterval.ToStdlib(); interval < time.Second || interval > time.Hour {
-		return fmt.Errorf("gateway.gateway_session_revalidate_interval must be between 1s and 1h")
+		return fmt.Errorf("gateway.sessions.revalidate_interval must be between 1s and 1h")
 	}
 	if c.MaxSessionsPerCodespace < 1 || c.MaxSessionsPerCodespace > 10000 {
-		return fmt.Errorf("gateway.gateway_max_sessions_per_codespace must be between 1 and 10000")
+		return fmt.Errorf("gateway.sessions.max_per_codespace must be between 1 and 10000")
 	}
 	if c.MaxSessionsPerUser < 1 || c.MaxSessionsPerUser > 10000 {
-		return fmt.Errorf("gateway.gateway_max_sessions_per_user must be between 1 and 10000")
+		return fmt.Errorf("gateway.sessions.max_per_user must be between 1 and 10000")
 	}
 	if c.PublicMaxConnectionsPerEndpoint < 1 || c.PublicMaxConnectionsPerEndpoint > 10000 {
-		return fmt.Errorf("gateway.gateway_public_max_connections_per_endpoint must be between 1 and 10000")
+		return fmt.Errorf("gateway.limits.public_max_connections_per_endpoint must be between 1 and 10000")
 	}
 	if c.PublicMaxConnectionsPerIP < 1 || c.PublicMaxConnectionsPerIP > 10000 {
-		return fmt.Errorf("gateway.gateway_public_max_connections_per_ip must be between 1 and 10000")
+		return fmt.Errorf("gateway.limits.public_max_connections_per_ip must be between 1 and 10000")
 	}
 	if c.PublicMaxConnectionsPerIP > c.PublicMaxConnectionsPerEndpoint {
-		return fmt.Errorf("gateway.gateway_public_max_connections_per_ip must not exceed gateway.gateway_public_max_connections_per_endpoint")
+		return fmt.Errorf("gateway.limits.public_max_connections_per_ip must not exceed gateway.limits.public_max_connections_per_endpoint")
 	}
 	if c.ValidationMaxInflight < 1 || c.ValidationMaxInflight > 4096 {
-		return fmt.Errorf("gateway.gateway_validation_max_inflight must be between 1 and 4096")
+		return fmt.Errorf("gateway.limits.validation_max_inflight must be between 1 and 4096")
 	}
 	return nil
 }
 
 func (c *GatewayConfig) applyDefaults(defaults GatewayConfig) {
-	if strings.TrimSpace(c.SSHHost) == "" {
-		c.SSHHost = defaults.SSHHost
+	if strings.TrimSpace(c.HTTP.Listen) == "" {
+		c.HTTP.Listen = defaults.HTTP.Listen
 	}
-	if c.SSHPort == 0 {
-		c.SSHPort = defaults.SSHPort
+	if strings.TrimSpace(c.HTTP.PublicURL) == "" {
+		c.HTTP.PublicURL = defaults.HTTP.PublicURL
 	}
-	if c.MaxInflightTotal == 0 {
-		c.MaxInflightTotal = defaults.MaxInflightTotal
+	if strings.TrimSpace(c.SSH.Listen) == "" {
+		c.SSH.Listen = defaults.SSH.Listen
 	}
-	if c.MaxInflightPerSession == 0 {
-		c.MaxInflightPerSession = defaults.MaxInflightPerSession
+	if strings.TrimSpace(c.SSH.PublicAddr) == "" {
+		c.SSH.PublicAddr = defaults.SSH.PublicAddr
 	}
-	if c.SSHMaxChannelsPerConnection == 0 {
-		c.SSHMaxChannelsPerConnection = defaults.SSHMaxChannelsPerConnection
+	if c.SSH.MaxChannelsPerConnection == 0 {
+		c.SSH.MaxChannelsPerConnection = defaults.SSH.MaxChannelsPerConnection
 	}
-	if c.SSHAuthMaxAttemptsPerIP == 0 {
-		c.SSHAuthMaxAttemptsPerIP = defaults.SSHAuthMaxAttemptsPerIP
+	if c.SSH.Auth.MaxAttemptsPerIP == 0 {
+		c.SSH.Auth.MaxAttemptsPerIP = defaults.SSH.Auth.MaxAttemptsPerIP
 	}
-	if c.SSHAuthMaxAttemptsPerCodespace == 0 {
-		c.SSHAuthMaxAttemptsPerCodespace = defaults.SSHAuthMaxAttemptsPerCodespace
+	if c.SSH.Auth.MaxAttemptsPerCodespace == 0 {
+		c.SSH.Auth.MaxAttemptsPerCodespace = defaults.SSH.Auth.MaxAttemptsPerCodespace
 	}
-	if c.SSHAuthMaxAttemptsPerIPCodespace == 0 {
-		c.SSHAuthMaxAttemptsPerIPCodespace = defaults.SSHAuthMaxAttemptsPerIPCodespace
+	if c.SSH.Auth.MaxAttemptsPerIPCodespace == 0 {
+		c.SSH.Auth.MaxAttemptsPerIPCodespace = defaults.SSH.Auth.MaxAttemptsPerIPCodespace
 	}
-	if c.SSHAuthMaxAttemptsPerPublicKey == 0 {
-		c.SSHAuthMaxAttemptsPerPublicKey = defaults.SSHAuthMaxAttemptsPerPublicKey
+	if c.SSH.Auth.MaxAttemptsPerPublicKey == 0 {
+		c.SSH.Auth.MaxAttemptsPerPublicKey = defaults.SSH.Auth.MaxAttemptsPerPublicKey
 	}
-	if c.SSHAuthBackoffBase == 0 {
-		c.SSHAuthBackoffBase = defaults.SSHAuthBackoffBase
+	if c.SSH.Auth.BackoffBase == 0 {
+		c.SSH.Auth.BackoffBase = defaults.SSH.Auth.BackoffBase
 	}
-	if c.SSHAuthBackoffMax == 0 {
-		c.SSHAuthBackoffMax = defaults.SSHAuthBackoffMax
+	if c.SSH.Auth.BackoffMax == 0 {
+		c.SSH.Auth.BackoffMax = defaults.SSH.Auth.BackoffMax
 	}
-	if c.SSHAuthFailureWindow == 0 {
-		c.SSHAuthFailureWindow = defaults.SSHAuthFailureWindow
+	if c.SSH.Auth.FailureWindow == 0 {
+		c.SSH.Auth.FailureWindow = defaults.SSH.Auth.FailureWindow
 	}
-	if c.SessionTTL == 0 {
-		c.SessionTTL = defaults.SessionTTL
+	if c.Sessions.TTL == 0 {
+		c.Sessions.TTL = defaults.Sessions.TTL
 	}
-	if c.SessionIdleTimeout == 0 {
-		c.SessionIdleTimeout = defaults.SessionIdleTimeout
+	if c.Sessions.IdleTimeout == 0 {
+		c.Sessions.IdleTimeout = defaults.Sessions.IdleTimeout
 	}
-	if c.SessionRevalidateInterval == 0 {
-		c.SessionRevalidateInterval = defaults.SessionRevalidateInterval
+	if c.Sessions.RevalidateInterval == 0 {
+		c.Sessions.RevalidateInterval = defaults.Sessions.RevalidateInterval
 	}
-	if c.MaxSessionsPerCodespace == 0 {
-		c.MaxSessionsPerCodespace = defaults.MaxSessionsPerCodespace
+	if c.Sessions.MaxPerCodespace == 0 {
+		c.Sessions.MaxPerCodespace = defaults.Sessions.MaxPerCodespace
 	}
-	if c.MaxSessionsPerUser == 0 {
-		c.MaxSessionsPerUser = defaults.MaxSessionsPerUser
+	if c.Sessions.MaxPerUser == 0 {
+		c.Sessions.MaxPerUser = defaults.Sessions.MaxPerUser
 	}
-	if c.PublicMaxConnectionsPerEndpoint == 0 {
-		c.PublicMaxConnectionsPerEndpoint = defaults.PublicMaxConnectionsPerEndpoint
+	if c.Limits.MaxInflightTotal == 0 {
+		c.Limits.MaxInflightTotal = defaults.Limits.MaxInflightTotal
 	}
-	if c.PublicMaxConnectionsPerIP == 0 {
-		c.PublicMaxConnectionsPerIP = defaults.PublicMaxConnectionsPerIP
+	if c.Limits.MaxInflightPerSession == 0 {
+		c.Limits.MaxInflightPerSession = defaults.Limits.MaxInflightPerSession
 	}
-	if c.ValidationMaxInflight == 0 {
-		c.ValidationMaxInflight = defaults.ValidationMaxInflight
+	if c.Limits.PublicMaxConnectionsPerEndpoint == 0 {
+		c.Limits.PublicMaxConnectionsPerEndpoint = defaults.Limits.PublicMaxConnectionsPerEndpoint
+	}
+	if c.Limits.PublicMaxConnectionsPerIP == 0 {
+		c.Limits.PublicMaxConnectionsPerIP = defaults.Limits.PublicMaxConnectionsPerIP
+	}
+	if c.Limits.ValidationMaxInflight == 0 {
+		c.Limits.ValidationMaxInflight = defaults.Limits.ValidationMaxInflight
+	}
+	c.SSHHost, c.SSHPort = splitGatewaySSHPublicAddr(c.SSH.PublicAddr)
+	c.SessionTTL = c.Sessions.TTL
+	c.SessionIdleTimeout = c.Sessions.IdleTimeout
+	c.SessionRevalidateInterval = c.Sessions.RevalidateInterval
+	c.MaxSessionsPerCodespace = c.Sessions.MaxPerCodespace
+	c.MaxSessionsPerUser = c.Sessions.MaxPerUser
+	c.MaxInflightTotal = c.Limits.MaxInflightTotal
+	c.MaxInflightPerSession = c.Limits.MaxInflightPerSession
+	c.SSHMaxChannelsPerConnection = c.SSH.MaxChannelsPerConnection
+	c.SSHAuthMaxAttemptsPerIP = c.SSH.Auth.MaxAttemptsPerIP
+	c.SSHAuthMaxAttemptsPerCodespace = c.SSH.Auth.MaxAttemptsPerCodespace
+	c.SSHAuthMaxAttemptsPerIPCodespace = c.SSH.Auth.MaxAttemptsPerIPCodespace
+	c.SSHAuthMaxAttemptsPerPublicKey = c.SSH.Auth.MaxAttemptsPerPublicKey
+	c.SSHAuthBackoffBase = c.SSH.Auth.BackoffBase
+	c.SSHAuthBackoffMax = c.SSH.Auth.BackoffMax
+	c.SSHAuthFailureWindow = c.SSH.Auth.FailureWindow
+	c.PublicMaxConnectionsPerEndpoint = c.Limits.PublicMaxConnectionsPerEndpoint
+	c.PublicMaxConnectionsPerIP = c.Limits.PublicMaxConnectionsPerIP
+	c.ValidationMaxInflight = c.Limits.ValidationMaxInflight
+}
+
+func splitGatewaySSHPublicAddr(value string) (string, int) {
+	host, portText, ok := strings.Cut(strings.TrimSpace(value), ":")
+	if !ok {
+		return strings.TrimSpace(value), 0
+	}
+	var port int
+	_, _ = fmt.Sscanf(portText, "%d", &port)
+	return host, port
+}
+
+func normalizeManagerGatewayURL(rawURL string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return "", fmt.Errorf("parse gateway url: %w", err)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return "", fmt.Errorf("gateway url must use http or https")
+	}
+	host := strings.ToLower(parsed.Hostname())
+	if host == "" {
+		return "", fmt.Errorf("gateway url host is required")
+	}
+	if err := validateManagerGatewayDNSHost(host); err != nil {
+		return "", fmt.Errorf("invalid gateway url host: %w", err)
+	}
+	if len(strings.Repeat("a", 30)+"-"+strings.Repeat("0", 32)+"."+host) > 253 {
+		return "", fmt.Errorf("derived gateway endpoint host is too long")
+	}
+	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("gateway url must not contain userinfo, query, or fragment")
+	}
+	if parsed.Path != "" && parsed.Path != "/" {
+		return "", fmt.Errorf("gateway url must not contain a business path")
+	}
+	port := parsed.Port()
+	if port != "" {
+		portNumber, err := strconv.Atoi(port)
+		if err != nil || portNumber < 1 || portNumber > 65535 {
+			return "", fmt.Errorf("invalid gateway url port")
+		}
+		if (parsed.Scheme == "http" && portNumber == 80) || (parsed.Scheme == "https" && portNumber == 443) {
+			port = ""
+		} else {
+			port = strconv.Itoa(portNumber)
+		}
+	}
+	normalized := parsed.Scheme + "://" + host
+	if port != "" {
+		normalized += ":" + port
+	}
+	if len(normalized) > 512 {
+		return "", fmt.Errorf("gateway url is too long")
+	}
+	return normalized, nil
+}
+
+func normalizeManagerGatewaySSHAddr(rawAddr string) (string, error) {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(rawAddr))
+	if err != nil {
+		return "", fmt.Errorf("gateway ssh address must use host:port")
+	}
+	host = strings.ToLower(strings.TrimSpace(host))
+	if err := validateManagerGatewayDNSHost(host); err != nil {
+		return "", fmt.Errorf("invalid gateway ssh host: %w", err)
+	}
+	portNumber, err := strconv.Atoi(port)
+	if err != nil || portNumber < 1 || portNumber > 65535 {
+		return "", fmt.Errorf("invalid gateway ssh port")
+	}
+	normalized := net.JoinHostPort(host, strconv.Itoa(portNumber))
+	if len(normalized) > 512 {
+		return "", fmt.Errorf("gateway ssh address is too long")
+	}
+	return normalized, nil
+}
+
+func validateManagerGatewayDNSHost(host string) error {
+	if host == "" || strings.HasSuffix(host, ".") {
+		return fmt.Errorf("host must be a DNS name without trailing dot")
+	}
+	if net.ParseIP(host) != nil {
+		return fmt.Errorf("host must not be an IP address")
+	}
+	if len(host) > 253 {
+		return fmt.Errorf("host is too long")
+	}
+	for label := range strings.SplitSeq(host, ".") {
+		if !gatewayDNSLabelPattern.MatchString(label) {
+			return fmt.Errorf("invalid DNS label %q", label)
+		}
+	}
+	return nil
+}
+
+func (c *RuntimeConfig) applyDefaults(defaults RuntimeConfig) {
+	if strings.TrimSpace(c.Driver) == "" {
+		c.Driver = defaults.Driver
+	}
+	if strings.TrimSpace(c.CodespaceRoot) == "" {
+		c.CodespaceRoot = defaults.CodespaceRoot
+	}
+	if strings.TrimSpace(c.Bootstrap.Shell) == "" {
+		c.Bootstrap.Shell = defaults.Bootstrap.Shell
+	}
+	if strings.TrimSpace(c.Bootstrap.HomeDir) == "" {
+		c.Bootstrap.HomeDir = defaults.Bootstrap.HomeDir
+	}
+	if strings.TrimSpace(c.Bootstrap.UserName) == "" {
+		c.Bootstrap.UserName = defaults.Bootstrap.UserName
+	}
+	if strings.TrimSpace(c.Git.SSHKeyType) == "" {
+		c.Git.SSHKeyType = defaults.Git.SSHKeyType
+	}
+	c.Scripts.applyDefaults(defaults.Scripts)
+	if strings.TrimSpace(c.Incus.Connect.UnixSocket) == "" && strings.TrimSpace(c.Incus.Connect.RemoteAddr) == "" {
+		c.Incus.Connect.UnixSocket = defaults.Incus.Connect.UnixSocket
+	}
+	if strings.TrimSpace(c.Incus.Project.Name) == "" {
+		c.Incus.Project.Name = defaults.Incus.Project.Name
+	}
+	if strings.TrimSpace(c.Incus.Storage.Pool) == "" {
+		c.Incus.Storage.Pool = defaults.Incus.Storage.Pool
+	}
+	if strings.TrimSpace(c.Incus.Network.Name) == "" {
+		c.Incus.Network.Name = defaults.Incus.Network.Name
+	}
+	if len(c.Environments) == 0 {
+		c.Environments = cloneEnvironments(defaults.Environments)
+	}
+	for i := range c.Environments {
+		c.Environments[i].applyDefaults(defaults.Environments[0])
+	}
+}
+
+func (c *EnvironmentConfig) applyDefaults(defaults EnvironmentConfig) {
+	if strings.TrimSpace(c.Tag) == "" {
+		c.Tag = defaults.Tag
+	}
+	if strings.TrimSpace(c.DisplayName) == "" {
+		c.DisplayName = c.Tag
+	}
+	if strings.TrimSpace(c.Type) == "" {
+		c.Type = defaults.Type
+	}
+	if strings.TrimSpace(c.Source.Type) == "" {
+		c.Source.Type = defaults.Source.Type
+	}
+	if strings.TrimSpace(c.Source.Type) == "image" && strings.TrimSpace(c.Source.Image) == "" {
+		c.Source.Image = defaults.Source.Image
+	}
+	if strings.TrimSpace(c.CommunicationInterface) == "" {
+		c.CommunicationInterface = defaults.CommunicationInterface
+	}
+	if c.Resources.CPU == 0 {
+		c.Resources.CPU = defaults.Resources.CPU
+	}
+	if strings.TrimSpace(c.Resources.Memory) == "" {
+		c.Resources.Memory = defaults.Resources.Memory
+	}
+	if strings.TrimSpace(c.Resources.RootDisk) == "" {
+		c.Resources.RootDisk = defaults.Resources.RootDisk
+	}
+	if len(c.Profiles.Use) == 0 {
+		c.Profiles.Use = append([]string(nil), defaults.Profiles.Use...)
 	}
 }
 
@@ -664,9 +1173,9 @@ func (c *ScriptsConfig) applyDefaults(defaults ScriptsConfig) {
 	}
 }
 
-func (c Config) templateTags() []string {
-	tags := make([]string, 0, len(c.Templates))
-	for tag := range c.Templates {
+func (c Config) environmentTags() []string {
+	tags := make([]string, 0, len(c.RuntimeEnvironments))
+	for tag := range c.RuntimeEnvironments {
 		tag = strings.TrimSpace(tag)
 		if tag != "" {
 			tags = append(tags, tag)
@@ -676,11 +1185,57 @@ func (c Config) templateTags() []string {
 	return tags
 }
 
-func cloneTemplates(templates map[string]TemplateConfig) map[string]TemplateConfig {
-	cloned := make(map[string]TemplateConfig, len(templates))
-	for tag, template := range templates {
-		template.Profiles = append([]string(nil), template.Profiles...)
-		cloned[tag] = template
+func runtimeEnvironmentsFromConfig(environments []EnvironmentConfig) map[string]RuntimeEnvironmentConfig {
+	result := make(map[string]RuntimeEnvironmentConfig, len(environments))
+	for _, environment := range environments {
+		tag := strings.TrimSpace(environment.Tag)
+		if tag == "" {
+			continue
+		}
+		result[tag] = RuntimeEnvironmentConfig{
+			Image:                  strings.TrimSpace(environment.Source.Image),
+			InstanceType:           normalizeEnvironmentType(environment.Type),
+			CommunicationInterface: strings.TrimSpace(environment.CommunicationInterface),
+			CPU:                    environment.Resources.CPU,
+			MemoryLimit:            strings.TrimSpace(environment.Resources.Memory),
+			RootDiskSize:           strings.TrimSpace(environment.Resources.RootDisk),
+			Profiles:               normalizedConfigProfiles(environment.Profiles.Use),
+			SourceType:             strings.TrimSpace(environment.Source.Type),
+			SourceRemote:           strings.TrimSpace(environment.Source.Remote),
+			SourceProject:          strings.TrimSpace(environment.Source.Project),
+			SourceName:             strings.TrimSpace(environment.Source.Name),
+		}
+	}
+	return result
+}
+
+func normalizeEnvironmentType(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "lxc", "container":
+		return "container"
+	case "vm", "virtual-machine":
+		return "virtual-machine"
+	default:
+		return ""
+	}
+}
+
+func normalizedConfigProfiles(profiles []string) []string {
+	normalized := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		profile = strings.TrimSpace(profile)
+		if profile != "" {
+			normalized = append(normalized, profile)
+		}
+	}
+	return normalized
+}
+
+func cloneEnvironments(environments []EnvironmentConfig) []EnvironmentConfig {
+	cloned := make([]EnvironmentConfig, len(environments))
+	for i, environment := range environments {
+		environment.Profiles.Use = append([]string(nil), environment.Profiles.Use...)
+		cloned[i] = environment
 	}
 	return cloned
 }
@@ -693,14 +1248,28 @@ func minInt32(left, right int32) int32 {
 }
 
 func (c *Config) resolveRelativePaths(configPath string) {
-	if strings.TrimSpace(configPath) == "" || filepath.IsAbs(c.Manager.StateDir) {
+	if strings.TrimSpace(configPath) == "" {
 		return
 	}
 	configDir := filepath.Dir(configPath)
 	if configDir == "." || configDir == "" {
 		return
 	}
-	c.Manager.StateDir = filepath.Clean(filepath.Join(configDir, c.Manager.StateDir))
+	if !filepath.IsAbs(c.Node.StateDir) {
+		c.Node.StateDir = filepath.Clean(filepath.Join(configDir, c.Node.StateDir))
+	}
+	c.Runtime.Scripts.Init = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Init)
+	c.Runtime.Scripts.Start = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Start)
+	c.Runtime.Scripts.Resume = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Resume)
+	c.syncRuntimeFields()
+}
+
+func resolveConfigScriptPath(configDir, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "builtin" || filepath.IsAbs(path) {
+		return path
+	}
+	return filepath.Clean(filepath.Join(configDir, path))
 }
 
 // Validate checks whether the script entry points are usable.
@@ -709,9 +1278,9 @@ func (c ScriptsConfig) Validate() error {
 		name  string
 		value string
 	}{
-		{name: "scripts.init", value: c.Init},
-		{name: "scripts.start", value: c.Start},
-		{name: "scripts.resume", value: c.Resume},
+		{name: "runtime.scripts.init", value: c.Init},
+		{name: "runtime.scripts.start", value: c.Start},
+		{name: "runtime.scripts.resume", value: c.Resume},
 	}
 	builtinCount := 0
 	customCount := 0
@@ -734,7 +1303,7 @@ func (c ScriptsConfig) Validate() error {
 		}
 	}
 	if builtinCount != 0 && customCount != 0 {
-		return fmt.Errorf("scripts.init, scripts.start, and scripts.resume must all be builtin or all be absolute local file paths")
+		return fmt.Errorf("runtime.scripts.init, runtime.scripts.start, and runtime.scripts.resume must all be builtin or all be local file paths")
 	}
 	return nil
 }

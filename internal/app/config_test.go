@@ -14,48 +14,70 @@ import (
 func TestLoadConfigYAML(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "codespace.yaml")
 	content := `
-server:
-  listen_addr: ":19090"
-  gateway_listen: ":19091"
-  gateway_ssh_listen: ":19022"
-  public_base_url: "https://codespace.example.com"
-gateway:
-  gateway_session_ttl: "4h"
-  gateway_session_idle_timeout: "2m"
-  gateway_session_revalidate_interval: "45s"
-  gateway_max_sessions_per_codespace: 9
-  gateway_max_sessions_per_user: 99
-  gateway_ssh_max_channels_per_connection: 7
-  ssh_auth_max_attempts_per_ip_per_minute: 11
-  ssh_auth_max_attempts_per_codespace_per_minute: 12
-  ssh_auth_max_attempts_per_ip_codespace_per_minute: 13
-  ssh_auth_max_attempts_per_public_key_per_minute: 14
-  ssh_auth_backoff_base: "2s"
-  ssh_auth_backoff_max: "20s"
-  ssh_auth_failure_window: "5m"
-manager:
+version: 1
+
+node:
   state_dir: "state"
   name: "yaml-manager"
   poll_interval: "1s"
   capacity_total: 3
   startup_workers: 2
   cleanup_workers: 5
-provisioner:
-  kind: "incus"
-incus:
-  unix_socket: "/var/lib/incus/unix.socket"
-templates:
-  default:
-    image: "images:debian/12"
-    instance_type: "virtual-machine"
-    communication_nic: "eth0"
-    cpu: 2
-    memory: "1GiB"
-    root_disk_size: "10GiB"
-    profiles:
-      - default
+
+gateway:
+  http:
+    listen: ":19091"
+    public_url: "https://codespace.example.com"
+  ssh:
+    listen: ":19022"
+    public_addr: "codespace.example.com:2222"
+    max_channels_per_connection: 7
+    auth:
+      max_attempts_per_ip_per_minute: 11
+      max_attempts_per_codespace_per_minute: 12
+      max_attempts_per_ip_codespace_per_minute: 13
+      max_attempts_per_public_key_per_minute: 14
+      backoff_base: "2s"
+      backoff_max: "20s"
+      failure_window: "5m"
+  sessions:
+    ttl: "4h"
+    idle_timeout: "2m"
+    revalidate_interval: "45s"
+    max_per_codespace: 9
+    max_per_user: 99
+
+runtime:
+  driver: "incus"
+  incus:
+    connect:
+      unix_socket: "/var/lib/incus/unix.socket"
+    project:
+      name: "gitea-codespace"
+      manage: true
+    storage:
+      pool: "default"
+    network:
+      name: "gitea-codespace-net"
+      manage: true
+  environments:
+    - tag: "default"
+      display_name: "Debian VM"
+      type: "vm"
+      communication_interface: "eth0"
+      source:
+        type: "image"
+        image: "images:debian/12"
+      resources:
+        cpu: 2
+        memory: "1GiB"
+        root_disk: "10GiB"
+      profiles:
+        use:
+          - default
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write yaml config: %v", err)
@@ -66,299 +88,148 @@ templates:
 		t.Fatalf("load yaml config: %v", err)
 	}
 
-	if config.Server.ListenAddr != ":19090" {
-		t.Fatalf("listen addr = %q", config.Server.ListenAddr)
+	if config.Version != 1 {
+		t.Fatalf("version = %d", config.Version)
 	}
-	if config.Server.GatewayListenAddr != ":19091" {
-		t.Fatalf("gateway listen addr = %q", config.Server.GatewayListenAddr)
-	}
-	if config.Server.GatewaySSHListenAddr != ":19022" {
-		t.Fatalf("gateway ssh listen addr = %q", config.Server.GatewaySSHListenAddr)
-	}
-	if config.Manager.GatewayURL != "https://codespace.example.com" {
-		t.Fatalf("manager gateway url = %q", config.Manager.GatewayURL)
-	}
-	if config.Manager.StateDir != filepath.Join(filepath.Dir(configPath), "state") {
+	if config.Manager.StateDir != filepath.Join(dir, "state") {
 		t.Fatalf("manager state dir = %q", config.Manager.StateDir)
 	}
-	if config.Manager.PollInterval.ToStdlib().Seconds() != 1 {
-		t.Fatalf("manager poll interval = %s", config.Manager.PollInterval.ToStdlib())
+	if config.Manager.Name != "yaml-manager" || config.Manager.GatewayURL != "https://codespace.example.com" {
+		t.Fatalf("manager config = %#v", config.Manager)
 	}
-	if config.Manager.CapacityTotal != 3 || config.Manager.StartupWorkers != 2 || config.Manager.CleanupWorkers != 5 {
-		t.Fatalf("manager capacity config = %#v", config.Manager)
+	if config.Manager.GatewaySSHAddr != "codespace.example.com:2222" {
+		t.Fatalf("manager gateway ssh addr = %q", config.Manager.GatewaySSHAddr)
 	}
-	if config.Gateway.SessionRevalidateInterval.ToStdlib().Seconds() != 45 {
-		t.Fatalf("gateway session revalidate interval = %s", config.Gateway.SessionRevalidateInterval.ToStdlib())
+	if config.Server.GatewayListenAddr != ":19091" || config.Server.GatewaySSHListenAddr != ":19022" {
+		t.Fatalf("server listeners = %#v", config.Server)
 	}
-	if config.Gateway.SessionIdleTimeout.ToStdlib().Minutes() != 2 {
-		t.Fatalf("gateway session idle timeout = %s", config.Gateway.SessionIdleTimeout.ToStdlib())
-	}
-	if config.Gateway.SessionTTL.ToStdlib().Hours() != 4 ||
+	if config.Gateway.SessionRevalidateInterval.ToStdlib().Seconds() != 45 ||
+		config.Gateway.SessionIdleTimeout.ToStdlib().Minutes() != 2 ||
+		config.Gateway.SessionTTL.ToStdlib().Hours() != 4 ||
 		config.Gateway.MaxSessionsPerCodespace != 9 ||
 		config.Gateway.MaxSessionsPerUser != 99 {
 		t.Fatalf("gateway session config = %#v", config.Gateway)
 	}
-	if config.Gateway.SSHMaxChannelsPerConnection != 7 {
-		t.Fatalf("gateway ssh max channels = %d", config.Gateway.SSHMaxChannelsPerConnection)
-	}
-	if config.Gateway.SSHAuthMaxAttemptsPerIP != 11 ||
+	if config.Gateway.SSHMaxChannelsPerConnection != 7 ||
+		config.Gateway.SSHAuthMaxAttemptsPerIP != 11 ||
 		config.Gateway.SSHAuthMaxAttemptsPerCodespace != 12 ||
 		config.Gateway.SSHAuthMaxAttemptsPerIPCodespace != 13 ||
 		config.Gateway.SSHAuthMaxAttemptsPerPublicKey != 14 ||
 		config.Gateway.SSHAuthBackoffBase.ToStdlib().Seconds() != 2 ||
 		config.Gateway.SSHAuthBackoffMax.ToStdlib().Seconds() != 20 ||
 		config.Gateway.SSHAuthFailureWindow.ToStdlib().Minutes() != 5 {
-		t.Fatalf("gateway ssh auth limit config = %#v", config.Gateway)
+		t.Fatalf("gateway ssh config = %#v", config.Gateway)
 	}
-	if config.Incus.UnixSocket != "/var/lib/incus/unix.socket" {
-		t.Fatalf("incus unix socket = %q", config.Incus.UnixSocket)
+	if config.Incus.Project != "gitea-codespace" || !config.Incus.ProjectManage ||
+		config.Incus.StoragePool != "default" || config.Incus.NetworkName != "gitea-codespace-net" || !config.Incus.NetworkManage {
+		t.Fatalf("incus config = %#v", config.Incus)
 	}
-	template := config.Templates["default"]
-	if template.CommunicationInterface != "eth0" {
-		t.Fatalf("template communication interface = %q", template.CommunicationInterface)
-	}
-	if template.Image != "images:debian/12" {
-		t.Fatalf("template image = %q", template.Image)
-	}
-	if template.InstanceType != "virtual-machine" {
-		t.Fatalf("template instance type = %q", template.InstanceType)
-	}
-	if template.CPU != 2 {
-		t.Fatalf("template cpu = %d", template.CPU)
-	}
-	if template.MemoryLimit != "1GiB" {
-		t.Fatalf("template memory limit = %q", template.MemoryLimit)
-	}
-	if template.RootDiskSize != "10GiB" {
-		t.Fatalf("template root disk size = %q", template.RootDiskSize)
-	}
-	if len(template.Profiles) != 1 || template.Profiles[0] != "default" {
-		t.Fatalf("template profiles = %#v", template.Profiles)
-	}
-	if config.Scripts.Init != "builtin" || config.Scripts.Start != "builtin" || config.Scripts.Resume != "builtin" {
-		t.Fatalf("scripts defaults = %#v", config.Scripts)
+	environment := config.RuntimeEnvironments["default"]
+	if environment.InstanceType != "virtual-machine" || environment.Image != "images:debian/12" || environment.CPU != 2 {
+		t.Fatalf("environment = %#v", environment)
 	}
 }
 
-func TestLoadConfigJSON(t *testing.T) {
+func TestLoadCheckedInYAMLConfigs(t *testing.T) {
+	t.Parallel()
+
+	for _, path := range []string{
+		filepath.Join("..", "..", "codespace.yaml"),
+		filepath.Join("..", "..", "examples", "config.example.yaml"),
+	} {
+		path := path
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			config, err := LoadConfig(path)
+			if err != nil {
+				t.Fatalf("load checked-in config %s: %v", path, err)
+			}
+			if config.Provisioner.Kind != "incus" {
+				t.Fatalf("provisioner kind = %q", config.Provisioner.Kind)
+			}
+			if len(config.RuntimeEnvironments) == 0 {
+				t.Fatalf("config %s has no runtime environments", path)
+			}
+		})
+	}
+}
+
+func TestLoadConfigRejectsJSON(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "codespace.json")
-	content := `{
-	  "server": {
-	    "listen_addr": ":20080",
-	    "gateway_listen": ":20081",
-    "gateway_ssh_listen": ":20022",
-    "public_base_url": "http://127.0.0.1:20080"
-  },
-  "manager": {
-    "state_dir": "state",
-    "name": "json-manager",
-    "gateway_url": "http://127.0.0.1:20080"
-  },
-  "provisioner": {
-    "kind": "dummy"
-  }
-}`
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(configPath, []byte(`{"version":1}`), 0o644); err != nil {
 		t.Fatalf("write json config: %v", err)
 	}
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatalf("expected json config error")
+	}
+	if !strings.Contains(err.Error(), "must be a yaml file") {
+		t.Fatalf("json config error = %v", err)
+	}
+}
 
+func TestLoadConfigRejectsDuplicateEnvironmentTags(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
+	content := `
+runtime:
+  environments:
+    - tag: "default"
+    - tag: "default"
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write yaml config: %v", err)
+	}
+	_, err := LoadConfig(configPath)
+	if err == nil {
+		t.Fatalf("expected duplicate tag error")
+	}
+	if !strings.Contains(err.Error(), "duplicated") {
+		t.Fatalf("duplicate tag error = %v", err)
+	}
+}
+
+func TestLoadConfigInstanceSource(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
+	content := `
+runtime:
+  driver: "incus"
+  environments:
+    - tag: "environment"
+      type: "vm"
+      communication_interface: "eth0"
+      source:
+        type: "instance"
+        remote: "local"
+        project: "environments"
+        name: "dev-environment"
+      resources:
+        cpu: 2
+        memory: "1GiB"
+        root_disk: "10GiB"
+      profiles:
+        use:
+          - default
+`
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
+		t.Fatalf("write yaml config: %v", err)
+	}
 	config, err := LoadConfig(configPath)
 	if err != nil {
-		t.Fatalf("load json config: %v", err)
+		t.Fatalf("load yaml config: %v", err)
 	}
-
-	if config.Manager.StateDir != filepath.Join(filepath.Dir(configPath), "state") {
-		t.Fatalf("manager state dir = %q", config.Manager.StateDir)
-	}
-	if config.Server.ShutdownTimeout.ToStdlib().Seconds() != 10 {
-		t.Fatalf("shutdown timeout = %s", config.Server.ShutdownTimeout.ToStdlib())
-	}
-	if config.Provisioner.Bootstrap.Shell != "/bin/sh" {
-		t.Fatalf("bootstrap shell = %q", config.Provisioner.Bootstrap.Shell)
-	}
-	template := config.Templates["default"]
-	if template.Image != "images:debian/12" {
-		t.Fatalf("default template image = %q", template.Image)
-	}
-	if template.InstanceType != "container" {
-		t.Fatalf("default template instance type = %q", template.InstanceType)
-	}
-	if config.Manager.CapacityTotal != 4 ||
-		config.Manager.StartupWorkers != 4 ||
-		config.Manager.CleanupWorkers != 4 {
-		t.Fatalf("manager capacity defaults = %#v", config.Manager)
-	}
-	if config.Gateway.MaxInflightTotal != 4096 ||
-		config.Gateway.SessionTTL.ToStdlib().Hours() != 8 ||
-		config.Gateway.SessionIdleTimeout.ToStdlib().Minutes() != 30 ||
-		config.Gateway.SessionRevalidateInterval.ToStdlib().Minutes() != 5 ||
-		config.Gateway.MaxSessionsPerCodespace != 32 ||
-		config.Gateway.MaxSessionsPerUser != 128 ||
-		config.Gateway.MaxInflightPerSession != 32 ||
-		config.Gateway.SSHMaxChannelsPerConnection != 32 ||
-		config.Gateway.SSHAuthMaxAttemptsPerIP != 30 ||
-		config.Gateway.SSHAuthMaxAttemptsPerCodespace != 20 ||
-		config.Gateway.SSHAuthMaxAttemptsPerIPCodespace != 10 ||
-		config.Gateway.SSHAuthMaxAttemptsPerPublicKey != 30 ||
-		config.Gateway.SSHAuthBackoffBase.ToStdlib().Seconds() != 1 ||
-		config.Gateway.SSHAuthBackoffMax.ToStdlib().Seconds() != 30 ||
-		config.Gateway.SSHAuthFailureWindow.ToStdlib().Minutes() != 10 ||
-		config.Gateway.PublicMaxConnectionsPerEndpoint != 64 ||
-		config.Gateway.PublicMaxConnectionsPerIP != 16 ||
-		config.Gateway.ValidationMaxInflight != 128 {
-		t.Fatalf("gateway defaults = %#v", config.Gateway)
-	}
-}
-
-func TestLoadConfigRejectsGatewaySSHHostKeyStateFields(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		file    string
-		content string
-	}{
-		{
-			name: "yaml",
-			file: "codespace.yaml",
-			content: `
-manager:
-  gateway_ssh_host_key_algorithm: "ssh-ed25519"
-`,
-		},
-		{
-			name: "json",
-			file: "codespace.json",
-			content: `{
-  "manager": {
-    "gateway_ssh_host_key_fingerprint_sha256": "SHA256:test"
-  }
-}`,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := filepath.Join(t.TempDir(), test.file)
-			if err := os.WriteFile(configPath, []byte(test.content), 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			_, err := LoadConfig(configPath)
-			if err == nil {
-				t.Fatalf("expected config decode error")
-			}
-			if !strings.Contains(err.Error(), "gateway_ssh_host_key_") {
-				t.Fatalf("decode error = %v", err)
-			}
-		})
-	}
-}
-
-func TestLoadConfigRejectsDynamicCapacityStateFields(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		file    string
-		content string
-	}{
-		{
-			name: "yaml capacity available",
-			file: "codespace.yaml",
-			content: `
-manager:
-  capacity_available: 1
-`,
-		},
-		{
-			name: "json cleanup capacity available",
-			file: "codespace.json",
-			content: `{
-  "manager": {
-    "cleanup_capacity_available": 1
-  }
-}`,
-		},
-		{
-			name: "yaml max operations",
-			file: "codespace.yaml",
-			content: `
-manager:
-  max_operations: 1
-`,
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := filepath.Join(t.TempDir(), test.file)
-			if err := os.WriteFile(configPath, []byte(test.content), 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			_, err := LoadConfig(configPath)
-			if err == nil {
-				t.Fatalf("expected config decode error")
-			}
-			if !strings.Contains(err.Error(), "capacity_available") &&
-				!strings.Contains(err.Error(), "max_operations") {
-				t.Fatalf("decode error = %v", err)
-			}
-		})
-	}
-}
-
-func TestLoadConfigRejectsRemovedTemplateCompatibilityFields(t *testing.T) {
-	t.Parallel()
-
-	tests := []struct {
-		name    string
-		file    string
-		content string
-		want    string
-	}{
-		{
-			name: "manager tags",
-			file: "codespace.yaml",
-			content: `
-manager:
-  tags:
-    - default
-`,
-			want: "tags",
-		},
-		{
-			name: "provisioner incus",
-			file: "codespace.json",
-			content: `{
-  "provisioner": {
-    "incus": {
-      "image": "images:debian/12"
-    }
-  }
-}`,
-			want: "incus",
-		},
-	}
-	for _, test := range tests {
-		t.Run(test.name, func(t *testing.T) {
-			t.Parallel()
-
-			configPath := filepath.Join(t.TempDir(), test.file)
-			if err := os.WriteFile(configPath, []byte(test.content), 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			_, err := LoadConfig(configPath)
-			if err == nil {
-				t.Fatalf("expected config decode error")
-			}
-			if !strings.Contains(err.Error(), test.want) {
-				t.Fatalf("decode error = %v", err)
-			}
-		})
+	environment := config.RuntimeEnvironments["environment"]
+	if environment.SourceType != "instance" ||
+		environment.SourceRemote != "local" ||
+		environment.SourceProject != "environments" ||
+		environment.SourceName != "dev-environment" {
+		t.Fatalf("environment source = %#v", environment)
 	}
 }
 
@@ -392,109 +263,25 @@ func TestGatewayConfigValidation(t *testing.T) {
 	}
 
 	config = DefaultConfig()
-	config.Gateway.SessionTTL = Duration(time.Second)
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected session ttl validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.MaxSessionsPerCodespace = 0
-	config.applyDefaults()
-	config.Gateway.MaxSessionsPerCodespace = -1
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected per-codespace session limit validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.MaxSessionsPerUser = 0
-	config.applyDefaults()
-	config.Gateway.MaxSessionsPerUser = -1
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected per-user session limit validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.SSHAuthMaxAttemptsPerIP = 0
-	config.applyDefaults()
-	config.Gateway.SSHAuthMaxAttemptsPerIP = -1
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected ssh auth per-ip validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.SSHAuthBackoffMax = Duration(time.Millisecond)
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected ssh auth backoff validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.SSHAuthFailureWindow = Duration(time.Second)
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected ssh auth failure window validation error")
-	}
-
-	config = DefaultConfig()
-	config.Gateway.ValidationMaxInflight = 4097
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected validation inflight limit error")
-	}
-
-	config = DefaultConfig()
 	config.Manager.CapacityTotal = 10001
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected capacity total validation error")
 	}
 
 	config = DefaultConfig()
-	config.Manager.StartupWorkers = 257
+	config.Manager.GatewayURL = "http://127.0.0.1:18081"
 	if err := config.Validate(); err == nil {
-		t.Fatalf("expected startup workers validation error")
+		t.Fatalf("expected gateway public url validation error")
+	} else if !strings.Contains(err.Error(), "gateway.http.public_url") {
+		t.Fatalf("gateway public url validation error = %v", err)
 	}
 
 	config = DefaultConfig()
-	config.Manager.CleanupWorkers = 257
+	config.Manager.GatewaySSHAddr = "127.0.0.1:2222"
 	if err := config.Validate(); err == nil {
-		t.Fatalf("expected cleanup workers validation error")
-	}
-
-	config = DefaultConfig()
-	config.Templates["default"] = TemplateConfig{
-		Image:                  "images:debian/12",
-		InstanceType:           "serverless",
-		CommunicationInterface: "eth0",
-		CPU:                    1,
-		MemoryLimit:            "1GiB",
-		RootDiskSize:           "10GiB",
-		Profiles:               []string{"default"},
-	}
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected template instance type validation error")
-	}
-
-	config = DefaultConfig()
-	config.Templates["default"] = TemplateConfig{
-		Image:                  "images:debian/12",
-		InstanceType:           "container",
-		CommunicationInterface: "eth0",
-		MemoryLimit:            "1GiB",
-		RootDiskSize:           "10GiB",
-		Profiles:               []string{"default"},
-	}
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected template cpu validation error")
-	}
-
-	config = DefaultConfig()
-	config.Templates["default"] = TemplateConfig{
-		Image:                  "images:debian/12",
-		InstanceType:           "container",
-		CommunicationInterface: "eth0",
-		CPU:                    1,
-		MemoryLimit:            "1GiB",
-		Profiles:               []string{"default"},
-	}
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected template root disk validation error")
+		t.Fatalf("expected gateway ssh public addr validation error")
+	} else if !strings.Contains(err.Error(), "gateway.ssh.public_addr") {
+		t.Fatalf("gateway ssh public addr validation error = %v", err)
 	}
 }
 
@@ -526,17 +313,6 @@ func TestScriptsConfigValidation(t *testing.T) {
 	}
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected mixed scripts validation error")
-	}
-
-	config = DefaultConfig()
-	config.applyDefaults()
-	config.Scripts = ScriptsConfig{
-		Init:   "init.sh",
-		Start:  startPath,
-		Resume: resumePath,
-	}
-	if err := config.Validate(); err == nil {
-		t.Fatalf("expected relative script path validation error")
 	}
 }
 

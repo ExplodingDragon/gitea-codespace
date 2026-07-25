@@ -48,9 +48,11 @@ type codespaceState struct {
 	RuntimeGeneration        int64                              `json:"runtime_generation,omitempty"`
 	PendingRuntimeTransition *codespacePendingRuntimeTransition `json:"pending_runtime_transition,omitempty"`
 	CleanupPending           bool                               `json:"cleanup_pending,omitempty"`
+	HealthStopPending        bool                               `json:"health_stop_pending,omitempty"`
 	Endpoints                []codespaceEndpointSnapshot        `json:"endpoints,omitempty"`
 	RuntimeMetadata          *codespaceRuntimeMetadataSnapshot  `json:"runtime_metadata,omitempty"`
 	ActiveOperation          *codespaceActiveOperation          `json:"active_operation,omitempty"`
+	StartupInput             *codespaceStartupInputSnapshot     `json:"startup_input,omitempty"`
 	SharedEnvironment        map[string]string                  `json:"shared_environment,omitempty"`
 }
 
@@ -76,6 +78,29 @@ type codespacePendingRuntimeTransition struct {
 	TargetState               string `json:"target_state"`
 	RuntimeGeneration         int64  `json:"runtime_generation"`
 	ObservedOperationRVersion int64  `json:"observed_operation_rversion"`
+}
+
+type codespaceStartupInputSnapshot struct {
+	UserIdentity     codespaceStartupUserIdentity     `json:"user_identity"`
+	RuntimeUserName  string                           `json:"runtime_user_name"`
+	EnvironmentTag   string                           `json:"environment_tag"`
+	RepositoryConfig codespaceStartupRepositoryConfig `json:"repository_config"`
+}
+
+type codespaceStartupUserIdentity struct {
+	UserID       int64  `json:"user_id,omitempty"`
+	Username     string `json:"username"`
+	DisplayName  string `json:"display_name,omitempty"`
+	GitUserName  string `json:"git_user_name"`
+	GitUserEmail string `json:"git_user_email"`
+}
+
+type codespaceStartupRepositoryConfig struct {
+	Present       bool   `json:"present"`
+	Path          string `json:"path,omitempty"`
+	Content       []byte `json:"content,omitempty"`
+	SourceRef     string `json:"source_ref,omitempty"`
+	ContentSHA256 string `json:"content_sha256,omitempty"`
 }
 
 type codespaceEndpointSnapshot struct {
@@ -187,6 +212,9 @@ func (s *CodespaceStateStore) LoadActiveOperations() ([]manager.OperationSnapsho
 		if state.CleanupPending {
 			continue
 		}
+		if state.HealthStopPending {
+			continue
+		}
 		if state.ActiveOperation == nil {
 			continue
 		}
@@ -276,6 +304,9 @@ func (s *CodespaceStateStore) LoadRuntimeTransitionPendings() ([]manager.Runtime
 		if state.CleanupPending {
 			continue
 		}
+		if state.HealthStopPending {
+			continue
+		}
 		if state.PendingRuntimeTransition == nil {
 			continue
 		}
@@ -323,6 +354,45 @@ func (s *CodespaceStateStore) LoadCleanupPendings() ([]string, error) {
 	return codespaceUUIDs, nil
 }
 
+// LoadHealthStopPendings returns health-driven stops that must complete before normal RPC work.
+func (s *CodespaceStateStore) LoadHealthStopPendings() ([]manager.HealthStopSnapshot, error) {
+	dir, err := codespaceStateDir(s.stateDir)
+	if err != nil {
+		return nil, err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
+	}
+	pendings := make([]manager.HealthStopSnapshot, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
+		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
+		if err != nil {
+			return nil, err
+		}
+		if !state.HealthStopPending {
+			continue
+		}
+		if state.RuntimeMetadata == nil ||
+			state.RuntimeMetadata.Boot.Stage != manager.RuntimeBootStageReady ||
+			state.RuntimeMetadata.Boot.OperationRVersion <= 0 {
+			return nil, fmt.Errorf("health stop pending %s requires ready runtime metadata", codespaceUUID)
+		}
+		pendings = append(pendings, manager.HealthStopSnapshot{
+			CodespaceUUID:             codespaceUUID,
+			ObservedOperationRVersion: state.RuntimeMetadata.Boot.OperationRVersion,
+		})
+	}
+	return pendings, nil
+}
+
 // LoadGatewayRoutes returns persisted Endpoint routes for Gateway startup recovery.
 func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error) {
 	dir, err := codespaceStateDir(s.stateDir)
@@ -346,7 +416,7 @@ func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error
 		if err != nil {
 			return nil, err
 		}
-		if state.CleanupPending {
+		if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil {
 			continue
 		}
 		for _, endpoint := range state.Endpoints {
@@ -386,7 +456,7 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataCodespaceUUIDs() ([]string, err
 		if err != nil {
 			return nil, err
 		}
-		if state.CleanupPending || state.RuntimeMetadata == nil {
+		if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil || state.RuntimeMetadata == nil {
 			continue
 		}
 		codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
@@ -518,6 +588,9 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (
 	if state.RuntimeMetadata == nil {
 		return 0, nil, false, nil
 	}
+	if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil {
+		return 0, nil, false, nil
+	}
 	endpoints := append([]codespaceEndpointSnapshot(nil), state.Endpoints...)
 	sort.Slice(endpoints, func(i, j int) bool {
 		return endpoints[i].EndpointID < endpoints[j].EndpointID
@@ -565,7 +638,7 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 		}
 		return gatewayWorkspaceTarget{}, false, err
 	}
-	if state.CleanupPending {
+	if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil {
 		return gatewayWorkspaceTarget{}, false, nil
 	}
 	target, ok := gatewayWorkspaceTargetFromRuntimeMetadata(state.RuntimeMetadata)
@@ -588,7 +661,7 @@ func (s *CodespaceStateStore) UpdateRuntimeResourceUsage(codespaceUUID string, u
 		}
 		return false, err
 	}
-	if state.CleanupPending || state.RuntimeMetadata == nil {
+	if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil || state.RuntimeMetadata == nil {
 		return false, nil
 	}
 	next := runtimeResourceUsageToState(usage)
@@ -618,7 +691,7 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) 
 		}
 		return manager.RuntimeMetadataSnapshot{}, false, err
 	}
-	if state.CleanupPending || state.RuntimeMetadata == nil {
+	if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil || state.RuntimeMetadata == nil {
 		return manager.RuntimeMetadataSnapshot{}, false, nil
 	}
 	return manager.RuntimeMetadataSnapshot{
@@ -634,6 +707,51 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) 
 		},
 		ResourceUsage: runtimeResourceUsageFromState(state.RuntimeMetadata.ResourceUsage),
 	}, true, nil
+}
+
+// SaveStartupInput stores the create-time startup input owned by Manager.
+func (s *CodespaceStateStore) SaveStartupInput(input manager.StartupInput) error {
+	if err := validateCodespaceStateUUID(input.CodespaceUUID); err != nil {
+		return fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	if err := validateStartupInput(input); err != nil {
+		return err
+	}
+	path, err := codespaceStatePath(s.stateDir, input.CodespaceUUID)
+	if err != nil {
+		return err
+	}
+	state, err := loadOptionalCodespaceStateFile(path, input.CodespaceUUID)
+	if err != nil {
+		return err
+	}
+	state.StateFormatVersion = codespaceStateFormatVersion
+	state.CodespaceUUID = input.CodespaceUUID
+	state.StartupInput = startupInputToState(input)
+	return writeCodespaceStateFile(path, state)
+}
+
+// LoadStartupInput returns the persisted create-time startup input.
+func (s *CodespaceStateStore) LoadStartupInput(codespaceUUID string) (manager.StartupInput, bool, error) {
+	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
+		return manager.StartupInput{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	if err != nil {
+		return manager.StartupInput{}, false, err
+	}
+	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return manager.StartupInput{}, false, nil
+		}
+		return manager.StartupInput{}, false, err
+	}
+	if state.StartupInput == nil {
+		return manager.StartupInput{}, false, nil
+	}
+	input := startupInputFromState(codespaceUUID, state.StartupInput)
+	return input, true, nil
 }
 
 func gatewayWorkspaceTargetFromRuntimeMetadata(snapshot *codespaceRuntimeMetadataSnapshot) (gatewayWorkspaceTarget, bool) {
@@ -862,6 +980,7 @@ func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.Runt
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = snapshot.CodespaceUUID
 	state.RuntimeGeneration = snapshot.RuntimeGeneration
+	state.HealthStopPending = false
 	state.PendingRuntimeTransition = &codespacePendingRuntimeTransition{
 		TargetState:               targetState,
 		RuntimeGeneration:         snapshot.RuntimeGeneration,
@@ -896,6 +1015,36 @@ func (s *CodespaceStateStore) ClearRuntimeTransitionPending(codespaceUUID string
 	return writeCodespaceStateFile(path, state)
 }
 
+// SaveHealthStopPending stores a health-driven stop intent before stopping runtime resources.
+func (s *CodespaceStateStore) SaveHealthStopPending(snapshot manager.HealthStopSnapshot) error {
+	if err := validateCodespaceStateUUID(snapshot.CodespaceUUID); err != nil {
+		return fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	if snapshot.ObservedOperationRVersion <= 0 {
+		return fmt.Errorf("observed_operation_rversion must be positive")
+	}
+	path, err := codespaceStatePath(s.stateDir, snapshot.CodespaceUUID)
+	if err != nil {
+		return err
+	}
+	state, err := loadOptionalCodespaceStateFile(path, snapshot.CodespaceUUID)
+	if err != nil {
+		return err
+	}
+	if state.CleanupPending || state.PendingRuntimeTransition != nil {
+		return fmt.Errorf("health_stop_pending cannot coexist with cleanup_pending or pending_runtime_transition")
+	}
+	if state.RuntimeMetadata == nil ||
+		state.RuntimeMetadata.Boot.Stage != manager.RuntimeBootStageReady ||
+		state.RuntimeMetadata.Boot.OperationRVersion != snapshot.ObservedOperationRVersion {
+		return fmt.Errorf("health_stop_pending requires matching ready runtime metadata")
+	}
+	state.StateFormatVersion = codespaceStateFormatVersion
+	state.CodespaceUUID = snapshot.CodespaceUUID
+	state.HealthStopPending = true
+	return writeJSONFileAtomic(path, state)
+}
+
 // SaveCleanupPending stores the local cleanup state before deleting runtime resources.
 func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
@@ -912,6 +1061,7 @@ func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = codespaceUUID
 	state.PendingRuntimeTransition = nil
+	state.HealthStopPending = false
 	state.CleanupPending = true
 	return writeJSONFileAtomic(path, state)
 }
@@ -976,6 +1126,16 @@ func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, 
 	if state.CleanupPending && state.PendingRuntimeTransition != nil {
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: cleanup_pending cannot coexist with pending_runtime_transition", path)
 	}
+	if state.HealthStopPending && (state.CleanupPending || state.PendingRuntimeTransition != nil) {
+		return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_pending cannot coexist with cleanup_pending or pending_runtime_transition", path)
+	}
+	if state.HealthStopPending {
+		if state.RuntimeMetadata == nil ||
+			state.RuntimeMetadata.Boot.Stage != manager.RuntimeBootStageReady ||
+			state.RuntimeMetadata.Boot.OperationRVersion <= 0 {
+			return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_pending requires ready runtime metadata", path)
+		}
+	}
 	if len(state.Endpoints) > maxCodespaceEndpoints {
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: endpoints exceed limit %d", path, maxCodespaceEndpoints)
 	}
@@ -986,6 +1146,9 @@ func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, 
 		return codespaceState{}, err
 	}
 	if err := validateActiveOperationState(path, state.ActiveOperation); err != nil {
+		return codespaceState{}, err
+	}
+	if err := validateStartupInputState(path, codespaceUUID, state.StartupInput); err != nil {
 		return codespaceState{}, err
 	}
 	if err := validateSharedEnvironment(state.SharedEnvironment); err != nil {
@@ -1105,6 +1268,79 @@ func validateSharedEnvironment(environment map[string]string) error {
 	return nil
 }
 
+func startupInputToState(input manager.StartupInput) *codespaceStartupInputSnapshot {
+	return &codespaceStartupInputSnapshot{
+		RuntimeUserName: strings.TrimSpace(input.RuntimeUserName),
+		EnvironmentTag:  strings.TrimSpace(input.EnvironmentTag),
+		UserIdentity: codespaceStartupUserIdentity{
+			UserID:       input.UserIdentity.UserID,
+			Username:     strings.TrimSpace(input.UserIdentity.Username),
+			DisplayName:  strings.TrimSpace(input.UserIdentity.DisplayName),
+			GitUserName:  strings.TrimSpace(input.UserIdentity.GitUserName),
+			GitUserEmail: strings.TrimSpace(input.UserIdentity.GitUserEmail),
+		},
+		RepositoryConfig: codespaceStartupRepositoryConfig{
+			Present:       input.RepositoryConfig.Present,
+			Path:          strings.TrimSpace(input.RepositoryConfig.Path),
+			Content:       append([]byte(nil), input.RepositoryConfig.Content...),
+			SourceRef:     strings.TrimSpace(input.RepositoryConfig.SourceRef),
+			ContentSHA256: strings.TrimSpace(input.RepositoryConfig.ContentSHA256),
+		},
+	}
+}
+
+func startupInputFromState(codespaceUUID string, snapshot *codespaceStartupInputSnapshot) manager.StartupInput {
+	return manager.StartupInput{
+		CodespaceUUID:   codespaceUUID,
+		RuntimeUserName: strings.TrimSpace(snapshot.RuntimeUserName),
+		EnvironmentTag:  strings.TrimSpace(snapshot.EnvironmentTag),
+		UserIdentity: manager.StartupUserIdentity{
+			UserID:       snapshot.UserIdentity.UserID,
+			Username:     strings.TrimSpace(snapshot.UserIdentity.Username),
+			DisplayName:  strings.TrimSpace(snapshot.UserIdentity.DisplayName),
+			GitUserName:  strings.TrimSpace(snapshot.UserIdentity.GitUserName),
+			GitUserEmail: strings.TrimSpace(snapshot.UserIdentity.GitUserEmail),
+		},
+		RepositoryConfig: manager.StartupRepositoryConfig{
+			Present:       snapshot.RepositoryConfig.Present,
+			Path:          strings.TrimSpace(snapshot.RepositoryConfig.Path),
+			Content:       append([]byte(nil), snapshot.RepositoryConfig.Content...),
+			SourceRef:     strings.TrimSpace(snapshot.RepositoryConfig.SourceRef),
+			ContentSHA256: strings.TrimSpace(snapshot.RepositoryConfig.ContentSHA256),
+		},
+	}
+}
+
+func validateStartupInput(input manager.StartupInput) error {
+	if strings.TrimSpace(input.UserIdentity.Username) == "" {
+		return fmt.Errorf("startup input username is required")
+	}
+	if strings.TrimSpace(input.UserIdentity.GitUserName) == "" {
+		return fmt.Errorf("startup input git user name is required")
+	}
+	if strings.TrimSpace(input.UserIdentity.GitUserEmail) == "" {
+		return fmt.Errorf("startup input git user email is required")
+	}
+	if strings.TrimSpace(input.RuntimeUserName) == "" {
+		return fmt.Errorf("startup input runtime user name is required")
+	}
+	if strings.TrimSpace(input.EnvironmentTag) == "" {
+		return fmt.Errorf("startup input environment tag is required")
+	}
+	return nil
+}
+
+func validateStartupInputState(path, codespaceUUID string, snapshot *codespaceStartupInputSnapshot) error {
+	if snapshot == nil {
+		return nil
+	}
+	input := startupInputFromState(codespaceUUID, snapshot)
+	if err := validateStartupInput(input); err != nil {
+		return fmt.Errorf("validate codespace state %s: %w", path, err)
+	}
+	return nil
+}
+
 func isSharedEnvironmentName(name string) bool {
 	if name == "" {
 		return false
@@ -1149,7 +1385,7 @@ func loadOptionalCodespaceStateFile(path string, codespaceUUID string) (codespac
 }
 
 func (s codespaceState) hasPersistentData() bool {
-	return s.RuntimeGeneration > 0 || s.PendingRuntimeTransition != nil || s.CleanupPending || len(s.Endpoints) > 0 || s.RuntimeMetadata != nil || s.ActiveOperation != nil || len(s.SharedEnvironment) > 0
+	return s.RuntimeGeneration > 0 || s.PendingRuntimeTransition != nil || s.CleanupPending || s.HealthStopPending || len(s.Endpoints) > 0 || s.RuntimeMetadata != nil || s.ActiveOperation != nil || s.StartupInput != nil || len(s.SharedEnvironment) > 0
 }
 
 func (s *codespaceState) bumpRuntimeMetadataGeneration() error {

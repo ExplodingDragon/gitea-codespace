@@ -124,6 +124,7 @@ type processStateSnapshot struct {
 	initialRuntimeGenerations   map[string]int64
 	initialRuntimeTransitions   []manager.RuntimeTransitionSnapshot
 	initialCleanupPendings      []string
+	initialHealthStopPendings   []manager.HealthStopSnapshot
 	initialGatewayRoutes        []gatewayEndpointRoute
 	initialRuntimeMetadataUUIDs []string
 	gatewaySSHHostKey           gatewaySSHHostKey
@@ -163,6 +164,10 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load codespace cleanup pendings: %w", err)
 	}
+	initialHealthStopPendings, err := codespaceStateStore.LoadHealthStopPendings()
+	if err != nil {
+		return processStateSnapshot{}, fmt.Errorf("load codespace health stop pendings: %w", err)
+	}
 	initialGatewayRoutes, err := codespaceStateStore.LoadGatewayRoutes()
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load codespace gateway routes: %w", err)
@@ -192,6 +197,7 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 		initialRuntimeGenerations:   initialRuntimeGenerations,
 		initialRuntimeTransitions:   initialRuntimeTransitions,
 		initialCleanupPendings:      initialCleanupPendings,
+		initialHealthStopPendings:   initialHealthStopPendings,
 		initialGatewayRoutes:        initialGatewayRoutes,
 		initialRuntimeMetadataUUIDs: initialRuntimeMetadataUUIDs,
 		gatewaySSHHostKey:           gatewaySSHHostKey,
@@ -233,7 +239,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		return nil, fmt.Errorf("configure gateway origin: %w", err)
 	}
 	gatewayControlPlane := newGatewayControlPlane(
-		strings.TrimRight(state.identity.GiteaURL, "/"),
+		managerServiceBaseURL(state.identity.GiteaURL),
 		state.identity.ManagerID,
 		state.credentials.ManagerSecret,
 		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
@@ -241,13 +247,14 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 	runtimeMetadataPublisher := newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
 	runtimeMetadataPublisher.Run(ctx, state.initialRuntimeMetadataUUIDs)
 	managerServiceSettings := managerServiceSettingsStores{
+		gatewayControlPlane,
 		gatewayBrowserAuth,
 		runtimeMetadataPublisher,
 	}
 	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
 
 	agent := manager.New(manager.AgentConfig{
-		BaseURL:                     strings.TrimRight(state.identity.GiteaURL, "/"),
+		BaseURL:                     managerServiceBaseURL(state.identity.GiteaURL),
 		ManagerID:                   state.identity.ManagerID,
 		ManagerSecret:               state.credentials.ManagerSecret,
 		Name:                        config.Manager.Name,
@@ -257,7 +264,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		GatewaySSHHostKeySHA256:     state.gatewaySSHHostKey.fingerprintSHA256,
 		GatewaySSHHostKeyUnix:       state.gatewaySSHHostKey.updatedUnix,
 		Version:                     config.Manager.Version,
-		Tags:                        config.templateTags(),
+		Tags:                        config.environmentTags(),
 		PollInterval:                config.Manager.PollInterval.ToStdlib(),
 		DeclareInterval:             config.Manager.DeclareInterval.ToStdlib(),
 		CapacityTotal:               config.Manager.CapacityTotal,
@@ -270,19 +277,23 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		InitialRuntimeGenerations:   state.initialRuntimeGenerations,
 		InitialRuntimeTransitions:   state.initialRuntimeTransitions,
 		InitialCleanupPendings:      state.initialCleanupPendings,
+		InitialHealthStopPendings:   state.initialHealthStopPendings,
 		InitialOperations:           state.initialOperations,
 		OperationStateStore:         state.codespaceStateStore,
 		InventoryStateStore:         NewManagerRootStateStore(config.Manager.StateDir, state.identity.ManagerID),
 		RuntimeStateStore:           state.codespaceStateStore,
 		CleanupStateStore:           state.codespaceStateStore,
+		HealthStopStateStore:        state.codespaceStateStore,
 		ScriptEnvironmentStateStore: state.codespaceStateStore,
 		RuntimeMetadataStateStore:   state.codespaceStateStore,
+		StartupInputStateStore:      state.codespaceStateStore,
 		RuntimeEndpointApplier:      endpointApplier,
 		RuntimeHealthStateStore:     state.codespaceStateStore,
 		RuntimeMetadataPublisher:    runtimeMetadataPublisher,
 		SessionTracker:              sessionRegistry,
 		AccessController:            gatewayRoutes,
 		ManagerServiceSettings:      managerServiceSettings,
+		GitSSHKeyType:               config.runtimeGitSSHKeyType(),
 	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
 
 	processHealth := newProcessHealth()
@@ -360,17 +371,22 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 		return provisioner.NewDummy(), nil
 	case "incus":
 		return provisioner.NewIncus(provisioner.IncusConfig{
-			ManagerID:     managerID,
-			Project:       config.Incus.Project,
-			Remote:        config.Incus.Endpoint,
-			UnixSocket:    config.Incus.UnixSocket,
-			Templates:     provisionerTemplates(config.Templates),
-			CodespaceRoot: config.Provisioner.CodespaceRoot,
+			ManagerID:           managerID,
+			Project:             config.Incus.Project,
+			ProjectManage:       config.Incus.ProjectManage,
+			Remote:              config.Incus.Endpoint,
+			UnixSocket:          config.Incus.UnixSocket,
+			StoragePool:         config.Incus.StoragePool,
+			NetworkName:         config.Incus.NetworkName,
+			NetworkManage:       config.Incus.NetworkManage,
+			RuntimeEnvironments: provisionerEnvironments(config.RuntimeEnvironments),
+			CodespaceRoot:       config.Provisioner.CodespaceRoot,
 			Bootstrap: provisioner.BootstrapConfig{
-				Shell:   config.Provisioner.Bootstrap.Shell,
-				HomeDir: config.Provisioner.Bootstrap.HomeDir,
-				User:    config.Provisioner.Bootstrap.User,
-				Group:   config.Provisioner.Bootstrap.Group,
+				Shell:    config.Provisioner.Bootstrap.Shell,
+				HomeDir:  config.Provisioner.Bootstrap.HomeDir,
+				UserName: config.Provisioner.Bootstrap.UserName,
+				User:     config.Provisioner.Bootstrap.User,
+				Group:    config.Provisioner.Bootstrap.Group,
 			},
 			Scripts: provisioner.ScriptConfig{
 				Init:   config.Scripts.Init,
@@ -383,17 +399,21 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 	}
 }
 
-func provisionerTemplates(templates map[string]TemplateConfig) map[string]provisioner.IncusTemplateConfig {
-	result := make(map[string]provisioner.IncusTemplateConfig, len(templates))
-	for tag, template := range templates {
-		result[tag] = provisioner.IncusTemplateConfig{
-			Image:                  template.Image,
-			InstanceType:           template.InstanceType,
-			CPU:                    template.CPU,
-			MemoryLimit:            template.MemoryLimit,
-			RootDiskSize:           template.RootDiskSize,
-			Profiles:               append([]string(nil), template.Profiles...),
-			CommunicationInterface: template.CommunicationInterface,
+func provisionerEnvironments(environments map[string]RuntimeEnvironmentConfig) map[string]provisioner.IncusEnvironmentConfig {
+	result := make(map[string]provisioner.IncusEnvironmentConfig, len(environments))
+	for tag, environment := range environments {
+		result[tag] = provisioner.IncusEnvironmentConfig{
+			Image:                  environment.Image,
+			InstanceType:           environment.InstanceType,
+			CPU:                    environment.CPU,
+			MemoryLimit:            environment.MemoryLimit,
+			RootDiskSize:           environment.RootDiskSize,
+			Profiles:               append([]string(nil), environment.Profiles...),
+			CommunicationInterface: environment.CommunicationInterface,
+			SourceType:             environment.SourceType,
+			SourceRemote:           environment.SourceRemote,
+			SourceProject:          environment.SourceProject,
+			SourceName:             environment.SourceName,
 		}
 	}
 	return result

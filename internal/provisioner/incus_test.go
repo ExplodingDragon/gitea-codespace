@@ -4,6 +4,7 @@
 package provisioner
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
@@ -19,6 +20,15 @@ import (
 	"github.com/pkg/sftp"
 )
 
+type recordingLifecycleLogSink struct {
+	lines []string
+}
+
+func (s *recordingLifecycleLogSink) WriteLifecycleLog(ctx context.Context, message string) error {
+	s.lines = append(s.lines, message)
+	return nil
+}
+
 func TestIncusInstanceFromAPIRequiresManagerOwnership(t *testing.T) {
 	t.Parallel()
 
@@ -28,9 +38,9 @@ func TestIncusInstanceFromAPIRequiresManagerOwnership(t *testing.T) {
 		Status: "Running",
 		InstancePut: api.InstancePut{
 			Config: map[string]string{
-				incusConfigManagerID:     "7",
-				incusConfigCodespaceUUID: "11111111-2222-4333-8444-555555555555",
-				incusConfigTag:           "default",
+				incusConfigManagerID:      "7",
+				incusConfigCodespaceUUID:  "11111111-2222-4333-8444-555555555555",
+				incusConfigEnvironmentTag: "default",
 			},
 		},
 	})
@@ -40,7 +50,7 @@ func TestIncusInstanceFromAPIRequiresManagerOwnership(t *testing.T) {
 	if instance.CodespaceUUID != "11111111-2222-4333-8444-555555555555" ||
 		instance.Name != "cs-11111111222243338444" ||
 		instance.RuntimeState != RuntimeStateRunning ||
-		instance.RepoTag != "default" {
+		instance.EnvironmentTag != "default" {
 		t.Fatalf("instance = %#v", instance)
 	}
 }
@@ -82,34 +92,50 @@ func TestIncusInstanceFromAPISkipsMissingCodespaceUUID(t *testing.T) {
 	}
 }
 
-func TestBootstrapCredentialFilesUseFixedPathsAndModes(t *testing.T) {
+func TestRuntimeCredentialSeedUsesFixedPathsAndModes(t *testing.T) {
 	t.Parallel()
 
-	files := bootstrapCredentialFiles(CredentialRequest{
-		GiteaToken: "gitea-token",
+	files, err := runtimeCredentialSeedFiles(RuntimeCredentialSeedRequest{
+		CodespaceUUID:    "codespace-uuid",
+		GiteaToken:       "gitea-token",
+		GitSSHPrivateKey: []byte("private-key"),
+		GitSSHPublicKey:  []byte("public-key"),
+		GitSSHKnownHosts: []string{"known-hosts"},
 	})
-	got := make([]bootstrapCredentialFile, len(files))
-	copy(got, files)
+	if err != nil {
+		t.Fatalf("runtime credential seed files: %v", err)
+	}
 	want := []bootstrapCredentialFile{
 		{
-			path: runtimeCredentialDir,
-			mode: runtimeCredentialDirMode,
-			kind: "directory",
-		},
-		{
-			path: runtimeGitCredentialDir,
-			mode: runtimeCredentialDirMode,
-			kind: "directory",
-		},
-		{
-			path:    runtimeGiteaTokenFilePath,
+			path:    runtimeSeedGiteaToken,
 			content: "gitea-token",
 			mode:    runtimeCredentialFileMode,
-			kind:    "file",
 		},
+		{path: runtimeSeedGitSSHPrivateKey, content: "private-key", mode: runtimeCredentialFileMode},
+		{path: runtimeSeedGitSSHPublicKey, content: "public-key", mode: 0o644},
+		{path: runtimeSeedGitSSHKnownHosts, content: "known-hosts\n", mode: runtimeCredentialFileMode},
 	}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("credential files = %#v", got)
+	if !reflect.DeepEqual(files, want) {
+		t.Fatalf("credential seed files = %#v", files)
+	}
+}
+
+func TestLifecycleLogWriterEmitsCompleteLines(t *testing.T) {
+	t.Parallel()
+
+	sink := &recordingLifecycleLogSink{}
+	writer := newLifecycleLogWriter(context.Background(), sink, "stdout")
+	if _, err := writer.Write([]byte("alpha\nbeta")); err != nil {
+		t.Fatalf("write first chunk: %v", err)
+	}
+	if _, err := writer.Write([]byte("\ngamma")); err != nil {
+		t.Fatalf("write second chunk: %v", err)
+	}
+	writer.Flush()
+
+	want := []string{"stdout: alpha", "stdout: beta", "stdout: gamma"}
+	if !reflect.DeepEqual(sink.lines, want) {
+		t.Fatalf("log lines = %#v", sink.lines)
 	}
 }
 
@@ -132,17 +158,6 @@ func TestDecodeEndpointManifestFile(t *testing.T) {
 	}
 }
 
-func TestCredentialFileIDUsesScriptIdentity(t *testing.T) {
-	t.Parallel()
-
-	if got := credentialFileID(1000, 0); got != 1000 {
-		t.Fatalf("script identity = %d", got)
-	}
-	if got := credentialFileID(0, 7); got != 7 {
-		t.Fatalf("fallback identity = %d", got)
-	}
-}
-
 func TestNormalizedBootstrapConfigFillsRuntimeDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -153,6 +168,9 @@ func TestNormalizedBootstrapConfigFillsRuntimeDefaults(t *testing.T) {
 	}
 	if config.HomeDir != defaultBootstrapHomeDir {
 		t.Fatalf("bootstrap home dir = %q", config.HomeDir)
+	}
+	if config.UserName != defaultBootstrapUserName {
+		t.Fatalf("bootstrap user name = %q", config.UserName)
 	}
 }
 
@@ -166,7 +184,9 @@ func TestNormalizeIncusInstanceType(t *testing.T) {
 	}{
 		{name: "default", want: api.InstanceTypeContainer},
 		{name: "container", value: "container", want: api.InstanceTypeContainer},
+		{name: "lxc", value: "lxc", want: api.InstanceTypeContainer},
 		{name: "virtual machine", value: "virtual-machine", want: api.InstanceTypeVM},
+		{name: "vm", value: "vm", want: api.InstanceTypeVM},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -186,45 +206,71 @@ func TestNormalizeIncusInstanceType(t *testing.T) {
 	}
 }
 
-func TestNormalizeIncusTemplatesRequiresCompleteTemplate(t *testing.T) {
+func TestNormalizeIncusEnvironmentsRequiresCompleteEnvironment(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name     string
-		template IncusTemplateConfig
-		want     string
+		name        string
+		environment IncusEnvironmentConfig
+		want        string
 	}{
-		{name: "image", template: IncusTemplateConfig{InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "image"},
-		{name: "communication nic", template: IncusTemplateConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "communication_nic"},
-		{name: "cpu", template: IncusTemplateConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "cpu"},
-		{name: "memory", template: IncusTemplateConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "memory"},
-		{name: "root disk", template: IncusTemplateConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", Profiles: []string{"default"}}, want: "root_disk_size"},
-		{name: "profiles", template: IncusTemplateConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB"}, want: "profiles"},
+		{name: "image", environment: IncusEnvironmentConfig{InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "image"},
+		{name: "communication interface", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "communication_interface"},
+		{name: "cpu", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "cpu"},
+		{name: "memory", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "memory"},
+		{name: "root disk", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", Profiles: []string{"default"}}, want: "resources.root_disk"},
+		{name: "profiles", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB"}, want: "profiles"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			_, err := normalizeIncusTemplates(IncusConfig{
-				Templates: map[string]IncusTemplateConfig{"default": tt.template},
+			_, err := normalizeIncusEnvironments(IncusConfig{
+				RuntimeEnvironments: map[string]IncusEnvironmentConfig{"default": tt.environment},
 			})
 			if err == nil {
-				t.Fatalf("expected template validation error")
+				t.Fatalf("expected environment validation error")
 			}
 			if !strings.Contains(err.Error(), tt.want) {
-				t.Fatalf("template validation error = %v", err)
+				t.Fatalf("environment validation error = %v", err)
 			}
 		})
 	}
 }
 
-func TestIncusCreateRequestUsesTemplateResources(t *testing.T) {
+func TestNormalizeIncusEnvironmentsRejectsRemoteInstanceSource(t *testing.T) {
+	t.Parallel()
+
+	_, err := normalizeIncusEnvironments(IncusConfig{
+		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
+			"default": {
+				InstanceType:           "container",
+				CommunicationInterface: "eth0",
+				CPU:                    1,
+				MemoryLimit:            "1GiB",
+				RootDiskSize:           "10GiB",
+				Profiles:               []string{"default"},
+				SourceType:             "instance",
+				SourceRemote:           "remote-a",
+				SourceName:             "environment-instance",
+			},
+		},
+	})
+	if err == nil {
+		t.Fatalf("expected remote instance source error")
+	}
+	if !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("remote instance source error = %v", err)
+	}
+}
+
+func TestIncusCreateRequestUsesEnvironmentResources(t *testing.T) {
 	t.Parallel()
 
 	request := incusCreateRequest(InstanceSpec{
-		CodespaceUUID: "11111111-1111-4111-8111-111111111111",
-		Name:          "cs-test",
-		RepoTag:       "default",
-	}, incusTemplate{
+		CodespaceUUID:  "11111111-1111-4111-8111-111111111111",
+		Name:           "cs-test",
+		EnvironmentTag: "default",
+	}, incusEnvironment{
 		image:        "images:debian/12",
 		instanceType: api.InstanceTypeContainer,
 		cpu:          2,
@@ -236,9 +282,9 @@ func TestIncusCreateRequestUsesTemplateResources(t *testing.T) {
 		"path": "/",
 		"pool": "default",
 	}, map[string]string{
-		incusConfigManagerID:     "7",
-		incusConfigCodespaceUUID: "11111111-1111-4111-8111-111111111111",
-		incusConfigTag:           "default",
+		incusConfigManagerID:      "7",
+		incusConfigCodespaceUUID:  "11111111-1111-4111-8111-111111111111",
+		incusConfigEnvironmentTag: "default",
 	})
 
 	if request.Type != api.InstanceTypeContainer {
@@ -258,14 +304,73 @@ func TestIncusCreateRequestUsesTemplateResources(t *testing.T) {
 	}
 }
 
+func TestIncusCreateRequestUsesInstanceSource(t *testing.T) {
+	t.Parallel()
+
+	request := incusCreateRequest(InstanceSpec{
+		CodespaceUUID:  "11111111-1111-4111-8111-111111111111",
+		Name:           "cs-test",
+		EnvironmentTag: "default",
+	}, incusEnvironment{
+		sourceType:    "instance",
+		sourceProject: "base-images",
+		sourceName:    "dev-environment",
+		instanceType:  api.InstanceTypeVM,
+		profiles:      []string{"default"},
+	}, "", nil, map[string]string{})
+
+	if request.Source.Type != "copy" ||
+		request.Source.Source != "dev-environment" ||
+		request.Source.Project != "base-images" ||
+		!request.Source.InstanceOnly {
+		t.Fatalf("instance source = %#v", request.Source)
+	}
+}
+
+func TestProjectFeatureEnabled(t *testing.T) {
+	t.Parallel()
+
+	if !projectFeatureEnabled(map[string]string{"features.profiles": "true"}, "features.profiles") {
+		t.Fatalf("true project feature was not accepted")
+	}
+	if !projectFeatureEnabled(map[string]string{"features.profiles": "1"}, "features.profiles") {
+		t.Fatalf("numeric project feature was not accepted")
+	}
+	if projectFeatureEnabled(map[string]string{"features.profiles": "false"}, "features.profiles") {
+		t.Fatalf("false project feature was accepted")
+	}
+}
+
+func TestProfileHasManagedDevices(t *testing.T) {
+	t.Parallel()
+
+	profile := &api.Profile{
+		ProfilePut: api.ProfilePut{
+			Devices: map[string]map[string]string{
+				"root": {"type": "disk", "path": "/", "pool": "default"},
+				"eth0": {"type": "nic", "network": "codespace-net"},
+			},
+		},
+	}
+	if !profileHasManagedDevices(profile, "default", "codespace-net") {
+		t.Fatalf("managed profile devices were not accepted")
+	}
+	if profileHasManagedDevices(profile, "other", "codespace-net") {
+		t.Fatalf("wrong storage pool was accepted")
+	}
+	if profileHasManagedDevices(profile, "default", "other-net") {
+		t.Fatalf("wrong network was accepted")
+	}
+}
+
 func TestIncusStartupAdmissionUsesProjectInstanceQuota(t *testing.T) {
 	t.Parallel()
 
-	admission, err := incusTemplateStartupAdmission(&api.ProjectState{
+	admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{
 		Resources: map[string]api.ProjectStateResource{
 			"instances": {Limit: 1, Usage: 1},
 		},
-	}, incusTemplate{instanceType: api.InstanceTypeContainer, memoryLimit: "1GiB"})
+	}, incusEnvironment{instanceType: api.InstanceTypeContainer, memoryLimit: "1GiB"})
 	if err != nil {
 		t.Fatalf("startup admission: %v", err)
 	}
@@ -332,7 +437,7 @@ func TestIncusStartupAdmissionUsesTypeAndMemoryQuota(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			admission, err := incusTemplateStartupAdmission(&api.ProjectState{Resources: tt.resources}, incusTemplate{
+			admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{Resources: tt.resources}, incusEnvironment{
 				instanceType: tt.instance,
 				memoryLimit:  tt.memoryLimit,
 			})
@@ -349,11 +454,61 @@ func TestIncusStartupAdmissionUsesTypeAndMemoryQuota(t *testing.T) {
 	}
 }
 
-func TestIncusStartupAdmissionRequiresEveryTemplateToFit(t *testing.T) {
+func TestIncusStartupAdmissionUsesDiskQuota(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		rootDiskSize string
+		resource     api.ProjectStateResource
+		wantCreate   bool
+	}{
+		{
+			name:         "disk quota available",
+			rootDiskSize: "1GiB",
+			resource:     api.ProjectStateResource{Limit: 3 << 30, Usage: 1 << 30},
+			wantCreate:   true,
+		},
+		{
+			name:         "disk quota full",
+			rootDiskSize: "2GiB",
+			resource:     api.ProjectStateResource{Limit: 3 << 30, Usage: 2 << 30},
+		},
+		{
+			name:     "missing root disk with disk quota",
+			resource: api.ProjectStateResource{Limit: 3 << 30, Usage: 0},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{
+				Resources: map[string]api.ProjectStateResource{
+					"disk": tt.resource,
+				},
+			}, incusEnvironment{
+				instanceType: api.InstanceTypeContainer,
+				memoryLimit:  "1GiB",
+				rootDiskSize: tt.rootDiskSize,
+			})
+			if err != nil {
+				t.Fatalf("startup admission: %v", err)
+			}
+			if admission.CreateAvailable != tt.wantCreate {
+				t.Fatalf("create available = %v, want %v", admission.CreateAvailable, tt.wantCreate)
+			}
+			if !admission.ResumeAvailable {
+				t.Fatalf("resume should remain available")
+			}
+		})
+	}
+}
+
+func TestIncusStartupAdmissionRequiresEveryEnvironmentToFit(t *testing.T) {
 	t.Parallel()
 
 	provisioner := &IncusProvisioner{
-		templates: map[string]incusTemplate{
+		environments: map[string]incusEnvironment{
 			"small": {instanceType: api.InstanceTypeContainer, memoryLimit: "512MiB"},
 			"large": {instanceType: api.InstanceTypeContainer, memoryLimit: "2GiB"},
 		},
@@ -367,7 +522,7 @@ func TestIncusStartupAdmissionRequiresEveryTemplateToFit(t *testing.T) {
 		t.Fatalf("startup admission: %v", err)
 	}
 	if admission.CreateAvailable {
-		t.Fatalf("create should be unavailable when one declared template exceeds project quota")
+		t.Fatalf("create should be unavailable when one declared environment exceeds project quota")
 	}
 	if !admission.ResumeAvailable {
 		t.Fatalf("resume should remain available")

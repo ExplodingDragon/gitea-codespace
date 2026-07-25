@@ -41,10 +41,7 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 			},
 		},
 	}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	controlPlane := httptest.NewServer(mux)
+	controlPlane := newGiteaManagerServiceServer(t, service)
 	defer controlPlane.Close()
 
 	stateDir := t.TempDir()
@@ -114,16 +111,12 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 				Command: &codespacev1.OperationPayload_Resume{
 					Resume: &codespacev1.ResumeOperationPayload{
 						RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{},
-						GitProtocol:     codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
 					},
 				},
 			},
 		},
 	}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	controlPlane := httptest.NewServer(mux)
+	controlPlane := newGiteaManagerServiceServer(t, service)
 	defer controlPlane.Close()
 
 	stateDir := t.TempDir()
@@ -315,8 +308,8 @@ func appE2ECreateOperation(codespaceUUID string, version int64) *codespacev1.Ope
 				RepoWebUrl:       "https://gitea.example.com/owner/repo",
 				OwnerId:          2,
 				OwnerName:        "owner",
-				OwnerType:        "user",
-				RepoTag:          "default",
+				OwnerType:        codespacev1.RepositoryOwnerType_REPOSITORY_OWNER_TYPE_USER,
+				EnvironmentTag:   "default",
 				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
 				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
 				CommitSha:        "0123456789abcdef0123456789abcdef01234567",
@@ -347,7 +340,7 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 	config.Incus.Endpoint = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE"))
 	config.Incus.UnixSocket = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET"))
 	config.Incus.Project = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT"))
-	config.Templates = map[string]TemplateConfig{
+	config.RuntimeEnvironments = map[string]RuntimeEnvironmentConfig{
 		"default": {
 			Image:                  appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
 			InstanceType:           appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
@@ -368,7 +361,7 @@ func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID stri
 		Remote:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
 		UnixSocket: strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
 		Project:    strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
-		Templates: map[string]provisioner.IncusTemplateConfig{
+		RuntimeEnvironments: map[string]provisioner.IncusEnvironmentConfig{
 			"default": {
 				Image:                  appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
 				InstanceType:           appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
@@ -646,8 +639,30 @@ func (s *appE2EManagerService) FetchOperations(
 		return connect.NewResponse(&codespacev1.FetchOperationsResponse{}), nil
 	}
 	return connect.NewResponse(&codespacev1.FetchOperationsResponse{
-		Operations: []*codespacev1.OperationPayload{operation},
+		Operations: []*codespacev1.OperationPayload{completeAppE2ECreatePayload(operation)},
 	}), nil
+}
+
+func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codespacev1.OperationPayload {
+	payload := operation.GetCreate()
+	if payload == nil {
+		return operation
+	}
+	if payload.UserIdentity == nil {
+		payload.UserIdentity = &codespacev1.CodespaceUserIdentity{
+			UserId:       101,
+			Username:     "e2e-user",
+			DisplayName:  "E2E User",
+			GitUserName:  "e2e-user",
+			GitUserEmail: "e2e-user@example.com",
+		}
+	}
+	if payload.RepositoryConfig == nil {
+		payload.RepositoryConfig = &codespacev1.RepositoryCodespaceConfig{
+			Path: ".gitea/codespace.yaml",
+		}
+	}
+	return operation
 }
 
 func (s *appE2EManagerService) nextOperationLocked() *codespacev1.OperationPayload {

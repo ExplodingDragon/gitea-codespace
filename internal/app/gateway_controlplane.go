@@ -6,11 +6,15 @@ package app
 import (
 	"context"
 	"fmt"
+	"math"
 	"net/http"
+	"sync"
 
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/manager"
+	"google.golang.org/protobuf/proto"
 )
 
 const (
@@ -20,9 +24,13 @@ const (
 )
 
 type gatewayControlPlane struct {
-	client        codespacev1connect.ManagerServiceClient
-	managerID     int64
-	managerSecret string
+	baseURL        string
+	httpClient     connect.HTTPClient
+	mu             sync.RWMutex
+	client         codespacev1connect.ManagerServiceClient
+	managerID      int64
+	managerSecret  string
+	maxMessageSize int64
 }
 
 type gatewayAccessDecision struct {
@@ -52,10 +60,54 @@ type gatewaySSHAuthDecision struct {
 
 func newGatewayControlPlane(baseURL string, managerID int64, managerSecret string, httpClient *http.Client) *gatewayControlPlane {
 	return &gatewayControlPlane{
+		baseURL:       baseURL,
+		httpClient:    httpClient,
 		client:        codespacev1connect.NewManagerServiceClient(httpClient, baseURL),
 		managerID:     managerID,
 		managerSecret: managerSecret,
 	}
+}
+
+func (c *gatewayControlPlane) SaveManagerServiceSettings(settings manager.ManagerServiceSettings) error {
+	c.mu.Lock()
+	if settings.ControlPlaneMaxMessageSize > 0 {
+		c.client = newGatewayManagerServiceClient(c.httpClient, c.baseURL, settings.ControlPlaneMaxMessageSize)
+		c.maxMessageSize = settings.ControlPlaneMaxMessageSize
+	}
+	c.mu.Unlock()
+	return nil
+}
+
+func newGatewayManagerServiceClient(httpClient connect.HTTPClient, baseURL string, maxBytes int64) codespacev1connect.ManagerServiceClient {
+	opts := []connect.ClientOption(nil)
+	if maxBytes > 0 {
+		max := int(maxBytes)
+		if int64(max) != maxBytes {
+			max = math.MaxInt
+		}
+		opts = append(opts, connect.WithReadMaxBytes(max), connect.WithSendMaxBytes(max))
+	}
+	return codespacev1connect.NewManagerServiceClient(httpClient, baseURL, opts...)
+}
+
+func (c *gatewayControlPlane) managerClient() codespacev1connect.ManagerServiceClient {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.client
+}
+
+func (c *gatewayControlPlane) checkMessageSize(message proto.Message) error {
+	c.mu.RLock()
+	maxSize := c.maxMessageSize
+	c.mu.RUnlock()
+	if maxSize <= 0 || message == nil {
+		return nil
+	}
+	size := proto.Size(message)
+	if int64(size) <= maxSize {
+		return nil
+	}
+	return fmt.Errorf("control plane message size %d exceeds limit %d", size, maxSize)
 }
 
 func (c *gatewayControlPlane) validateOpenToken(ctx context.Context, code string) (gatewayOpenTokenDecision, error) {
@@ -64,7 +116,7 @@ func (c *gatewayControlPlane) validateOpenToken(ctx context.Context, code string
 		Code:            code,
 	})
 	c.setManagerAuth(request.Header())
-	response, err := c.client.ValidateOpenToken(ctx, request)
+	response, err := c.managerClient().ValidateOpenToken(ctx, request)
 	if err != nil {
 		return gatewayOpenTokenDecision{}, fmt.Errorf("validate open token rpc: %w", err)
 	}
@@ -92,7 +144,7 @@ func (c *gatewayControlPlane) validatePublicEndpoint(ctx context.Context, codesp
 		EndpointId:      endpointID,
 	})
 	c.setManagerAuth(request.Header())
-	response, err := c.client.ValidatePublicEndpoint(ctx, request)
+	response, err := c.managerClient().ValidatePublicEndpoint(ctx, request)
 	if err != nil {
 		return gatewayAccessDecision{}, fmt.Errorf("validate public endpoint rpc: %w", err)
 	}
@@ -110,7 +162,7 @@ func (c *gatewayControlPlane) verifySSHPublicKey(ctx context.Context, codespaceU
 		PublicKey:       append([]byte(nil), publicKey...),
 	})
 	c.setManagerAuth(request.Header())
-	response, err := c.client.VerifySSHPublicKey(ctx, request)
+	response, err := c.managerClient().VerifySSHPublicKey(ctx, request)
 	if err != nil {
 		return gatewaySSHAuthDecision{}, fmt.Errorf("verify ssh public key rpc: %w", err)
 	}
@@ -134,7 +186,7 @@ func (c *gatewayControlPlane) ensureCodespaceGitSSHKey(ctx context.Context, code
 		PublicKey:       append([]byte(nil), publicKey...),
 	})
 	c.setManagerAuth(request.Header())
-	response, err := c.client.EnsureCodespaceGitSSHKey(ctx, request)
+	response, err := c.managerClient().EnsureCodespaceGitSSHKey(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("ensure codespace git ssh key rpc: %w", err)
 	}
@@ -149,7 +201,10 @@ func (c *gatewayControlPlane) reportRuntimeMetadata(ctx context.Context, codespa
 		Metadata:           metadata,
 	})
 	c.setManagerAuth(request.Header())
-	if _, err := c.client.ReportRuntimeMetadata(ctx, request); err != nil {
+	if err := c.checkMessageSize(request.Msg); err != nil {
+		return err
+	}
+	if _, err := c.managerClient().ReportRuntimeMetadata(ctx, request); err != nil {
 		return fmt.Errorf("report runtime metadata rpc: %w", err)
 	}
 	return nil
@@ -183,7 +238,7 @@ func (c *gatewayControlPlane) revalidateSSHSession(ctx context.Context, userID i
 func (c *gatewayControlPlane) revalidateGatewaySession(ctx context.Context, payload *codespacev1.RevalidateGatewaySessionRequest) (gatewayAccessDecision, error) {
 	request := connect.NewRequest(payload)
 	c.setManagerAuth(request.Header())
-	response, err := c.client.RevalidateGatewaySession(ctx, request)
+	response, err := c.managerClient().RevalidateGatewaySession(ctx, request)
 	if err != nil {
 		return gatewayAccessDecision{}, fmt.Errorf("revalidate gateway session rpc: %w", err)
 	}

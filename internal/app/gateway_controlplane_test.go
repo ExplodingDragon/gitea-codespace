@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/manager"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -170,6 +171,35 @@ func TestGatewayControlPlaneReportRuntimeMetadata(t *testing.T) {
 		t.Fatalf("metadata request = %#v", service.metadataRequest)
 	}
 	assertGatewayManagerAuth(t, service)
+}
+
+func TestGatewayControlPlaneReportRuntimeMetadataRespectsMessageSize(t *testing.T) {
+	t.Parallel()
+
+	service := &gatewayManagerService{}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	if err := controlPlane.SaveManagerServiceSettings(manager.ManagerServiceSettings{
+		ControlPlaneMaxMessageSize: 1,
+	}); err != nil {
+		t.Fatalf("save manager service settings: %v", err)
+	}
+
+	metadata := &codespacev1.RuntimeMetadata{
+		Boot: &codespacev1.RuntimeBoot{
+			OperationRversion: 7,
+			Stage:             codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}
+	err := controlPlane.reportRuntimeMetadata(context.Background(), "codespace-uuid", metadata, 3)
+	if err == nil {
+		t.Fatalf("expected message size error")
+	}
+	if service.metadataRequest != nil {
+		t.Fatalf("metadata request was sent")
+	}
 }
 
 func TestGatewayControlPlaneRevalidateSSHSessionAllowed(t *testing.T) {

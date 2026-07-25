@@ -32,16 +32,16 @@ type Instance struct {
 	RuntimeState      RuntimeState
 	Workdir           string
 	RepoFullName      string
-	RepoTag           string
+	EnvironmentTag    string
 	CommunicationHost string
 }
 
 // InstanceSpec stores the runtime instance shape requested by Gitea.
 type InstanceSpec struct {
-	CodespaceUUID string
-	Name          string
-	RepoFullName  string
-	RepoTag       string
+	CodespaceUUID  string
+	Name           string
+	RepoFullName   string
+	EnvironmentTag string
 }
 
 // StartupAdmission reports which startup operation types may be fetched now.
@@ -57,42 +57,54 @@ type StartupAdmissionChecker interface {
 
 // BootstrapRequest stores the codespace bootstrap inputs.
 type BootstrapRequest struct {
-	CodespaceUUID      string
-	CodespaceName      string
-	CodespaceOwnerName string
-	GiteaToken         string
-	ServerURL          string
-	RepoCloneHTTPURL   string
-	RepoCloneSSHURL    string
-	RepoWebURL         string
-	RepoID             int64
-	RepoFullName       string
-	RepoName           string
-	OwnerID            int64
-	OwnerName          string
-	OwnerType          string
-	OwnerDisplayName   string
-	StartRef           string
-	RefType            string
-	RefName            string
-	CommitSHA          string
-	Workdir            string
-	GitProtocol        string
-	Operation          ScriptOperation
-	Scripts            ScriptSnapshot
+	CodespaceUUID       string
+	CodespaceName       string
+	CodespaceOwnerName  string
+	UserID              int64
+	UserName            string
+	UserDisplayName     string
+	GitUserName         string
+	GitUserEmail        string
+	RuntimeUserName     string
+	GiteaToken          string
+	ServerURL           string
+	RepoCloneHTTPURL    string
+	RepoCloneSSHURL     string
+	RepoWebURL          string
+	RepoID              int64
+	RepoFullName        string
+	RepoName            string
+	OwnerID             int64
+	OwnerName           string
+	OwnerType           string
+	OwnerDisplayName    string
+	StartRef            string
+	RefType             string
+	RefName             string
+	CommitSHA           string
+	Workdir             string
+	EnvironmentTag      string
+	GitProtocol         string
+	RepoConfigPresent   bool
+	RepoConfigPath      string
+	RepoConfigContent   []byte
+	RepoConfigSourceRef string
+	RepoConfigSHA256    string
+	Operation           ScriptOperation
+	Scripts             ScriptSnapshot
+	LogSink             LifecycleLogSink
 }
 
-// CredentialRequest stores the current runtime credential file inputs.
-type CredentialRequest struct {
-	CodespaceUUID string
-	GiteaToken    string
-	UID           uint32
-	GID           uint32
+// LifecycleLogSink receives lifecycle script output as complete text lines.
+type LifecycleLogSink interface {
+	WriteLifecycleLog(ctx context.Context, message string) error
 }
 
 // CredentialStatus stores the current runtime credential file state.
 type CredentialStatus struct {
 	GiteaTokenPresent bool
+	GitSSHPrivateKey  []byte
+	GitSSHPublicKey   []byte
 }
 
 // WorkspaceGitStatus stores the current workspace Git credential configuration.
@@ -101,15 +113,13 @@ type WorkspaceGitStatus struct {
 	CredentialConfigured bool
 }
 
-// GitSSHKeyRequest stores the identity used to own runtime Git SSH files.
-type GitSSHKeyRequest struct {
-	UID uint32
-	GID uint32
-}
-
-// GitSSHKey stores the runtime Git SSH public key.
-type GitSSHKey struct {
-	PublicKey string
+// RuntimeCredentialSeedRequest stores root-owned credential seed material.
+type RuntimeCredentialSeedRequest struct {
+	CodespaceUUID    string
+	GiteaToken       string
+	GitSSHPrivateKey []byte
+	GitSSHPublicKey  []byte
+	GitSSHKnownHosts []string
 }
 
 // RuntimeEndpointDeclaration stores one endpoint declared inside the runtime.
@@ -218,10 +228,11 @@ func (e *WorkspaceCommandExitError) Error() string {
 
 // BootstrapConfig stores runtime bootstrap execution settings.
 type BootstrapConfig struct {
-	Shell   string
-	HomeDir string
-	User    uint32
-	Group   uint32
+	Shell    string
+	HomeDir  string
+	UserName string
+	User     uint32
+	Group    uint32
 }
 
 // Provisioner creates and manages codespace instances.
@@ -230,9 +241,7 @@ type Provisioner interface {
 	StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error)
 	ListInstances(ctx context.Context) ([]*Instance, error)
 	CheckCredentials(ctx context.Context, instanceName string) (CredentialStatus, error)
-	WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error
-	EnsureGitSSHKey(ctx context.Context, instanceName string, request GitSSHKeyRequest) (GitSSHKey, error)
-	WriteGitSSHKnownHosts(ctx context.Context, instanceName string, lines []string, request GitSSHKeyRequest) error
+	SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error
 	ReadEndpointManifest(ctx context.Context, instanceName string) ([]RuntimeEndpointDeclaration, error)
 	RuntimeResourceUsage(ctx context.Context, instanceName string) (RuntimeResourceUsage, error)
 	InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error)

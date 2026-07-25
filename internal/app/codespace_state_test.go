@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -19,7 +18,6 @@ import (
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
 )
@@ -112,7 +110,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 				RepoFullName:     "owner/repo",
 				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
 				RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-				RepoTag:          "default",
+				EnvironmentTag:   "default",
 				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
 			},
 		},
@@ -389,6 +387,78 @@ func TestCodespaceStateStoreCleanupPendingSkipsOperationRecovery(t *testing.T) {
 	}
 	if _, err := os.Stat(statePath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("state file after clear err = %v", err)
+	}
+}
+
+func TestCodespaceStateStoreHealthStopPendingRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	stateDir := filepath.Join(t.TempDir(), "state")
+	store := NewCodespaceStateStore(stateDir)
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/codespace/owner/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save runtime metadata snapshot: %v", err)
+	}
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "app",
+		Label:          "App",
+		UpstreamScheme: "http",
+		UpstreamHost:   "127.0.0.1:3000",
+	}}); err != nil {
+		t.Fatalf("save endpoint routes: %v", err)
+	}
+	if err := store.SaveHealthStopPending(manager.HealthStopSnapshot{
+		CodespaceUUID:             codespaceUUID,
+		ObservedOperationRVersion: 7,
+	}); err != nil {
+		t.Fatalf("save health stop pending: %v", err)
+	}
+
+	pendings, err := store.LoadHealthStopPendings()
+	if err != nil {
+		t.Fatalf("load health stop pendings: %v", err)
+	}
+	if len(pendings) != 1 || pendings[0].CodespaceUUID != codespaceUUID || pendings[0].ObservedOperationRVersion != 7 {
+		t.Fatalf("health stop pendings = %#v", pendings)
+	}
+	if routes, err := store.LoadGatewayRoutes(); err != nil || len(routes) != 0 {
+		t.Fatalf("gateway routes err=%v routes=%#v", err, routes)
+	}
+	if uuids, err := store.LoadRuntimeMetadataCodespaceUUIDs(); err != nil || len(uuids) != 0 {
+		t.Fatalf("metadata uuids err=%v uuids=%#v", err, uuids)
+	}
+	if target, ok, err := store.LoadGatewayWorkspaceTarget(codespaceUUID); err != nil || ok {
+		t.Fatalf("workspace target err=%v ok=%v target=%#v", err, ok, target)
+	}
+	if err := store.SaveRuntimeTransitionPending(manager.RuntimeTransitionSnapshot{
+		CodespaceUUID:             codespaceUUID,
+		TargetState:               codespacev1.RuntimeState_RUNTIME_STATE_STOPPED,
+		RuntimeGeneration:         1,
+		ObservedOperationRVersion: 7,
+	}); err != nil {
+		t.Fatalf("save runtime transition pending: %v", err)
+	}
+	statePath, err := codespaceStatePath(stateDir, codespaceUUID)
+	if err != nil {
+		t.Fatalf("codespace state path: %v", err)
+	}
+	state, err := loadCodespaceStateFile(statePath, codespaceUUID)
+	if err != nil {
+		t.Fatalf("load state: %v", err)
+	}
+	if state.HealthStopPending || state.PendingRuntimeTransition == nil {
+		t.Fatalf("state = %#v", state)
 	}
 }
 
@@ -687,7 +757,7 @@ func TestCodespaceStateStoreRuntimeMetadataIncludesBootDuringStartup(t *testing.
 		MetadataGeneration: 1,
 		Boot: manager.RuntimeMetadataBoot{
 			OperationRVersion: 7,
-			Stage:             manager.RuntimeBootStagePublishRuntime,
+			Stage:             manager.RuntimeBootStagePublishReady,
 			StartedUnix:       10,
 			LastUpdateUnix:    11,
 		},
@@ -701,7 +771,7 @@ func TestCodespaceStateStoreRuntimeMetadataIncludesBootDuringStartup(t *testing.
 	if !ok {
 		t.Fatalf("metadata request was missing")
 	}
-	if metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_RUNTIME {
+	if metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY {
 		t.Fatalf("metadata = %#v", metadata)
 	}
 }
@@ -1102,8 +1172,5 @@ func writeRunnableState(t *testing.T, stateDir string) {
 
 func newLockTestManagerServer(t *testing.T, service *lockTestManagerService) *httptest.Server {
 	t.Helper()
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	return httptest.NewServer(mux)
+	return newGiteaManagerServiceServer(t, service)
 }

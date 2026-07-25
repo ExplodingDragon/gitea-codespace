@@ -11,13 +11,16 @@ import (
 )
 
 const (
-	failureProtocolMismatch     = "protocol_mismatch"
-	failureStateHistoryConflict = "state_history_conflict"
-	failureManagerUnregistered  = "manager_unregistered"
-	failureOperationRegression  = "operation_version_regression"
-	failureLocalStateCommit     = "local_state_commit_failed"
-	failureGenerationConflict   = "generation_conflict"
-	failureVersionExhausted     = "version_exhausted"
+	failureProtocolMismatch       = "protocol_mismatch"
+	failureStateHistoryConflict   = "state_history_conflict"
+	failureManagerUnregistered    = "manager_unregistered"
+	failureInvalidDeclaration     = "invalid_declaration"
+	failureGatewayURLConflict     = "gateway_url_conflict"
+	failureGatewaySSHAddrConflict = "gateway_ssh_addr_conflict"
+	failureOperationRegression    = "operation_version_regression"
+	failureLocalStateCommit       = "local_state_commit_failed"
+	failureGenerationConflict     = "generation_conflict"
+	failureVersionExhausted       = "version_exhausted"
 )
 
 type categorizedError struct {
@@ -52,7 +55,14 @@ func failureCategory(err error) string {
 
 func isManagerCriticalError(err error) bool {
 	switch failureCategory(err) {
-	case failureProtocolMismatch, failureStateHistoryConflict, failureManagerUnregistered, failureOperationRegression, failureLocalStateCommit:
+	case failureProtocolMismatch,
+		failureStateHistoryConflict,
+		failureManagerUnregistered,
+		failureInvalidDeclaration,
+		failureGatewayURLConflict,
+		failureGatewaySSHAddrConflict,
+		failureOperationRegression,
+		failureLocalStateCommit:
 		return true
 	default:
 		return false

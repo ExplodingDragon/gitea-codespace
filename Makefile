@@ -14,6 +14,14 @@ test-scripts:
 test-e2e:
 	CODESPACE_E2E_INCUS=1 $(GO) test -count=1 -run 'Test.*E2E' ./...
 
+.PHONY: test-e2e-auto
+test-e2e-auto:
+	if command -v incus >/dev/null 2>&1 && incus info >/dev/null 2>&1; then \
+		CODESPACE_E2E_INCUS=1 $(GO) test -count=1 -run 'Test.*E2E' ./...; \
+	else \
+		echo "Incus E2E skipped: incus client is unavailable"; \
+	fi
+
 .PHONY: test-e2e-required
 test-e2e-required:
 	CODESPACE_E2E_INCUS=1 CODESPACE_E2E_REQUIRE_INCUS=1 $(GO) test -count=1 -run 'Test.*E2E' ./...

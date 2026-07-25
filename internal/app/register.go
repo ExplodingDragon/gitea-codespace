@@ -47,8 +47,11 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if strings.TrimSpace(config.Manager.GatewayURL) == "" {
 		config.Manager.GatewayURL = config.Server.PublicBaseURL
 	}
+	if err := config.Manager.Validate(); err != nil {
+		return fmt.Errorf("validate manager config: %w", err)
+	}
 
-	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, giteaURL)
+	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerServiceBaseURL(giteaURL))
 	ctx, cancel := context.WithTimeout(context.Background(), config.Manager.HTTPTimeout.ToStdlib())
 	defer cancel()
 	response, err := client.RegisterManager(ctx, connect.NewRequest(&codespacev1.RegisterManagerRequest{

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/pkg/sftp"
 )
@@ -35,6 +36,57 @@ func TestIncusE2EConnectsToDefaultServer(t *testing.T) {
 	}
 }
 
+func TestIncusE2EManagedProjectResources(t *testing.T) {
+	requireIncusE2E(t)
+
+	suffix := time.Now().UnixNano()
+	projectName := fmt.Sprintf("gitea-codespace-e2e-project-%d", suffix)
+	networkName := fmt.Sprintf("gitea-codespace-e2e-net-%d", suffix)
+	config := incusE2EConfig(suffix, fmt.Sprintf("managed-project-%d", suffix))
+	config.Project = projectName
+	config.ProjectManage = true
+	config.StoragePool = incusE2EEnvDefault("CODESPACE_E2E_INCUS_STORAGE_POOL", "default")
+	config.NetworkName = networkName
+	config.NetworkManage = true
+
+	baseClient, err := connectIncusBase(config)
+	if err != nil {
+		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
+	}
+	defer cleanupIncusE2EManagedProject(t, baseClient, projectName, networkName)
+
+	provisioner, err := NewIncus(config)
+	if err != nil {
+		skipOrFailIncusE2E(t, "Incus E2E managed project cannot be prepared", err)
+	}
+	project, _, err := baseClient.GetProject(projectName)
+	if err != nil {
+		t.Fatalf("get managed project: %v", err)
+	}
+	for _, feature := range []string{"features.profiles", "features.networks", "features.storage.volumes"} {
+		if !projectFeatureEnabled(project.Config, feature) {
+			t.Fatalf("managed project feature %s = %q", feature, project.Config[feature])
+		}
+	}
+	network, _, err := provisioner.client.GetNetwork(networkName)
+	if err != nil {
+		t.Fatalf("get managed network: %v", err)
+	}
+	if network.Type != "bridge" || !network.Managed {
+		t.Fatalf("managed network = %#v", network)
+	}
+	if network.Config["ipv4.dhcp"] != "true" {
+		t.Fatalf("managed network ipv4.dhcp = %q", network.Config["ipv4.dhcp"])
+	}
+	profile, _, err := provisioner.client.GetProfile("default")
+	if err != nil {
+		t.Fatalf("get managed default profile: %v", err)
+	}
+	if !profileHasManagedDevices(profile, config.StoragePool, networkName) {
+		t.Fatalf("managed default profile devices = %#v", profile.Devices)
+	}
+}
+
 func TestIncusE2ECreateStopDeleteInstance(t *testing.T) {
 	requireIncusE2E(t)
 
@@ -47,7 +99,7 @@ func TestIncusE2ECreateStopDeleteInstance(t *testing.T) {
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
 	}
-	if missing, err := incusE2EDeploymentMissing(provisioner, config.Templates["e2e"].Image); err != nil {
+	if missing, err := incusE2EDeploymentMissing(provisioner, config.RuntimeEnvironments["e2e"].Image); err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E deployment cannot be inspected", err)
 	} else if len(missing) > 0 {
 		skipOrFailIncusE2E(t, "Incus E2E deployment is missing requirements", fmt.Errorf("%s", strings.Join(missing, "; ")))
@@ -57,10 +109,10 @@ func TestIncusE2ECreateStopDeleteInstance(t *testing.T) {
 	codespaceUUID := fmt.Sprintf("e2e-%d", suffix)
 	instanceName := fmt.Sprintf("gitea-codespace-e2e-%d", suffix)
 	spec := InstanceSpec{
-		CodespaceUUID: codespaceUUID,
-		Name:          instanceName,
-		RepoFullName:  "owner/repo",
-		RepoTag:       "e2e",
+		CodespaceUUID:  codespaceUUID,
+		Name:           instanceName,
+		RepoFullName:   "owner/repo",
+		EnvironmentTag: "e2e",
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
@@ -81,7 +133,7 @@ func TestIncusE2ECreateStopDeleteInstance(t *testing.T) {
 		t.Fatalf("created instance = %#v", instance)
 	}
 	assertIncusE2EInstanceRunID(t, ctx, provisioner, instanceName, codespaceUUID, runID)
-	assertIncusE2ETemplateResources(t, ctx, provisioner, instanceName, config.Templates["e2e"])
+	assertIncusE2EEnvironmentResources(t, ctx, provisioner, instanceName, config.RuntimeEnvironments["e2e"])
 	assertIncusE2EInstanceState(t, ctx, provisioner, codespaceUUID, RuntimeStateRunning)
 	assertIncusE2EWorkspaceSFTP(t, ctx, provisioner, instance.Name, instance.Workdir)
 	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, instance.Workdir)
@@ -125,7 +177,7 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
 	}
-	if missing, err := incusE2EDeploymentMissing(provisioner, config.Templates["e2e"].Image); err != nil {
+	if missing, err := incusE2EDeploymentMissing(provisioner, config.RuntimeEnvironments["e2e"].Image); err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E deployment cannot be inspected", err)
 	} else if len(missing) > 0 {
 		skipOrFailIncusE2E(t, "Incus E2E deployment is missing requirements", fmt.Errorf("%s", strings.Join(missing, "; ")))
@@ -135,10 +187,10 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	codespaceUUID := fmt.Sprintf("e2e-lifecycle-%d", suffix)
 	instanceName := fmt.Sprintf("gitea-codespace-e2e-lifecycle-%d", suffix)
 	spec := InstanceSpec{
-		CodespaceUUID: codespaceUUID,
-		Name:          instanceName,
-		RepoFullName:  "octocat/Hello-World",
-		RepoTag:       "e2e",
+		CodespaceUUID:  codespaceUUID,
+		Name:           instanceName,
+		RepoFullName:   "octocat/Hello-World",
+		EnvironmentTag: "e2e",
 	}
 	defer func() {
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
@@ -179,17 +231,11 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 
 func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) WorkspaceStatus {
 	t.Helper()
-	identity, err := provisioner.InitializeSystem(ctx, instance.Name, request)
-	if err != nil {
-		t.Fatalf("initialize e2e lifecycle system: %v", err)
+	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
+		t.Fatalf("seed e2e lifecycle credentials: %v", err)
 	}
-	if err := provisioner.WriteCredentials(ctx, instance.Name, CredentialRequest{
-		CodespaceUUID: request.CodespaceUUID,
-		GiteaToken:    request.GiteaToken,
-		UID:           identity.UID,
-		GID:           identity.GID,
-	}); err != nil {
-		t.Fatalf("write e2e lifecycle credentials: %v", err)
+	if _, err := provisioner.InitializeSystem(ctx, instance.Name, request); err != nil {
+		t.Fatalf("initialize e2e lifecycle system: %v", err)
 	}
 	status, err := provisioner.CheckCredentials(ctx, instance.Name)
 	if err != nil {
@@ -218,17 +264,11 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 
 func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) {
 	t.Helper()
-	identity, err := provisioner.InitializeSystem(ctx, instance.Name, request)
-	if err != nil {
-		t.Fatalf("initialize e2e resume system: %v", err)
+	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
+		t.Fatalf("seed e2e resume credentials: %v", err)
 	}
-	if err := provisioner.WriteCredentials(ctx, instance.Name, CredentialRequest{
-		CodespaceUUID: request.CodespaceUUID,
-		GiteaToken:    request.GiteaToken,
-		UID:           identity.UID,
-		GID:           identity.GID,
-	}); err != nil {
-		t.Fatalf("write e2e resume credentials: %v", err)
+	if _, err := provisioner.InitializeSystem(ctx, instance.Name, request); err != nil {
+		t.Fatalf("initialize e2e resume system: %v", err)
 	}
 	workspace, err := provisioner.PrepareWorkspace(ctx, instance.Name, request)
 	if err != nil {
@@ -240,6 +280,16 @@ func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *
 	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, workspace.Workdir)
 	if _, err := provisioner.ActivateRuntime(ctx, instance.Name, request); err != nil {
 		t.Fatalf("activate e2e resume runtime: %v", err)
+	}
+}
+
+func incusE2ERuntimeCredentialSeed(codespaceUUID, token string) RuntimeCredentialSeedRequest {
+	return RuntimeCredentialSeedRequest{
+		CodespaceUUID:    codespaceUUID,
+		GiteaToken:       token,
+		GitSSHPrivateKey: []byte("-----BEGIN OPENSSH PRIVATE KEY-----\ne2e\n-----END OPENSSH PRIVATE KEY-----\n"),
+		GitSSHPublicKey:  []byte("ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE2ETestKey gitea-codespace\n"),
+		GitSSHKnownHosts: []string{"gitea.example.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIE2ETestHostKey"},
 	}
 }
 
@@ -278,24 +328,24 @@ func assertIncusE2EInstanceState(t *testing.T, ctx context.Context, provisioner 
 	t.Fatalf("e2e instance %s not found", codespaceUUID)
 }
 
-func assertIncusE2ETemplateResources(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName string, template IncusTemplateConfig) {
+func assertIncusE2EEnvironmentResources(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName string, environment IncusEnvironmentConfig) {
 	t.Helper()
 	instance, _, err := provisioner.client.GetInstance(instanceName)
 	if err != nil {
 		t.Fatalf("get e2e instance resources: %v", err)
 	}
-	if instance.Config["limits.cpu"] != fmt.Sprintf("%d", template.CPU) {
-		t.Fatalf("limits.cpu = %q, want %d", instance.Config["limits.cpu"], template.CPU)
+	if instance.Config["limits.cpu"] != fmt.Sprintf("%d", environment.CPU) {
+		t.Fatalf("limits.cpu = %q, want %d", instance.Config["limits.cpu"], environment.CPU)
 	}
-	if instance.Config["limits.memory"] != template.MemoryLimit {
-		t.Fatalf("limits.memory = %q, want %q", instance.Config["limits.memory"], template.MemoryLimit)
+	if instance.Config["limits.memory"] != environment.MemoryLimit {
+		t.Fatalf("limits.memory = %q, want %q", instance.Config["limits.memory"], environment.MemoryLimit)
 	}
 	for _, device := range instance.Devices {
 		if device["type"] != "disk" || device["path"] != "/" {
 			continue
 		}
-		if device["size"] != template.RootDiskSize {
-			t.Fatalf("root disk size = %q, want %q", device["size"], template.RootDiskSize)
+		if device["size"] != environment.RootDiskSize {
+			t.Fatalf("root disk size = %q, want %q", device["size"], environment.RootDiskSize)
 		}
 		if strings.TrimSpace(device["pool"]) == "" {
 			t.Fatalf("root disk pool is empty: %#v", device)
@@ -404,6 +454,20 @@ func cleanupIncusE2EInstance(ctx context.Context, provisioner *IncusProvisioner,
 	return provisioner.Delete(ctx, instanceName)
 }
 
+func cleanupIncusE2EManagedProject(t *testing.T, baseClient incus.InstanceServer, projectName, networkName string) {
+	t.Helper()
+	if baseClient == nil {
+		return
+	}
+	projectClient := withProject(baseClient, projectName)
+	if err := projectClient.DeleteNetwork(networkName); err != nil && !isNotFoundError(err) {
+		t.Logf("cleanup managed network %s: %v", networkName, err)
+	}
+	if err := baseClient.DeleteProject(projectName); err != nil && !isNotFoundError(err) {
+		t.Logf("cleanup managed project %s: %v", projectName, err)
+	}
+}
+
 func incusE2EConfig(managerID int64, runID string) IncusConfig {
 	memoryLimit := strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_MEMORY_LIMIT"))
 	if memoryLimit == "" {
@@ -418,7 +482,7 @@ func incusE2EConfig(managerID int64, runID string) IncusConfig {
 		Remote:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
 		UnixSocket: strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
 		Project:    strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
-		Templates: map[string]IncusTemplateConfig{
+		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
 			"e2e": {
 				Image:                  image,
 				InstanceType:           incusE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
@@ -470,7 +534,7 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 		return []string{"incus provisioner is nil"}, nil
 	}
 	missing := []string{}
-	template := provisioner.templates["e2e"]
+	environment := provisioner.environments["e2e"]
 	if imageMissing, err := incusE2EImageMissing(provisioner, image); err != nil {
 		return nil, err
 	} else if imageMissing != "" {
@@ -478,7 +542,7 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 	}
 	hasRootDisk := false
 	hasNIC := false
-	for _, profileName := range template.profiles {
+	for _, profileName := range environment.profiles {
 		profile, _, err := provisioner.client.GetProfile(profileName)
 		if err != nil {
 			return nil, fmt.Errorf("get profile %s: %w", profileName, err)
@@ -507,10 +571,10 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 		}
 	}
 	if !hasRootDisk {
-		missing = append(missing, fmt.Sprintf("profiles %s do not define a root disk", strings.Join(template.profiles, ",")))
+		missing = append(missing, fmt.Sprintf("profiles %s do not define a root disk", strings.Join(environment.profiles, ",")))
 	}
 	if !hasNIC {
-		missing = append(missing, fmt.Sprintf("profiles %s do not define a network device", strings.Join(template.profiles, ",")))
+		missing = append(missing, fmt.Sprintf("profiles %s do not define a network device", strings.Join(environment.profiles, ",")))
 	}
 	return missing, nil
 }

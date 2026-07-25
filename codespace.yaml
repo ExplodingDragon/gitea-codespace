@@ -1,65 +1,84 @@
-server:
-    listen_addr: :18080
-    gateway_listen: :18081
-    gateway_ssh_listen: :2222
-    public_base_url: http://127.0.0.1:18081
-    shutdown_timeout: 10s
+version: 1
+
+node:
+  name: "local-incus-manager"
+  state_dir: "codespace-state"
+  version: "0.1.0"
+  poll_interval: "750ms"
+  declare_interval: "5s"
+  capacity_total: 4
+  startup_workers: 4
+  cleanup_workers: 4
+  http_timeout: "15s"
+  shutdown_timeout: "10s"
+
 gateway:
-    ssh_host: 127.0.0.1
-    ssh_port: 2222
-    gateway_session_ttl: 8h
-    gateway_session_idle_timeout: 30m
-    gateway_session_revalidate_interval: 5m
-    gateway_max_sessions_per_codespace: 32
-    gateway_max_sessions_per_user: 128
-    gateway_max_inflight_total: 4096
-    gateway_max_inflight_per_session: 32
-    gateway_ssh_max_channels_per_connection: 32
-    ssh_auth_max_attempts_per_ip_per_minute: 30
-    ssh_auth_max_attempts_per_codespace_per_minute: 20
-    ssh_auth_max_attempts_per_ip_codespace_per_minute: 10
-    ssh_auth_max_attempts_per_public_key_per_minute: 30
-    ssh_auth_backoff_base: 1s
-    ssh_auth_backoff_max: 30s
-    ssh_auth_failure_window: 10m
-    gateway_public_max_connections_per_endpoint: 64
-    gateway_public_max_connections_per_ip: 16
-    gateway_validation_max_inflight: 128
-manager:
-    state_dir: codespace-state
-    name: codespace-manager
-    gateway_url: http://127.0.0.1:18081
-    gateway_ssh_addr: 127.0.0.1:2222
-    version: 0.1.0
-    poll_interval: 750ms
-    declare_interval: 5s
-    capacity_total: 4
-    startup_workers: 4
-    cleanup_workers: 4
-    http_timeout: 15s
-scripts:
-    init: builtin
-    start: builtin
-    resume: builtin
-incus:
-    endpoint: ""
-    unix_socket: ""
-    project: ""
-templates:
-    default:
-        image: images:debian/12
-        instance_type: container
-        communication_nic: eth0
+  http:
+    listen: ":18081"
+    public_url: "http://codespace.fbi.com:18081"
+  ssh:
+    listen: ":2222"
+    public_addr: "codespace.fbi.com:2222"
+    max_channels_per_connection: 32
+    auth:
+      max_attempts_per_ip_per_minute: 30
+      max_attempts_per_codespace_per_minute: 20
+      max_attempts_per_ip_codespace_per_minute: 10
+      max_attempts_per_public_key_per_minute: 30
+      backoff_base: "1s"
+      backoff_max: "30s"
+      failure_window: "10m"
+  sessions:
+    ttl: "8h"
+    idle_timeout: "30m"
+    revalidate_interval: "5m"
+    max_per_codespace: 32
+    max_per_user: 128
+  limits:
+    max_inflight_total: 4096
+    max_inflight_per_session: 32
+    public_max_connections_per_endpoint: 64
+    public_max_connections_per_ip: 16
+    validation_max_inflight: 128
+
+runtime:
+  driver: "incus"
+  codespace_root: "/codespace"
+  bootstrap:
+    shell: "/bin/sh"
+    home_dir: "/root"
+    user_name: "codespace"
+    user: 0
+    group: 0
+  git:
+    ssh_key_type: "ed25519"
+  scripts:
+    init: "builtin"
+    start: "builtin"
+    resume: "builtin"
+  incus:
+    connect:
+      unix_socket: "/var/lib/incus/unix.socket"
+    project:
+      name: "default"
+      manage: false
+    storage:
+      pool: "default"
+    network:
+      name: "incusbr0"
+      manage: false
+  environments:
+    - tag: "default"
+      display_name: "Default"
+      type: "lxc"
+      communication_interface: "eth0"
+      source:
+        type: "image"
+        image: "images:debian/12"
+      resources:
         cpu: 1
-        memory: 1GiB
-        root_disk_size: 10GiB
-        profiles:
-            - default
-provisioner:
-    kind: dummy
-    codespace_root: /codespace
-    bootstrap:
-        shell: /bin/sh
-        home_dir: /root
-        user: 0
-        group: 0
+        memory: "1GiB"
+        root_disk: "10GiB"
+      profiles:
+        use:
+          - "default"

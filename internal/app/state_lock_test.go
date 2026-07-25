@@ -7,8 +7,6 @@ import (
 	"bytes"
 	"context"
 	"net"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync/atomic"
@@ -47,10 +45,7 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	defer lock.Close()
 
 	service := &lockTestManagerService{}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
+	server := newGiteaManagerServiceServer(t, service)
 	defer server.Close()
 
 	var output bytes.Buffer
@@ -75,10 +70,7 @@ func TestRunWithConfigMissingRootStateFailsBeforeRPC(t *testing.T) {
 
 	stateDir := filepath.Join(t.TempDir(), "state")
 	service := &lockTestManagerService{}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
+	server := newGiteaManagerServiceServer(t, service)
 	defer server.Close()
 	if err := SaveManagerIdentity(stateDir, ManagerIdentity{
 		GiteaURL:       server.URL,
@@ -176,10 +168,7 @@ func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
 	defer occupied.Close()
 
 	service := &lockTestManagerService{}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
+	server := newGiteaManagerServiceServer(t, service)
 	defer server.Close()
 	saveManagerRegistrationForTest(t, stateDir, server.URL, 42)
 

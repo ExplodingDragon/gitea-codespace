@@ -1,29 +1,8 @@
-server:
-  listen_addr: ":18080"
-  gateway_listen: ":18081"
-  gateway_ssh_listen: ":2222"
-  public_base_url: "https://codespace.example.com"
-  shutdown_timeout: "10s"
+version: 1
 
-gateway:
-  ssh_host: "codespace.example.com"
-  ssh_port: 2222
-  gateway_session_ttl: "8h"
-  gateway_session_idle_timeout: "30m"
-  gateway_session_revalidate_interval: "5m"
-  gateway_max_sessions_per_codespace: 32
-  gateway_max_sessions_per_user: 128
-  gateway_max_inflight_total: 4096
-  gateway_max_inflight_per_session: 32
-  gateway_public_max_connections_per_endpoint: 64
-  gateway_public_max_connections_per_ip: 16
-  gateway_validation_max_inflight: 128
-
-manager:
-  state_dir: "codespace-state"
+node:
   name: "local-incus-manager"
-  gateway_url: "https://codespace.example.com"
-  gateway_ssh_addr: "codespace.example.com:2222"
+  state_dir: "codespace-state"
   version: "0.1.0"
   poll_interval: "750ms"
   declare_interval: "5s"
@@ -31,51 +10,108 @@ manager:
   startup_workers: 4
   cleanup_workers: 4
   http_timeout: "15s"
+  shutdown_timeout: "10s"
 
-scripts:
-  init: "builtin"
-  start: "builtin"
-  resume: "builtin"
+gateway:
+  http:
+    listen: ":18081"
+    public_url: "https://codespace.example.com"
+  ssh:
+    listen: ":2222"
+    public_addr: "codespace.example.com:2222"
+    max_channels_per_connection: 32
+    auth:
+      max_attempts_per_ip_per_minute: 30
+      max_attempts_per_codespace_per_minute: 20
+      max_attempts_per_ip_codespace_per_minute: 10
+      max_attempts_per_public_key_per_minute: 30
+      backoff_base: "1s"
+      backoff_max: "30s"
+      failure_window: "10m"
+  sessions:
+    ttl: "8h"
+    idle_timeout: "30m"
+    revalidate_interval: "5m"
+    max_per_codespace: 32
+    max_per_user: 128
+  limits:
+    max_inflight_total: 4096
+    max_inflight_per_session: 32
+    public_max_connections_per_endpoint: 64
+    public_max_connections_per_ip: 16
+    validation_max_inflight: 128
 
-incus:
-  endpoint: ""
-  unix_socket: "/var/lib/incus/unix.socket"
-  project: "default"
-
-templates:
-  default:
-    image: "images:debian/12"
-    instance_type: "container"
-    communication_nic: "eth0"
-    cpu: 1
-    memory: "1GiB"
-    root_disk_size: "10GiB"
-    profiles:
-      - "default"
-  linux:
-    image: "images:debian/12"
-    instance_type: "container"
-    communication_nic: "eth0"
-    cpu: 1
-    memory: "1GiB"
-    root_disk_size: "10GiB"
-    profiles:
-      - "default"
-  incus:
-    image: "images:debian/12"
-    instance_type: "container"
-    communication_nic: "eth0"
-    cpu: 1
-    memory: "1GiB"
-    root_disk_size: "10GiB"
-    profiles:
-      - "default"
-
-provisioner:
-  kind: "incus"
+runtime:
+  driver: "incus"
   codespace_root: "/codespace"
   bootstrap:
     shell: "/bin/sh"
     home_dir: "/root"
+    user_name: "codespace"
     user: 0
     group: 0
+  git:
+    ssh_key_type: "ed25519"
+  scripts:
+    init: "builtin"
+    start: "builtin"
+    resume: "builtin"
+  incus:
+    connect:
+      unix_socket: "/var/lib/incus/unix.socket"
+      # remote_addr: "https://incus.example.com:8443"
+    project:
+      name: "gitea-codespace"
+      manage: true
+    storage:
+      pool: "default"
+    network:
+      name: "gitea-codespace-net"
+      manage: true
+  environments:
+    - tag: "debian-lxc"
+      display_name: "Debian 12 LXC"
+      type: "lxc"
+      communication_interface: "eth0"
+      source:
+        type: "image"
+        image: "images:debian/12"
+      resources:
+        cpu: 1
+        memory: "1GiB"
+        root_disk: "10GiB"
+      profiles:
+        use:
+          - "default"
+
+    - tag: "debian-vm"
+      display_name: "Debian 12 VM"
+      type: "vm"
+      communication_interface: "eth0"
+      source:
+        type: "image"
+        image: "images:debian/12"
+      resources:
+        cpu: 2
+        memory: "1GiB"
+        root_disk: "20GiB"
+      profiles:
+        use:
+          - "default"
+
+    - tag: "company-base"
+      display_name: "Company Base VM"
+      type: "vm"
+      communication_interface: "eth0"
+      source:
+        type: "instance"
+        remote: "local"
+        project: "base-images"
+        name: "dev-vm-base"
+      resources:
+        cpu: 2
+        memory: "1GiB"
+        root_disk: "20GiB"
+      profiles:
+        use:
+          - "company-dev-vm"

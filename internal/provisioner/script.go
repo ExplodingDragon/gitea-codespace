@@ -161,6 +161,9 @@ func (p *IncusProvisioner) runLifecycleScript(
 	if err := p.ensureScriptStateFiles(ctx, instanceName); err != nil {
 		return nil, err
 	}
+	if err := p.writeRuntimeRepositoryConfig(ctx, instanceName, request); err != nil {
+		return nil, err
+	}
 	scriptPath := filepath.Join(runtimeScriptDir, scriptName)
 	if err := p.writeRuntimeFile(ctx, instanceName, scriptPath, script, 0o700, "file"); err != nil {
 		return nil, err
@@ -195,7 +198,8 @@ func (p *IncusProvisioner) runLifecycleScript(
 	if _, ok := sharedEnv["CODESPACE_WORKSPACE_DIR"]; !ok && request.Workdir != "" {
 		environment["CODESPACE_WORKSPACE_DIR"] = request.Workdir
 	}
-	execErr := p.execCommand(ctx, instanceName, []string{p.bootstrap.Shell, scriptPath}, environment, "/")
+	p.writeLifecycleLog(ctx, request.LogSink, fmt.Sprintf("%s started", stage))
+	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{p.bootstrap.Shell, scriptPath}, environment, "/", request.LogSink)
 	resultContent, _, err := p.readRuntimeFile(ctx, instanceName, resultPath)
 	if err != nil {
 		_ = p.writeRuntimeSharedEnvFile(ctx, instanceName, previousEnvFile)
@@ -224,7 +228,15 @@ func (p *IncusProvisioner) runLifecycleScript(
 	if err := p.writeRuntimeSharedEnvFile(ctx, instanceName, encodeSharedEnv(currentEnv)); err != nil {
 		return nil, err
 	}
+	p.writeLifecycleLog(ctx, request.LogSink, fmt.Sprintf("%s completed", stage))
 	return currentEnv, nil
+}
+
+func (p *IncusProvisioner) writeLifecycleLog(ctx context.Context, sink LifecycleLogSink, message string) {
+	if sink == nil || message == "" {
+		return
+	}
+	_ = sink.WriteLifecycleLog(ctx, message)
 }
 
 func (p *IncusProvisioner) writeRuntimeSharedEnvFile(ctx context.Context, instanceName, content string) error {
@@ -242,10 +254,26 @@ mv "$tmp" "$CODESPACE_ENV"
 }
 
 func (p *IncusProvisioner) ensureScriptStateFiles(ctx context.Context, instanceName string) error {
-	for _, path := range []string{runtimeCredentialDir, runtimeGitCredentialDir, runtimeManifestDir, runtimeScriptResultDir, runtimeScriptParentDir, runtimeScriptDir} {
-		if err := p.writeRuntimeFile(ctx, instanceName, path, "", runtimeCredentialDirMode, "directory"); err != nil {
+	for _, directory := range []struct {
+		path string
+		mode int
+	}{
+		{path: runtimeCredentialDir, mode: runtimeRootDirMode},
+		{path: runtimeManifestDir, mode: runtimeRootDirMode},
+		{path: runtimeScriptResultDir, mode: runtimePrivateDirMode},
+		{path: runtimeScriptParentDir, mode: runtimeRootDirMode},
+		{path: runtimeScriptDir, mode: runtimeRootDirMode},
+	} {
+		if err := p.writeRuntimeFile(ctx, instanceName, directory.path, "", directory.mode, "directory"); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (p *IncusProvisioner) writeRuntimeRepositoryConfig(ctx context.Context, instanceName string, request BootstrapRequest) error {
+	if err := p.writeRuntimeFile(ctx, instanceName, runtimeRepositoryConfig, string(request.RepoConfigContent), 0o644, "file"); err != nil {
+		return fmt.Errorf("write repository config: %w", err)
 	}
 	return nil
 }
@@ -306,39 +334,68 @@ func (p *IncusProvisioner) predefinedScriptEnv(request BootstrapRequest, stage, 
 		repoURL = request.RepoCloneSSHURL
 	}
 	authPrefix, httpsPrefix, _ := buildGitURLPrefixes(request.RepoCloneHTTPURL, "codespace", request.GiteaToken)
+	runtimeUserName := strings.TrimSpace(request.RuntimeUserName)
+	if runtimeUserName == "" {
+		runtimeUserName = p.bootstrap.UserName
+	}
 	values := map[string]string{
-		"HOME":                      p.bootstrap.HomeDir,
-		"CODESPACE_UUID":            request.CodespaceUUID,
-		"CODESPACE_NAME":            request.CodespaceName,
-		"CODESPACE_OWNER_NAME":      request.CodespaceOwnerName,
-		"CODESPACE_OPERATION":       string(request.Operation),
-		"CODESPACE_SCRIPT_PHASE":    phase,
-		"CODESPACE_RESULT":          resultPath,
-		"CODESPACE_ENV":             runtimeSharedEnvFilePath,
-		"CODESPACE_WORKSPACES_DIR":  defaultWorkspaceRoot,
-		"GITEA_SERVER_URL":          request.ServerURL,
-		"GITEA_TOKEN":               request.GiteaToken,
-		"GITEA_REPO_CLONE_HTTP_URL": request.RepoCloneHTTPURL,
-		"GITEA_REPO_CLONE_SSH_URL":  request.RepoCloneSSHURL,
-		"GITEA_GIT_PROTOCOL":        request.GitProtocol,
-		"GITEA_REPO_WEB_URL":        request.RepoWebURL,
-		"GITEA_REPO_ID":             strconv.FormatInt(request.RepoID, 10),
-		"GITEA_REPO_FULL_NAME":      request.RepoFullName,
-		"GITEA_REPO_NAME":           request.RepoName,
-		"GITEA_OWNER_ID":            strconv.FormatInt(request.OwnerID, 10),
-		"GITEA_OWNER_NAME":          request.OwnerName,
-		"GITEA_OWNER_TYPE":          request.OwnerType,
-		"GITEA_OWNER_DISPLAY_NAME":  request.OwnerDisplayName,
-		"GITEA_REF_TYPE":            request.RefType,
-		"GITEA_REF_NAME":            request.RefName,
-		"GITEA_START_REF":           request.StartRef,
-		"GITEA_COMMIT_SHA":          request.CommitSHA,
-		"CODESPACE_REPO_NAME":       request.RepoName,
-		"GITEA_LEGACY_REPO_URL":     repoURL,
-		"GITEA_LEGACY_AUTH_PREFIX":  authPrefix,
-		"GITEA_LEGACY_HTTPS_PREFIX": httpsPrefix,
+		"HOME":                              p.bootstrap.HomeDir,
+		"CODESPACE_UUID":                    request.CodespaceUUID,
+		"CODESPACE_NAME":                    request.CodespaceName,
+		"CODESPACE_OWNER_NAME":              request.CodespaceOwnerName,
+		"CODESPACE_OPERATION":               string(request.Operation),
+		"CODESPACE_SCRIPT_PHASE":            phase,
+		"CODESPACE_USER":                    runtimeUserName,
+		"CODESPACE_RESULT":                  resultPath,
+		"CODESPACE_ENV":                     runtimeSharedEnvFilePath,
+		"CODESPACE_WORKSPACES_DIR":          defaultWorkspaceRoot,
+		"CODESPACE_RUNTIME_DIR":             runtimeCredentialDir,
+		"CODESPACE_RUNTIME_SEED_DIR":        runtimeCredentialSeedDir,
+		"CODESPACE_GITEA_TOKEN_FILE":        runtimeGiteaTokenFilePath,
+		"CODESPACE_GIT_SSH_PRIVATE_KEY":     runtimeGitSSHPrivateKey,
+		"CODESPACE_GIT_SSH_PUBLIC_KEY":      runtimeGitSSHPublicKey,
+		"CODESPACE_GIT_SSH_KNOWN_HOSTS":     runtimeGitSSHKnownHosts,
+		"GITEA_USER_ID":                     strconv.FormatInt(request.UserID, 10),
+		"GITEA_USER_NAME":                   request.UserName,
+		"GITEA_USER_DISPLAY_NAME":           request.UserDisplayName,
+		"GITEA_GIT_USER_NAME":               request.GitUserName,
+		"GITEA_GIT_USER_EMAIL":              request.GitUserEmail,
+		"GITEA_SERVER_URL":                  request.ServerURL,
+		"GITEA_TOKEN":                       request.GiteaToken,
+		"GITEA_REPO_CLONE_HTTP_URL":         request.RepoCloneHTTPURL,
+		"GITEA_REPO_CLONE_SSH_URL":          request.RepoCloneSSHURL,
+		"GITEA_GIT_PROTOCOL":                request.GitProtocol,
+		"GITEA_REPO_WEB_URL":                request.RepoWebURL,
+		"GITEA_REPO_ID":                     strconv.FormatInt(request.RepoID, 10),
+		"GITEA_REPO_FULL_NAME":              request.RepoFullName,
+		"GITEA_REPO_NAME":                   request.RepoName,
+		"GITEA_OWNER_ID":                    strconv.FormatInt(request.OwnerID, 10),
+		"GITEA_OWNER_NAME":                  request.OwnerName,
+		"GITEA_OWNER_TYPE":                  request.OwnerType,
+		"GITEA_OWNER_DISPLAY_NAME":          request.OwnerDisplayName,
+		"GITEA_REF_TYPE":                    request.RefType,
+		"GITEA_REF_NAME":                    request.RefName,
+		"GITEA_START_REF":                   request.StartRef,
+		"GITEA_COMMIT_SHA":                  request.CommitSHA,
+		"GITEA_CODESPACE_ENVIRONMENT_TAG":   request.EnvironmentTag,
+		"GITEA_CODESPACE_CONFIG_PRESENT":    boolString(request.RepoConfigPresent),
+		"GITEA_CODESPACE_CONFIG_PATH":       request.RepoConfigPath,
+		"GITEA_CODESPACE_CONFIG_FILE":       runtimeRepositoryConfig,
+		"GITEA_CODESPACE_CONFIG_SOURCE_REF": request.RepoConfigSourceRef,
+		"GITEA_CODESPACE_CONFIG_SHA256":     request.RepoConfigSHA256,
+		"CODESPACE_REPO_NAME":               request.RepoName,
+		"GITEA_LEGACY_REPO_URL":             repoURL,
+		"GITEA_LEGACY_AUTH_PREFIX":          authPrefix,
+		"GITEA_LEGACY_HTTPS_PREFIX":         httpsPrefix,
 	}
 	return values
+}
+
+func boolString(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func predefinedScriptEnvNames() map[string]struct{} {

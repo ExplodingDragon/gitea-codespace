@@ -4,6 +4,7 @@
 package provisioner
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -27,40 +28,47 @@ const defaultIncusImage = "images:debian/12"
 const defaultIncusInstanceType = "container"
 const defaultBootstrapShell = "/bin/sh"
 const defaultBootstrapHomeDir = "/root"
+const defaultBootstrapUserName = "codespace"
 const defaultVMAgentWaitTimeout = 2 * time.Minute
 const maxIncusExecCapturedOutput = 1024 * 1024
 
 const (
-	runtimeCredentialDir       = "/var/lib/gitea-codespace"
-	runtimeGitCredentialDir    = "/var/lib/gitea-codespace/git"
-	runtimeManifestDir         = "/var/lib/gitea-codespace/runtime"
-	runtimeGiteaTokenFilePath  = "/var/lib/gitea-codespace/gitea-token"
-	runtimeEndpointManifest    = "/var/lib/gitea-codespace/runtime/endpoints.json"
-	runtimeGitSSHPrivateKey    = "/var/lib/gitea-codespace/git/id_ed25519"
-	runtimeGitSSHPublicKey     = "/var/lib/gitea-codespace/git/id_ed25519.pub"
-	runtimeGitSSHKnownHosts    = "/var/lib/gitea-codespace/git/known_hosts"
-	runtimeSharedEnvFilePath   = "/var/lib/gitea-codespace/env"
-	runtimeScriptResultDir     = "/var/lib/gitea-codespace/results"
-	runtimeScriptParentDir     = "/usr/local/libexec"
-	runtimeScriptDir           = "/usr/local/libexec/gitea-codespace"
-	runtimeCredentialDirMode   = 0o700
-	runtimeCredentialFileMode  = 0o600
-	runtimeCredentialWriteMode = "overwrite"
+	runtimeCredentialDir        = "/var/lib/gitea-codespace"
+	runtimeCredentialSeedDir    = "/var/lib/gitea-codespace/seed"
+	runtimeSeedGiteaToken       = "/var/lib/gitea-codespace/seed/gitea-token"
+	runtimeSeedGitSSHPrivateKey = "/var/lib/gitea-codespace/seed/id_ed25519"
+	runtimeSeedGitSSHPublicKey  = "/var/lib/gitea-codespace/seed/id_ed25519.pub"
+	runtimeSeedGitSSHKnownHosts = "/var/lib/gitea-codespace/seed/known_hosts"
+	runtimeGitCredentialDir     = "/var/lib/gitea-codespace/git"
+	runtimeManifestDir          = "/var/lib/gitea-codespace/runtime"
+	runtimeGiteaTokenFilePath   = "/var/lib/gitea-codespace/gitea-token"
+	runtimeEndpointManifest     = "/var/lib/gitea-codespace/runtime/endpoints.json"
+	runtimeRepositoryConfig     = "/var/lib/gitea-codespace/runtime/repository-codespace.yaml"
+	runtimeGitSSHPrivateKey     = "/var/lib/gitea-codespace/git/id_ed25519"
+	runtimeGitSSHPublicKey      = "/var/lib/gitea-codespace/git/id_ed25519.pub"
+	runtimeGitSSHKnownHosts     = "/var/lib/gitea-codespace/git/known_hosts"
+	runtimeSharedEnvFilePath    = "/var/lib/gitea-codespace/env"
+	runtimeScriptResultDir      = "/var/lib/gitea-codespace/results"
+	runtimeScriptParentDir      = "/usr/local/libexec"
+	runtimeScriptDir            = "/usr/local/libexec/gitea-codespace"
+	runtimeRootDirMode          = 0o755
+	runtimePrivateDirMode       = 0o700
+	runtimeCredentialFileMode   = 0o600
+	runtimeCredentialWriteMode  = "overwrite"
 )
 
 const (
-	incusConfigManagerID     = "user.gitea.manager_id"
-	incusConfigCodespaceUUID = "user.gitea.codespace_uuid"
-	incusConfigSchemaVersion = "user.gitea.schema_version"
-	incusConfigTag           = "user.gitea.tag"
-	incusConfigE2ERunID      = "user.gitea.e2e_run_id"
+	incusConfigManagerID      = "user.gitea.manager_id"
+	incusConfigCodespaceUUID  = "user.gitea.codespace_uuid"
+	incusConfigSchemaVersion  = "user.gitea.schema_version"
+	incusConfigEnvironmentTag = "user.gitea.environment_tag"
+	incusConfigE2ERunID       = "user.gitea.e2e_run_id"
 )
 
 type bootstrapCredentialFile struct {
 	path    string
 	content string
 	mode    int
-	kind    string
 }
 
 type runtimeEndpointManifestFile struct {
@@ -70,19 +78,23 @@ type runtimeEndpointManifestFile struct {
 
 // IncusConfig configures one Incus-backed provisioner.
 type IncusConfig struct {
-	ManagerID     int64
-	Project       string
-	Remote        string
-	UnixSocket    string
-	Templates     map[string]IncusTemplateConfig
-	ExtraConfig   map[string]string
-	CodespaceRoot string
-	Bootstrap     BootstrapConfig
-	Scripts       ScriptConfig
+	ManagerID           int64
+	Project             string
+	ProjectManage       bool
+	Remote              string
+	UnixSocket          string
+	StoragePool         string
+	NetworkName         string
+	NetworkManage       bool
+	RuntimeEnvironments map[string]IncusEnvironmentConfig
+	ExtraConfig         map[string]string
+	CodespaceRoot       string
+	Bootstrap           BootstrapConfig
+	Scripts             ScriptConfig
 }
 
-// IncusTemplateConfig stores one Incus template selected by repository tag.
-type IncusTemplateConfig struct {
+// IncusEnvironmentConfig stores one Incus environment selected by repository tag.
+type IncusEnvironmentConfig struct {
 	Image                  string
 	InstanceType           string
 	CPU                    int32
@@ -90,6 +102,10 @@ type IncusTemplateConfig struct {
 	RootDiskSize           string
 	Profiles               []string
 	CommunicationInterface string
+	SourceType             string
+	SourceRemote           string
+	SourceProject          string
+	SourceName             string
 }
 
 // IncusProvisioner provisions codespace as Incus instances.
@@ -97,7 +113,7 @@ type IncusProvisioner struct {
 	client        incus.InstanceServer
 	managerID     string
 	project       string
-	templates     map[string]incusTemplate
+	environments  map[string]incusEnvironment
 	extraConfig   map[string]string
 	codespaceRoot string
 	bootstrap     BootstrapConfig
@@ -106,7 +122,7 @@ type IncusProvisioner struct {
 	cpuSamples    map[string]incusCPUSample
 }
 
-type incusTemplate struct {
+type incusEnvironment struct {
 	image                  string
 	instanceType           api.InstanceType
 	cpu                    int32
@@ -114,6 +130,10 @@ type incusTemplate struct {
 	rootDiskSize           string
 	profiles               []string
 	communicationInterface string
+	sourceType             string
+	sourceRemote           string
+	sourceProject          string
+	sourceName             string
 }
 
 type incusCPUSample struct {
@@ -126,10 +146,14 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if config.ManagerID <= 0 {
 		return nil, fmt.Errorf("manager_id is required")
 	}
-	client, err := connectIncus(config)
+	client, err := connectIncusBase(config)
 	if err != nil {
 		return nil, fmt.Errorf("connect incus: %w", err)
 	}
+	if err := ensureIncusProject(client, config); err != nil {
+		return nil, err
+	}
+	client = withProject(client, config.Project)
 	server, _, err := client.GetServer()
 	if err != nil {
 		return nil, fmt.Errorf("get incus server: %w", err)
@@ -144,6 +168,9 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if project == "" {
 		project = api.ProjectDefaultName
 	}
+	if err := ensureIncusManagedResources(client, config); err != nil {
+		return nil, err
+	}
 
 	codespaceRoot := config.CodespaceRoot
 	if codespaceRoot == "" {
@@ -153,7 +180,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if err != nil {
 		return nil, err
 	}
-	templates, err := normalizeIncusTemplates(config)
+	environments, err := normalizeIncusEnvironments(config)
 	if err != nil {
 		return nil, err
 	}
@@ -164,7 +191,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 		client:        client,
 		managerID:     fmt.Sprintf("%d", config.ManagerID),
 		project:       project,
-		templates:     templates,
+		environments:  environments,
 		extraConfig:   copyStringMap(config.ExtraConfig),
 		codespaceRoot: codespaceRoot,
 		bootstrap:     bootstrap,
@@ -187,19 +214,19 @@ func (p *IncusProvisioner) CheckStartupAdmission(ctx context.Context) (StartupAd
 
 func (p *IncusProvisioner) incusStartupAdmission(state *api.ProjectState) (StartupAdmission, error) {
 	admission := StartupAdmission{ResumeAvailable: true, CreateAvailable: true}
-	for tag, template := range p.templates {
-		templateAdmission, err := incusTemplateStartupAdmission(state, template)
+	for tag, environment := range p.environments {
+		environmentAdmission, err := incusEnvironmentStartupAdmission(state, environment)
 		if err != nil {
-			return StartupAdmission{}, fmt.Errorf("check template %s startup admission: %w", tag, err)
+			return StartupAdmission{}, fmt.Errorf("check environment %s startup admission: %w", tag, err)
 		}
-		if !templateAdmission.CreateAvailable {
+		if !environmentAdmission.CreateAvailable {
 			admission.CreateAvailable = false
 		}
 	}
 	return admission, nil
 }
 
-func incusTemplateStartupAdmission(state *api.ProjectState, template incusTemplate) (StartupAdmission, error) {
+func incusEnvironmentStartupAdmission(state *api.ProjectState, environment incusEnvironment) (StartupAdmission, error) {
 	admission := StartupAdmission{ResumeAvailable: true, CreateAvailable: true}
 	if state == nil || len(state.Resources) == 0 {
 		return admission, nil
@@ -207,7 +234,7 @@ func incusTemplateStartupAdmission(state *api.ProjectState, template incusTempla
 	if !projectResourceAvailable(state.Resources, "instances", 1) {
 		admission.CreateAvailable = false
 	}
-	switch template.instanceType {
+	switch environment.instanceType {
 	case api.InstanceTypeContainer:
 		if !projectResourceAvailable(state.Resources, "containers", 1) {
 			admission.CreateAvailable = false
@@ -218,16 +245,30 @@ func incusTemplateStartupAdmission(state *api.ProjectState, template incusTempla
 		}
 	}
 	if memory, ok := state.Resources["memory"]; ok && memory.Limit >= 0 {
-		memoryLimit := strings.TrimSpace(template.memoryLimit)
+		memoryLimit := strings.TrimSpace(environment.memoryLimit)
 		if memoryLimit == "" {
 			admission.CreateAvailable = false
 			return admission, nil
 		}
 		required, err := units.ParseByteSizeString(memoryLimit)
 		if err != nil {
-			return StartupAdmission{}, fmt.Errorf("parse incus template memory %q: %w", memoryLimit, err)
+			return StartupAdmission{}, fmt.Errorf("parse incus environment memory %q: %w", memoryLimit, err)
 		}
 		if memory.Usage+required > memory.Limit {
+			admission.CreateAvailable = false
+		}
+	}
+	if disk, ok := state.Resources["disk"]; ok && disk.Limit >= 0 {
+		rootDiskSize := strings.TrimSpace(environment.rootDiskSize)
+		if rootDiskSize == "" {
+			admission.CreateAvailable = false
+			return admission, nil
+		}
+		required, err := units.ParseByteSizeString(rootDiskSize)
+		if err != nil {
+			return StartupAdmission{}, fmt.Errorf("parse incus environment root disk size %q: %w", rootDiskSize, err)
+		}
+		if disk.Usage+required > disk.Limit {
 			admission.CreateAvailable = false
 		}
 	}
@@ -242,48 +283,70 @@ func projectResourceAvailable(resources map[string]api.ProjectStateResource, nam
 	return resource.Usage+required <= resource.Limit
 }
 
-func normalizeIncusTemplates(config IncusConfig) (map[string]incusTemplate, error) {
-	if len(config.Templates) == 0 {
-		return nil, fmt.Errorf("incus templates are required")
+func normalizeIncusEnvironments(config IncusConfig) (map[string]incusEnvironment, error) {
+	if len(config.RuntimeEnvironments) == 0 {
+		return nil, fmt.Errorf("incus environments are required")
 	}
-	normalized := make(map[string]incusTemplate, len(config.Templates))
-	for tag, template := range config.Templates {
+	normalized := make(map[string]incusEnvironment, len(config.RuntimeEnvironments))
+	for tag, environment := range config.RuntimeEnvironments {
 		tag = strings.TrimSpace(tag)
 		if tag == "" {
-			return nil, fmt.Errorf("incus template tag is empty")
+			return nil, fmt.Errorf("incus environment tag is empty")
 		}
-		image := strings.TrimSpace(template.Image)
-		if image == "" {
-			return nil, fmt.Errorf("incus template %s image is required", tag)
+		sourceType := strings.TrimSpace(environment.SourceType)
+		if sourceType == "" {
+			sourceType = "image"
 		}
-		instanceType, err := normalizeIncusInstanceType(template.InstanceType)
+		image := strings.TrimSpace(environment.Image)
+		sourceName := strings.TrimSpace(environment.SourceName)
+		switch sourceType {
+		case "image":
+			if image == "" {
+				return nil, fmt.Errorf("incus environment %s image is required", tag)
+			}
+		case "instance":
+			if sourceName == "" {
+				return nil, fmt.Errorf("incus environment %s source instance name is required", tag)
+			}
+			sourceRemote := strings.TrimSpace(environment.SourceRemote)
+			if sourceRemote != "" && sourceRemote != "local" {
+				return nil, fmt.Errorf("incus environment %s source remote %q is not supported; configure the manager to connect to that Incus server and clone by project/name", tag, sourceRemote)
+			}
+		default:
+			return nil, fmt.Errorf("incus environment %s source type must be image or instance", tag)
+		}
+		instanceType, err := normalizeIncusInstanceType(environment.InstanceType)
 		if err != nil {
-			return nil, fmt.Errorf("incus template %s: %w", tag, err)
+			return nil, fmt.Errorf("incus environment %s: %w", tag, err)
 		}
-		communicationInterface := strings.TrimSpace(template.CommunicationInterface)
+		communicationInterface := strings.TrimSpace(environment.CommunicationInterface)
 		if communicationInterface == "" {
-			return nil, fmt.Errorf("incus template %s communication_nic is required", tag)
+			return nil, fmt.Errorf("incus environment %s communication_interface is required", tag)
 		}
-		if template.CPU < 1 {
-			return nil, fmt.Errorf("incus template %s cpu must be positive", tag)
+		if environment.CPU < 1 {
+			return nil, fmt.Errorf("incus environment %s cpu must be positive", tag)
 		}
-		if strings.TrimSpace(template.MemoryLimit) == "" {
-			return nil, fmt.Errorf("incus template %s memory is required", tag)
+		if strings.TrimSpace(environment.MemoryLimit) == "" {
+			return nil, fmt.Errorf("incus environment %s memory is required", tag)
 		}
-		if strings.TrimSpace(template.RootDiskSize) == "" {
-			return nil, fmt.Errorf("incus template %s root_disk_size is required", tag)
+		if strings.TrimSpace(environment.RootDiskSize) == "" {
+			return nil, fmt.Errorf("incus environment %s resources.root_disk is required", tag)
 		}
-		if len(template.Profiles) == 0 {
-			return nil, fmt.Errorf("incus template %s profiles are required", tag)
+		if len(environment.Profiles) == 0 {
+			return nil, fmt.Errorf("incus environment %s profiles are required", tag)
 		}
-		normalized[tag] = incusTemplate{
+		normalized[tag] = incusEnvironment{
 			image:                  image,
 			instanceType:           instanceType,
-			cpu:                    template.CPU,
-			memoryLimit:            strings.TrimSpace(template.MemoryLimit),
-			rootDiskSize:           strings.TrimSpace(template.RootDiskSize),
-			profiles:               normalizedIncusProfiles(template.Profiles),
+			cpu:                    environment.CPU,
+			memoryLimit:            strings.TrimSpace(environment.MemoryLimit),
+			rootDiskSize:           strings.TrimSpace(environment.RootDiskSize),
+			profiles:               normalizedIncusProfiles(environment.Profiles),
 			communicationInterface: communicationInterface,
+			sourceType:             sourceType,
+			sourceRemote:           strings.TrimSpace(environment.SourceRemote),
+			sourceProject:          strings.TrimSpace(environment.SourceProject),
+			sourceName:             sourceName,
 		}
 	}
 	return normalized, nil
@@ -295,12 +358,12 @@ func normalizeIncusInstanceType(value string) (api.InstanceType, error) {
 		value = defaultIncusInstanceType
 	}
 	switch value {
-	case "container":
+	case "container", "lxc":
 		return api.InstanceTypeContainer, nil
-	case "virtual-machine":
+	case "virtual-machine", "vm":
 		return api.InstanceTypeVM, nil
 	default:
-		return "", fmt.Errorf("incus instance_type must be container or virtual-machine")
+		return "", fmt.Errorf("incus instance type must be lxc/container or vm/virtual-machine")
 	}
 }
 
@@ -312,6 +375,10 @@ func normalizedBootstrapConfig(config BootstrapConfig) BootstrapConfig {
 	config.HomeDir = strings.TrimSpace(config.HomeDir)
 	if config.HomeDir == "" {
 		config.HomeDir = defaultBootstrapHomeDir
+	}
+	config.UserName = strings.TrimSpace(config.UserName)
+	if config.UserName == "" {
+		config.UserName = defaultBootstrapUserName
 	}
 	return config
 }
@@ -331,11 +398,11 @@ func (p *IncusProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec)
 		if !isNotFoundError(err) {
 			return nil, fmt.Errorf("get instance %s: %w", instanceName, err)
 		}
-		template, err := p.templateForTag(spec.RepoTag)
+		environment, err := p.environmentForTag(spec.EnvironmentTag)
 		if err != nil {
 			return nil, err
 		}
-		if err := p.createInstance(ctx, spec, template); err != nil {
+		if err := p.createInstance(ctx, spec, environment); err != nil {
 			return nil, fmt.Errorf("create instance %s: %w", instanceName, err)
 		}
 		instance, _, err = p.client.GetInstance(instanceName)
@@ -459,8 +526,18 @@ func (p *IncusProvisioner) CheckCredentials(ctx context.Context, instanceName st
 	if err != nil {
 		return CredentialStatus{}, err
 	}
+	gitSSHPrivateKey, _, err := p.readCredentialFile(ctx, instanceName, runtimeGitSSHPrivateKey)
+	if err != nil {
+		return CredentialStatus{}, err
+	}
+	gitSSHPublicKey, _, err := p.readCredentialFile(ctx, instanceName, runtimeGitSSHPublicKey)
+	if err != nil {
+		return CredentialStatus{}, err
+	}
 	return CredentialStatus{
 		GiteaTokenPresent: giteaPresent && strings.TrimSpace(giteaToken) != "",
+		GitSSHPrivateKey:  []byte(gitSSHPrivateKey),
+		GitSSHPublicKey:   []byte(gitSSHPublicKey),
 	}, nil
 }
 
@@ -563,91 +640,61 @@ func (p *IncusProvisioner) readCredentialFile(ctx context.Context, instanceName,
 	return string(data), true, nil
 }
 
-// WriteCredentials writes the current Gitea token into the instance.
-func (p *IncusProvisioner) WriteCredentials(ctx context.Context, instanceName string, request CredentialRequest) error {
+// SeedRuntimeCredentials writes root-owned credential seed files.
+func (p *IncusProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if instanceName == "" {
+	if strings.TrimSpace(instanceName) == "" {
 		return fmt.Errorf("instance name is empty")
 	}
-	if strings.TrimSpace(request.GiteaToken) == "" {
-		return fmt.Errorf("gitea token is empty")
+	files, err := runtimeCredentialSeedFiles(request)
+	if err != nil {
+		return err
 	}
-	for _, file := range bootstrapCredentialFiles(request) {
-		args := incus.InstanceFileArgs{
-			Content:   strings.NewReader(file.content),
-			UID:       credentialFileID(request.UID, p.bootstrap.User),
-			GID:       credentialFileID(request.GID, p.bootstrap.Group),
-			Mode:      file.mode,
-			Type:      file.kind,
-			WriteMode: runtimeCredentialWriteMode,
+	for _, directory := range []struct {
+		path string
+		mode int
+	}{
+		{path: runtimeCredentialDir, mode: runtimeRootDirMode},
+		{path: runtimeCredentialSeedDir, mode: runtimePrivateDirMode},
+	} {
+		if err := p.writeRuntimeFile(ctx, instanceName, directory.path, "", directory.mode, "directory"); err != nil {
+			return err
 		}
-		if err := p.createInstanceFile(ctx, instanceName, file.path, args); err != nil {
+	}
+	for _, file := range files {
+		if err := p.writeRuntimeOwnedFile(ctx, instanceName, file.path, file.content, 0, 0, file.mode); err != nil {
 			return fmt.Errorf("write %s: %w", file.path, err)
 		}
 	}
 	return nil
 }
 
-// EnsureGitSSHKey creates or reads the runtime Git SSH key pair and returns the public key.
-func (p *IncusProvisioner) EnsureGitSSHKey(ctx context.Context, instanceName string, request GitSSHKeyRequest) (GitSSHKey, error) {
-	if err := ctx.Err(); err != nil {
-		return GitSSHKey{}, err
+func runtimeCredentialSeedFiles(request RuntimeCredentialSeedRequest) ([]bootstrapCredentialFile, error) {
+	if strings.TrimSpace(request.CodespaceUUID) == "" {
+		return nil, fmt.Errorf("codespace uuid is empty")
 	}
-	if strings.TrimSpace(instanceName) == "" {
-		return GitSSHKey{}, fmt.Errorf("instance name is empty")
+	if strings.TrimSpace(request.GiteaToken) == "" {
+		return nil, fmt.Errorf("gitea token is empty")
 	}
-	uid := credentialFileID(request.UID, p.bootstrap.User)
-	gid := credentialFileID(request.GID, p.bootstrap.Group)
-	output, err := p.execScriptOutput(ctx, instanceName, `
-set -eu
-install -d -m 700 -o "$CODESPACE_UID" -g "$CODESPACE_GID" /var/lib/gitea-codespace/git
-if [ ! -f /var/lib/gitea-codespace/git/id_ed25519 ]; then
-  sudo -u "#$CODESPACE_UID" ssh-keygen -t ed25519 -N '' -f /var/lib/gitea-codespace/git/id_ed25519 >/dev/null
-fi
-chown "$CODESPACE_UID:$CODESPACE_GID" /var/lib/gitea-codespace/git/id_ed25519 /var/lib/gitea-codespace/git/id_ed25519.pub
-chmod 600 /var/lib/gitea-codespace/git/id_ed25519
-chmod 644 /var/lib/gitea-codespace/git/id_ed25519.pub
-cat /var/lib/gitea-codespace/git/id_ed25519.pub
-`, map[string]string{
-		"CODESPACE_UID": fmt.Sprintf("%d", uid),
-		"CODESPACE_GID": fmt.Sprintf("%d", gid),
-	}, "/")
-	if err != nil {
-		return GitSSHKey{}, fmt.Errorf("ensure git ssh key: %w", err)
+	if len(request.GitSSHPrivateKey) == 0 {
+		return nil, fmt.Errorf("git ssh private key is empty")
 	}
-	publicKey := strings.TrimSpace(output)
-	if publicKey == "" {
-		return GitSSHKey{}, fmt.Errorf("git ssh public key is empty")
+	if len(request.GitSSHPublicKey) == 0 {
+		return nil, fmt.Errorf("git ssh public key is empty")
 	}
-	return GitSSHKey{PublicKey: publicKey}, nil
-}
-
-// WriteGitSSHKnownHosts writes trusted Git SSH host keys into the runtime.
-func (p *IncusProvisioner) WriteGitSSHKnownHosts(ctx context.Context, instanceName string, lines []string, request GitSSHKeyRequest) error {
-	if err := ctx.Err(); err != nil {
-		return err
+	content := strings.TrimSpace(strings.Join(request.GitSSHKnownHosts, "\n"))
+	if content == "" {
+		return nil, fmt.Errorf("git ssh known hosts are empty")
 	}
-	if strings.TrimSpace(instanceName) == "" {
-		return fmt.Errorf("instance name is empty")
-	}
-	content := strings.TrimSpace(strings.Join(lines, "\n"))
-	if content != "" {
-		content += "\n"
-	}
-	args := incus.InstanceFileArgs{
-		Content:   strings.NewReader(content),
-		UID:       credentialFileID(request.UID, p.bootstrap.User),
-		GID:       credentialFileID(request.GID, p.bootstrap.Group),
-		Mode:      runtimeCredentialFileMode,
-		Type:      "file",
-		WriteMode: runtimeCredentialWriteMode,
-	}
-	if err := p.createInstanceFile(ctx, instanceName, runtimeGitSSHKnownHosts, args); err != nil {
-		return fmt.Errorf("write %s: %w", runtimeGitSSHKnownHosts, err)
-	}
-	return nil
+	content += "\n"
+	return []bootstrapCredentialFile{
+		{path: runtimeSeedGiteaToken, content: request.GiteaToken, mode: runtimeCredentialFileMode},
+		{path: runtimeSeedGitSSHPrivateKey, content: string(request.GitSSHPrivateKey), mode: runtimeCredentialFileMode},
+		{path: runtimeSeedGitSSHPublicKey, content: string(request.GitSSHPublicKey), mode: 0o644},
+		{path: runtimeSeedGitSSHKnownHosts, content: content, mode: runtimeCredentialFileMode},
+	}, nil
 }
 
 // ReadEndpointManifest reads the runtime endpoint declaration file.
@@ -678,34 +725,6 @@ func (p *IncusProvisioner) ReadEndpointManifest(ctx context.Context, instanceNam
 		return nil, fmt.Errorf("endpoint manifest version %d is not supported", manifest.Version)
 	}
 	return append([]RuntimeEndpointDeclaration(nil), manifest.Endpoints...), nil
-}
-
-func bootstrapCredentialFiles(request CredentialRequest) []bootstrapCredentialFile {
-	return []bootstrapCredentialFile{
-		{
-			path: runtimeCredentialDir,
-			mode: runtimeCredentialDirMode,
-			kind: "directory",
-		},
-		{
-			path: runtimeGitCredentialDir,
-			mode: runtimeCredentialDirMode,
-			kind: "directory",
-		},
-		{
-			path:    runtimeGiteaTokenFilePath,
-			content: request.GiteaToken,
-			mode:    runtimeCredentialFileMode,
-			kind:    "file",
-		},
-	}
-}
-
-func credentialFileID(value, fallback uint32) int64 {
-	if value != 0 {
-		return int64(value)
-	}
-	return int64(fallback)
 }
 
 // Stop stops one instance if it exists.
@@ -770,15 +789,15 @@ func (p *IncusProvisioner) Delete(ctx context.Context, instanceName string) erro
 	return nil
 }
 
-func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec, template incusTemplate) error {
+func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec, environment incusEnvironment) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	instanceConfig := map[string]string{
-		incusConfigManagerID:     p.managerID,
-		incusConfigCodespaceUUID: spec.CodespaceUUID,
-		incusConfigSchemaVersion: "1",
-		incusConfigTag:           spec.RepoTag,
+		incusConfigManagerID:      p.managerID,
+		incusConfigCodespaceUUID:  spec.CodespaceUUID,
+		incusConfigSchemaVersion:  "1",
+		incusConfigEnvironmentTag: spec.EnvironmentTag,
 	}
 	for key, value := range p.extraConfig {
 		key = strings.TrimSpace(key)
@@ -788,14 +807,14 @@ func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec
 	}
 	rootDiskName := ""
 	rootDiskDevice := map[string]string(nil)
-	if template.rootDiskSize != "" {
+	if environment.rootDiskSize != "" {
 		var err error
-		rootDiskName, rootDiskDevice, err = p.rootDiskDevice(template.profiles)
+		rootDiskName, rootDiskDevice, err = p.rootDiskDevice(environment.profiles)
 		if err != nil {
 			return err
 		}
 	}
-	request := incusCreateRequest(spec, template, rootDiskName, rootDiskDevice, instanceConfig)
+	request := incusCreateRequest(spec, environment, rootDiskName, rootDiskDevice, instanceConfig)
 
 	operation, err := p.client.CreateInstance(request)
 	if err != nil {
@@ -808,36 +827,48 @@ func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec
 	return nil
 }
 
-func incusCreateRequest(spec InstanceSpec, template incusTemplate, rootDiskName string, rootDiskDevice map[string]string, instanceConfig map[string]string) api.InstancesPost {
-	if template.memoryLimit != "" {
-		instanceConfig["limits.memory"] = template.memoryLimit
+func incusCreateRequest(spec InstanceSpec, environment incusEnvironment, rootDiskName string, rootDiskDevice map[string]string, instanceConfig map[string]string) api.InstancesPost {
+	if environment.memoryLimit != "" {
+		instanceConfig["limits.memory"] = environment.memoryLimit
 	}
-	if template.cpu > 0 {
-		instanceConfig["limits.cpu"] = fmt.Sprintf("%d", template.cpu)
+	if environment.cpu > 0 {
+		instanceConfig["limits.cpu"] = fmt.Sprintf("%d", environment.cpu)
 	}
 	instanceDevices := map[string]map[string]string{}
-	if template.rootDiskSize != "" {
+	if environment.rootDiskSize != "" {
 		device := copyStringMap(rootDiskDevice)
 		device["type"] = "disk"
 		device["path"] = "/"
-		device["size"] = template.rootDiskSize
+		device["size"] = environment.rootDiskSize
 		instanceDevices[rootDiskName] = device
 	}
 	return api.InstancesPost{
 		Name: spec.Name,
-		Type: template.instanceType,
+		Type: environment.instanceType,
 		InstancePut: api.InstancePut{
 			Config:   instanceConfig,
 			Devices:  instanceDevices,
-			Profiles: append([]string(nil), template.profiles...),
+			Profiles: append([]string(nil), environment.profiles...),
 		},
-		Source: api.InstanceSource{
-			Type:        "image",
-			Alias:       incusImageAlias(template.image),
-			Fingerprint: incusImageFingerprint(template.image),
-			Server:      imageServerForAlias(template.image),
-			Protocol:    imageProtocolForAlias(template.image),
-		},
+		Source: incusInstanceSource(environment),
+	}
+}
+
+func incusInstanceSource(environment incusEnvironment) api.InstanceSource {
+	if environment.sourceType == "instance" {
+		return api.InstanceSource{
+			Type:         "copy",
+			Source:       environment.sourceName,
+			Project:      environment.sourceProject,
+			InstanceOnly: true,
+		}
+	}
+	return api.InstanceSource{
+		Type:        "image",
+		Alias:       incusImageAlias(environment.image),
+		Fingerprint: incusImageFingerprint(environment.image),
+		Server:      imageServerForAlias(environment.image),
+		Protocol:    imageProtocolForAlias(environment.image),
 	}
 }
 
@@ -910,10 +941,10 @@ func (p *IncusProvisioner) instanceFromAPI(instance api.Instance) (*Instance, bo
 		return nil, false
 	}
 	return &Instance{
-		CodespaceUUID: codespaceUUID,
-		Name:          instance.Name,
-		RuntimeState:  incusRuntimeState(instance.Status),
-		RepoTag:       instance.Config[incusConfigTag],
+		CodespaceUUID:  codespaceUUID,
+		Name:           instance.Name,
+		RuntimeState:   incusRuntimeState(instance.Status),
+		EnvironmentTag: instance.Config[incusConfigEnvironmentTag],
 	}, true
 }
 
@@ -944,18 +975,18 @@ func (p *IncusProvisioner) startInstance(ctx context.Context, instanceName strin
 }
 
 func (p *IncusProvisioner) startExistingInstance(ctx context.Context, spec InstanceSpec, instance api.Instance) (*Instance, error) {
-	tag := strings.TrimSpace(instance.Config[incusConfigTag])
+	tag := strings.TrimSpace(instance.Config[incusConfigEnvironmentTag])
 	if tag == "" {
-		tag = spec.RepoTag
+		tag = spec.EnvironmentTag
 	}
-	template, err := p.templateForTag(tag)
+	environment, err := p.environmentForTag(tag)
 	if err != nil {
 		return nil, err
 	}
 	if err := p.startInstance(ctx, instance.Name); err != nil {
 		return nil, fmt.Errorf("start instance %s: %w", instance.Name, err)
 	}
-	host, err := p.instanceCommunicationHost(ctx, instance.Name, template.communicationInterface)
+	host, err := p.instanceCommunicationHost(ctx, instance.Name, environment.communicationInterface)
 	if err != nil {
 		return nil, err
 	}
@@ -965,21 +996,21 @@ func (p *IncusProvisioner) startExistingInstance(ctx context.Context, spec Insta
 		RuntimeState:      RuntimeStateRunning,
 		Workdir:           filepath.Join(p.codespaceRoot, repoDirName(spec.RepoFullName)),
 		RepoFullName:      spec.RepoFullName,
-		RepoTag:           spec.RepoTag,
+		EnvironmentTag:    spec.EnvironmentTag,
 		CommunicationHost: host,
 	}, nil
 }
 
-func (p *IncusProvisioner) templateForTag(tag string) (incusTemplate, error) {
+func (p *IncusProvisioner) environmentForTag(tag string) (incusEnvironment, error) {
 	tag = strings.TrimSpace(tag)
 	if tag == "" {
 		tag = "default"
 	}
-	template, ok := p.templates[tag]
+	environment, ok := p.environments[tag]
 	if !ok {
-		return incusTemplate{}, fmt.Errorf("incus template %s is not configured", tag)
+		return incusEnvironment{}, fmt.Errorf("incus environment %s is not configured", tag)
 	}
-	return template, nil
+	return environment, nil
 }
 
 func (p *IncusProvisioner) instanceCommunicationHost(ctx context.Context, instanceName string, communicationInterface string) (string, error) {
@@ -1114,18 +1145,26 @@ func incusRuntimeState(status string) RuntimeState {
 	}
 }
 
-func connectIncus(config IncusConfig) (incus.InstanceServer, error) {
+func connectIncusBase(config IncusConfig) (incus.InstanceServer, error) {
 	if config.Remote != "" {
 		client, err := incus.ConnectIncus(config.Remote, nil)
 		if err != nil {
 			return nil, fmt.Errorf("connect remote %s: %w", config.Remote, err)
 		}
-		return withProject(client, config.Project), nil
+		return client, nil
 	}
 
 	client, err := incus.ConnectIncusUnix(config.UnixSocket, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect unix socket %q: %w", config.UnixSocket, err)
+	}
+	return client, nil
+}
+
+func connectIncus(config IncusConfig) (incus.InstanceServer, error) {
+	client, err := connectIncusBase(config)
+	if err != nil {
+		return nil, err
 	}
 	return withProject(client, config.Project), nil
 }
@@ -1135,6 +1174,155 @@ func withProject(client incus.InstanceServer, project string) incus.InstanceServ
 		return client
 	}
 	return client.UseProject(project)
+}
+
+func ensureIncusProject(client incus.InstanceServer, config IncusConfig) error {
+	if !config.ProjectManage {
+		return nil
+	}
+	projectName := strings.TrimSpace(config.Project)
+	if projectName == "" || projectName == api.ProjectDefaultName {
+		return nil
+	}
+	project, _, err := client.GetProject(projectName)
+	if err != nil {
+		if !isNotFoundError(err) {
+			return fmt.Errorf("get incus project %s: %w", projectName, err)
+		}
+		err = client.CreateProject(api.ProjectsPost{
+			Name: projectName,
+			ProjectPut: api.ProjectPut{
+				Description: "Gitea Codespace runtimes",
+				Config: map[string]string{
+					"features.profiles":        "true",
+					"features.networks":        "true",
+					"features.storage.volumes": "true",
+				},
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("create incus project %s: %w", projectName, err)
+		}
+		project, _, err = client.GetProject(projectName)
+		if err != nil {
+			return fmt.Errorf("reload incus project %s: %w", projectName, err)
+		}
+	}
+	for _, feature := range []string{"features.profiles", "features.networks", "features.storage.volumes"} {
+		if !projectFeatureEnabled(project.Config, feature) {
+			return fmt.Errorf("incus project %s must enable %s before it is used by codespace manager", projectName, feature)
+		}
+	}
+	return nil
+}
+
+func projectFeatureEnabled(config map[string]string, name string) bool {
+	value := strings.TrimSpace(config[name])
+	return strings.EqualFold(value, "true") || value == "1"
+}
+
+func ensureIncusManagedResources(client incus.InstanceServer, config IncusConfig) error {
+	if !config.ProjectManage {
+		return nil
+	}
+	if config.NetworkManage {
+		if err := ensureIncusNetwork(client, config.NetworkName); err != nil {
+			return err
+		}
+	}
+	return ensureIncusDefaultProfile(client, config)
+}
+
+func ensureIncusNetwork(client incus.InstanceServer, name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("incus managed network name is required")
+	}
+	if network, _, err := client.GetNetwork(name); err == nil {
+		if network.Type != "bridge" || !network.Managed {
+			return fmt.Errorf("incus network %s must be a managed bridge network", name)
+		}
+		return nil
+	} else if !isNotFoundError(err) {
+		return fmt.Errorf("get incus network %s: %w", name, err)
+	}
+	if err := client.CreateNetwork(api.NetworksPost{
+		Name: name,
+		Type: "bridge",
+		NetworkPut: api.NetworkPut{
+			Description: "Gitea Codespace managed network",
+			Config: map[string]string{
+				"ipv4.address": "auto",
+				"ipv4.dhcp":    "true",
+				"ipv4.nat":     "true",
+				"ipv6.address": "none",
+			},
+		},
+	}); err != nil {
+		return fmt.Errorf("create incus network %s: %w", name, err)
+	}
+	return nil
+}
+
+func ensureIncusDefaultProfile(client incus.InstanceServer, config IncusConfig) error {
+	storagePool := strings.TrimSpace(config.StoragePool)
+	if storagePool == "" {
+		return fmt.Errorf("incus storage pool is required when project management is enabled")
+	}
+	if _, _, err := client.GetStoragePool(storagePool); err != nil {
+		return fmt.Errorf("get incus storage pool %s: %w", storagePool, err)
+	}
+	networkName := strings.TrimSpace(config.NetworkName)
+	devices := map[string]map[string]string{
+		"root": {
+			"type": "disk",
+			"path": "/",
+			"pool": storagePool,
+		},
+	}
+	if networkName != "" {
+		devices["eth0"] = map[string]string{
+			"type":    "nic",
+			"network": networkName,
+		}
+	}
+	profilePut := api.ProfilePut{
+		Description: "Gitea Codespace default profile",
+		Devices:     devices,
+		Config:      map[string]string{},
+	}
+	profile, etag, err := client.GetProfile("default")
+	if err != nil {
+		if !isNotFoundError(err) {
+			return fmt.Errorf("get incus profile default: %w", err)
+		}
+		return client.CreateProfile(api.ProfilesPost{
+			Name:       "default",
+			ProfilePut: profilePut,
+		})
+	}
+	if !profileHasManagedDevices(profile, storagePool, networkName) {
+		operationErr := client.UpdateProfile("default", profilePut, etag)
+		if operationErr != nil {
+			return fmt.Errorf("update incus profile default: %w", operationErr)
+		}
+	}
+	return nil
+}
+
+func profileHasManagedDevices(profile *api.Profile, storagePool, networkName string) bool {
+	if profile == nil {
+		return false
+	}
+	root := profile.Devices["root"]
+	if root["type"] != "disk" || root["path"] != "/" || root["pool"] != storagePool {
+		return false
+	}
+	if strings.TrimSpace(networkName) == "" {
+		return true
+	}
+	nic := profile.Devices["eth0"]
+	return nic["type"] == "nic" && nic["network"] == networkName
 }
 
 func validateIncusServer(server *api.Server, project string) error {
@@ -1261,7 +1449,19 @@ func (p *IncusProvisioner) execCommand(
 	environment map[string]string,
 	workdir string,
 ) error {
-	_, err := p.execInstanceCommand(ctx, instanceName, command, environment, workdir, false)
+	_, err := p.execInstanceCommand(ctx, instanceName, command, environment, workdir, false, nil)
+	return err
+}
+
+func (p *IncusProvisioner) execCommandWithLogSink(
+	ctx context.Context,
+	instanceName string,
+	command []string,
+	environment map[string]string,
+	workdir string,
+	sink LifecycleLogSink,
+) error {
+	_, err := p.execInstanceCommand(ctx, instanceName, command, environment, workdir, false, sink)
 	return err
 }
 
@@ -1272,7 +1472,7 @@ func (p *IncusProvisioner) execCommandOutput(
 	environment map[string]string,
 	workdir string,
 ) (string, error) {
-	return p.execInstanceCommand(ctx, instanceName, command, environment, workdir, true)
+	return p.execInstanceCommand(ctx, instanceName, command, environment, workdir, true, nil)
 }
 
 func (p *IncusProvisioner) execInstanceCommand(
@@ -1282,12 +1482,24 @@ func (p *IncusProvisioner) execInstanceCommand(
 	environment map[string]string,
 	workdir string,
 	requireCompleteStdout bool,
+	sink LifecycleLogSink,
 ) (string, error) {
 	if err := p.waitInstanceFileAPI(ctx, instanceName); err != nil {
 		return "", err
 	}
 	stdout := newBoundedOutputBuffer(maxIncusExecCapturedOutput)
 	stderr := newBoundedOutputBuffer(maxIncusExecCapturedOutput)
+	stdoutWriter := io.Writer(stdout)
+	stderrWriter := io.Writer(stderr)
+	var stdoutLog, stderrLog *lifecycleLogWriter
+	if sink != nil {
+		stdoutLog = newLifecycleLogWriter(ctx, sink, "stdout")
+		stderrLog = newLifecycleLogWriter(ctx, sink, "stderr")
+		stdoutWriter = io.MultiWriter(stdout, stdoutLog)
+		stderrWriter = io.MultiWriter(stderr, stderrLog)
+		defer stdoutLog.Flush()
+		defer stderrLog.Flush()
+	}
 
 	operation, err := p.client.ExecInstance(instanceName, api.InstanceExecPost{
 		Command:     command,
@@ -1297,8 +1509,8 @@ func (p *IncusProvisioner) execInstanceCommand(
 		User:        p.bootstrap.User,
 		Group:       p.bootstrap.Group,
 	}, &incus.InstanceExecArgs{
-		Stdout: stdout,
-		Stderr: stderr,
+		Stdout: stdoutWriter,
+		Stderr: stderrWriter,
 	})
 	if err != nil {
 		return "", fmt.Errorf("exec instance command: %w", err)
@@ -1380,6 +1592,62 @@ func (b *boundedOutputBuffer) Truncated() bool {
 	return b != nil && b.truncated > 0
 }
 
+type lifecycleLogWriter struct {
+	ctx    context.Context
+	sink   LifecycleLogSink
+	stream string
+	mu     sync.Mutex
+	buf    []byte
+}
+
+func newLifecycleLogWriter(ctx context.Context, sink LifecycleLogSink, stream string) *lifecycleLogWriter {
+	return &lifecycleLogWriter{ctx: ctx, sink: sink, stream: stream}
+}
+
+func (w *lifecycleLogWriter) Write(payload []byte) (int, error) {
+	if w == nil || w.sink == nil {
+		return len(payload), nil
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	w.buf = append(w.buf, payload...)
+	for {
+		index := bytes.IndexByte(w.buf, '\n')
+		if index < 0 {
+			break
+		}
+		w.writeLineLocked(w.buf[:index])
+		w.buf = w.buf[index+1:]
+	}
+	return len(payload), nil
+}
+
+func (w *lifecycleLogWriter) Flush() {
+	if w == nil || w.sink == nil {
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if len(w.buf) == 0 {
+		return
+	}
+	w.writeLineLocked(w.buf)
+	w.buf = nil
+}
+
+func (w *lifecycleLogWriter) writeLineLocked(line []byte) {
+	line = bytes.TrimSuffix(line, []byte{'\r'})
+	message := string(line)
+	if message == "" {
+		return
+	}
+	if w.stream != "" {
+		message = w.stream + ": " + message
+	}
+	_ = w.sink.WriteLifecycleLog(w.ctx, message)
+}
+
 func (p *IncusProvisioner) waitInstanceFileAPI(ctx context.Context, instanceName string) error {
 	deadline := time.Now().Add(defaultVMAgentWaitTimeout)
 	var lastErr error
@@ -1411,8 +1679,25 @@ func (p *IncusProvisioner) probeVMAgent(instanceName string) error {
 	return p.client.CreateInstanceFile(instanceName, runtimeCredentialDir, incus.InstanceFileArgs{
 		UID:       int64(p.bootstrap.User),
 		GID:       int64(p.bootstrap.Group),
-		Mode:      runtimeCredentialDirMode,
+		Mode:      runtimeRootDirMode,
 		Type:      "directory",
+		WriteMode: runtimeCredentialWriteMode,
+	})
+}
+
+func (p *IncusProvisioner) writeRuntimeOwnedFile(ctx context.Context, instanceName, path, content string, uid, gid int64, mode int) error {
+	if err := p.waitInstanceFileAPI(ctx, instanceName); err != nil {
+		return err
+	}
+	if err := p.client.DeleteInstanceFile(instanceName, path); err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("delete previous %s: %w", path, err)
+	}
+	return p.createInstanceFile(ctx, instanceName, path, incus.InstanceFileArgs{
+		Content:   strings.NewReader(content),
+		UID:       uid,
+		GID:       gid,
+		Mode:      mode,
+		Type:      "file",
 		WriteMode: runtimeCredentialWriteMode,
 	})
 }
