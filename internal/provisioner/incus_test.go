@@ -135,7 +135,7 @@ func TestLifecycleLogWriterEmitsCompleteLines(t *testing.T) {
 	t.Parallel()
 
 	sink := &recordingLifecycleLogSink{}
-	writer := newLifecycleLogWriter(context.Background(), sink, "stdout")
+	writer := newLifecycleLogWriter(context.Background(), sink)
 	if _, err := writer.Write([]byte("alpha\nbeta")); err != nil {
 		t.Fatalf("write first chunk: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestLifecycleLogWriterEmitsCompleteLines(t *testing.T) {
 	}
 	writer.Flush()
 
-	want := []string{"stdout: alpha", "stdout: beta", "stdout: gamma"}
+	want := []string{"alpha", "beta", "gamma"}
 	if !reflect.DeepEqual(sink.lines, want) {
 		t.Fatalf("log lines = %#v", sink.lines)
 	}
@@ -225,12 +225,11 @@ func TestNormalizeIncusEnvironmentsRequiresCompleteEnvironment(t *testing.T) {
 		environment IncusEnvironmentConfig
 		want        string
 	}{
-		{name: "image", environment: IncusEnvironmentConfig{InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "image"},
-		{name: "communication interface", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "communication_interface"},
-		{name: "cpu", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "cpu"},
-		{name: "memory", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "memory"},
-		{name: "root disk", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", Profiles: []string{"default"}}, want: "resources.root_disk"},
-		{name: "profiles", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CommunicationInterface: "eth0", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB"}, want: "profiles"},
+		{name: "image", environment: IncusEnvironmentConfig{InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "image"},
+		{name: "cpu", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", MemoryLimit: "1GiB", RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "cpu"},
+		{name: "memory", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, RootDiskSize: "10GiB", Profiles: []string{"default"}}, want: "memory"},
+		{name: "root disk", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", Profiles: []string{"default"}}, want: "resources.root_disk"},
+		{name: "profiles", environment: IncusEnvironmentConfig{Image: "images:debian/12", InstanceType: "container", CPU: 1, MemoryLimit: "1GiB", RootDiskSize: "10GiB"}, want: "profiles"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -254,15 +253,14 @@ func TestNormalizeIncusEnvironmentsRejectsRemoteInstanceSource(t *testing.T) {
 	_, err := normalizeIncusEnvironments(IncusConfig{
 		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
 			"default": {
-				InstanceType:           "container",
-				CommunicationInterface: "eth0",
-				CPU:                    1,
-				MemoryLimit:            "1GiB",
-				RootDiskSize:           "10GiB",
-				Profiles:               []string{"default"},
-				SourceType:             "instance",
-				SourceRemote:           "remote-a",
-				SourceName:             "environment-instance",
+				InstanceType: "container",
+				CPU:          1,
+				MemoryLimit:  "1GiB",
+				RootDiskSize: "10GiB",
+				Profiles:     []string{"default"},
+				SourceType:   "instance",
+				SourceRemote: "remote-a",
+				SourceName:   "environment-instance",
 			},
 		},
 	})
@@ -802,30 +800,90 @@ func TestIncusImageSourceFields(t *testing.T) {
 	}
 }
 
-func TestInstanceStateCommunicationHostUsesGlobalAddress(t *testing.T) {
+func TestInstanceNetworkDeviceUsesExpandedNICMAC(t *testing.T) {
 	t.Parallel()
 
-	state := &api.InstanceState{
-		Network: map[string]api.InstanceStateNetwork{
-			"eth0": {
-				Addresses: []api.InstanceStateNetworkAddress{
-					{Address: "fe80::1", Scope: "link"},
-					{Address: "10.0.0.12", Scope: "global"},
-				},
-			},
-			"eth1": {
-				Addresses: []api.InstanceStateNetworkAddress{
-					{Address: "10.0.1.12", Scope: "global"},
-				},
-			},
+	instance := &api.Instance{
+		InstancePut: api.InstancePut{
+			Config: map[string]string{"volatile.runtime0.hwaddr": "00:16:3e:01:02:03"},
+		},
+		ExpandedDevices: map[string]map[string]string{
+			"root":     {"type": "disk", "path": "/"},
+			"runtime0": {"type": "nic", "network": "csnet"},
 		},
 	}
-
-	if host := instanceStateCommunicationHost(state, "eth0"); host != "10.0.0.12" {
-		t.Fatalf("eth0 host = %q", host)
+	deviceName, hardwareAddress, err := instanceNetworkDevice(instance, "csnet")
+	if err != nil {
+		t.Fatalf("resolve instance network device: %v", err)
 	}
-	if host := instanceStateCommunicationHost(state, "eth2"); host != "" {
-		t.Fatalf("missing interface host = %q", host)
+	if deviceName != "runtime0" || hardwareAddress != "00:16:3e:01:02:03" {
+		t.Fatalf("network device = %q %q", deviceName, hardwareAddress)
+	}
+}
+
+func TestInstanceNetworkDeviceRequiresUniqueTargetNetworkNIC(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		devices  map[string]map[string]string
+		wantText string
+	}{
+		{
+			name:     "missing",
+			devices:  map[string]map[string]string{"eth0": {"type": "nic", "network": "other", "hwaddr": "00:16:3e:01:02:03"}},
+			wantText: "no NIC device",
+		},
+		{
+			name: "multiple",
+			devices: map[string]map[string]string{
+				"eth0": {"type": "nic", "network": "csnet", "hwaddr": "00:16:3e:01:02:03"},
+				"eth1": {"type": "nic", "parent": "csnet", "hwaddr": "00:16:3e:01:02:04"},
+			},
+			wantText: "multiple NIC devices",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			instance := &api.Instance{ExpandedDevices: tt.devices}
+			if _, _, err := instanceNetworkDevice(instance, "csnet"); err == nil || !strings.Contains(err.Error(), tt.wantText) {
+				t.Fatalf("network device error = %v", err)
+			}
+		})
+	}
+}
+
+func TestInstanceStateCommunicationHostMatchesMACAcrossGuestNames(t *testing.T) {
+	t.Parallel()
+
+	for _, interfaceName := range []string{"eth0", "enp5s0", "workspace0"} {
+		t.Run(interfaceName, func(t *testing.T) {
+			t.Parallel()
+			state := &api.InstanceState{
+				Network: map[string]api.InstanceStateNetwork{
+					interfaceName: {
+						Hwaddr: "00:16:3e:01:02:03",
+						Addresses: []api.InstanceStateNetworkAddress{
+							{Address: "fe80::1", Scope: "global"},
+							{Address: "10.0.0.12", Scope: "global"},
+						},
+					},
+					"other": {
+						Hwaddr:    "00:16:3e:01:02:04",
+						Addresses: []api.InstanceStateNetworkAddress{{Address: "10.0.1.12", Scope: "global"}},
+					},
+				},
+			}
+
+			host, err := instanceStateCommunicationHost(state, "00:16:3e:01:02:03")
+			if err != nil {
+				t.Fatalf("resolve communication host: %v", err)
+			}
+			if host != "10.0.0.12" {
+				t.Fatalf("communication host = %q", host)
+			}
+		})
 	}
 }
 

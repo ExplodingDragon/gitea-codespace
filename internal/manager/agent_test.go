@@ -662,8 +662,8 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 	if stateStore.savedCommand() != "delete" {
 		t.Fatalf("saved operation command = %q", stateStore.savedCommand())
 	}
-	if calls := publisher.forgottenCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
-		t.Fatalf("metadata forgotten calls = %#v", calls)
+	if calls := publisher.deactivatedCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
+		t.Fatalf("metadata deactivated calls = %#v", calls)
 	}
 }
 
@@ -748,8 +748,8 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 	if stateStore.savedCommand() != "delete" {
 		t.Fatalf("saved operation command = %q", stateStore.savedCommand())
 	}
-	if calls := publisher.forgottenCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
-		t.Fatalf("metadata forgotten calls = %#v", calls)
+	if calls := publisher.deactivatedCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
+		t.Fatalf("metadata deactivated calls = %#v", calls)
 	}
 }
 
@@ -827,8 +827,8 @@ func TestAgentDeleteTakesOverRunningStop(t *testing.T) {
 	if stateStore.savedCommand() != "delete" {
 		t.Fatalf("saved operation command = %q", stateStore.savedCommand())
 	}
-	if calls := publisher.forgottenCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
-		t.Fatalf("metadata forgotten calls = %#v", calls)
+	if calls := publisher.deactivatedCalls(); len(calls) == 0 || calls[0] != codespaceUUID {
+		t.Fatalf("metadata deactivated calls = %#v", calls)
 	}
 }
 
@@ -1096,8 +1096,8 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	if calls := access.calls(); len(calls) != 2 || calls[0] != codespaceUUID || calls[1] != codespaceUUID {
 		t.Fatalf("access close calls = %#v", calls)
 	}
-	if calls := publisher.forgottenCalls(); len(calls) != 1 || calls[0] != codespaceUUID {
-		t.Fatalf("metadata forget calls = %#v", calls)
+	if calls := publisher.deactivatedCalls(); len(calls) != 2 || calls[0] != codespaceUUID || calls[1] != codespaceUUID {
+		t.Fatalf("metadata deactivate calls = %#v", calls)
 	}
 }
 
@@ -1458,6 +1458,7 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 	defer server.Close()
 
 	stateStore := &memoryOperationStateStore{}
+	publisher := &memoryRuntimeMetadataPublisher{}
 	provisioner := newBlockingProvisioner()
 	agent := New(AgentConfig{
 		BaseURL:                   server.URL,
@@ -1473,6 +1474,8 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 		CleanupWorkers:            1,
 		RuntimeMetadataGeneration: 1,
 		OperationStateStore:       stateStore,
+		RuntimeMetadataStateStore: &memoryRuntimeMetadataStateStore{},
+		RuntimeMetadataPublisher:  publisher,
 	}, server.Client(), provisioner)
 
 	if err := agent.pollOnce(context.Background()); err != nil {
@@ -1483,6 +1486,9 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 	waitSavedStage(t, stateStore, OperationWorkerStageLeasePaused)
 	if stateStore.deletedCount() != 0 {
 		t.Fatalf("deleted active operations = %d", stateStore.deletedCount())
+	}
+	if calls := publisher.deactivatedCalls(); len(calls) != 1 || calls[0] != codespaceUUID {
+		t.Fatalf("metadata deactivate calls = %#v", calls)
 	}
 	select {
 	case <-service.finalized:
@@ -2021,6 +2027,7 @@ func TestReportInventoryDefersHealthCheckForNewRuntimeToNextRound(t *testing.T) 
 			codespaceUUID: readyHealthSnapshot(codespaceUUID),
 		},
 	}
+	publisher := &memoryRuntimeMetadataPublisher{}
 	agent := New(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
@@ -2029,6 +2036,7 @@ func TestReportInventoryDefersHealthCheckForNewRuntimeToNextRound(t *testing.T) 
 		InitialRuntimeGenerations: map[string]int64{codespaceUUID: 4},
 		RuntimeStateStore:         &memoryRuntimeStateStore{},
 		RuntimeHealthStateStore:   healthStore,
+		RuntimeMetadataPublisher:  publisher,
 		AccessController:          &memoryAccessController{},
 	}, server.Client(), repairProvisioner)
 
@@ -2037,6 +2045,9 @@ func TestReportInventoryDefersHealthCheckForNewRuntimeToNextRound(t *testing.T) 
 	}
 	if calls := repairProvisioner.workspaceAccessCalls(); calls != 0 {
 		t.Fatalf("workspace access calls after first inventory = %d", calls)
+	}
+	if calls := publisher.notifiedCalls(); len(calls) != 1 || calls[0] != codespaceUUID {
+		t.Fatalf("runtime metadata activation calls = %#v", calls)
 	}
 
 	if err := agent.reportInventoryOnce(context.Background()); err != nil {
@@ -4602,6 +4613,7 @@ type memoryRuntimeStateStore struct {
 type memoryRuntimeMetadataStateStore struct {
 	mu        sync.Mutex
 	snapshots []RuntimeMetadataSnapshot
+	cleared   []string
 }
 
 type memoryScriptEnvironmentStore struct {
@@ -4616,7 +4628,7 @@ type memoryRuntimeMetadataPublisher struct {
 	mu             sync.Mutex
 	codespaceUUIDs []string
 	notified       []string
-	forgotten      []string
+	deactivated    []string
 	err            error
 }
 
@@ -4701,6 +4713,14 @@ func (s *memoryRuntimeMetadataStateStore) SaveRuntimeMetadataSnapshot(snapshot R
 	return nil
 }
 
+func (s *memoryRuntimeMetadataStateStore) ClearRuntimeMetadata(codespaceUUID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.cleared = append(s.cleared, codespaceUUID)
+	return nil
+}
+
 func (s *memoryRuntimeMetadataStateStore) savedSnapshots() []RuntimeMetadataSnapshot {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -4744,6 +4764,17 @@ func (p *memoryRuntimeMetadataPublisher) PublishRuntimeMetadata(_ context.Contex
 	return nil
 }
 
+func (p *memoryRuntimeMetadataPublisher) ActivateRuntimeMetadata(codespaceUUID string) (bool, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.err != nil {
+		return false, p.err
+	}
+	p.notified = append(p.notified, codespaceUUID)
+	return true, nil
+}
+
 func (p *memoryRuntimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -4751,11 +4782,11 @@ func (p *memoryRuntimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID str
 	p.notified = append(p.notified, codespaceUUID)
 }
 
-func (p *memoryRuntimeMetadataPublisher) ForgetRuntimeMetadata(codespaceUUID string) {
+func (p *memoryRuntimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	p.forgotten = append(p.forgotten, codespaceUUID)
+	p.deactivated = append(p.deactivated, codespaceUUID)
 }
 
 func (p *memoryRuntimeMetadataPublisher) calls() []string {
@@ -4765,11 +4796,18 @@ func (p *memoryRuntimeMetadataPublisher) calls() []string {
 	return append([]string(nil), p.codespaceUUIDs...)
 }
 
-func (p *memoryRuntimeMetadataPublisher) forgottenCalls() []string {
+func (p *memoryRuntimeMetadataPublisher) deactivatedCalls() []string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	return append([]string(nil), p.forgotten...)
+	return append([]string(nil), p.deactivated...)
+}
+
+func (p *memoryRuntimeMetadataPublisher) notifiedCalls() []string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]string(nil), p.notified...)
 }
 
 func (c *memoryAccessController) CloseCodespaceAccess(codespaceUUID string) {

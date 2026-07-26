@@ -357,6 +357,7 @@ type RuntimeMetadataBoot struct {
 // RuntimeMetadataStateStore persists runtime metadata snapshots for Endpoint updates.
 type RuntimeMetadataStateStore interface {
 	SaveRuntimeMetadataSnapshot(snapshot RuntimeMetadataSnapshot) error
+	ClearRuntimeMetadata(codespaceUUID string) error
 }
 
 // RuntimeEndpointRoute stores one endpoint route derived from a runtime manifest.
@@ -381,12 +382,10 @@ type RuntimeHealthStateStore interface {
 
 // RuntimeMetadataPublisher publishes the current complete metadata snapshot.
 type RuntimeMetadataPublisher interface {
+	ActivateRuntimeMetadata(codespaceUUID string) (bool, error)
 	NotifyRuntimeMetadata(codespaceUUID string)
 	PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error
-}
-
-type runtimeMetadataForgetter interface {
-	ForgetRuntimeMetadata(codespaceUUID string)
+	DeactivateRuntimeMetadata(codespaceUUID string)
 }
 
 type workspaceGitChecker interface {
@@ -1198,20 +1197,10 @@ func (a *Agent) markRuntimeRemoved(codespaceUUID string) {
 	if codespaceUUID == "" {
 		return
 	}
-	a.forgetRuntimeMetadata(codespaceUUID)
 	a.autoStopMu.Lock()
 	defer a.autoStopMu.Unlock()
 
 	delete(a.autoStops, codespaceUUID)
-}
-
-func (a *Agent) forgetRuntimeMetadata(codespaceUUID string) {
-	if codespaceUUID == "" {
-		return
-	}
-	if forgetter, ok := a.metadataPublisher.(runtimeMetadataForgetter); ok {
-		forgetter.ForgetRuntimeMetadata(codespaceUUID)
-	}
 }
 
 func (a *Agent) markRuntimeInactive(codespaceUUID string, runtimeState codespacev1.RuntimeState) {
@@ -1348,6 +1337,9 @@ func (a *Agent) applyInventoryResult(
 		if !a.operationVersionAtMost(codespaceUUID, result.GetStopLocalRuntime().GetCurrentOperationRversion()) {
 			return nil
 		}
+		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+			return err
+		}
 		if err := a.provisioner.Stop(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
 			return fmt.Errorf("stop local runtime %s: %w", codespaceUUID, err)
 		}
@@ -1380,6 +1372,9 @@ func (a *Agent) applyInventoryResult(
 			return nil
 		}
 		runtimeState := runtimeStates[codespaceUUID]
+		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+			return err
+		}
 		runtimeGeneration, reported, err := a.reportRuntimeTransition(ctx, codespaceUUID, runtimeState, result.GetReportRuntimeTransition().GetCurrentOperationRversion())
 		if err != nil {
 			return err
@@ -1402,6 +1397,15 @@ func (a *Agent) applyInventoryResult(
 	default:
 		if err := a.repairStableRunningRuntime(ctx, codespaceUUID, runtimeStates, requestOperationVersions, healthCandidates); err != nil {
 			return err
+		}
+		if runtimeStates[codespaceUUID] == codespacev1.RuntimeState_RUNTIME_STATE_RUNNING && requestOperationVersions[codespaceUUID] == 0 && a.metadataPublisher != nil {
+			active, err := a.metadataPublisher.ActivateRuntimeMetadata(codespaceUUID)
+			if err != nil {
+				return fmt.Errorf("activate stable runtime metadata %s: %w", codespaceUUID, err)
+			}
+			if active {
+				a.markRuntimeReady(codespaceUUID)
+			}
 		}
 	}
 	return nil
@@ -1469,10 +1473,12 @@ func (a *Agent) repairStableRunningCredentials(ctx context.Context, codespaceUUI
 		return fmt.Errorf("check runtime credentials %s: %w", codespaceUUID, err)
 	}
 	if !status.GiteaTokenPresent {
-		a.closeCodespaceAccess(codespaceUUID)
 		observedOperationRVersion, observedErr := a.stableRunningObservedOperationVersion(codespaceUUID)
 		if observedErr != nil {
 			return observedErr
+		}
+		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+			return err
 		}
 		if stopErr := a.provisioner.Stop(ctx, instanceName); stopErr != nil {
 			return fmt.Errorf("stop runtime with missing gitea token %s: %w", codespaceUUID, stopErr)
@@ -1489,10 +1495,12 @@ func (a *Agent) repairStableRunningCredentials(ctx context.Context, codespaceUUI
 		return nil
 	}
 	if err := a.checkStableRunningWorkspaceGit(ctx, codespaceUUID, instanceName); err != nil {
-		a.closeCodespaceAccess(codespaceUUID)
 		observedOperationRVersion, observedErr := a.stableRunningObservedOperationVersion(codespaceUUID)
 		if observedErr != nil {
 			return observedErr
+		}
+		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+			return err
 		}
 		if stopErr := a.provisioner.Stop(ctx, instanceName); stopErr != nil {
 			return fmt.Errorf("stop runtime with invalid workspace git credentials %s: %w", codespaceUUID, stopErr)
@@ -1660,7 +1668,9 @@ func (a *Agent) runHealthStopPendings(ctx context.Context) error {
 }
 
 func (a *Agent) finishHealthStopPending(ctx context.Context, pending HealthStopSnapshot) (int64, bool, error) {
-	a.closeCodespaceAccess(pending.CodespaceUUID)
+	if err := a.deactivateRuntimeMetadata(pending.CodespaceUUID); err != nil {
+		return 0, false, err
+	}
 	instanceName := runtimeInstanceName(pending.CodespaceUUID)
 	if err := a.provisioner.Stop(ctx, instanceName); err != nil {
 		return 0, false, fmt.Errorf("stop health pending runtime %s: %w", pending.CodespaceUUID, err)
@@ -1678,6 +1688,9 @@ func (a *Agent) finishHealthStopPending(ctx context.Context, pending HealthStopS
 }
 
 func (a *Agent) cleanupLocalRuntime(ctx context.Context, codespaceUUID string) error {
+	if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+		return err
+	}
 	if err := a.provisioner.Delete(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
 		return fmt.Errorf("cleanup local runtime %s: %w", codespaceUUID, err)
 	}
@@ -2123,8 +2136,9 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 			a.activeOperations[codespaceUUID] = operationContext
 			a.activeMu.Unlock()
 
-			a.closeCodespaceAccess(codespaceUUID)
-			a.forgetRuntimeMetadata(codespaceUUID)
+			if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+				return err
+			}
 			a.runOperation(operationCtx, operation, scripts)
 			return nil
 		}
@@ -2240,6 +2254,9 @@ func (a *Agent) runOperation(ctx context.Context, operation *codespacev1.Operati
 		if err := a.handleOperation(ctx, operation, scripts); err != nil {
 			critical := isManagerCriticalError(err)
 			if ctx.Err() != nil && isStartupOperation(operation) {
+				if deactivateErr := a.deactivateRuntimeMetadata(codespaceUUID); deactivateErr != nil {
+					log.Printf("deactivate paused operation %s version %d: %v", codespaceUUID, operationRVersion, deactivateErr)
+				}
 				if stopErr := a.provisioner.Stop(context.Background(), runtimeInstanceName(codespaceUUID)); stopErr != nil {
 					log.Printf("stop paused operation %s version %d: %v", codespaceUUID, operationRVersion, stopErr)
 				}
@@ -3125,7 +3142,9 @@ func (a *Agent) checkRuntimeWorkspaceAccess(ctx context.Context, checker workspa
 }
 
 func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.OperationPayload, scripts provisioner.ScriptSnapshot) error {
-	a.closeCodespaceAccess(operation.GetCodespaceUuid())
+	if err := a.deactivateRuntimeMetadata(operation.GetCodespaceUuid()); err != nil {
+		return err
+	}
 	stopRequest := provisioner.BootstrapRequest{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		CodespaceName: runtimeInstanceName(operation.GetCodespaceUuid()),
@@ -3151,7 +3170,9 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 }
 
 func (a *Agent) handleDelete(ctx context.Context, operation *codespacev1.OperationPayload, cleanupPending bool) error {
-	a.closeCodespaceAccess(operation.GetCodespaceUuid())
+	if err := a.deactivateRuntimeMetadata(operation.GetCodespaceUuid()); err != nil {
+		return err
+	}
 	if cleanupPending {
 		if err := a.saveCleanupPending(operation.GetCodespaceUuid()); err != nil {
 			return err
@@ -3169,6 +3190,28 @@ func (a *Agent) closeCodespaceAccess(codespaceUUID string) {
 		return
 	}
 	a.accessController.CloseCodespaceAccess(codespaceUUID)
+}
+
+func (a *Agent) deactivateRuntimeMetadata(codespaceUUID string) error {
+	if codespaceUUID == "" {
+		return nil
+	}
+	a.closeCodespaceAccess(codespaceUUID)
+	var cleanupErrors []error
+	if a.endpointApplier != nil {
+		if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, nil); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("clear runtime endpoint routes %s: %w", codespaceUUID, err))
+		}
+	}
+	if a.metadataStateStore != nil {
+		if err := a.metadataStateStore.ClearRuntimeMetadata(codespaceUUID); err != nil {
+			cleanupErrors = append(cleanupErrors, fmt.Errorf("clear runtime metadata %s: %w", codespaceUUID, err))
+		}
+	}
+	if a.metadataPublisher != nil {
+		a.metadataPublisher.DeactivateRuntimeMetadata(codespaceUUID)
+	}
+	return errors.Join(cleanupErrors...)
 }
 
 func (a *Agent) requestGiteaToken(ctx context.Context, codespaceUUID string) (*codespacev1.RequestGiteaTokenResponse, error) {
@@ -3270,8 +3313,14 @@ func (a *Agent) reportBootMetadata(
 		}
 	}
 	if a.metadataPublisher != nil {
+		active, err := a.metadataPublisher.ActivateRuntimeMetadata(operation.GetCodespaceUuid())
+		if err != nil {
+			return fmt.Errorf("activate runtime metadata: %w", err)
+		}
+		if !active {
+			return fmt.Errorf("runtime metadata snapshot is missing after save")
+		}
 		if stage != RuntimeBootStageReady {
-			a.metadataPublisher.NotifyRuntimeMetadata(operation.GetCodespaceUuid())
 			return nil
 		}
 		if err := a.metadataPublisher.PublishRuntimeMetadata(ctx, operation.GetCodespaceUuid()); err != nil {

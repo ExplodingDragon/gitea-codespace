@@ -49,13 +49,15 @@ func (a *gatewayBrowserAuth) openURL(codespaceUUID, endpointID string) (string, 
 	if err != nil {
 		return "", false
 	}
-	openPath := strings.TrimRight(parsed.Path, "/") + "/-/codespaces/" + url.PathEscape(codespaceUUID) + "/open"
-	if endpointID != "" && endpointID != "workspace" {
-		openPath += "/" + url.PathEscape(endpointID)
+	openPath := strings.TrimRight(parsed.Path, "/") + "/-/codespaces/" + url.PathEscape(codespaceUUID)
+	if endpointID == "" {
+		endpointID = "workspace"
 	}
 	parsed.Path = openPath
 	parsed.RawPath = ""
-	parsed.RawQuery = ""
+	query := url.Values{}
+	query.Set("open_endpoint", endpointID)
+	parsed.RawQuery = query.Encode()
 	parsed.Fragment = ""
 	return parsed.String(), true
 }

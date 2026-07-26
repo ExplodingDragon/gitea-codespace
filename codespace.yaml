@@ -71,7 +71,6 @@ runtime:
     - tag: "default"
       display_name: "Default"
       type: "lxc"
-      communication_interface: "eth0"
       source:
         type: "image"
         image: "images:debian/12"

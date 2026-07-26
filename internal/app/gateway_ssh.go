@@ -687,11 +687,10 @@ func parseInt64(value string) (int64, error) {
 }
 
 func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {
-	value, ok := strings.CutPrefix(strings.ToLower(strings.TrimSpace(user)), gatewaySSHUserPrefix)
-	if !ok || len(value) != 32 {
+	codespaceUUID, ok := strings.CutPrefix(user, gatewaySSHUserPrefix)
+	if !ok {
 		return "", false
 	}
-	codespaceUUID := value[0:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:32]
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return "", false
 	}

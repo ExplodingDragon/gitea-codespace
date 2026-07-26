@@ -22,50 +22,6 @@ import (
 	"gitea.dev/codespace/internal/provisioner"
 )
 
-func TestLoadRuntimeMetadataCodespaceUUIDsSkipsCleanupAndMissingMetadata(t *testing.T) {
-	t.Parallel()
-
-	stateDir := filepath.Join(t.TempDir(), "state")
-	store := NewCodespaceStateStore(stateDir)
-	readyUUID := "11111111-1111-4111-8111-111111111111"
-	cleanupUUID := "22222222-2222-4222-8222-222222222222"
-	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
-		CodespaceUUID:      readyUUID,
-		MetadataGeneration: 1,
-		Boot: manager.RuntimeMetadataBoot{
-			OperationRVersion: 7,
-			Stage:             "ready",
-			StartedUnix:       10,
-			LastUpdateUnix:    11,
-		},
-	}); err != nil {
-		t.Fatalf("save ready metadata: %v", err)
-	}
-	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
-		CodespaceUUID:      cleanupUUID,
-		MetadataGeneration: 1,
-		Boot: manager.RuntimeMetadataBoot{
-			OperationRVersion: 7,
-			Stage:             "ready",
-			StartedUnix:       10,
-			LastUpdateUnix:    11,
-		},
-	}); err != nil {
-		t.Fatalf("save cleanup metadata: %v", err)
-	}
-	if err := store.SaveCleanupPending(cleanupUUID); err != nil {
-		t.Fatalf("save cleanup pending: %v", err)
-	}
-
-	uuids, err := store.LoadRuntimeMetadataCodespaceUUIDs()
-	if err != nil {
-		t.Fatalf("load runtime metadata uuids: %v", err)
-	}
-	if want := []string{readyUUID}; !reflect.DeepEqual(uuids, want) {
-		t.Fatalf("runtime metadata uuids = %#v, want %#v", uuids, want)
-	}
-}
-
 func TestValidateCodespaceStateFilesAcceptsVersionOne(t *testing.T) {
 	t.Parallel()
 
@@ -424,6 +380,9 @@ func TestCodespaceStateStoreHealthStopPendingRoundTrip(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save health stop pending: %v", err)
 	}
+	if err := store.ClearRuntimeMetadata(codespaceUUID); err != nil {
+		t.Fatalf("clear runtime metadata: %v", err)
+	}
 
 	pendings, err := store.LoadHealthStopPendings()
 	if err != nil {
@@ -434,9 +393,6 @@ func TestCodespaceStateStoreHealthStopPendingRoundTrip(t *testing.T) {
 	}
 	if routes, err := store.LoadGatewayRoutes(); err != nil || len(routes) != 0 {
 		t.Fatalf("gateway routes err=%v routes=%#v", err, routes)
-	}
-	if uuids, err := store.LoadRuntimeMetadataCodespaceUUIDs(); err != nil || len(uuids) != 0 {
-		t.Fatalf("metadata uuids err=%v uuids=%#v", err, uuids)
 	}
 	if target, ok, err := store.LoadGatewayWorkspaceTarget(codespaceUUID); err != nil || ok {
 		t.Fatalf("workspace target err=%v ok=%v target=%#v", err, ok, target)
@@ -457,7 +413,7 @@ func TestCodespaceStateStoreHealthStopPendingRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load state: %v", err)
 	}
-	if state.HealthStopPending || state.PendingRuntimeTransition == nil {
+	if state.HealthStopPending || state.HealthStopObservedOperationRVersion != 0 || state.PendingRuntimeTransition == nil {
 		t.Fatalf("state = %#v", state)
 	}
 }
@@ -743,6 +699,138 @@ func TestCodespaceStateStoreLoadsRuntimeMetadataSnapshot(t *testing.T) {
 	}
 	if ok {
 		t.Fatalf("cleanup pending snapshot was returned")
+	}
+}
+
+func TestCodespaceStateStoreClearRuntimeMetadataKeepsResumeState(t *testing.T) {
+	t.Parallel()
+
+	store := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	input := manager.StartupInput{
+		CodespaceUUID:   codespaceUUID,
+		RuntimeUserName: "developer",
+		EnvironmentTag:  "default",
+		UserIdentity: manager.StartupUserIdentity{
+			UserID:       1,
+			Username:     "developer",
+			GitUserName:  "Developer",
+			GitUserEmail: "developer@example.com",
+		},
+	}
+	if err := store.SaveStartupInput(input); err != nil {
+		t.Fatalf("save startup input: %v", err)
+	}
+	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{"CODESPACE_WORKSPACE_DIR": "/workspaces/repo"}); err != nil {
+		t.Fatalf("save script environment: %v", err)
+	}
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save runtime metadata: %v", err)
+	}
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
+		EndpointID:     "app",
+		Label:          "App",
+		UpstreamScheme: "http",
+		UpstreamHost:   "10.0.0.2:3000",
+	}}); err != nil {
+		t.Fatalf("save endpoint route: %v", err)
+	}
+
+	if err := store.ClearRuntimeMetadata(codespaceUUID); err != nil {
+		t.Fatalf("clear runtime metadata: %v", err)
+	}
+	if _, _, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID); err != nil || ok {
+		t.Fatalf("runtime metadata after clear ok=%v err=%v", ok, err)
+	}
+	if routes, err := store.LoadGatewayRoutes(); err != nil || len(routes) != 0 {
+		t.Fatalf("gateway routes after clear = %#v, err=%v", routes, err)
+	}
+	lateRoute := manager.RuntimeEndpointRoute{
+		EndpointID:     "late",
+		Label:          "Late",
+		UpstreamScheme: "http",
+		UpstreamHost:   "10.0.0.2:4000",
+	}
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{lateRoute}); err == nil {
+		t.Fatal("late endpoint update was accepted after runtime metadata clear")
+	}
+	if loaded, ok, err := store.LoadStartupInput(codespaceUUID); err != nil || !ok || !reflect.DeepEqual(loaded, input) {
+		t.Fatalf("startup input after clear ok=%v value=%#v err=%v", ok, loaded, err)
+	}
+	if environment, ok, err := store.LoadScriptEnvironment(codespaceUUID); err != nil || !ok || environment["CODESPACE_WORKSPACE_DIR"] != "/workspaces/repo" {
+		t.Fatalf("script environment after clear ok=%v value=%#v err=%v", ok, environment, err)
+	}
+	resumed := manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 3,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 8,
+			Stage:             manager.RuntimeBootStagePrepareRuntime,
+			StartedUnix:       12,
+			LastUpdateUnix:    12,
+		},
+	}
+	if err := store.SaveRuntimeMetadataSnapshot(resumed); err != nil {
+		t.Fatalf("save resumed runtime metadata: %v", err)
+	}
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{lateRoute}); err != nil {
+		t.Fatalf("save endpoint after runtime metadata resume: %v", err)
+	}
+}
+
+func TestCodespaceStateStoreClearRuntimeMetadataWinsConcurrentUsageUpdates(t *testing.T) {
+	t.Parallel()
+
+	store := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 7,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       10,
+			LastUpdateUnix:    11,
+		},
+	}); err != nil {
+		t.Fatalf("save runtime metadata: %v", err)
+	}
+
+	start := make(chan struct{})
+	done := make(chan error, 16)
+	for i := int64(0); i < 16; i++ {
+		go func(observedUnix int64) {
+			<-start
+			_, err := store.UpdateRuntimeResourceUsage(codespaceUUID, provisioner.RuntimeResourceUsage{ObservedUnix: observedUnix})
+			done <- err
+		}(i + 1)
+	}
+	close(start)
+	if err := store.ClearRuntimeMetadata(codespaceUUID); err != nil {
+		t.Fatalf("clear runtime metadata: %v", err)
+	}
+	for range 16 {
+		if err := <-done; err != nil {
+			t.Fatalf("update runtime resource usage: %v", err)
+		}
+	}
+	if _, _, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID); err != nil || ok {
+		t.Fatalf("runtime metadata after concurrent clear ok=%v err=%v", ok, err)
 	}
 }
 

@@ -242,12 +242,14 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 
 func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) string {
 	t.Helper()
+	logs := &recordingLifecycleLogSink{}
+	request.LogSink = logs
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e lifecycle credentials: %v", err)
 	}
 	identity, err := provisioner.InitializeSystem(ctx, instance.Name, request)
 	if err != nil {
-		t.Fatalf("initialize e2e lifecycle system: %v", err)
+		t.Fatalf("initialize e2e lifecycle system: %v\nlifecycle log:\n%s", err, strings.Join(logs.lines, "\n"))
 	}
 	status, err := provisioner.CheckCredentials(ctx, instance.Name)
 	if err != nil {
@@ -271,7 +273,7 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	startRequest := request
 	startRequest.Workdir = workspace
 	if _, err := provisioner.StartRuntime(ctx, instance.Name, startRequest); err != nil {
-		t.Fatalf("start e2e lifecycle runtime: %v", err)
+		t.Fatalf("start e2e lifecycle runtime: %v\nlifecycle log:\n%s", err, strings.Join(logs.lines, "\n"))
 	}
 	return workspace
 }
@@ -337,6 +339,13 @@ func assertIncusE2EEnvironmentResources(t *testing.T, ctx context.Context, provi
 	instance, _, err := provisioner.client.GetInstance(instanceName)
 	if err != nil {
 		t.Fatalf("get e2e instance resources: %v", err)
+	}
+	expectedType, err := normalizeIncusInstanceType(environment.InstanceType)
+	if err != nil {
+		t.Fatalf("normalize e2e instance type: %v", err)
+	}
+	if instance.Type != string(expectedType) {
+		t.Fatalf("instance type = %s, want %s", instance.Type, expectedType)
 	}
 	if instance.Config["limits.cpu"] != fmt.Sprintf("%d", environment.CPU) {
 		t.Fatalf("limits.cpu = %q, want %d", instance.Config["limits.cpu"], environment.CPU)
@@ -486,28 +495,24 @@ func cleanupIncusE2EManagedProject(t *testing.T, baseClient incus.InstanceServer
 }
 
 func incusE2EConfig(managerID int64, runID string) IncusConfig {
-	memoryLimit := strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_MEMORY_LIMIT"))
-	if memoryLimit == "" {
-		memoryLimit = "1GiB"
-	}
 	image := strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_IMAGE"))
 	if image == "" {
 		image = defaultIncusImage
 	}
 	return IncusConfig{
-		ManagerID:  managerID,
-		Remote:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
-		UnixSocket: strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
-		Project:    strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
+		ManagerID:   managerID,
+		Remote:      strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
+		UnixSocket:  strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
+		Project:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
+		NetworkName: incusE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet"),
 		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
 			"e2e": {
-				Image:                  image,
-				InstanceType:           incusE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
-				CPU:                    1,
-				MemoryLimit:            memoryLimit,
-				RootDiskSize:           incusE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
-				Profiles:               incusE2EProfiles(),
-				CommunicationInterface: incusE2EEnvDefault("CODESPACE_E2E_INCUS_COMMUNICATION_INTERFACE", "eth0"),
+				Image:        image,
+				InstanceType: incusE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
+				CPU:          1,
+				MemoryLimit:  "1GiB",
+				RootDiskSize: incusE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
+				Profiles:     incusE2EProfiles(),
 			},
 		},
 		ExtraConfig: map[string]string{
@@ -558,7 +563,7 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 		missing = append(missing, imageMissing)
 	}
 	hasRootDisk := false
-	hasNIC := false
+	hasNetworkNIC := false
 	for _, profileName := range environment.profiles {
 		profile, _, err := provisioner.client.GetProfile(profileName)
 		if err != nil {
@@ -578,7 +583,14 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 					}
 				}
 			case "nic":
-				hasNIC = true
+				networkName := strings.TrimSpace(device["network"])
+				if networkName == "" {
+					networkName = strings.TrimSpace(device["parent"])
+				}
+				if networkName != provisioner.networkName {
+					continue
+				}
+				hasNetworkNIC = true
 				if missingNetwork, err := incusE2ENetworkMissing(provisioner, device); err != nil {
 					return nil, err
 				} else if missingNetwork != "" {
@@ -590,8 +602,8 @@ func incusE2EDeploymentMissing(provisioner *IncusProvisioner, image string) ([]s
 	if !hasRootDisk {
 		missing = append(missing, fmt.Sprintf("profiles %s do not define a root disk", strings.Join(environment.profiles, ",")))
 	}
-	if !hasNIC {
-		missing = append(missing, fmt.Sprintf("profiles %s do not define a network device", strings.Join(environment.profiles, ",")))
+	if !hasNetworkNIC {
+		missing = append(missing, fmt.Sprintf("profiles %s do not define a NIC connected to network %s", strings.Join(environment.profiles, ","), provisioner.networkName))
 	}
 	return missing, nil
 }

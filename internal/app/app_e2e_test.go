@@ -19,6 +19,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	incus "github.com/lxc/incus/v6/client"
+	"github.com/lxc/incus/v6/shared/api"
 	"golang.org/x/crypto/ssh"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
@@ -83,7 +85,7 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 
 func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	if !appE2EEnvBool("CODESPACE_E2E_INCUS_MANAGER_LIFECYCLE") {
-		t.Skip("Manager process Incus lifecycle E2E is disabled; run make test-e2e-manager-required to enable it")
+		t.Skip("Manager process Incus lifecycle E2E is disabled; run the container or VM Manager E2E target to enable it")
 	}
 
 	runSuffix := uint64(time.Now().UnixNano()) & 0xffffffffffff
@@ -91,7 +93,8 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	managerID := time.Now().UnixNano()
 	scripts := writeAppE2EIncusScripts(t)
 	service := &appE2EManagerService{
-		finalized: make(chan struct{}, 3),
+		finalized:      make(chan struct{}, 3),
+		operationLimit: 1,
 		operations: []*codespacev1.OperationPayload{
 			appE2ECreateOperation(codespaceUUID, 1),
 			{
@@ -124,14 +127,77 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	defer cleanupAppE2EIncusRuntime(t, managerID, codespaceUUID)
 
 	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir, scripts)
+	testBackend, err := newProvisioner(config, managerID)
+	if err != nil {
+		t.Fatalf("create Incus E2E inspection backend: %v", err)
+	}
+	incusProvisioner, ok := testBackend.(*provisioner.IncusProvisioner)
+	if !ok {
+		t.Fatalf("E2E inspection backend = %T, want Incus", testBackend)
+	}
+	var incusClient incus.InstanceServer
+	if config.Incus.Endpoint != "" {
+		incusClient, err = incus.ConnectIncus(config.Incus.Endpoint, nil)
+	} else {
+		incusClient, err = incus.ConnectIncusUnix(config.Incus.UnixSocket, nil)
+	}
+	if err != nil {
+		t.Fatalf("connect Incus E2E inspection client: %v", err)
+	}
+	if config.Incus.Project != "" {
+		incusClient = incusClient.UseProject(config.Incus.Project)
+	}
+	expectedInstanceType := api.InstanceTypeContainer
+	if config.RuntimeEnvironments["default"].InstanceType == "virtual-machine" {
+		expectedInstanceType = api.InstanceTypeVM
+	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	runDone := make(chan error, 1)
 	var output bytes.Buffer
 	go func() {
 		runDone <- runWithConfigContext(ctx, &output, config)
 	}()
 
-	waitAppE2EFinalizedCount(t, service.finalized, 3, 7*time.Minute)
+	timer := time.NewTimer(7 * time.Minute)
+	expectedStates := []provisioner.RuntimeState{
+		provisioner.RuntimeStateRunning,
+		provisioner.RuntimeStateStopped,
+		provisioner.RuntimeStateRunning,
+	}
+	readyVersions := []int64{1, 0, 3}
+	var instanceName string
+	for finalizedCount := 0; finalizedCount < 3; {
+		select {
+		case <-service.finalized:
+			observedName := assertAppE2EIncusRuntime(t, ctx, incusProvisioner, incusClient, stateDir, codespaceUUID, expectedInstanceType, expectedStates[finalizedCount])
+			if instanceName == "" {
+				instanceName = observedName
+			} else if observedName != instanceName {
+				t.Fatalf("runtime instance changed from %s to %s", instanceName, observedName)
+			}
+			if readyVersions[finalizedCount] > 0 && !service.sawReadyMetadata(readyVersions[finalizedCount]) {
+				t.Fatalf("ready metadata for operation %d was not reported", readyVersions[finalizedCount])
+			}
+			finalizedCount++
+			if finalizedCount < 3 {
+				service.allowNextOperation()
+			}
+		case err := <-runDone:
+			t.Fatalf("manager process exited after %d operation finalizations: %v\noperation log:\n%s\noutput:\n%s", finalizedCount, err, service.operationLog(), output.String())
+		case <-timer.C:
+			cancel()
+			select {
+			case err := <-runDone:
+				t.Fatalf("operation finalization timed out: %v\noperation log:\n%s\noutput:\n%s", err, service.operationLog(), output.String())
+			case <-time.After(10 * time.Second):
+				t.Fatalf("operation finalization timed out and manager process did not stop\noperation log:\n%s\noutput:\n%s", service.operationLog(), output.String())
+			}
+		}
+	}
+	if !timer.Stop() {
+		<-timer.C
+	}
 	cancel()
 	select {
 	case err := <-runDone:
@@ -260,7 +326,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -319,6 +385,69 @@ func appE2ECreateOperation(codespaceUUID string, version int64) *codespacev1.Ope
 	}
 }
 
+func assertAppE2EIncusRuntime(
+	t *testing.T,
+	ctx context.Context,
+	incusProvisioner *provisioner.IncusProvisioner,
+	incusClient incus.InstanceServer,
+	stateDir, codespaceUUID string,
+	expectedType api.InstanceType,
+	expectedState provisioner.RuntimeState,
+) string {
+	t.Helper()
+	instances, err := incusProvisioner.ListInstances(ctx)
+	if err != nil {
+		t.Fatalf("list Manager E2E Incus instances: %v", err)
+	}
+	var runtime *provisioner.Instance
+	for _, instance := range instances {
+		if instance == nil || instance.CodespaceUUID != codespaceUUID {
+			continue
+		}
+		if runtime != nil {
+			t.Fatalf("multiple Manager E2E runtimes found for %s", codespaceUUID)
+		}
+		runtime = instance
+	}
+	if runtime == nil {
+		t.Fatalf("Manager E2E runtime %s not found", codespaceUUID)
+	}
+	if runtime.RuntimeState != expectedState {
+		t.Fatalf("Manager E2E runtime state = %s, want %s", runtime.RuntimeState, expectedState)
+	}
+	instance, _, err := incusClient.GetInstance(runtime.Name)
+	if err != nil {
+		t.Fatalf("get Manager E2E Incus instance %s: %v", runtime.Name, err)
+	}
+	if instance.Type != string(expectedType) {
+		t.Fatalf("Manager E2E instance type = %s, want %s", instance.Type, expectedType)
+	}
+	if instance.Config["limits.memory"] != "1GiB" {
+		t.Fatalf("Manager E2E memory limit = %q, want 1GiB", instance.Config["limits.memory"])
+	}
+
+	store := NewCodespaceStateStore(stateDir)
+	if expectedState == provisioner.RuntimeStateRunning {
+		snapshot, ok, err := store.LoadRuntimeMetadataSnapshot(codespaceUUID)
+		if err != nil {
+			t.Fatalf("load Manager E2E runtime metadata: %v", err)
+		}
+		if !ok || snapshot.InstanceName != runtime.Name || snapshot.Workdir == "" {
+			t.Fatalf("Manager E2E runtime metadata = %#v, present=%v", snapshot, ok)
+		}
+		if err := incusProvisioner.CheckWorkspaceAccess(ctx, runtime.Name, snapshot.Workdir); err != nil {
+			t.Fatalf("check Manager E2E workspace through Incus agent: %v", err)
+		}
+	} else {
+		if _, _, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID); err != nil {
+			t.Fatalf("load stopped Manager E2E runtime metadata: %v", err)
+		} else if ok {
+			t.Fatal("stopped Manager E2E runtime still has publishable metadata")
+		}
+	}
+	return runtime.Name
+}
+
 func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIncusScripts) Config {
 	config := DefaultConfig()
 	config.Manager.StateDir = stateDir
@@ -341,15 +470,15 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 	config.Incus.Endpoint = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE"))
 	config.Incus.UnixSocket = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET"))
 	config.Incus.Project = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT"))
+	config.Incus.NetworkName = appE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet")
 	config.RuntimeEnvironments = map[string]RuntimeEnvironmentConfig{
 		"default": {
-			Image:                  appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
-			InstanceType:           appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
-			CommunicationInterface: appE2EEnvDefault("CODESPACE_E2E_INCUS_COMMUNICATION_INTERFACE", "eth0"),
-			CPU:                    1,
-			MemoryLimit:            appE2EEnvDefault("CODESPACE_E2E_INCUS_MEMORY_LIMIT", "1GiB"),
-			RootDiskSize:           appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
-			Profiles:               appE2EIncusProfiles(),
+			Image:        appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
+			InstanceType: appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
+			CPU:          1,
+			MemoryLimit:  "1GiB",
+			RootDiskSize: appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
+			Profiles:     appE2EIncusProfiles(),
 		},
 	}
 	return config
@@ -358,19 +487,19 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID string) {
 	t.Helper()
 	config := provisioner.IncusConfig{
-		ManagerID:  managerID,
-		Remote:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
-		UnixSocket: strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
-		Project:    strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
+		ManagerID:   managerID,
+		Remote:      strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
+		UnixSocket:  strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
+		Project:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
+		NetworkName: appE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet"),
 		RuntimeEnvironments: map[string]provisioner.IncusEnvironmentConfig{
 			"default": {
-				Image:                  appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
-				InstanceType:           appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
-				CPU:                    1,
-				MemoryLimit:            appE2EEnvDefault("CODESPACE_E2E_INCUS_MEMORY_LIMIT", "1GiB"),
-				RootDiskSize:           appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
-				Profiles:               appE2EIncusProfiles(),
-				CommunicationInterface: appE2EEnvDefault("CODESPACE_E2E_INCUS_COMMUNICATION_INTERFACE", "eth0"),
+				Image:        appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
+				InstanceType: appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
+				CPU:          1,
+				MemoryLimit:  "1GiB",
+				RootDiskSize: appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
+				Profiles:     appE2EIncusProfiles(),
 			},
 		},
 	}
@@ -575,11 +704,13 @@ type appE2EManagerService struct {
 	declared       bool
 	fetched        bool
 	metadata       bool
+	readyMetadata  map[int64]struct{}
 	status         codespacev1.FinalStatus
 	statuses       []codespacev1.FinalStatus
 	logs           []string
 	finalized      chan struct{}
 	operationIndex int
+	operationLimit int
 }
 
 func (s *appE2EManagerService) DeclareManager(
@@ -643,7 +774,8 @@ func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codes
 
 func (s *appE2EManagerService) nextOperationLocked() *codespacev1.OperationPayload {
 	if len(s.operations) > 0 {
-		if s.operationIndex >= len(s.operations) || s.operationIndex > len(s.statuses) {
+		if s.operationIndex >= len(s.operations) || s.operationIndex > len(s.statuses) ||
+			(s.operationLimit > 0 && s.operationIndex >= s.operationLimit) {
 			return nil
 		}
 		operation := s.operations[s.operationIndex]
@@ -678,6 +810,18 @@ func (s *appE2EManagerService) RequestGiteaToken(
 	}), nil
 }
 
+func (s *appE2EManagerService) EnsureCodespaceGitSSHKey(
+	_ context.Context,
+	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
+) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
+	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || len(req.Msg.GetPublicKey()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
+	}
+	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{
+		KnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
+	}), nil
+}
+
 func (s *appE2EManagerService) ReportRuntimeMetadata(
 	_ context.Context,
 	req *connect.Request[codespacev1.ReportRuntimeMetadataRequest],
@@ -688,6 +832,13 @@ func (s *appE2EManagerService) ReportRuntimeMetadata(
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	s.metadata = true
+	boot := req.Msg.GetMetadata().GetBoot()
+	if boot.GetStage() == codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY {
+		if s.readyMetadata == nil {
+			s.readyMetadata = make(map[int64]struct{})
+		}
+		s.readyMetadata[boot.GetOperationRversion()] = struct{}{}
+	}
 	return connect.NewResponse(&codespacev1.ReportRuntimeMetadataResponse{}), nil
 }
 
@@ -742,6 +893,19 @@ func (s *appE2EManagerService) sawMetadata() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.metadata
+}
+
+func (s *appE2EManagerService) sawReadyMetadata(operationRVersion int64) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.readyMetadata[operationRVersion]
+	return ok
+}
+
+func (s *appE2EManagerService) allowNextOperation() {
+	s.mu.Lock()
+	s.operationLimit++
+	s.mu.Unlock()
 }
 
 func (s *appE2EManagerService) finalStatus() codespacev1.FinalStatus {

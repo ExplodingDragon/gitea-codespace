@@ -61,13 +61,12 @@ runtime:
     storage:
       pool: "default"
     network:
-      name: "gitea-codespace-net"
+      name: "csnet"
       manage: true
   environments:
     - tag: "default"
       display_name: "Debian VM"
       type: "vm"
-      communication_interface: "eth0"
       source:
         type: "image"
         image: "images:debian/12"
@@ -121,7 +120,7 @@ runtime:
 		t.Fatalf("gateway ssh config = %#v", config.Gateway)
 	}
 	if config.Incus.Project != "gitea-codespace" || !config.Incus.ProjectManage ||
-		config.Incus.StoragePool != "default" || config.Incus.NetworkName != "gitea-codespace-net" || !config.Incus.NetworkManage {
+		config.Incus.StoragePool != "default" || config.Incus.NetworkName != "csnet" || !config.Incus.NetworkManage {
 		t.Fatalf("incus config = %#v", config.Incus)
 	}
 	environment := config.RuntimeEnvironments["default"]
@@ -203,7 +202,6 @@ runtime:
   environments:
     - tag: "environment"
       type: "vm"
-      communication_interface: "eth0"
       source:
         type: "instance"
         remote: "local"

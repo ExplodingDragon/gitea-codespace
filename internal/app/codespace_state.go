@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode"
 	"unicode/utf8"
 
@@ -41,20 +42,23 @@ type CodespaceStateHeader struct {
 type CodespaceStateStore struct {
 	stateDir string
 	sessions *gatewaySessionRegistry
+	mu       sync.Mutex
 }
 
 type codespaceState struct {
-	StateFormatVersion       int                                `json:"state_format_version"`
-	CodespaceUUID            string                             `json:"codespace_uuid,omitempty"`
-	RuntimeGeneration        int64                              `json:"runtime_generation,omitempty"`
-	PendingRuntimeTransition *codespacePendingRuntimeTransition `json:"pending_runtime_transition,omitempty"`
-	CleanupPending           bool                               `json:"cleanup_pending,omitempty"`
-	HealthStopPending        bool                               `json:"health_stop_pending,omitempty"`
-	Endpoints                []codespaceEndpointSnapshot        `json:"endpoints,omitempty"`
-	RuntimeMetadata          *codespaceRuntimeMetadataSnapshot  `json:"runtime_metadata,omitempty"`
-	ActiveOperation          *codespaceActiveOperation          `json:"active_operation,omitempty"`
-	StartupInput             *codespaceStartupInputSnapshot     `json:"startup_input,omitempty"`
-	SharedEnvironment        map[string]string                  `json:"shared_environment,omitempty"`
+	StateFormatVersion                  int                                `json:"state_format_version"`
+	CodespaceUUID                       string                             `json:"codespace_uuid,omitempty"`
+	RuntimeGeneration                   int64                              `json:"runtime_generation,omitempty"`
+	PendingRuntimeTransition            *codespacePendingRuntimeTransition `json:"pending_runtime_transition,omitempty"`
+	CleanupPending                      bool                               `json:"cleanup_pending,omitempty"`
+	HealthStopPending                   bool                               `json:"health_stop_pending,omitempty"`
+	HealthStopObservedOperationRVersion int64                              `json:"health_stop_observed_operation_rversion,omitempty"`
+	RuntimeMetadataInactive             bool                               `json:"runtime_metadata_inactive,omitempty"`
+	Endpoints                           []codespaceEndpointSnapshot        `json:"endpoints,omitempty"`
+	RuntimeMetadata                     *codespaceRuntimeMetadataSnapshot  `json:"runtime_metadata,omitempty"`
+	ActiveOperation                     *codespaceActiveOperation          `json:"active_operation,omitempty"`
+	StartupInput                        *codespaceStartupInputSnapshot     `json:"startup_input,omitempty"`
+	SharedEnvironment                   map[string]string                  `json:"shared_environment,omitempty"`
 }
 
 type codespaceActiveOperation struct {
@@ -154,6 +158,8 @@ func (s *CodespaceStateStore) SetSessionRegistry(sessions *gatewaySessionRegistr
 	if s == nil {
 		return
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.sessions = sessions
 }
 
@@ -190,6 +196,8 @@ func ValidateCodespaceStateFiles(stateDir string) error {
 
 // LoadActiveOperations returns complete active operation contexts from local snapshots.
 func (s *CodespaceStateStore) LoadActiveOperations() ([]manager.OperationSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -253,6 +261,8 @@ func (s *CodespaceStateStore) LoadActiveOperations() ([]manager.OperationSnapsho
 
 // LoadRuntimeGenerations returns persisted per-Codespace runtime generation baselines.
 func (s *CodespaceStateStore) LoadRuntimeGenerations() (map[string]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -283,6 +293,8 @@ func (s *CodespaceStateStore) LoadRuntimeGenerations() (map[string]int64, error)
 
 // LoadRuntimeTransitionPendings returns pending runtime transition reports from local snapshots.
 func (s *CodespaceStateStore) LoadRuntimeTransitionPendings() ([]manager.RuntimeTransitionSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -329,6 +341,8 @@ func (s *CodespaceStateStore) LoadRuntimeTransitionPendings() ([]manager.Runtime
 
 // LoadCleanupPendings returns Codespaces that must finish local cleanup before RPC work.
 func (s *CodespaceStateStore) LoadCleanupPendings() ([]string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -359,6 +373,8 @@ func (s *CodespaceStateStore) LoadCleanupPendings() ([]string, error) {
 
 // LoadHealthStopPendings returns health-driven stops that must complete before normal RPC work.
 func (s *CodespaceStateStore) LoadHealthStopPendings() ([]manager.HealthStopSnapshot, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -383,14 +399,9 @@ func (s *CodespaceStateStore) LoadHealthStopPendings() ([]manager.HealthStopSnap
 		if !state.HealthStopPending {
 			continue
 		}
-		if state.RuntimeMetadata == nil ||
-			state.RuntimeMetadata.Boot.Stage != manager.RuntimeBootStageReady ||
-			state.RuntimeMetadata.Boot.OperationRVersion <= 0 {
-			return nil, fmt.Errorf("health stop pending %s requires ready runtime metadata", codespaceUUID)
-		}
 		pendings = append(pendings, manager.HealthStopSnapshot{
 			CodespaceUUID:             codespaceUUID,
-			ObservedOperationRVersion: state.RuntimeMetadata.Boot.OperationRVersion,
+			ObservedOperationRVersion: state.HealthStopObservedOperationRVersion,
 		})
 	}
 	return pendings, nil
@@ -398,6 +409,8 @@ func (s *CodespaceStateStore) LoadHealthStopPendings() ([]manager.HealthStopSnap
 
 // LoadGatewayRoutes returns persisted Endpoint routes for Gateway startup recovery.
 func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	dir, err := codespaceStateDir(s.stateDir)
 	if err != nil {
 		return nil, err
@@ -436,40 +449,10 @@ func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error
 	return routes, nil
 }
 
-// LoadRuntimeMetadataCodespaceUUIDs returns Codespaces with a persisted metadata snapshot.
-func (s *CodespaceStateStore) LoadRuntimeMetadataCodespaceUUIDs() ([]string, error) {
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	codespaceUUIDs := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
-		}
-		if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil || state.RuntimeMetadata == nil {
-			continue
-		}
-		codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
-	}
-	sort.Strings(codespaceUUIDs)
-	return codespaceUUIDs, nil
-}
-
 // SaveRuntimeEndpointRoutes stores the complete endpoint route set declared by a runtime.
 func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, routes []manager.RuntimeEndpointRoute) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -483,6 +466,9 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 	state, err := loadOptionalCodespaceStateFile(path, codespaceUUID)
 	if err != nil {
 		return false, err
+	}
+	if state.RuntimeMetadataInactive && len(routes) > 0 {
+		return false, fmt.Errorf("runtime metadata publication is inactive")
 	}
 
 	endpoints := make([]codespaceEndpointSnapshot, 0, len(routes))
@@ -528,8 +514,10 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 	return true, writeCodespaceStateFile(path, state)
 }
 
-// SaveRuntimeMetadataSnapshot stores the current ready runtime metadata base.
+// SaveRuntimeMetadataSnapshot stores the current runtime metadata base.
 func (s *CodespaceStateStore) SaveRuntimeMetadataSnapshot(snapshot manager.RuntimeMetadataSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(snapshot.CodespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -550,6 +538,7 @@ func (s *CodespaceStateStore) SaveRuntimeMetadataSnapshot(snapshot manager.Runti
 	oldTarget, hadOldTarget := gatewayWorkspaceTargetFromRuntimeMetadata(state.RuntimeMetadata)
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = snapshot.CodespaceUUID
+	state.RuntimeMetadataInactive = false
 	state.RuntimeMetadata = &codespaceRuntimeMetadataSnapshot{
 		MetadataGeneration: snapshot.MetadataGeneration,
 		InstanceName:       strings.TrimSpace(snapshot.InstanceName),
@@ -572,8 +561,44 @@ func (s *CodespaceStateStore) SaveRuntimeMetadataSnapshot(snapshot manager.Runti
 	return nil
 }
 
+// ClearRuntimeMetadata removes the publishable runtime snapshot and its Endpoint declarations.
+func (s *CodespaceStateStore) ClearRuntimeMetadata(codespaceUUID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
+		return fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	if err != nil {
+		return err
+	}
+	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return err
+	}
+	if state.RuntimeMetadataInactive && state.RuntimeMetadata == nil && len(state.Endpoints) == 0 {
+		return nil
+	}
+	state.RuntimeMetadataInactive = true
+	state.RuntimeMetadata = nil
+	state.Endpoints = nil
+	if err := writeCodespaceStateFile(path, state); err != nil {
+		return err
+	}
+	if s.sessions != nil {
+		s.sessions.DeleteCodespace(codespaceUUID)
+	}
+	return nil
+}
+
 // LoadRuntimeMetadataRequest returns the current complete typed metadata for Gitea.
 func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (int64, *codespacev1.RuntimeMetadata, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return 0, nil, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -627,6 +652,8 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (
 }
 
 func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (gatewayWorkspaceTarget, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return gatewayWorkspaceTarget{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -659,6 +686,8 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 
 // UpdateRuntimeResourceUsage stores the latest resource usage sample.
 func (s *CodespaceStateStore) UpdateRuntimeResourceUsage(codespaceUUID string, usage provisioner.RuntimeResourceUsage) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -689,6 +718,8 @@ func (s *CodespaceStateStore) UpdateRuntimeResourceUsage(codespaceUUID string, u
 
 // LoadRuntimeMetadataSnapshot returns the persisted runtime metadata snapshot.
 func (s *CodespaceStateStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) (manager.RuntimeMetadataSnapshot, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return manager.RuntimeMetadataSnapshot{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -723,6 +754,8 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) 
 
 // SaveStartupInput stores the create-time startup input owned by Manager.
 func (s *CodespaceStateStore) SaveStartupInput(input manager.StartupInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(input.CodespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -745,6 +778,8 @@ func (s *CodespaceStateStore) SaveStartupInput(input manager.StartupInput) error
 
 // LoadStartupInput returns the persisted create-time startup input.
 func (s *CodespaceStateStore) LoadStartupInput(codespaceUUID string) (manager.StartupInput, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return manager.StartupInput{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -804,6 +839,8 @@ func gatewayWorkspaceTargetIdentityValue(env map[string]string, name string) (ui
 
 // RebaseRuntimeMetadataGeneration moves a persisted metadata snapshot above a stale server generation.
 func (s *CodespaceStateStore) RebaseRuntimeMetadataGeneration(codespaceUUID string, currentGeneration int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -833,6 +870,8 @@ func (s *CodespaceStateStore) RebaseRuntimeMetadataGeneration(codespaceUUID stri
 
 // SaveActiveOperation stores one complete active operation context.
 func (s *CodespaceStateStore) SaveActiveOperation(snapshot manager.OperationSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if snapshot.Payload == nil {
 		return fmt.Errorf("operation payload is required")
 	}
@@ -906,6 +945,8 @@ func provisionerScriptSnapshotFromState(snapshot *codespaceScriptSnapshot) provi
 
 // SaveScriptEnvironment merges the latest normalized shared script environment.
 func (s *CodespaceStateStore) SaveScriptEnvironment(codespaceUUID string, environment map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -935,6 +976,8 @@ func (s *CodespaceStateStore) SaveScriptEnvironment(codespaceUUID string, enviro
 
 // LoadScriptEnvironment returns the latest normalized shared script environment.
 func (s *CodespaceStateStore) LoadScriptEnvironment(codespaceUUID string) (map[string]string, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return nil, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -957,6 +1000,8 @@ func (s *CodespaceStateStore) LoadScriptEnvironment(codespaceUUID string) (map[s
 
 // DeleteActiveOperation clears one active operation context when it still matches the current version.
 func (s *CodespaceStateStore) DeleteActiveOperation(codespaceUUID string, operationRVersion int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -986,6 +1031,8 @@ func (s *CodespaceStateStore) DeleteActiveOperation(codespaceUUID string, operat
 
 // SaveRuntimeTransitionPending stores a pending runtime transition before its first RPC.
 func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.RuntimeTransitionSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(snapshot.CodespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1014,6 +1061,7 @@ func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.Runt
 	state.CodespaceUUID = snapshot.CodespaceUUID
 	state.RuntimeGeneration = snapshot.RuntimeGeneration
 	state.HealthStopPending = false
+	state.HealthStopObservedOperationRVersion = 0
 	state.PendingRuntimeTransition = &codespacePendingRuntimeTransition{
 		TargetState:               targetState,
 		RuntimeGeneration:         snapshot.RuntimeGeneration,
@@ -1024,6 +1072,8 @@ func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.Runt
 
 // ClearRuntimeTransitionPending clears the pending transition after the matching report is resolved.
 func (s *CodespaceStateStore) ClearRuntimeTransitionPending(codespaceUUID string, runtimeGeneration int64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1050,6 +1100,8 @@ func (s *CodespaceStateStore) ClearRuntimeTransitionPending(codespaceUUID string
 
 // SaveHealthStopPending stores a health-driven stop intent before stopping runtime resources.
 func (s *CodespaceStateStore) SaveHealthStopPending(snapshot manager.HealthStopSnapshot) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(snapshot.CodespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1075,11 +1127,14 @@ func (s *CodespaceStateStore) SaveHealthStopPending(snapshot manager.HealthStopS
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = snapshot.CodespaceUUID
 	state.HealthStopPending = true
+	state.HealthStopObservedOperationRVersion = snapshot.ObservedOperationRVersion
 	return writeJSONFileAtomic(path, state)
 }
 
 // SaveCleanupPending stores the local cleanup state before deleting runtime resources.
 func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1095,12 +1150,15 @@ func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
 	state.CodespaceUUID = codespaceUUID
 	state.PendingRuntimeTransition = nil
 	state.HealthStopPending = false
+	state.HealthStopObservedOperationRVersion = 0
 	state.CleanupPending = true
 	return writeJSONFileAtomic(path, state)
 }
 
 // ClearCodespaceState removes the local Codespace snapshot after cleanup completes.
 func (s *CodespaceStateStore) ClearCodespaceState(codespaceUUID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1163,11 +1221,14 @@ func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, 
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_pending cannot coexist with cleanup_pending or pending_runtime_transition", path)
 	}
 	if state.HealthStopPending {
-		if state.RuntimeMetadata == nil ||
-			state.RuntimeMetadata.Boot.Stage != manager.RuntimeBootStageReady ||
-			state.RuntimeMetadata.Boot.OperationRVersion <= 0 {
-			return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_pending requires ready runtime metadata", path)
+		if state.HealthStopObservedOperationRVersion <= 0 {
+			return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_observed_operation_rversion must be positive", path)
 		}
+	} else if state.HealthStopObservedOperationRVersion != 0 {
+		return codespaceState{}, fmt.Errorf("validate codespace state %s: health_stop_observed_operation_rversion requires health_stop_pending", path)
+	}
+	if state.RuntimeMetadataInactive && (state.RuntimeMetadata != nil || len(state.Endpoints) > 0) {
+		return codespaceState{}, fmt.Errorf("validate codespace state %s: inactive runtime metadata cannot contain metadata or endpoints", path)
 	}
 	if len(state.Endpoints) > maxCodespaceEndpoints {
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: endpoints exceed limit %d", path, maxCodespaceEndpoints)
@@ -1418,7 +1479,7 @@ func loadOptionalCodespaceStateFile(path string, codespaceUUID string) (codespac
 }
 
 func (s codespaceState) hasPersistentData() bool {
-	return s.RuntimeGeneration > 0 || s.PendingRuntimeTransition != nil || s.CleanupPending || s.HealthStopPending || len(s.Endpoints) > 0 || s.RuntimeMetadata != nil || s.ActiveOperation != nil || s.StartupInput != nil || len(s.SharedEnvironment) > 0
+	return s.RuntimeGeneration > 0 || s.PendingRuntimeTransition != nil || s.CleanupPending || s.HealthStopPending || s.RuntimeMetadataInactive || len(s.Endpoints) > 0 || s.RuntimeMetadata != nil || s.ActiveOperation != nil || s.StartupInput != nil || len(s.SharedEnvironment) > 0
 }
 
 func (s *codespaceState) bumpRuntimeMetadataGeneration() error {

@@ -6,7 +6,27 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"gitea.dev/codespace/internal/manager"
 )
+
+func TestGatewayBrowserAuthOpenURLUsesCodespaceDetail(t *testing.T) {
+	t.Parallel()
+
+	auth := newGatewayBrowserAuth()
+	if err := auth.SaveManagerServiceSettings(manager.ManagerServiceSettings{GiteaWebURL: "https://gitea.example.test/git/"}); err != nil {
+		t.Fatalf("save manager service settings: %v", err)
+	}
+
+	got, ok := auth.openURL("11111111-1111-4111-8111-111111111111", "app-3000")
+	if !ok {
+		t.Fatal("open URL is unavailable")
+	}
+	want := "https://gitea.example.test/git/-/codespaces/11111111-1111-4111-8111-111111111111?open_endpoint=app-3000"
+	if got != want {
+		t.Fatalf("open URL = %q, want %q", got, want)
+	}
+}
 
 func TestSanitizeGatewayReturnTo(t *testing.T) {
 	t.Parallel()

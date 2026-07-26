@@ -206,17 +206,16 @@ type IncusConfig struct {
 
 // RuntimeEnvironmentConfig stores one repository tag to an internal runtime environment mapping.
 type RuntimeEnvironmentConfig struct {
-	Image                  string
-	InstanceType           string
-	CommunicationInterface string
-	CPU                    int32
-	MemoryLimit            string
-	RootDiskSize           string
-	Profiles               []string
-	SourceType             string
-	SourceRemote           string
-	SourceProject          string
-	SourceName             string
+	Image         string
+	InstanceType  string
+	CPU           int32
+	MemoryLimit   string
+	RootDiskSize  string
+	Profiles      []string
+	SourceType    string
+	SourceRemote  string
+	SourceProject string
+	SourceName    string
 }
 
 // ProvisionerConfig stores provisioner selection and runtime options.
@@ -284,13 +283,12 @@ type RuntimeIncusNetworkConfig struct {
 
 // EnvironmentConfig stores one Gitea tag to a backend runtime environment.
 type EnvironmentConfig struct {
-	Tag                    string                     `yaml:"tag"`
-	DisplayName            string                     `yaml:"display_name"`
-	Type                   string                     `yaml:"type"`
-	Source                 EnvironmentSourceConfig    `yaml:"source"`
-	Resources              EnvironmentResourcesConfig `yaml:"resources"`
-	Profiles               EnvironmentProfilesConfig  `yaml:"profiles"`
-	CommunicationInterface string                     `yaml:"communication_interface"`
+	Tag         string                     `yaml:"tag"`
+	DisplayName string                     `yaml:"display_name"`
+	Type        string                     `yaml:"type"`
+	Source      EnvironmentSourceConfig    `yaml:"source"`
+	Resources   EnvironmentResourcesConfig `yaml:"resources"`
+	Profiles    EnvironmentProfilesConfig  `yaml:"profiles"`
 }
 
 // EnvironmentSourceConfig stores the base used to create one runtime.
@@ -412,16 +410,15 @@ func DefaultConfig() Config {
 					Pool: "default",
 				},
 				Network: RuntimeIncusNetworkConfig{
-					Name:   "gitea-codespace-net",
+					Name:   "csnet",
 					Manage: true,
 				},
 			},
 			Environments: []EnvironmentConfig{
 				{
-					Tag:                    "default",
-					DisplayName:            "Default",
-					Type:                   "container",
-					CommunicationInterface: "eth0",
+					Tag:         "default",
+					DisplayName: "Default",
+					Type:        "container",
 					Source: EnvironmentSourceConfig{
 						Type:  "image",
 						Image: "images:debian/12",
@@ -836,9 +833,6 @@ func (c RuntimeEnvironmentConfig) validate(tag string) error {
 	default:
 		return fmt.Errorf("runtime.environments.%s.source.type must be image or instance", tag)
 	}
-	if strings.TrimSpace(c.CommunicationInterface) == "" {
-		return fmt.Errorf("runtime.environments.%s.communication_interface is required", tag)
-	}
 	if c.CPU < 1 {
 		return fmt.Errorf("runtime.environments.%s.resources.cpu must be positive", tag)
 	}
@@ -1157,9 +1151,6 @@ func (c *EnvironmentConfig) applyDefaults(defaults EnvironmentConfig) {
 	if strings.TrimSpace(c.Source.Type) == "image" && strings.TrimSpace(c.Source.Image) == "" {
 		c.Source.Image = defaults.Source.Image
 	}
-	if strings.TrimSpace(c.CommunicationInterface) == "" {
-		c.CommunicationInterface = defaults.CommunicationInterface
-	}
 	if c.Resources.CPU == 0 {
 		c.Resources.CPU = defaults.Resources.CPU
 	}
@@ -1206,17 +1197,16 @@ func runtimeEnvironmentsFromConfig(environments []EnvironmentConfig) map[string]
 			continue
 		}
 		result[tag] = RuntimeEnvironmentConfig{
-			Image:                  strings.TrimSpace(environment.Source.Image),
-			InstanceType:           normalizeEnvironmentType(environment.Type),
-			CommunicationInterface: strings.TrimSpace(environment.CommunicationInterface),
-			CPU:                    environment.Resources.CPU,
-			MemoryLimit:            strings.TrimSpace(environment.Resources.Memory),
-			RootDiskSize:           strings.TrimSpace(environment.Resources.RootDisk),
-			Profiles:               normalizedConfigProfiles(environment.Profiles.Use),
-			SourceType:             strings.TrimSpace(environment.Source.Type),
-			SourceRemote:           strings.TrimSpace(environment.Source.Remote),
-			SourceProject:          strings.TrimSpace(environment.Source.Project),
-			SourceName:             strings.TrimSpace(environment.Source.Name),
+			Image:         strings.TrimSpace(environment.Source.Image),
+			InstanceType:  normalizeEnvironmentType(environment.Type),
+			CPU:           environment.Resources.CPU,
+			MemoryLimit:   strings.TrimSpace(environment.Resources.Memory),
+			RootDiskSize:  strings.TrimSpace(environment.Resources.RootDisk),
+			Profiles:      normalizedConfigProfiles(environment.Profiles.Use),
+			SourceType:    strings.TrimSpace(environment.Source.Type),
+			SourceRemote:  strings.TrimSpace(environment.Source.Remote),
+			SourceProject: strings.TrimSpace(environment.Source.Project),
+			SourceName:    strings.TrimSpace(environment.Source.Name),
 		}
 	}
 	return result

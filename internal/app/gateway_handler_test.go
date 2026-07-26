@@ -1202,7 +1202,7 @@ func TestGatewayWorkspaceMissingSessionRedirectsBrowserNavigationToGitea(t *test
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("workspace missing session status = %d body=%s", response.Code, response.Body.String())
 	}
-	wantLocation := "https://gitea.example.test/git/-/codespaces/" + codespaceUUID + "/open"
+	wantLocation := "https://gitea.example.test/git/-/codespaces/" + codespaceUUID + "?open_endpoint=workspace"
 	if location := response.Header().Get("Location"); location != wantLocation {
 		t.Fatalf("auth recovery location = %q", location)
 	}
@@ -1238,7 +1238,7 @@ func TestGatewayWorkspaceMissingSessionUsesSecureReturnToCookieForHTTPS(t *testi
 	if response.Code != http.StatusSeeOther {
 		t.Fatalf("workspace missing session status = %d body=%s", response.Code, response.Body.String())
 	}
-	wantLocation := "https://gitea.example.test/git/-/codespaces/" + codespaceUUID + "/open"
+	wantLocation := "https://gitea.example.test/git/-/codespaces/" + codespaceUUID + "?open_endpoint=workspace"
 	if location := response.Header().Get("Location"); location != wantLocation {
 		t.Fatalf("auth recovery location = %q", location)
 	}

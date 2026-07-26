@@ -66,13 +66,12 @@ runtime:
     storage:
       pool: "default"
     network:
-      name: "gitea-codespace-net"
+      name: "csnet"
       manage: true
   environments:
     - tag: "debian-lxc"
       display_name: "Debian 12 LXC"
       type: "lxc"
-      communication_interface: "eth0"
       source:
         type: "image"
         image: "images:debian/12"
@@ -87,7 +86,6 @@ runtime:
     - tag: "debian-vm"
       display_name: "Debian 12 VM"
       type: "vm"
-      communication_interface: "eth0"
       source:
         type: "image"
         image: "images:debian/12"
@@ -102,7 +100,6 @@ runtime:
     - tag: "company-base"
       display_name: "Company Base VM"
       type: "vm"
-      communication_interface: "eth0"
       source:
         type: "instance"
         remote: "local"

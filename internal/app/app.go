@@ -117,19 +117,18 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 }
 
 type processStateSnapshot struct {
-	identity                    ManagerIdentity
-	credentials                 ManagerCredentials
-	rootState                   ManagerRootState
-	codespaceStateStore         *CodespaceStateStore
-	initialOperations           []manager.OperationSnapshot
-	initialRuntimeGenerations   map[string]int64
-	initialRuntimeTransitions   []manager.RuntimeTransitionSnapshot
-	initialCleanupPendings      []string
-	initialHealthStopPendings   []manager.HealthStopSnapshot
-	initialGatewayRoutes        []gatewayEndpointRoute
-	initialRuntimeMetadataUUIDs []string
-	gatewaySSHHostKey           gatewaySSHHostKey
-	scriptSnapshot              provisioner.ScriptSnapshot
+	identity                  ManagerIdentity
+	credentials               ManagerCredentials
+	rootState                 ManagerRootState
+	codespaceStateStore       *CodespaceStateStore
+	initialOperations         []manager.OperationSnapshot
+	initialRuntimeGenerations map[string]int64
+	initialRuntimeTransitions []manager.RuntimeTransitionSnapshot
+	initialCleanupPendings    []string
+	initialHealthStopPendings []manager.HealthStopSnapshot
+	initialGatewayRoutes      []gatewayEndpointRoute
+	gatewaySSHHostKey         gatewaySSHHostKey
+	scriptSnapshot            provisioner.ScriptSnapshot
 }
 
 func loadProcessState(config Config) (processStateSnapshot, error) {
@@ -173,10 +172,6 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load codespace gateway routes: %w", err)
 	}
-	initialRuntimeMetadataUUIDs, err := codespaceStateStore.LoadRuntimeMetadataCodespaceUUIDs()
-	if err != nil {
-		return processStateSnapshot{}, fmt.Errorf("load codespace runtime metadata snapshots: %w", err)
-	}
 	gatewaySSHHostKey, err := loadOrCreateGatewaySSHHostKey(config.Manager.StateDir)
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load gateway ssh host key: %w", err)
@@ -190,19 +185,18 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 		return processStateSnapshot{}, fmt.Errorf("load lifecycle scripts: %w", err)
 	}
 	return processStateSnapshot{
-		identity:                    identity,
-		credentials:                 credentials,
-		rootState:                   rootState,
-		codespaceStateStore:         codespaceStateStore,
-		initialOperations:           initialOperations,
-		initialRuntimeGenerations:   initialRuntimeGenerations,
-		initialRuntimeTransitions:   initialRuntimeTransitions,
-		initialCleanupPendings:      initialCleanupPendings,
-		initialHealthStopPendings:   initialHealthStopPendings,
-		initialGatewayRoutes:        initialGatewayRoutes,
-		initialRuntimeMetadataUUIDs: initialRuntimeMetadataUUIDs,
-		gatewaySSHHostKey:           gatewaySSHHostKey,
-		scriptSnapshot:              scriptSnapshot,
+		identity:                  identity,
+		credentials:               credentials,
+		rootState:                 rootState,
+		codespaceStateStore:       codespaceStateStore,
+		initialOperations:         initialOperations,
+		initialRuntimeGenerations: initialRuntimeGenerations,
+		initialRuntimeTransitions: initialRuntimeTransitions,
+		initialCleanupPendings:    initialCleanupPendings,
+		initialHealthStopPendings: initialHealthStopPendings,
+		initialGatewayRoutes:      initialGatewayRoutes,
+		gatewaySSHHostKey:         gatewaySSHHostKey,
+		scriptSnapshot:            scriptSnapshot,
 	}, nil
 }
 
@@ -246,7 +240,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
 	)
 	runtimeMetadataPublisher := newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
-	runtimeMetadataPublisher.Run(ctx, state.initialRuntimeMetadataUUIDs)
+	runtimeMetadataPublisher.Run(ctx)
 	managerServiceSettings := managerServiceSettingsStores{
 		gatewayControlPlane,
 		gatewayBrowserAuth,
@@ -404,17 +398,16 @@ func provisionerEnvironments(environments map[string]RuntimeEnvironmentConfig) m
 	result := make(map[string]provisioner.IncusEnvironmentConfig, len(environments))
 	for tag, environment := range environments {
 		result[tag] = provisioner.IncusEnvironmentConfig{
-			Image:                  environment.Image,
-			InstanceType:           environment.InstanceType,
-			CPU:                    environment.CPU,
-			MemoryLimit:            environment.MemoryLimit,
-			RootDiskSize:           environment.RootDiskSize,
-			Profiles:               append([]string(nil), environment.Profiles...),
-			CommunicationInterface: environment.CommunicationInterface,
-			SourceType:             environment.SourceType,
-			SourceRemote:           environment.SourceRemote,
-			SourceProject:          environment.SourceProject,
-			SourceName:             environment.SourceName,
+			Image:         environment.Image,
+			InstanceType:  environment.InstanceType,
+			CPU:           environment.CPU,
+			MemoryLimit:   environment.MemoryLimit,
+			RootDiskSize:  environment.RootDiskSize,
+			Profiles:      append([]string(nil), environment.Profiles...),
+			SourceType:    environment.SourceType,
+			SourceRemote:  environment.SourceRemote,
+			SourceProject: environment.SourceProject,
+			SourceName:    environment.SourceName,
 		}
 	}
 	return result

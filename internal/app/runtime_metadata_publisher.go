@@ -81,11 +81,29 @@ func (p *runtimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID string) {
 	if p == nil || p.state == nil || p.controlPlane == nil {
 		return
 	}
-	worker, ok := p.ensureWorker(codespaceUUID)
-	if !ok {
+	p.mu.Lock()
+	worker := p.workers[codespaceUUID]
+	p.mu.Unlock()
+	if worker == nil {
 		return
 	}
 	worker.notify()
+}
+
+func (p *runtimeMetadataPublisher) ActivateRuntimeMetadata(codespaceUUID string) (bool, error) {
+	if p == nil || p.state == nil || p.controlPlane == nil {
+		return false, fmt.Errorf("runtime metadata publisher is not ready")
+	}
+	if _, _, ok, err := p.state.LoadRuntimeMetadataRequest(codespaceUUID); err != nil {
+		return false, err
+	} else if !ok {
+		return false, nil
+	}
+	worker, ok := p.ensureWorker(codespaceUUID)
+	if ok {
+		worker.notify()
+	}
+	return true, nil
 }
 
 func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error {
@@ -142,7 +160,7 @@ func (p *runtimeMetadataPublisher) ensureWorker(codespaceUUID string) (*runtimeM
 	return worker, ok
 }
 
-func (p *runtimeMetadataPublisher) Run(ctx context.Context, codespaceUUIDs []string) {
+func (p *runtimeMetadataPublisher) Run(ctx context.Context) {
 	if p == nil || p.state == nil || p.controlPlane == nil {
 		return
 	}
@@ -151,15 +169,6 @@ func (p *runtimeMetadataPublisher) Run(ctx context.Context, codespaceUUIDs []str
 	if !p.refreshStarted {
 		p.refreshStarted = true
 		go p.runRefresh(ctx)
-	}
-	for _, codespaceUUID := range codespaceUUIDs {
-		if _, ok := p.workers[codespaceUUID]; ok {
-			continue
-		}
-		worker := newRuntimeMetadataWorker()
-		p.workers[codespaceUUID] = worker
-		go p.runWorker(ctx, codespaceUUID, worker)
-		worker.notify()
 	}
 	p.mu.Unlock()
 }
@@ -196,13 +205,14 @@ func (p *runtimeMetadataPublisher) runRefresh(ctx context.Context) {
 }
 
 func (p *runtimeMetadataPublisher) refreshRuntimeMetadataSet() {
-	codespaceUUIDs, err := p.state.LoadRuntimeMetadataCodespaceUUIDs()
-	if err != nil {
-		log.Printf("load runtime metadata refresh set: %v", err)
-		return
+	p.mu.Lock()
+	workers := make([]*runtimeMetadataWorker, 0, len(p.workers))
+	for _, worker := range p.workers {
+		workers = append(workers, worker)
 	}
-	for _, codespaceUUID := range codespaceUUIDs {
-		p.NotifyRuntimeMetadata(codespaceUUID)
+	p.mu.Unlock()
+	for _, worker := range workers {
+		worker.notify()
 	}
 }
 
@@ -222,7 +232,11 @@ func (p *runtimeMetadataPublisher) runWorker(ctx context.Context, codespaceUUID 
 			return
 		case <-worker.wake:
 			if !p.publishUntilCurrent(ctx, codespaceUUID, worker) {
-				p.removeWorker(codespaceUUID, worker, false)
+				p.mu.Lock()
+				if p.workers[codespaceUUID] == worker {
+					delete(p.workers, codespaceUUID)
+				}
+				p.mu.Unlock()
 				return
 			}
 		}
@@ -295,7 +309,7 @@ func newRuntimeMetadataWorker() *runtimeMetadataWorker {
 	}
 }
 
-func (p *runtimeMetadataPublisher) ForgetRuntimeMetadata(codespaceUUID string) {
+func (p *runtimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID string) {
 	if p == nil {
 		return
 	}
@@ -306,19 +320,6 @@ func (p *runtimeMetadataPublisher) ForgetRuntimeMetadata(codespaceUUID string) {
 	}
 	p.mu.Unlock()
 	if worker != nil {
-		close(worker.stop)
-	}
-}
-
-func (p *runtimeMetadataPublisher) removeWorker(codespaceUUID string, worker *runtimeMetadataWorker, stop bool) {
-	p.mu.Lock()
-	if p.workers[codespaceUUID] != worker {
-		p.mu.Unlock()
-		return
-	}
-	delete(p.workers, codespaceUUID)
-	p.mu.Unlock()
-	if stop {
 		close(worker.stop)
 	}
 }
@@ -336,6 +337,12 @@ func (p *runtimeMetadataPublisher) handleMetadataPublishError(codespaceUUID stri
 		return true, nil
 	case "generation_conflict", "version_exhausted":
 		return true, fmt.Errorf("report runtime metadata %s: %s: %w", codespaceUUID, category, err)
+	case "stale_operation":
+		if clearErr := p.state.ClearRuntimeMetadata(codespaceUUID); clearErr != nil {
+			return true, fmt.Errorf("clear stale runtime metadata %s: %w", codespaceUUID, clearErr)
+		}
+		p.DeactivateRuntimeMetadata(codespaceUUID)
+		return true, err
 	default:
 		return false, nil
 	}

@@ -85,7 +85,7 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -174,7 +174,7 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -315,7 +315,7 @@ func TestGatewaySSHDirectTCPIPUsesEndpointRoute(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -430,7 +430,7 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -537,7 +537,7 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -600,7 +600,7 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,
@@ -693,7 +693,7 @@ func TestGatewaySSHHostKeyPersistsInStateDir(t *testing.T) {
 func dialGatewaySSHExpectFailure(t *testing.T, address string, clientKey ssh.Signer) {
 	t.Helper()
 	client, err := ssh.Dial("tcp", address, &ssh.ClientConfig{
-		User:            "cs-11111111111141118111111111111111",
+		User:            "cs-11111111-1111-4111-8111-111111111111",
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(clientKey)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(),
 		Timeout:         time.Second,

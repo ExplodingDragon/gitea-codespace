@@ -23,7 +23,6 @@ import (
 )
 
 const defaultCodespaceRoot = "/codespace"
-const defaultCommunicationInterface = "eth0"
 const defaultIncusImage = "images:debian/12"
 const defaultIncusInstanceType = "container"
 const defaultBootstrapShell = "/bin/bash"
@@ -95,17 +94,16 @@ type IncusConfig struct {
 
 // IncusEnvironmentConfig stores one Incus environment selected by repository tag.
 type IncusEnvironmentConfig struct {
-	Image                  string
-	InstanceType           string
-	CPU                    int32
-	MemoryLimit            string
-	RootDiskSize           string
-	Profiles               []string
-	CommunicationInterface string
-	SourceType             string
-	SourceRemote           string
-	SourceProject          string
-	SourceName             string
+	Image         string
+	InstanceType  string
+	CPU           int32
+	MemoryLimit   string
+	RootDiskSize  string
+	Profiles      []string
+	SourceType    string
+	SourceRemote  string
+	SourceProject string
+	SourceName    string
 }
 
 // IncusProvisioner provisions codespace as Incus instances.
@@ -113,6 +111,7 @@ type IncusProvisioner struct {
 	client        incus.InstanceServer
 	managerID     string
 	project       string
+	networkName   string
 	environments  map[string]incusEnvironment
 	extraConfig   map[string]string
 	codespaceRoot string
@@ -123,17 +122,16 @@ type IncusProvisioner struct {
 }
 
 type incusEnvironment struct {
-	image                  string
-	instanceType           api.InstanceType
-	cpu                    int32
-	memoryLimit            string
-	rootDiskSize           string
-	profiles               []string
-	communicationInterface string
-	sourceType             string
-	sourceRemote           string
-	sourceProject          string
-	sourceName             string
+	image         string
+	instanceType  api.InstanceType
+	cpu           int32
+	memoryLimit   string
+	rootDiskSize  string
+	profiles      []string
+	sourceType    string
+	sourceRemote  string
+	sourceProject string
+	sourceName    string
 }
 
 type incusCPUSample struct {
@@ -145,6 +143,10 @@ type incusCPUSample struct {
 func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if config.ManagerID <= 0 {
 		return nil, fmt.Errorf("manager_id is required")
+	}
+	networkName := strings.TrimSpace(config.NetworkName)
+	if networkName == "" {
+		return nil, fmt.Errorf("incus network name is required")
 	}
 	baseClient, err := connectIncusBase(config)
 	if err != nil {
@@ -191,6 +193,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 		client:        client,
 		managerID:     fmt.Sprintf("%d", config.ManagerID),
 		project:       project,
+		networkName:   networkName,
 		environments:  environments,
 		extraConfig:   copyStringMap(config.ExtraConfig),
 		codespaceRoot: codespaceRoot,
@@ -319,10 +322,6 @@ func normalizeIncusEnvironments(config IncusConfig) (map[string]incusEnvironment
 		if err != nil {
 			return nil, fmt.Errorf("incus environment %s: %w", tag, err)
 		}
-		communicationInterface := strings.TrimSpace(environment.CommunicationInterface)
-		if communicationInterface == "" {
-			return nil, fmt.Errorf("incus environment %s communication_interface is required", tag)
-		}
 		if environment.CPU < 1 {
 			return nil, fmt.Errorf("incus environment %s cpu must be positive", tag)
 		}
@@ -336,17 +335,16 @@ func normalizeIncusEnvironments(config IncusConfig) (map[string]incusEnvironment
 			return nil, fmt.Errorf("incus environment %s profiles are required", tag)
 		}
 		normalized[tag] = incusEnvironment{
-			image:                  image,
-			instanceType:           instanceType,
-			cpu:                    environment.CPU,
-			memoryLimit:            strings.TrimSpace(environment.MemoryLimit),
-			rootDiskSize:           strings.TrimSpace(environment.RootDiskSize),
-			profiles:               normalizedIncusProfiles(environment.Profiles),
-			communicationInterface: communicationInterface,
-			sourceType:             sourceType,
-			sourceRemote:           strings.TrimSpace(environment.SourceRemote),
-			sourceProject:          strings.TrimSpace(environment.SourceProject),
-			sourceName:             sourceName,
+			image:         image,
+			instanceType:  instanceType,
+			cpu:           environment.CPU,
+			memoryLimit:   strings.TrimSpace(environment.MemoryLimit),
+			rootDiskSize:  strings.TrimSpace(environment.RootDiskSize),
+			profiles:      normalizedIncusProfiles(environment.Profiles),
+			sourceType:    sourceType,
+			sourceRemote:  strings.TrimSpace(environment.SourceRemote),
+			sourceProject: strings.TrimSpace(environment.SourceProject),
+			sourceName:    sourceName,
 		}
 	}
 	return normalized, nil
@@ -1074,14 +1072,13 @@ func (p *IncusProvisioner) startExistingInstance(ctx context.Context, spec Insta
 	if tag == "" {
 		tag = spec.EnvironmentTag
 	}
-	environment, err := p.environmentForTag(tag)
-	if err != nil {
+	if _, err := p.environmentForTag(tag); err != nil {
 		return nil, err
 	}
 	if err := p.startInstance(ctx, instance.Name); err != nil {
 		return nil, fmt.Errorf("start instance %s: %w", instance.Name, err)
 	}
-	host, err := p.instanceCommunicationHost(ctx, instance.Name, environment.communicationInterface)
+	host, err := p.instanceCommunicationHost(ctx, instance.Name)
 	if err != nil {
 		return nil, err
 	}
@@ -1108,7 +1105,16 @@ func (p *IncusProvisioner) environmentForTag(tag string) (incusEnvironment, erro
 	return environment, nil
 }
 
-func (p *IncusProvisioner) instanceCommunicationHost(ctx context.Context, instanceName string, communicationInterface string) (string, error) {
+func (p *IncusProvisioner) instanceCommunicationHost(ctx context.Context, instanceName string) (string, error) {
+	instance, _, err := p.client.GetInstance(instanceName)
+	if err != nil {
+		return "", fmt.Errorf("get instance %s network devices: %w", instanceName, err)
+	}
+	deviceName, hardwareAddress, err := instanceNetworkDevice(instance, p.networkName)
+	if err != nil {
+		return "", fmt.Errorf("resolve instance %s communication device: %w", instanceName, err)
+	}
+
 	var lastErr error
 	for attempt := 0; attempt < 60; attempt++ {
 		if err := ctx.Err(); err != nil {
@@ -1117,8 +1123,14 @@ func (p *IncusProvisioner) instanceCommunicationHost(ctx context.Context, instan
 		state, _, err := p.client.GetInstanceState(instanceName)
 		if err != nil {
 			lastErr = fmt.Errorf("get instance state %s: %w", instanceName, err)
-		} else if host := instanceStateCommunicationHost(state, communicationInterface); host != "" {
-			return host, nil
+		} else {
+			host, err := instanceStateCommunicationHost(state, hardwareAddress)
+			if err != nil {
+				return "", fmt.Errorf("resolve instance %s communication address: %w", instanceName, err)
+			}
+			if host != "" {
+				return host, nil
+			}
 		}
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {
@@ -1133,7 +1145,7 @@ func (p *IncusProvisioner) instanceCommunicationHost(ctx context.Context, instan
 	if lastErr != nil {
 		return "", lastErr
 	}
-	return "", fmt.Errorf("instance %s has no global address on communication interface %s", instanceName, communicationInterface)
+	return "", fmt.Errorf("instance %s has no global IPv4 address on Incus network %s device %s with MAC %s", instanceName, p.networkName, deviceName, hardwareAddress)
 }
 
 // RuntimeResourceUsage samples CPU, memory and disk usage from Incus.
@@ -1199,19 +1211,68 @@ func instanceStateDiskUsage(disks map[string]api.InstanceStateDisk) (int64, int6
 	return used, limit
 }
 
-func instanceStateCommunicationHost(state *api.InstanceState, interfaceName string) string {
-	if state == nil {
-		return ""
+func instanceNetworkDevice(instance *api.Instance, networkName string) (string, string, error) {
+	if instance == nil {
+		return "", "", fmt.Errorf("instance response is empty")
 	}
-	if strings.TrimSpace(interfaceName) != "" {
-		return networkCommunicationHost(state.Network[interfaceName])
+	networkName = strings.TrimSpace(networkName)
+	if networkName == "" {
+		return "", "", fmt.Errorf("incus network name is empty")
 	}
-	for _, network := range state.Network {
-		if host := networkCommunicationHost(network); host != "" {
-			return host
+
+	deviceName := ""
+	var device map[string]string
+	for name, candidate := range instance.ExpandedDevices {
+		if candidate["type"] != "nic" || (candidate["network"] != networkName && candidate["parent"] != networkName) {
+			continue
 		}
+		if deviceName != "" {
+			return "", "", fmt.Errorf("multiple NIC devices connect to Incus network %s: %s and %s", networkName, deviceName, name)
+		}
+		deviceName = name
+		device = candidate
 	}
-	return ""
+	if deviceName == "" {
+		return "", "", fmt.Errorf("no NIC device connects to Incus network %s", networkName)
+	}
+
+	hardwareAddress := strings.TrimSpace(device["hwaddr"])
+	if hardwareAddress == "" {
+		hardwareAddress = strings.TrimSpace(instance.Config["volatile."+deviceName+".hwaddr"])
+	}
+	if hardwareAddress == "" {
+		hardwareAddress = strings.TrimSpace(instance.ExpandedConfig["volatile."+deviceName+".hwaddr"])
+	}
+	parsed, err := net.ParseMAC(hardwareAddress)
+	if err != nil {
+		return "", "", fmt.Errorf("NIC device %s on Incus network %s has invalid MAC address %q", deviceName, networkName, hardwareAddress)
+	}
+	return deviceName, parsed.String(), nil
+}
+
+func instanceStateCommunicationHost(state *api.InstanceState, hardwareAddress string) (string, error) {
+	target, err := net.ParseMAC(strings.TrimSpace(hardwareAddress))
+	if err != nil {
+		return "", fmt.Errorf("invalid communication device MAC address %q", hardwareAddress)
+	}
+	if state == nil {
+		return "", nil
+	}
+
+	host := ""
+	matchedInterface := ""
+	for interfaceName, network := range state.Network {
+		candidate, err := net.ParseMAC(strings.TrimSpace(network.Hwaddr))
+		if err != nil || !bytes.Equal(candidate, target) {
+			continue
+		}
+		if matchedInterface != "" {
+			return "", fmt.Errorf("MAC address %s is reported by multiple guest interfaces: %s and %s", target, matchedInterface, interfaceName)
+		}
+		matchedInterface = interfaceName
+		host = networkCommunicationHost(network)
+	}
+	return host, nil
 }
 
 func networkCommunicationHost(network api.InstanceStateNetwork) string {
@@ -1221,10 +1282,10 @@ func networkCommunicationHost(network api.InstanceStateNetwork) string {
 			continue
 		}
 		ip := net.ParseIP(strings.TrimSpace(address.Address))
-		if ip == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
+		if ip == nil || ip.To4() == nil || ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() {
 			continue
 		}
-		return ip.String()
+		return ip.To4().String()
 	}
 	return ""
 }
@@ -1617,8 +1678,8 @@ func (p *IncusProvisioner) execInstanceCommand(
 	stderrWriter := io.Writer(stderr)
 	var stdoutLog, stderrLog *lifecycleLogWriter
 	if sink != nil {
-		stdoutLog = newLifecycleLogWriter(ctx, sink, "stdout")
-		stderrLog = newLifecycleLogWriter(ctx, sink, "stderr")
+		stdoutLog = newLifecycleLogWriter(ctx, sink)
+		stderrLog = newLifecycleLogWriter(ctx, sink)
 		stdoutWriter = io.MultiWriter(stdout, stdoutLog)
 		stderrWriter = io.MultiWriter(stderr, stderrLog)
 		defer stdoutLog.Flush()
@@ -1723,15 +1784,14 @@ func (b *boundedOutputBuffer) Truncated() bool {
 }
 
 type lifecycleLogWriter struct {
-	ctx    context.Context
-	sink   LifecycleLogSink
-	stream string
-	mu     sync.Mutex
-	buf    []byte
+	ctx  context.Context
+	sink LifecycleLogSink
+	mu   sync.Mutex
+	buf  []byte
 }
 
-func newLifecycleLogWriter(ctx context.Context, sink LifecycleLogSink, stream string) *lifecycleLogWriter {
-	return &lifecycleLogWriter{ctx: ctx, sink: sink, stream: stream}
+func newLifecycleLogWriter(ctx context.Context, sink LifecycleLogSink) *lifecycleLogWriter {
+	return &lifecycleLogWriter{ctx: ctx, sink: sink}
 }
 
 func (w *lifecycleLogWriter) Write(payload []byte) (int, error) {
@@ -1768,14 +1828,10 @@ func (w *lifecycleLogWriter) Flush() {
 
 func (w *lifecycleLogWriter) writeLineLocked(line []byte) {
 	line = bytes.TrimSuffix(line, []byte{'\r'})
-	message := string(line)
-	if message == "" {
+	if len(line) == 0 {
 		return
 	}
-	if w.stream != "" {
-		message = w.stream + ": " + message
-	}
-	_ = w.sink.WriteLifecycleLog(w.ctx, message)
+	_ = w.sink.WriteLifecycleLog(w.ctx, string(line))
 }
 
 func (p *IncusProvisioner) waitInstanceFileAPI(ctx context.Context, instanceName string) error {
