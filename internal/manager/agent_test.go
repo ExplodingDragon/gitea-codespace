@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -115,6 +116,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		t.Fatalf("runtime credential seeds = %#v", records)
 	}
 	if events := provisioner.recordedEvents(); !slices.Equal(events, []string{
+		"seed-runtime-git-ssh-key",
 		"seed-runtime-credentials",
 	}) {
 		t.Fatalf("credential events = %#v", events)
@@ -142,6 +144,44 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	waitDeleted(t, stateStore, 1)
 	if stateStore.deletedCount() != 1 {
 		t.Fatalf("deleted active operations = %d", stateStore.deletedCount())
+	}
+}
+
+func TestSyncRuntimeEndpointManifestAllowsEmptyManifestWithoutRuntimeHost(t *testing.T) {
+	t.Parallel()
+
+	applier := &recordingRuntimeEndpointApplier{}
+	agent := New(AgentConfig{
+		RuntimeEndpointApplier: applier,
+	}, nil, provisioner.NewDummy())
+	if err := agent.syncRuntimeEndpointManifest(context.Background(), "11111111-1111-4111-8111-111111111111", &provisioner.Instance{
+		Name: "cs-11111111111141118111",
+	}); err != nil {
+		t.Fatalf("sync runtime endpoint manifest: %v", err)
+	}
+	if applier.codespaceUUID != "11111111-1111-4111-8111-111111111111" {
+		t.Fatalf("applied codespace uuid = %q", applier.codespaceUUID)
+	}
+	if len(applier.routes) != 0 {
+		t.Fatalf("applied routes = %#v", applier.routes)
+	}
+}
+
+func TestAgentRedactsLifecycleLogSecrets(t *testing.T) {
+	t.Parallel()
+
+	agent := New(AgentConfig{ManagerSecret: "manager-secret"}, nil, provisioner.NewDummy())
+	message := agent.redactLogMessage(
+		`manager-secret gcs_test Authorization: Bearer abc http://user:pass@gitea.example/repo basic xyz`,
+		"gcs_test",
+	)
+	for _, secret := range []string{"manager-secret", "gcs_test", "Bearer abc", "user:pass", "basic xyz"} {
+		if strings.Contains(message, secret) {
+			t.Fatalf("message still contains %q: %s", secret, message)
+		}
+	}
+	if !strings.Contains(message, "[redacted]") {
+		t.Fatalf("message was not redacted: %s", message)
 	}
 }
 
@@ -1058,6 +1098,80 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	}
 	if calls := publisher.forgottenCalls(); len(calls) != 1 || calls[0] != codespaceUUID {
 		t.Fatalf("metadata forget calls = %#v", calls)
+	}
+}
+
+func TestAgentStopSavesSuccessfulScriptEnvironment(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111122"
+	store := memoryScriptEnvironmentStore{values: map[string]map[string]string{
+		codespaceUUID: {
+			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
+			"OLD_VALUE":               "kept",
+		},
+	}}
+	runtimeProvisioner := &stopEnvironmentProvisioner{
+		DummyProvisioner: provisioner.NewDummy(),
+		access: provisioner.RuntimeAccess{SharedEnv: map[string]string{
+			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
+			"OLD_VALUE":               "kept",
+			"STOP_VALUE":              "saved",
+		}},
+	}
+	agent := New(AgentConfig{
+		BaseURL:                     "http://127.0.0.1",
+		ScriptEnvironmentStateStore: store,
+	}, http.DefaultClient, runtimeProvisioner)
+
+	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	if err := agent.handleStop(context.Background(), operation, provisioner.ScriptSnapshot{}); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	environment, ok, err := store.LoadScriptEnvironment(codespaceUUID)
+	if err != nil || !ok {
+		t.Fatalf("load environment ok=%v err=%v", ok, err)
+	}
+	if environment["STOP_VALUE"] != "saved" || environment["OLD_VALUE"] != "kept" {
+		t.Fatalf("environment = %#v", environment)
+	}
+	if runtimeProvisioner.stoppedCount() != 1 {
+		t.Fatalf("stopped count = %d", runtimeProvisioner.stoppedCount())
+	}
+}
+
+func TestAgentStopScriptFailureKeepsPreviousEnvironment(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111123"
+	store := memoryScriptEnvironmentStore{values: map[string]map[string]string{
+		codespaceUUID: {
+			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
+			"OLD_VALUE":               "kept",
+		},
+	}}
+	runtimeProvisioner := &stopEnvironmentProvisioner{
+		DummyProvisioner: provisioner.NewDummy(),
+		stopErr:          errors.New("stop script failed"),
+	}
+	agent := New(AgentConfig{
+		BaseURL:                     "http://127.0.0.1",
+		ScriptEnvironmentStateStore: store,
+	}, http.DefaultClient, runtimeProvisioner)
+
+	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	if err := agent.handleStop(context.Background(), operation, provisioner.ScriptSnapshot{}); err != nil {
+		t.Fatalf("handle stop: %v", err)
+	}
+	environment, ok, err := store.LoadScriptEnvironment(codespaceUUID)
+	if err != nil || !ok {
+		t.Fatalf("load environment ok=%v err=%v", ok, err)
+	}
+	if _, ok := environment["STOP_VALUE"]; ok || environment["OLD_VALUE"] != "kept" {
+		t.Fatalf("environment = %#v", environment)
+	}
+	if runtimeProvisioner.stoppedCount() != 1 {
+		t.Fatalf("stopped count = %d", runtimeProvisioner.stoppedCount())
 	}
 }
 
@@ -3866,6 +3980,14 @@ type stopBlockingProvisioner struct {
 	release chan struct{}
 }
 
+type stopEnvironmentProvisioner struct {
+	*provisioner.DummyProvisioner
+	mu      sync.Mutex
+	access  provisioner.RuntimeAccess
+	stopErr error
+	stopped int
+}
+
 type runtimeCredentialSeedRecord struct {
 	instanceName string
 	request      provisioner.RuntimeCredentialSeedRequest
@@ -3910,6 +4032,17 @@ type listFailingProvisioner struct {
 
 type nonDeletingProvisioner struct {
 	base *provisioner.DummyProvisioner
+}
+
+type recordingRuntimeEndpointApplier struct {
+	codespaceUUID string
+	routes        []RuntimeEndpointRoute
+}
+
+func (a *recordingRuntimeEndpointApplier) ApplyRuntimeEndpointRoutes(codespaceUUID string, routes []RuntimeEndpointRoute) error {
+	a.codespaceUUID = codespaceUUID
+	a.routes = append([]RuntimeEndpointRoute(nil), routes...)
+	return nil
 }
 
 func newCredentialTrackingProvisioner() *credentialTrackingProvisioner {
@@ -3958,6 +4091,16 @@ func (p *listFailingProvisioner) ListInstances(context.Context) ([]*provisioner.
 
 func (p *credentialTrackingProvisioner) CheckCredentials(ctx context.Context, instanceName string) (provisioner.CredentialStatus, error) {
 	return p.base.CheckCredentials(ctx, instanceName)
+}
+
+func (p *credentialTrackingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
+	if err := p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.events = append(p.events, "seed-runtime-git-ssh-key")
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *credentialTrackingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
@@ -4045,6 +4188,10 @@ func (p *credentialRepairProvisioner) CheckCredentials(ctx context.Context, _ st
 	defer p.mu.Unlock()
 
 	return p.status, nil
+}
+
+func (p *credentialRepairProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
+	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
 }
 
 func (p *credentialRepairProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceName string, workdir string) error {
@@ -4153,6 +4300,10 @@ func (p *blockingProvisioner) CheckCredentials(ctx context.Context, instanceName
 	return p.base.CheckCredentials(ctx, instanceName)
 }
 
+func (p *blockingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
+	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
+}
+
 func (p *blockingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
 	return p.base.SeedRuntimeCredentials(ctx, instanceName, request)
 }
@@ -4222,6 +4373,33 @@ func (p *stopBlockingProvisioner) Stop(ctx context.Context, instanceName string)
 	return p.DummyProvisioner.Stop(ctx, instanceName)
 }
 
+func (p *stopEnvironmentProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+	if err := ctx.Err(); err != nil {
+		return provisioner.RuntimeAccess{}, err
+	}
+	if p.stopErr != nil {
+		return provisioner.RuntimeAccess{}, p.stopErr
+	}
+	return p.access, nil
+}
+
+func (p *stopEnvironmentProvisioner) Stop(ctx context.Context, instanceName string) error {
+	if err := p.DummyProvisioner.Stop(ctx, instanceName); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.stopped++
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *stopEnvironmentProvisioner) stoppedCount() int {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.stopped
+}
+
 func (p *blockingProvisioner) Delete(ctx context.Context, instanceName string) error {
 	return p.base.Delete(ctx, instanceName)
 }
@@ -4249,6 +4427,10 @@ func (p *nonDeletingProvisioner) ListInstances(ctx context.Context) ([]*provisio
 
 func (p *nonDeletingProvisioner) CheckCredentials(ctx context.Context, instanceName string) (provisioner.CredentialStatus, error) {
 	return p.base.CheckCredentials(ctx, instanceName)
+}
+
+func (p *nonDeletingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
+	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
 }
 
 func (p *nonDeletingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {

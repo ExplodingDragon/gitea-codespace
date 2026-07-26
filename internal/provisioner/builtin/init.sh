@@ -1,15 +1,22 @@
 set -eu
 
 write_result() {
-  outcome="${1:-done}"
-  tmp="${CODESPACE_RESULT}.tmp.$$"
+  result_outcome="${1:-done}"
+  result_tmp_path="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"%s","stage":"initialize-system"}\n' "$outcome" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
+  printf '{"outcome":"%s","stage":"initialize-system"}\n' "$result_outcome" > "$result_tmp_path"
+  chmod 600 "$result_tmp_path"
+  mv "$result_tmp_path" "$CODESPACE_RESULT"
+}
+
+log_error() {
+  printf '%s\n' "$*" >&2
 }
 
 fail_unrecoverable() {
+  if [ "$#" -gt 0 ]; then
+    log_error "$*"
+  fi
   write_result unrecoverable_failed
   exit 0
 }
@@ -23,31 +30,31 @@ cleanup_policy_rc() {
 trap cleanup_policy_rc EXIT
 
 configure_apt_mirrors() {
-  mirror=""
-  security_mirror=""
+  apt_mirror=""
+  apt_security_mirror=""
   if [ -r /etc/os-release ]; then
     . /etc/os-release
     case "${ID:-}" in
       debian)
-        mirror="https://mirrors.tuna.tsinghua.edu.cn/debian"
-        security_mirror="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
+        apt_mirror="https://mirrors.tuna.tsinghua.edu.cn/debian"
+        apt_security_mirror="https://mirrors.tuna.tsinghua.edu.cn/debian-security"
         ;;
       ubuntu)
-        mirror="https://mirrors.tuna.tsinghua.edu.cn/ubuntu"
-        security_mirror="$mirror"
+        apt_mirror="https://mirrors.tuna.tsinghua.edu.cn/ubuntu"
+        apt_security_mirror="$apt_mirror"
         ;;
     esac
   fi
-  [ -n "$mirror" ] || return 0
+  [ -n "$apt_mirror" ] || return 0
   for file in /etc/apt/sources.list /etc/apt/sources.list.d/*.list /etc/apt/sources.list.d/*.sources; do
     [ -f "$file" ] || continue
     [ -f "${file}.gitea-codespace.bak" ] || cp "$file" "${file}.gitea-codespace.bak"
     sed -i \
-      -e "s|https\?://deb.debian.org/debian-security|$security_mirror|g" \
-      -e "s|https\?://security.debian.org/debian-security|$security_mirror|g" \
-      -e "s|https\?://deb.debian.org/debian|$mirror|g" \
-      -e "s|https\?://archive.ubuntu.com/ubuntu|$mirror|g" \
-      -e "s|https\?://security.ubuntu.com/ubuntu|$security_mirror|g" \
+      -e "s|https\?://deb.debian.org/debian-security|$apt_security_mirror|g" \
+      -e "s|https\?://security.debian.org/debian-security|$apt_security_mirror|g" \
+      -e "s|https\?://deb.debian.org/debian|$apt_mirror|g" \
+      -e "s|https\?://archive.ubuntu.com/ubuntu|$apt_mirror|g" \
+      -e "s|https\?://security.ubuntu.com/ubuntu|$apt_security_mirror|g" \
       "$file"
   done
 }
@@ -70,44 +77,44 @@ configure_dnf_mirrors() {
 }
 
 configure_pacman_mirrors() {
-  mirror='Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch'
-  if [ -f /etc/pacman.d/mirrorlist ] && ! grep -Fq "$mirror" /etc/pacman.d/mirrorlist; then
+  pacman_mirror='Server = https://mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch'
+  if [ -f /etc/pacman.d/mirrorlist ] && ! grep -Fq "$pacman_mirror" /etc/pacman.d/mirrorlist; then
     [ -f /etc/pacman.d/mirrorlist.gitea-codespace.bak ] || cp /etc/pacman.d/mirrorlist /etc/pacman.d/mirrorlist.gitea-codespace.bak
-    tmp="/etc/pacman.d/mirrorlist.tmp.$$"
-    printf '%s\n' "$mirror" > "$tmp"
-    cat /etc/pacman.d/mirrorlist >> "$tmp"
-    mv "$tmp" /etc/pacman.d/mirrorlist
+    pacman_tmp_path="/etc/pacman.d/mirrorlist.tmp.$$"
+    printf '%s\n' "$pacman_mirror" > "$pacman_tmp_path"
+    cat /etc/pacman.d/mirrorlist >> "$pacman_tmp_path"
+    mv "$pacman_tmp_path" /etc/pacman.d/mirrorlist
   fi
 }
 
 install_missing() {
-  missing=""
-  for command in git ssh sudo flock getent useradd groupadd; do
+  missing_commands=""
+  for command in bash git ssh sudo flock getent useradd groupadd; do
     if ! command -v "$command" >/dev/null 2>&1; then
-      missing="$missing $command"
+      missing_commands="$missing_commands $command"
     fi
   done
-  if [ -z "$missing" ]; then
+  if [ -z "$missing_commands" ]; then
     return 0
   fi
   if command -v apt-get >/dev/null 2>&1; then
     export DEBIAN_FRONTEND=noninteractive
     configure_apt_mirrors
     if [ ! -e /usr/sbin/policy-rc.d ]; then
-      printf '#!/bin/sh\nexit 101\n' > /usr/sbin/policy-rc.d
+      printf '#!/bin/bash\nexit 101\n' > /usr/sbin/policy-rc.d
       chmod 0755 /usr/sbin/policy-rc.d
       policy_rc_created=1
     fi
     apt-get update
-    apt-get install -y --no-install-recommends ca-certificates curl git openssh-client sudo util-linux passwd python3
+    apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client sudo util-linux passwd python3
   elif command -v dnf >/dev/null 2>&1; then
     configure_dnf_mirrors
-    dnf install -y --setopt=install_weak_deps=False ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3
+    dnf install -y --setopt=install_weak_deps=False bash ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3
   elif command -v pacman >/dev/null 2>&1; then
     configure_pacman_mirrors
-    pacman -Sy --noconfirm ca-certificates curl git openssh sudo util-linux shadow python
+    pacman -Sy --noconfirm bash ca-certificates curl git openssh sudo util-linux shadow python
   else
-    exit 20
+    fail_unrecoverable "no supported package manager found for installing runtime dependencies"
   fi
 }
 
@@ -116,7 +123,7 @@ install_missing
 codespace_user="${CODESPACE_USER:-codespace}"
 case "$codespace_user" in
   ""|[0-9]*|-*|*[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-]*)
-    exit 23
+    fail_unrecoverable "invalid codespace user: $codespace_user"
     ;;
 esac
 
@@ -126,7 +133,7 @@ fi
 codespace_uid="$(id -u "$codespace_user")"
 codespace_gid="$(id -g "$codespace_user")"
 if [ "$codespace_uid" = "0" ] || [ "$codespace_gid" = "0" ]; then
-  exit 24
+  fail_unrecoverable "codespace user must not resolve to uid or gid 0: $codespace_user"
 fi
 
 passwd -l "$codespace_user" >/dev/null 2>&1 || true
@@ -146,9 +153,9 @@ seed_public_key="$runtime_seed_dir/id_ed25519.pub"
 seed_known_hosts="$runtime_seed_dir/known_hosts"
 
 for seed_file in "$seed_token" "$seed_private_key" "$seed_public_key"; do
-  [ -s "$seed_file" ] || exit 25
+  [ -s "$seed_file" ] || fail_unrecoverable "missing runtime seed file: $seed_file"
 done
-[ -f "$seed_known_hosts" ] || exit 25
+[ -f "$seed_known_hosts" ] || fail_unrecoverable "missing runtime seed known_hosts file: $seed_known_hosts"
 
 install -d -m 0755 -o 0 -g 0 "$runtime_dir"
 install -d -m 0700 -o "$codespace_uid" -g "$codespace_gid" "$runtime_dir/git" "$runtime_dir/runtime"
@@ -167,13 +174,13 @@ git_user() {
 }
 
 ensure_git_ssh() {
-  [ -f "$private_key_file" ] || return 1
-  [ -s "$known_hosts_file" ] || return 1
+  [ -f "$private_key_file" ] || { log_error "missing git ssh private key: $private_key_file"; return 1; }
+  [ -s "$known_hosts_file" ] || { log_error "missing git ssh known_hosts: $known_hosts_file"; return 1; }
   export GIT_SSH_COMMAND="ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes"
 }
 
 configure_git_credentials() {
-  repo_url="$1"
+  credential_repo_url="$1"
   if [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ]; then
     git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
   fi
@@ -183,67 +190,90 @@ configure_git_credentials() {
   if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
     git_user config --global user.email "$GITEA_GIT_USER_EMAIL" || return 1
   fi
-  if [ "$repo_url" = "${GITEA_REPO_CLONE_SSH_URL:-}" ] && [ -n "$repo_url" ]; then
+  if [ "$credential_repo_url" = "${GITEA_REPO_CLONE_SSH_URL:-}" ] && [ -n "$credential_repo_url" ]; then
     ensure_git_ssh || return 1
   fi
 }
 
 configure_workspace_credentials() {
-  workspace="$1"
-  remote_url="$(git_user -C "$workspace" remote get-url origin)" || return 1
-  configure_git_credentials "$remote_url" || return 1
-  case "$remote_url" in
+  credential_workspace="$1"
+  credential_remote_url="$(git_user -C "$credential_workspace" remote get-url origin)" || return 1
+  configure_git_credentials "$credential_remote_url" || return 1
+  case "$credential_remote_url" in
     http://*|https://*)
       [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ] || return 1
-      git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
+      git_user -C "$credential_workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
       ;;
     *)
       ensure_git_ssh || return 1
       ;;
   esac
   if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
-    git_user -C "$workspace" config user.name "$GITEA_GIT_USER_NAME" || return 1
+    git_user -C "$credential_workspace" config user.name "$GITEA_GIT_USER_NAME" || return 1
   fi
   if [ -n "${GITEA_GIT_USER_EMAIL:-}" ]; then
-    git_user -C "$workspace" config user.email "$GITEA_GIT_USER_EMAIL" || return 1
+    git_user -C "$credential_workspace" config user.email "$GITEA_GIT_USER_EMAIL" || return 1
   fi
 }
 
 restore_existing_workspace() {
-  workspace="$1"
-  [ -d "$workspace/.git" ] || return 1
-  configure_workspace_credentials "$workspace" || return 1
+  existing_workspace="$1"
+  [ -d "$existing_workspace/.git" ] || { log_error "workspace is not a git repository: $existing_workspace"; return 1; }
+  configure_workspace_credentials "$existing_workspace" || { log_error "configure existing workspace credentials failed: $existing_workspace"; return 1; }
   if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
-    current="$(git_user -C "$workspace" rev-parse HEAD)" || return 1
-    [ "$current" = "$GITEA_COMMIT_SHA" ] || return 1
+    existing_head="$(git_user -C "$existing_workspace" rev-parse HEAD)" || { log_error "read existing workspace HEAD failed: $existing_workspace"; return 1; }
+    [ "$existing_head" = "$GITEA_COMMIT_SHA" ] || { log_error "existing workspace commit mismatch: expected $GITEA_COMMIT_SHA got $existing_head"; return 1; }
   fi
+}
+
+prepare_workspace_target() {
+  candidate_workspace="$1"
+  if [ ! -e "$candidate_workspace" ]; then
+    return 0
+  fi
+  if [ -d "$candidate_workspace/.git" ]; then
+    log_error "workspace already contains a git repository: $candidate_workspace"
+    return 1
+  fi
+  if [ -d "$candidate_workspace" ]; then
+    if rmdir "$candidate_workspace" 2>/dev/null; then
+      log_error "removed empty workspace directory before clone: $candidate_workspace"
+      return 0
+    fi
+    log_error "workspace path already exists and is not empty or a git repository: $candidate_workspace"
+    return 1
+  fi
+  log_error "workspace path already exists and is not a directory: $candidate_workspace"
+  return 1
 }
 
 prepare_workspace_from_repo() {
-  repo_url="$1"
-  workspace="$2"
-  temp_workspace="${CODESPACE_WORKSPACES_DIR}/.gitea-create-${CODESPACE_UUID}"
-  rm -rf "$temp_workspace"
-  configure_git_credentials "$repo_url" || return 1
-  git_user clone "$repo_url" "$temp_workspace" || return 1
-  git_user -C "$temp_workspace" remote set-url origin "$repo_url" || return 1
-  configure_workspace_credentials "$temp_workspace" || return 1
+  clone_repo_url="$1"
+  target_workspace="$2"
+  clone_temp_workspace="${CODESPACE_WORKSPACES_DIR}/.gitea-create-${CODESPACE_UUID}"
+  [ "$target_workspace" != "$clone_temp_workspace" ] || { log_error "workspace path conflicts with temporary clone path: $target_workspace"; return 1; }
+  prepare_workspace_target "$target_workspace" || return 1
+  rm -rf "$clone_temp_workspace" || { log_error "remove temporary workspace failed: $clone_temp_workspace"; return 1; }
+  configure_git_credentials "$clone_repo_url" || { log_error "configure git credentials failed for repository URL: $clone_repo_url"; return 1; }
+  git_user clone "$clone_repo_url" "$clone_temp_workspace" || { log_error "clone repository failed: $clone_repo_url"; return 1; }
+  git_user -C "$clone_temp_workspace" remote set-url origin "$clone_repo_url" || { log_error "set workspace origin failed: $clone_repo_url"; return 1; }
+  configure_workspace_credentials "$clone_temp_workspace" || { log_error "configure cloned workspace credentials failed: $clone_temp_workspace"; return 1; }
   if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
     if [ -n "${GITEA_START_REF:-}" ]; then
-      git_user -C "$temp_workspace" fetch origin "$GITEA_START_REF" --tags --prune || return 1
+      git_user -C "$clone_temp_workspace" fetch origin "$GITEA_START_REF" --tags --prune || { log_error "fetch start ref failed: $GITEA_START_REF"; return 1; }
     else
-      git_user -C "$temp_workspace" fetch --all --tags --prune || return 1
+      git_user -C "$clone_temp_workspace" fetch --all --tags --prune || { log_error "fetch repository refs failed"; return 1; }
     fi
-    git_user -C "$temp_workspace" checkout --detach "$GITEA_COMMIT_SHA" || return 1
-    current="$(git_user -C "$temp_workspace" rev-parse HEAD)" || return 1
-    [ "$current" = "$GITEA_COMMIT_SHA" ] || return 1
+    git_user -C "$clone_temp_workspace" checkout --detach "$GITEA_COMMIT_SHA" || { log_error "checkout commit failed: $GITEA_COMMIT_SHA"; return 1; }
+    cloned_head="$(git_user -C "$clone_temp_workspace" rev-parse HEAD)" || { log_error "read cloned workspace HEAD failed"; return 1; }
+    [ "$cloned_head" = "$GITEA_COMMIT_SHA" ] || { log_error "cloned workspace commit mismatch: expected $GITEA_COMMIT_SHA got $cloned_head"; return 1; }
   fi
-  [ ! -e "$workspace" ] || return 1
-  mv "$temp_workspace" "$workspace" || return 1
+  prepare_workspace_target "$target_workspace" || return 1
+  mv "$clone_temp_workspace" "$target_workspace" || { log_error "move prepared workspace into place failed: $clone_temp_workspace -> $target_workspace"; return 1; }
 }
 
 cat >/usr/local/bin/gitea-codespace-git-credential <<'EOF'
-#!/bin/sh
+#!/bin/bash
 set -eu
 while IFS= read -r line; do
   [ -n "$line" ] || break
@@ -298,24 +328,24 @@ if command -v visudo >/dev/null 2>&1; then
 fi
 
 if [ "${CODESPACE_OPERATION:-}" = "create" ]; then
-  repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
-  fallback_url="${GITEA_REPO_CLONE_SSH_URL:-}"
+  create_repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
+  create_fallback_url="${GITEA_REPO_CLONE_SSH_URL:-}"
   if [ "${GITEA_GIT_PROTOCOL:-http}" = "ssh" ] && [ -n "${GITEA_REPO_CLONE_SSH_URL:-}" ]; then
-    repo_url="$GITEA_REPO_CLONE_SSH_URL"
-    fallback_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
+    create_repo_url="$GITEA_REPO_CLONE_SSH_URL"
+    create_fallback_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
   fi
-  [ -n "$repo_url" ] || fail_unrecoverable
-  workspace="${CODESPACE_WORKSPACES_DIR}/${GITEA_REPO_NAME:-repo}"
-  if [ -d "$workspace/.git" ]; then
-    restore_existing_workspace "$workspace" || fail_unrecoverable
-  elif ! prepare_workspace_from_repo "$repo_url" "$workspace"; then
-    if [ -n "$fallback_url" ] && [ "$fallback_url" != "$repo_url" ]; then
-      prepare_workspace_from_repo "$fallback_url" "$workspace" || fail_unrecoverable
+  [ -n "$create_repo_url" ] || fail_unrecoverable "repository clone URL is empty"
+  create_workspace="${CODESPACE_WORKSPACES_DIR}/${GITEA_REPO_NAME:-repo}"
+  if [ -d "$create_workspace/.git" ]; then
+    restore_existing_workspace "$create_workspace" || fail_unrecoverable "existing workspace cannot be restored: $create_workspace"
+  elif ! prepare_workspace_from_repo "$create_repo_url" "$create_workspace"; then
+    if [ -n "$create_fallback_url" ] && [ "$create_fallback_url" != "$create_repo_url" ]; then
+      prepare_workspace_from_repo "$create_fallback_url" "$create_workspace" || fail_unrecoverable "clone failed with primary and fallback repository URLs"
     else
-      fail_unrecoverable
+      fail_unrecoverable "clone failed and no fallback repository URL is available"
     fi
   fi
-  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
+  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$create_workspace" >> "$CODESPACE_ENV"
 fi
 
 printf 'CODESPACE_CREDENTIAL_UID=%s\nCODESPACE_CREDENTIAL_GID=%s\nCODESPACE_USER=%s\n' "$codespace_uid" "$codespace_gid" "$codespace_user" >> "$CODESPACE_ENV"

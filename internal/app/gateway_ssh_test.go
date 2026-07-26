@@ -42,6 +42,7 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 
 	service := &gatewayManagerService{
 		sshResponse: &codespacev1.VerifySSHPublicKeyResponse{
@@ -133,6 +134,7 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 	service := &gatewayManagerService{
 		sshResponse: &codespacev1.VerifySSHPublicKeyResponse{
 			Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{
@@ -381,6 +383,7 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 
 	service := &gatewayManagerService{
 		sshResponse: &codespacev1.VerifySSHPublicKeyResponse{
@@ -489,6 +492,7 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 
 	service := &gatewayManagerService{
 		sshResponse: &codespacev1.VerifySSHPublicKeyResponse{

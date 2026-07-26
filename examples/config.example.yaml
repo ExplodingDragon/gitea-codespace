@@ -45,7 +45,7 @@ runtime:
   driver: "incus"
   codespace_root: "/codespace"
   bootstrap:
-    shell: "/bin/sh"
+    shell: "/bin/bash"
     home_dir: "/root"
     user_name: "codespace"
     user: 0

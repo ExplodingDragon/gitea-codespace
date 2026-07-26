@@ -42,7 +42,7 @@ func TestIncusE2EManagedProjectResources(t *testing.T) {
 
 	suffix := time.Now().UnixNano()
 	projectName := fmt.Sprintf("gitea-codespace-e2e-project-%d", suffix)
-	networkName := fmt.Sprintf("gitea-codespace-e2e-net-%d", suffix)
+	networkName := fmt.Sprintf("cse2e%09x", suffix&0xfffffffff)
 	config := incusE2EConfig(suffix, fmt.Sprintf("managed-project-%d", suffix))
 	config.Project = projectName
 	config.ProjectManage = true
@@ -64,12 +64,16 @@ func TestIncusE2EManagedProjectResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get managed project: %v", err)
 	}
-	for _, feature := range []string{"features.profiles", "features.networks", "features.storage.volumes"} {
+	for _, feature := range []string{"features.profiles", "features.storage.volumes"} {
 		if !projectFeatureEnabled(project.Config, feature) {
 			t.Fatalf("managed project feature %s = %q", feature, project.Config[feature])
 		}
 	}
-	network, _, err := provisioner.client.GetNetwork(networkName)
+	if projectFeatureEnabled(project.Config, "features.networks") {
+		t.Fatalf("managed project feature features.networks = %q", project.Config["features.networks"])
+	}
+	defaultClient := withProject(baseClient, api.ProjectDefaultName)
+	network, _, err := defaultClient.GetNetwork(networkName)
 	if err != nil {
 		t.Fatalf("get managed network: %v", err)
 	}
@@ -357,7 +361,18 @@ func assertIncusE2EEnvironmentResources(t *testing.T, ctx context.Context, provi
 
 func assertIncusE2EWorkspaceSFTP(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName, workdir string) {
 	t.Helper()
-	if err := provisioner.execScript(ctx, instanceName, "mkdir -p -- \"$CODESPACE_E2E_WORKDIR\"", map[string]string{
+	const workspaceUIDGID = 1000
+	if err := provisioner.execScript(ctx, instanceName, `
+set -eu
+if ! getent group 1000 >/dev/null; then
+	groupadd -g 1000 codespace-e2e
+fi
+if ! getent passwd 1000 >/dev/null; then
+	useradd -u 1000 -g 1000 -m -s /bin/bash codespace-e2e
+fi
+mkdir -p -- "$CODESPACE_E2E_WORKDIR"
+chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
+`, map[string]string{
 		"CODESPACE_E2E_WORKDIR": workdir,
 	}, "/"); err != nil {
 		t.Fatalf("prepare e2e workspace directory for sftp: %v", err)
@@ -365,6 +380,8 @@ func assertIncusE2EWorkspaceSFTP(t *testing.T, ctx context.Context, provisioner 
 	conn, err := provisioner.OpenWorkspaceSFTP(ctx, WorkspaceSFTPRequest{
 		InstanceName: instanceName,
 		Workdir:      workdir,
+		User:         workspaceUIDGID,
+		Group:        workspaceUIDGID,
 	})
 	if err != nil {
 		t.Fatalf("open e2e workspace sftp: %v", err)
@@ -459,8 +476,8 @@ func cleanupIncusE2EManagedProject(t *testing.T, baseClient incus.InstanceServer
 	if baseClient == nil {
 		return
 	}
-	projectClient := withProject(baseClient, projectName)
-	if err := projectClient.DeleteNetwork(networkName); err != nil && !isNotFoundError(err) {
+	defaultClient := withProject(baseClient, api.ProjectDefaultName)
+	if err := defaultClient.DeleteNetwork(networkName); err != nil && !isNotFoundError(err) {
 		t.Logf("cleanup managed network %s: %v", networkName, err)
 	}
 	if err := baseClient.DeleteProject(projectName); err != nil && !isNotFoundError(err) {

@@ -1,19 +1,19 @@
 set -eu
 
 write_result() {
-  tmp="${CODESPACE_RESULT}.tmp.$$"
+  result_tmp_path="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"done","stage":"stop-environment"}\n' > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
+  printf '{"outcome":"done","stage":"stop-environment"}\n' > "$result_tmp_path"
+  chmod 600 "$result_tmp_path"
+  mv "$result_tmp_path" "$CODESPACE_RESULT"
 }
 
-container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
-if [ -z "$container_id" ] && [ -n "${CODESPACE_WORKSPACE_DIR:-}" ]; then
-  container_id="$(docker ps -a --filter "label=devcontainer.local_folder=${CODESPACE_WORKSPACE_DIR}" --format '{{.ID}}' | head -n 1)"
+stop_container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
+if [ -z "$stop_container_id" ] && [ -n "${CODESPACE_WORKSPACE_DIR:-}" ]; then
+  stop_container_id="$(docker ps -a --filter "label=devcontainer.local_folder=${CODESPACE_WORKSPACE_DIR}" --format '{{.ID}}' | head -n 1)"
 fi
-if [ -n "$container_id" ]; then
-  docker stop "$container_id" >/dev/null 2>&1 || true
-  printf 'DEVCONTAINER_EXAMPLE_CONTAINER_ID=%s\n' "$container_id" >> "$CODESPACE_ENV"
+if [ -n "$stop_container_id" ]; then
+  docker stop "$stop_container_id" >/dev/null 2>&1 || true
+  printf 'DEVCONTAINER_EXAMPLE_CONTAINER_ID=%s\n' "$stop_container_id" >> "$CODESPACE_ENV"
 fi
 write_result

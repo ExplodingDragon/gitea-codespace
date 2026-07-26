@@ -68,9 +68,12 @@ func (p *runtimeMetadataPublisher) SaveManagerServiceSettings(settings manager.M
 		return fmt.Errorf("runtime metadata refresh interval must be positive")
 	}
 	p.mu.Lock()
+	changed := p.refreshInterval != settings.RuntimeMetadataRefreshInterval
 	p.refreshInterval = settings.RuntimeMetadataRefreshInterval
 	p.mu.Unlock()
-	p.wakeRefresh()
+	if changed {
+		p.wakeRefresh()
+	}
 	return nil
 }
 
@@ -169,6 +172,9 @@ func (p *runtimeMetadataPublisher) runRefresh(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-p.refreshWake:
+				if p.currentRefreshInterval() > 0 {
+					p.refreshRuntimeMetadataSet()
+				}
 				continue
 			}
 		}
@@ -180,18 +186,23 @@ func (p *runtimeMetadataPublisher) runRefresh(ctx context.Context) {
 			return
 		case <-p.refreshWake:
 			stopRuntimeMetadataTimer(timer)
+			p.refreshRuntimeMetadataSet()
 			continue
 		case <-timer.C:
 		}
 
-		codespaceUUIDs, err := p.state.LoadRuntimeMetadataCodespaceUUIDs()
-		if err != nil {
-			log.Printf("load runtime metadata refresh set: %v", err)
-			continue
-		}
-		for _, codespaceUUID := range codespaceUUIDs {
-			p.NotifyRuntimeMetadata(codespaceUUID)
-		}
+		p.refreshRuntimeMetadataSet()
+	}
+}
+
+func (p *runtimeMetadataPublisher) refreshRuntimeMetadataSet() {
+	codespaceUUIDs, err := p.state.LoadRuntimeMetadataCodespaceUUIDs()
+	if err != nil {
+		log.Printf("load runtime metadata refresh set: %v", err)
+		return
+	}
+	for _, codespaceUUID := range codespaceUUIDs {
+		p.NotifyRuntimeMetadata(codespaceUUID)
 	}
 }
 

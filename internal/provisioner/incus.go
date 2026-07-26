@@ -26,7 +26,7 @@ const defaultCodespaceRoot = "/codespace"
 const defaultCommunicationInterface = "eth0"
 const defaultIncusImage = "images:debian/12"
 const defaultIncusInstanceType = "container"
-const defaultBootstrapShell = "/bin/sh"
+const defaultBootstrapShell = "/bin/bash"
 const defaultBootstrapHomeDir = "/root"
 const defaultBootstrapUserName = "codespace"
 const defaultVMAgentWaitTimeout = 2 * time.Minute
@@ -146,14 +146,14 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if config.ManagerID <= 0 {
 		return nil, fmt.Errorf("manager_id is required")
 	}
-	client, err := connectIncusBase(config)
+	baseClient, err := connectIncusBase(config)
 	if err != nil {
 		return nil, fmt.Errorf("connect incus: %w", err)
 	}
-	if err := ensureIncusProject(client, config); err != nil {
+	if err := ensureIncusProject(baseClient, config); err != nil {
 		return nil, err
 	}
-	client = withProject(client, config.Project)
+	client := withProject(baseClient, config.Project)
 	server, _, err := client.GetServer()
 	if err != nil {
 		return nil, fmt.Errorf("get incus server: %w", err)
@@ -168,7 +168,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if project == "" {
 		project = api.ProjectDefaultName
 	}
-	if err := ensureIncusManagedResources(client, config); err != nil {
+	if err := ensureIncusManagedResources(baseClient, client, config); err != nil {
 		return nil, err
 	}
 
@@ -520,6 +520,16 @@ func (p *IncusProvisioner) CheckCredentials(ctx context.Context, instanceName st
 	if err != nil {
 		return CredentialStatus{}, err
 	}
+	if strings.TrimSpace(gitSSHPrivateKey) == "" && strings.TrimSpace(gitSSHPublicKey) == "" {
+		gitSSHPrivateKey, _, err = p.readCredentialFile(ctx, instanceName, runtimeSeedGitSSHPrivateKey)
+		if err != nil {
+			return CredentialStatus{}, err
+		}
+		gitSSHPublicKey, _, err = p.readCredentialFile(ctx, instanceName, runtimeSeedGitSSHPublicKey)
+		if err != nil {
+			return CredentialStatus{}, err
+		}
+	}
 	return CredentialStatus{
 		GiteaTokenPresent: giteaPresent && strings.TrimSpace(giteaToken) != "",
 		GitSSHPrivateKey:  []byte(gitSSHPrivateKey),
@@ -543,10 +553,17 @@ func (p *IncusProvisioner) CheckWorkspaceGit(ctx context.Context, instanceName s
 set -eu
 workdir="${CODESPACE_WORKSPACE_DIR}"
 [ -d "$workdir/.git" ] || exit 60
-origin="$(git -C "$workdir" remote get-url origin)"
-helper="$(git -C "$workdir" config --get credential.helper || true)"
-global_helper="$(git config --global --get credential.helper || true)"
-ssh_command="$(git -C "$workdir" config --get core.sshCommand || true)"
+workspace_uid="$(stat -c %u "$workdir")"
+workspace_gid="$(stat -c %g "$workdir")"
+workspace_home="$(getent passwd "$workspace_uid" | cut -d: -f6)"
+[ -n "$workspace_home" ] || exit 61
+run_workspace_git() {
+	sudo -u "#$workspace_uid" -g "#$workspace_gid" env HOME="$workspace_home" git "$@"
+}
+origin="$(run_workspace_git -C "$workdir" remote get-url origin)"
+helper="$(run_workspace_git -C "$workdir" config --get credential.helper || true)"
+global_helper="$(run_workspace_git config --global --get credential.helper || true)"
+ssh_command="$(run_workspace_git -C "$workdir" config --get core.sshCommand || true)"
 printf 'ORIGIN=%s\n' "$origin"
 printf 'HELPER=%s\n' "$helper"
 printf 'GLOBAL_HELPER=%s\n' "$global_helper"
@@ -585,10 +602,19 @@ func (p *IncusProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceNam
 set -eu
 workdir="${CODESPACE_WORKSPACE_DIR}"
 [ -d "$workdir" ] || exit 70
-[ -w "$workdir" ] || exit 71
-probe="$workdir/.gitea-codespace-health-$$"
-: > "$probe"
-rm -f "$probe"
+workspace_uid="$(stat -c %u "$workdir")"
+workspace_gid="$(stat -c %g "$workdir")"
+[ "$workspace_uid" != "0" ] || exit 71
+[ "$workspace_gid" != "0" ] || exit 71
+workspace_home="$(getent passwd "$workspace_uid" | cut -d: -f6)"
+[ -n "$workspace_home" ] || exit 72
+sudo -u "#$workspace_uid" -g "#$workspace_gid" env HOME="$workspace_home" bash -euo pipefail -c '
+	workdir="$1"
+	[ -w "$workdir" ] || exit 73
+	probe="$workdir/.gitea-codespace-health-$$"
+	: > "$probe"
+	rm -f "$probe"
+' bash "$workdir"
 `, map[string]string{"CODESPACE_WORKSPACE_DIR": workdir}, "/")
 }
 
@@ -626,6 +652,29 @@ func (p *IncusProvisioner) readCredentialFile(ctx context.Context, instanceName,
 	return string(data), true, nil
 }
 
+// SeedRuntimeGitSSHKey writes the root-owned git SSH key seed before the key is registered in Gitea.
+func (p *IncusProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request RuntimeGitSSHKeySeedRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	files, err := runtimeGitSSHKeySeedFiles(request)
+	if err != nil {
+		return err
+	}
+	if err := p.ensureRuntimeCredentialSeedDir(ctx, instanceName); err != nil {
+		return err
+	}
+	for _, file := range files {
+		if err := p.writeRuntimeOwnedFile(ctx, instanceName, file.path, file.content, 0, 0, file.mode); err != nil {
+			return fmt.Errorf("write %s: %w", file.path, err)
+		}
+	}
+	return nil
+}
+
 // SeedRuntimeCredentials writes root-owned credential seed files.
 func (p *IncusProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error {
 	if err := ctx.Err(); err != nil {
@@ -638,6 +687,18 @@ func (p *IncusProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceN
 	if err != nil {
 		return err
 	}
+	if err := p.ensureRuntimeCredentialSeedDir(ctx, instanceName); err != nil {
+		return err
+	}
+	for _, file := range files {
+		if err := p.writeRuntimeOwnedFile(ctx, instanceName, file.path, file.content, 0, 0, file.mode); err != nil {
+			return fmt.Errorf("write %s: %w", file.path, err)
+		}
+	}
+	return nil
+}
+
+func (p *IncusProvisioner) ensureRuntimeCredentialSeedDir(ctx context.Context, instanceName string) error {
 	for _, directory := range []struct {
 		path string
 		mode int
@@ -649,12 +710,20 @@ func (p *IncusProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceN
 			return err
 		}
 	}
-	for _, file := range files {
-		if err := p.writeRuntimeOwnedFile(ctx, instanceName, file.path, file.content, 0, 0, file.mode); err != nil {
-			return fmt.Errorf("write %s: %w", file.path, err)
-		}
-	}
 	return nil
+}
+
+func runtimeGitSSHKeySeedFiles(request RuntimeGitSSHKeySeedRequest) ([]bootstrapCredentialFile, error) {
+	if len(request.GitSSHPrivateKey) == 0 {
+		return nil, fmt.Errorf("git ssh private key is empty")
+	}
+	if len(request.GitSSHPublicKey) == 0 {
+		return nil, fmt.Errorf("git ssh public key is empty")
+	}
+	return []bootstrapCredentialFile{
+		{path: runtimeSeedGitSSHPrivateKey, content: string(request.GitSSHPrivateKey), mode: runtimeCredentialFileMode},
+		{path: runtimeSeedGitSSHPublicKey, content: string(request.GitSSHPublicKey), mode: 0o644},
+	}, nil
 }
 
 func runtimeCredentialSeedFiles(request RuntimeCredentialSeedRequest) ([]bootstrapCredentialFile, error) {
@@ -756,7 +825,7 @@ func (p *IncusProvisioner) Delete(ctx context.Context, instanceName string) erro
 		return nil
 	}
 
-	if err := p.Stop(ctx, instanceName); err != nil {
+	if err := p.stopInstanceForDelete(ctx, instanceName); err != nil {
 		return err
 	}
 
@@ -771,7 +840,48 @@ func (p *IncusProvisioner) Delete(ctx context.Context, instanceName string) erro
 		cancelIncusOperationOnContextError(ctx, operation)
 		return fmt.Errorf("wait delete instance %s: %w", instanceName, err)
 	}
+	if err := p.confirmInstanceDeleted(ctx, instanceName); err != nil {
+		return err
+	}
 	return nil
+}
+
+func (p *IncusProvisioner) stopInstanceForDelete(ctx context.Context, instanceName string) error {
+	instance, _, err := p.client.GetInstance(instanceName)
+	if err != nil {
+		if isNotFoundError(err) {
+			return nil
+		}
+		return fmt.Errorf("get instance %s before delete: %w", instanceName, err)
+	}
+	if strings.EqualFold(instance.Status, "Stopped") {
+		return nil
+	}
+
+	operation, err := p.client.UpdateInstanceState(instanceName, api.InstanceStatePut{
+		Action:  "stop",
+		Force:   true,
+		Timeout: -1,
+	}, "")
+	if err != nil {
+		return fmt.Errorf("force stop instance %s before delete: %w", instanceName, err)
+	}
+	if err := operation.WaitContext(ctx); err != nil {
+		cancelIncusOperationOnContextError(ctx, operation)
+		return fmt.Errorf("wait force stop instance %s before delete: %w", instanceName, err)
+	}
+	return nil
+}
+
+func (p *IncusProvisioner) confirmInstanceDeleted(ctx context.Context, instanceName string) error {
+	_, _, err := p.client.GetInstance(instanceName)
+	if err == nil {
+		return fmt.Errorf("delete instance %s: instance still exists", instanceName)
+	}
+	if isNotFoundError(err) {
+		return nil
+	}
+	return fmt.Errorf("confirm delete instance %s: %w", instanceName, err)
 }
 
 func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec, environment incusEnvironment) error {
@@ -1169,7 +1279,7 @@ func ensureIncusProject(client incus.InstanceServer, config IncusConfig) error {
 	if projectName == "" || projectName == api.ProjectDefaultName {
 		return nil
 	}
-	project, _, err := client.GetProject(projectName)
+	project, etag, err := client.GetProject(projectName)
 	if err != nil {
 		if !isNotFoundError(err) {
 			return fmt.Errorf("get incus project %s: %w", projectName, err)
@@ -1180,7 +1290,7 @@ func ensureIncusProject(client incus.InstanceServer, config IncusConfig) error {
 				Description: "Gitea Codespace runtimes",
 				Config: map[string]string{
 					"features.profiles":        "true",
-					"features.networks":        "true",
+					"features.networks":        "false",
 					"features.storage.volumes": "true",
 				},
 			},
@@ -1193,12 +1303,40 @@ func ensureIncusProject(client incus.InstanceServer, config IncusConfig) error {
 			return fmt.Errorf("reload incus project %s: %w", projectName, err)
 		}
 	}
-	for _, feature := range []string{"features.profiles", "features.networks", "features.storage.volumes"} {
-		if !projectFeatureEnabled(project.Config, feature) {
-			return fmt.Errorf("incus project %s must enable %s before it is used by codespace manager", projectName, feature)
+	if managedProjectFeaturesNeedUpdate(project.Config) {
+		projectPut := project.Writable()
+		projectPut.Config = copyStringMap(project.Config)
+		applyManagedProjectFeatures(projectPut.Config)
+		if err := client.UpdateProject(projectName, projectPut, etag); err != nil {
+			return fmt.Errorf("update incus project %s features: %w", projectName, err)
+		}
+		project, _, err = client.GetProject(projectName)
+		if err != nil {
+			return fmt.Errorf("reload incus project %s: %w", projectName, err)
 		}
 	}
+	if !projectFeatureEnabled(project.Config, "features.profiles") {
+		return fmt.Errorf("incus project %s must enable features.profiles before it is used by codespace manager", projectName)
+	}
+	if projectFeatureEnabled(project.Config, "features.networks") {
+		return fmt.Errorf("incus project %s must share default project networks before it is used by codespace manager", projectName)
+	}
+	if !projectFeatureEnabled(project.Config, "features.storage.volumes") {
+		return fmt.Errorf("incus project %s must enable features.storage.volumes before it is used by codespace manager", projectName)
+	}
 	return nil
+}
+
+func managedProjectFeaturesNeedUpdate(config map[string]string) bool {
+	return !projectFeatureEnabled(config, "features.profiles") ||
+		projectFeatureEnabled(config, "features.networks") ||
+		!projectFeatureEnabled(config, "features.storage.volumes")
+}
+
+func applyManagedProjectFeatures(config map[string]string) {
+	config["features.profiles"] = "true"
+	config["features.networks"] = "false"
+	config["features.storage.volumes"] = "true"
 }
 
 func projectFeatureEnabled(config map[string]string, name string) bool {
@@ -1206,16 +1344,17 @@ func projectFeatureEnabled(config map[string]string, name string) bool {
 	return strings.EqualFold(value, "true") || value == "1"
 }
 
-func ensureIncusManagedResources(client incus.InstanceServer, config IncusConfig) error {
+func ensureIncusManagedResources(baseClient, projectClient incus.InstanceServer, config IncusConfig) error {
 	if !config.ProjectManage {
 		return nil
 	}
 	if config.NetworkManage {
-		if err := ensureIncusNetwork(client, config.NetworkName); err != nil {
+		defaultClient := withProject(baseClient, api.ProjectDefaultName)
+		if err := ensureIncusNetwork(defaultClient, config.NetworkName); err != nil {
 			return err
 		}
 	}
-	return ensureIncusDefaultProfile(client, config)
+	return ensureIncusDefaultProfile(projectClient, config)
 }
 
 func ensureIncusNetwork(client incus.InstanceServer, name string) error {
@@ -1502,6 +1641,9 @@ func (p *IncusProvisioner) execInstanceCommand(
 	}
 	if err := operation.WaitContext(ctx); err != nil {
 		cancelIncusOperationOnContextError(ctx, operation)
+		if sink != nil {
+			return "", fmt.Errorf("wait instance command: %w", err)
+		}
 		return "", fmt.Errorf(
 			"wait instance command: %w (stdout=%q stderr=%q)",
 			err,
@@ -1510,6 +1652,9 @@ func (p *IncusProvisioner) execInstanceCommand(
 		)
 	}
 	if status, ok := incusOperationExitStatus(operation); ok && status != 0 {
+		if sink != nil {
+			return "", fmt.Errorf("instance command exited with status %d", status)
+		}
 		return "", fmt.Errorf(
 			"instance command exited with status %d (stdout=%q stderr=%q)",
 			status,

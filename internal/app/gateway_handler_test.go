@@ -673,6 +673,82 @@ func TestGatewayOpenReturnsTooManyRequestsWhenSessionLimitReached(t *testing.T) 
 	}
 }
 
+func TestGatewayWorkspaceRouteUnavailableUsesBrowserErrorPage(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistry()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, newGatewayRouteStore())
+	cookie := openGatewaySession(t, handler)
+
+	request := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	request.AddCookie(cookie)
+	setGatewayBrowserNavigationHeaders(request.Header)
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("route unavailable status = %d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
+		t.Fatalf("route unavailable content-type = %q", contentType)
+	}
+	if body := response.Body.String(); !strings.Contains(body, "Workspace is not ready") || !strings.Contains(body, "gateway route unavailable") {
+		t.Fatalf("route unavailable body = %s", body)
+	}
+}
+
+func TestGatewayWorkspaceRouteUnavailableKeepsJSONForAPI(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	service := &gatewayManagerService{
+		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
+			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
+				Allowed: &codespacev1.OpenTokenBinding{
+					UserId:        42,
+					CodespaceUuid: codespaceUUID,
+					EndpointId:    "workspace",
+				},
+			},
+		},
+		revalidateResponse: allowedRevalidateResponse(),
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
+	defer closeServer()
+	sessions := newGatewaySessionRegistry()
+	handler := newGatewayHandlerWithOriginAndBrowserAuth(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane, gatewayOriginPolicy{}, nil, newGatewayRouteStore())
+	cookie := openGatewaySession(t, handler)
+
+	request := httptest.NewRequest(http.MethodGet, "/w/"+codespaceUUID+"/", nil)
+	request.AddCookie(cookie)
+	request.Header.Set("Accept", "application/json")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("route unavailable status = %d body=%s", response.Code, response.Body.String())
+	}
+	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
+		t.Fatalf("route unavailable content-type = %q", contentType)
+	}
+	if !strings.Contains(response.Body.String(), "gateway route unavailable") {
+		t.Fatalf("route unavailable body = %s", response.Body.String())
+	}
+}
+
 func TestGatewayOpenCreatesConnectingSessionVisibleToAutoStop(t *testing.T) {
 	t.Parallel()
 
@@ -1954,6 +2030,34 @@ func TestGatewayWorkspaceUsesHostBindingWithRootCompatPath(t *testing.T) {
 	handler, service, cookie := newGatewayWorkspaceSourceTestHandlerWithOrigin(t, codespaceUUID, policy)
 
 	target := "http://" + gatewayTestUUID32(codespaceUUID) + ".gateway.example.test/w/"
+	request := httptest.NewRequest(http.MethodGet, target, nil)
+	request.AddCookie(cookie)
+	request.Header.Set("Origin", "http://"+gatewayTestUUID32(codespaceUUID)+".gateway.example.test")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("workspace status = %d body=%s", response.Code, response.Body.String())
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode workspace response: %v", err)
+	}
+	if payload["codespace_uuid"] != codespaceUUID || payload["endpoint_id"] != "workspace" {
+		t.Fatalf("workspace payload = %#v", payload)
+	}
+	if calls := service.revalidateCallCount(); calls != 1 {
+		t.Fatalf("revalidate rpc calls = %d", calls)
+	}
+}
+
+func TestGatewayWorkspaceUsesHostBindingAtDomainRoot(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	policy := mustGatewayOriginPolicy(t, "http://gateway.example.test")
+	handler, service, cookie := newGatewayWorkspaceSourceTestHandlerWithOrigin(t, codespaceUUID, policy)
+
+	target := "http://" + gatewayTestUUID32(codespaceUUID) + ".gateway.example.test/"
 	request := httptest.NewRequest(http.MethodGet, target, nil)
 	request.AddCookie(cookie)
 	request.Header.Set("Origin", "http://"+gatewayTestUUID32(codespaceUUID)+".gateway.example.test")

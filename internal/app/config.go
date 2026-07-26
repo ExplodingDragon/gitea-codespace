@@ -276,7 +276,7 @@ type RuntimeIncusStorageConfig struct {
 	Pool string `yaml:"pool"`
 }
 
-// RuntimeIncusNetworkConfig stores project-local network selection.
+// RuntimeIncusNetworkConfig stores the shared managed bridge network selection.
 type RuntimeIncusNetworkConfig struct {
 	Name   string `yaml:"name"`
 	Manage bool   `yaml:"manage"`
@@ -388,7 +388,7 @@ func DefaultConfig() Config {
 			Driver:        "dummy",
 			CodespaceRoot: "/codespace",
 			Bootstrap: BootstrapConfig{
-				Shell:    "/bin/sh",
+				Shell:    "/bin/bash",
 				HomeDir:  "/root",
 				UserName: "codespace",
 			},
@@ -405,13 +405,15 @@ func DefaultConfig() Config {
 					UnixSocket: "/var/lib/incus/unix.socket",
 				},
 				Project: RuntimeIncusProjectConfig{
-					Name: "default",
+					Name:   "gitea-codespace",
+					Manage: true,
 				},
 				Storage: RuntimeIncusStorageConfig{
 					Pool: "default",
 				},
 				Network: RuntimeIncusNetworkConfig{
-					Name: "incusbr0",
+					Name:   "gitea-codespace-net",
+					Manage: true,
 				},
 			},
 			Environments: []EnvironmentConfig{
@@ -516,6 +518,7 @@ func (c Config) Validate() error {
 		c.validateVersion,
 		c.validateEnvironments,
 		c.validateRuntimeGit,
+		c.validateRuntimeIncus,
 		c.Server.Validate,
 		c.Manager.Validate,
 		c.Provisioner.Validate,
@@ -526,6 +529,16 @@ func (c Config) Validate() error {
 		if err := validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c Config) validateRuntimeIncus() error {
+	if strings.ToLower(strings.TrimSpace(c.Runtime.Driver)) != "incus" {
+		return nil
+	}
+	if c.Runtime.Incus.Network.Manage && !c.Runtime.Incus.Project.Manage {
+		return fmt.Errorf("runtime.incus.network.manage requires runtime.incus.project.manage")
 	}
 	return nil
 }

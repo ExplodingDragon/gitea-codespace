@@ -1,12 +1,12 @@
 set -eu
 
 write_result() {
-  outcome="${1:-done}"
-  tmp="${CODESPACE_RESULT}.tmp.$$"
+  result_outcome="${1:-done}"
+  result_tmp_path="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"%s","stage":"stop-environment"}\n' "$outcome" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
+  printf '{"outcome":"%s","stage":"stop-environment"}\n' "$result_outcome" > "$result_tmp_path"
+  chmod 600 "$result_tmp_path"
+  mv "$result_tmp_path" "$CODESPACE_RESULT"
 }
 
 write_result done

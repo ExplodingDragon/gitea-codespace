@@ -19,6 +19,7 @@ import (
 	"net/http"
 	"net/url"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -57,6 +58,12 @@ const (
 	RuntimeBootStagePublishReady = "publish-ready"
 	// RuntimeBootStageReady means the runtime is ready for user entry.
 	RuntimeBootStageReady = "ready"
+)
+
+var (
+	logAuthorizationHeaderPattern = regexp.MustCompile(`(?i)(authorization:\s*(?:bearer|basic)\s+)[^\s]+`)
+	logBearerBasicPattern         = regexp.MustCompile(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+`)
+	logURLUserinfoPattern         = regexp.MustCompile(`([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 )
 
 var runtimeBootStageRanks = map[string]int{
@@ -2540,8 +2547,15 @@ func (a *Agent) runStartupOperation(
 	if err != nil {
 		return err
 	}
+	logSink.token = token.GetToken()
 	key, err := a.runtimeGitSSHKeySeed(ctx, instance.Name)
 	if err != nil {
+		return err
+	}
+	if err := a.provisioner.SeedRuntimeGitSSHKey(ctx, instance.Name, provisioner.RuntimeGitSSHKeySeedRequest{
+		GitSSHPrivateKey: key.privateKey,
+		GitSSHPublicKey:  key.publicKey,
+	}); err != nil {
 		return err
 	}
 	lines, err := a.ensureCodespaceGitSSHKey(ctx, codespaceUUID, key.publicWire)
@@ -2989,13 +3003,19 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 	if instance == nil {
 		return fmt.Errorf("runtime instance is required")
 	}
-	host, err := a.runtimeEndpointHost(ctx, codespaceUUID, instance)
-	if err != nil {
-		return err
-	}
 	declarations, err := a.provisioner.ReadEndpointManifest(ctx, instance.Name)
 	if err != nil {
 		return fmt.Errorf("read runtime endpoint manifest: %w", err)
+	}
+	if len(declarations) == 0 {
+		if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, nil); err != nil {
+			return fmt.Errorf("apply runtime endpoint routes: %w", err)
+		}
+		return nil
+	}
+	host, err := a.runtimeEndpointHost(ctx, codespaceUUID, instance)
+	if err != nil {
+		return err
 	}
 	routes := make([]RuntimeEndpointRoute, 0, len(declarations))
 	for _, declaration := range declarations {
@@ -3118,8 +3138,10 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 	} else {
 		log.Printf("skip stop script workspace context for %s: %v", operation.GetCodespaceUuid(), err)
 	}
-	if _, err := a.provisioner.StopRuntime(ctx, runtimeInstanceName(operation.GetCodespaceUuid()), stopRequest); err != nil {
+	if access, err := a.provisioner.StopRuntime(ctx, runtimeInstanceName(operation.GetCodespaceUuid()), stopRequest); err != nil {
 		log.Printf("codespace stop script failed for %s: %v", operation.GetCodespaceUuid(), err)
+	} else if err := a.saveScriptEnvironment(operation.GetCodespaceUuid(), access.SharedEnv); err != nil {
+		return err
 	}
 	if err := a.provisioner.Stop(ctx, runtimeInstanceName(operation.GetCodespaceUuid())); err != nil {
 		return err
@@ -3300,13 +3322,14 @@ func (a *Agent) nextRuntimeMetadataGeneration() int64 {
 func (a *Agent) updateLog(ctx context.Context, operation *codespacev1.OperationPayload, message string) error {
 	return a.updateLogLines(ctx, operation, []*codespacev1.LogLine{{
 		TimestampUnixNano: time.Now().UnixNano(),
-		Message:           message,
+		Message:           a.redactLogMessage(message, ""),
 	}})
 }
 
 type operationLogSink struct {
 	agent     *Agent
 	operation *codespacev1.OperationPayload
+	token     string
 	mu        sync.Mutex
 }
 
@@ -3316,7 +3339,20 @@ func (s *operationLogSink) WriteLifecycleLog(ctx context.Context, message string
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.agent.updateLog(ctx, s.operation, message)
+	return s.agent.updateLog(ctx, s.operation, s.agent.redactLogMessage(message, s.token))
+}
+
+func (a *Agent) redactLogMessage(message, operationToken string) string {
+	for _, secret := range []string{a.config.ManagerSecret, operationToken} {
+		secret = strings.TrimSpace(secret)
+		if secret != "" {
+			message = strings.ReplaceAll(message, secret, "[redacted]")
+		}
+	}
+	message = logAuthorizationHeaderPattern.ReplaceAllString(message, "${1}[redacted]")
+	message = logBearerBasicPattern.ReplaceAllString(message, "${1}[redacted]")
+	message = logURLUserinfoPattern.ReplaceAllString(message, "${1}[redacted]@")
+	return message
 }
 
 func (a *Agent) updateLogLines(ctx context.Context, operation *codespacev1.OperationPayload, lines []*codespacev1.LogLine) error {

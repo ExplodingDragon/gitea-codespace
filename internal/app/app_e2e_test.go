@@ -234,6 +234,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 	gatewaySSH, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
@@ -489,13 +490,13 @@ if id -u codespace >/dev/null 2>&1; then
     fail_deployment "codespace user exists with an unexpected uid or gid"
   fi
 else
-  useradd -m -u 1000 -g 1000 -s /bin/sh codespace
+  useradd -m -u 1000 -g 1000 -s /bin/bash codespace
 fi
 mkdir -p /workspaces /usr/local/bin
 chown 1000:1000 /workspaces
 chmod 0755 /workspaces
 cat >/usr/local/bin/git <<'EOF'
-#!/bin/sh
+#!/bin/bash
 set -eu
 if [ "${1:-}" = "-C" ]; then
   shift
@@ -522,7 +523,7 @@ exit 0
 EOF
 chmod 0755 /usr/local/bin/git
 cat >/usr/local/bin/gitea-codespace-git-credential <<'EOF'
-#!/bin/sh
+#!/bin/bash
 set -eu
 while IFS= read -r line; do
   [ -n "$line" ] || break

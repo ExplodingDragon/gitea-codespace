@@ -320,7 +320,7 @@ func writeScriptForTest(t *testing.T, dir, name string) string {
 	t.Helper()
 
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := os.WriteFile(path, []byte("#!/bin/bash\n"), 0o755); err != nil {
 		t.Fatalf("write script %s: %v", name, err)
 	}
 	return path

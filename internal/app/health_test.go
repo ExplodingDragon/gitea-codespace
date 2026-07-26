@@ -48,19 +48,6 @@ func TestProcessHealthzFail(t *testing.T) {
 	assertHealthzBody(t, response.Body.Bytes(), "fail")
 }
 
-func TestProcessInfoUsesProcessHealth(t *testing.T) {
-	t.Parallel()
-
-	health := newProcessHealth()
-	health.Fail()
-	response := requestHealthz(t, newProcessInfoHandler(health))
-
-	if response.Code != http.StatusServiceUnavailable {
-		t.Fatalf("status code = %d", response.Code)
-	}
-	assertHealthzBody(t, response.Body.Bytes(), "fail")
-}
-
 func requestHealthz(t *testing.T, handler http.Handler) *httptest.ResponseRecorder {
 	t.Helper()
 

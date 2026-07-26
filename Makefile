@@ -6,9 +6,9 @@ test: test-scripts
 
 .PHONY: test-scripts
 test-scripts:
-	sh -n examples/devcontainer/init.sh
-	sh -n examples/devcontainer/start.sh
-	sh -n examples/devcontainer/stop.sh
+	bash -n examples/devcontainer/init.sh
+	bash -n examples/devcontainer/start.sh
+	bash -n examples/devcontainer/stop.sh
 
 .PHONY: test-e2e
 test-e2e:

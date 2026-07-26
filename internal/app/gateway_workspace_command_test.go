@@ -9,17 +9,35 @@ import (
 	"io"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/pkg/sftp"
 
 	"gitea.dev/codespace/internal/provisioner"
 )
 
+func saveGatewayWorkspaceIdentityForTest(t testingT, store *CodespaceStateStore, codespaceUUID string) {
+	t.Helper()
+	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{
+		"CODESPACE_CREDENTIAL_UID": "1000",
+		"CODESPACE_CREDENTIAL_GID": "1000",
+	}); err != nil {
+		t.Fatalf("save script environment: %v", err)
+	}
+}
+
+type testingT interface {
+	Helper()
+	Fatalf(format string, args ...any)
+}
+
 type testWorkspaceCommandBackend struct {
 	mu          sync.Mutex
 	output      string
 	exitStatus  int
 	block       bool
+	stdin       chan []byte
+	resize      chan testWorkspaceResize
 	requests    []provisioner.WorkspaceCommandRequest
 	resizes     []testWorkspaceResize
 	openedShell chan struct{}
@@ -33,6 +51,7 @@ type testWorkspaceResize struct {
 func newTestWorkspaceCommandBackend(output string) *testWorkspaceCommandBackend {
 	return &testWorkspaceCommandBackend{
 		output:      output,
+		resize:      make(chan testWorkspaceResize, 16),
 		openedShell: make(chan struct{}, 1),
 	}
 }
@@ -46,6 +65,9 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	}
 	if request.Workdir == "" {
 		return nil, fmt.Errorf("workdir is empty")
+	}
+	if request.User == 0 || request.Group == 0 {
+		return nil, fmt.Errorf("workspace user and group are required")
 	}
 	b.mu.Lock()
 	b.requests = append(b.requests, request)
@@ -71,9 +93,7 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	case b.openedShell <- struct{}{}:
 	default:
 	}
-	go func() {
-		_, _ = io.Copy(io.Discard, stdinReader)
-	}()
+	go b.readStdin(stdinReader)
 	go func() {
 		if output != "" {
 			_, _ = io.WriteString(stdoutWriter, output)
@@ -96,6 +116,28 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	return session, nil
 }
 
+func (b *testWorkspaceCommandBackend) captureStdin() {
+	b.stdin = make(chan []byte, 16)
+}
+
+func (b *testWorkspaceCommandBackend) readStdin(reader io.Reader) {
+	if b.stdin == nil {
+		_, _ = io.Copy(io.Discard, reader)
+		return
+	}
+	buffer := make([]byte, 1024)
+	for {
+		n, err := reader.Read(buffer)
+		if n > 0 {
+			payload := append([]byte(nil), buffer[:n]...)
+			b.stdin <- payload
+		}
+		if err != nil {
+			return
+		}
+	}
+}
+
 func (b *testWorkspaceCommandBackend) OpenWorkspaceSFTP(ctx context.Context, request provisioner.WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -105,6 +147,9 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceSFTP(ctx context.Context, req
 	}
 	if request.Workdir == "" {
 		return nil, fmt.Errorf("workdir is empty")
+	}
+	if request.User == 0 || request.Group == 0 {
+		return nil, fmt.Errorf("workspace user and group are required")
 	}
 	clientConn, serverConn := net.Pipe()
 	server := sftp.NewRequestServer(serverConn, sftp.InMemHandler(), sftp.WithStartDirectory("/"))
@@ -149,9 +194,14 @@ func (s *testWorkspaceCommandSession) Stderr() io.Reader {
 }
 
 func (s *testWorkspaceCommandSession) Resize(cols, rows int) error {
+	resize := testWorkspaceResize{cols: cols, rows: rows}
 	s.backend.mu.Lock()
-	s.backend.resizes = append(s.backend.resizes, testWorkspaceResize{cols: cols, rows: rows})
+	s.backend.resizes = append(s.backend.resizes, resize)
 	s.backend.mu.Unlock()
+	select {
+	case s.backend.resize <- resize:
+	default:
+	}
 	return nil
 }
 
@@ -165,4 +215,20 @@ func (s *testWorkspaceCommandSession) Close() error {
 		_ = s.stdin.Close()
 	})
 	return nil
+}
+
+func waitTestWorkspaceResize(t testingT, backend *testWorkspaceCommandBackend, cols, rows int) testWorkspaceResize {
+	t.Helper()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case resize := <-backend.resize:
+			if resize.cols == cols && resize.rows == rows {
+				return resize
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for terminal resize %dx%d", cols, rows)
+		}
+	}
 }

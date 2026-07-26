@@ -285,6 +285,8 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 			session, err := s.backend.OpenWorkspaceCommand(ctx, provisioner.WorkspaceCommandRequest{
 				InstanceName: target.instanceName,
 				Workdir:      target.workdir,
+				User:         target.uid,
+				Group:        target.gid,
 				Command:      command,
 				Interactive:  pty.enabled || request.Type == "shell",
 				Cols:         pty.cols,
@@ -312,6 +314,8 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 			conn, err := s.backend.OpenWorkspaceSFTP(ctx, provisioner.WorkspaceSFTPRequest{
 				InstanceName: target.instanceName,
 				Workdir:      target.workdir,
+				User:         target.uid,
+				Group:        target.gid,
 			})
 			if err != nil {
 				if request.WantReply {
@@ -391,11 +395,18 @@ func (s *gatewaySSHServer) revalidateSession(ctx context.Context, auth gatewaySS
 			return
 		case <-ticker.C:
 			if s.controlPlane == nil {
+				log.Printf("gateway ssh revalidate %s user %d: control plane is not ready", auth.codespaceUUID, auth.userID)
 				cancel()
 				return
 			}
 			decision, err := s.controlPlane.revalidateSSHSession(ctx, auth.userID, auth.codespaceUUID)
-			if err != nil || !decision.allowed {
+			if err != nil {
+				log.Printf("gateway ssh revalidate %s user %d: %v", auth.codespaceUUID, auth.userID, err)
+				cancel()
+				return
+			}
+			if !decision.allowed {
+				log.Printf("gateway ssh revalidate denied %s user %d: %s", auth.codespaceUUID, auth.userID, decision.deniedCategory)
 				cancel()
 				return
 			}

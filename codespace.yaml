@@ -45,7 +45,7 @@ runtime:
   driver: "incus"
   codespace_root: "/codespace"
   bootstrap:
-    shell: "/bin/sh"
+    shell: "/bin/bash"
     home_dir: "/root"
     user_name: "codespace"
     user: 0
@@ -60,13 +60,13 @@ runtime:
     connect:
       unix_socket: "/var/lib/incus/unix.socket"
     project:
-      name: "default"
-      manage: false
+      name: "gitea-codespace"
+      manage: true
     storage:
       pool: "default"
     network:
-      name: "incusbr0"
-      manage: false
+      name: "csnet"
+      manage: true
   environments:
     - tag: "default"
       display_name: "Default"

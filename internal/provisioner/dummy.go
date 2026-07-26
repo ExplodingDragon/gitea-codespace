@@ -212,6 +212,24 @@ func (p *DummyProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceNam
 	return nil
 }
 
+// SeedRuntimeGitSSHKey simulates writing git SSH key seed files.
+func (p *DummyProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request RuntimeGitSSHKeySeedRequest) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if len(request.GitSSHPrivateKey) == 0 || len(request.GitSSHPublicKey) == 0 {
+		return fmt.Errorf("git ssh key seed is empty")
+	}
+	p.mu.Lock()
+	p.privateKey[instanceName] = append([]byte(nil), request.GitSSHPrivateKey...)
+	p.publicKey[instanceName] = append([]byte(nil), request.GitSSHPublicKey...)
+	p.mu.Unlock()
+	return nil
+}
+
 // SeedRuntimeCredentials simulates writing root-owned credential seed files.
 func (p *DummyProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error {
 	if err := ctx.Err(); err != nil {

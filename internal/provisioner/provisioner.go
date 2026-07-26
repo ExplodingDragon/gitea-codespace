@@ -122,6 +122,12 @@ type RuntimeCredentialSeedRequest struct {
 	GitSSHKnownHosts []string
 }
 
+// RuntimeGitSSHKeySeedRequest stores root-owned git SSH key seed material.
+type RuntimeGitSSHKeySeedRequest struct {
+	GitSSHPrivateKey []byte
+	GitSSHPublicKey  []byte
+}
+
 // RuntimeEndpointDeclaration stores one endpoint declared inside the runtime.
 type RuntimeEndpointDeclaration struct {
 	EndpointID     string `json:"endpoint_id"`
@@ -191,6 +197,8 @@ type RuntimeAccess struct {
 type WorkspaceCommandRequest struct {
 	InstanceName string
 	Workdir      string
+	User         uint32
+	Group        uint32
 	Command      string
 	Interactive  bool
 	Cols         int
@@ -201,6 +209,8 @@ type WorkspaceCommandRequest struct {
 type WorkspaceSFTPRequest struct {
 	InstanceName string
 	Workdir      string
+	User         uint32
+	Group        uint32
 }
 
 // WorkspaceCommandSession stores the live streams for one Gateway workspace session.
@@ -237,6 +247,7 @@ type Provisioner interface {
 	StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error)
 	ListInstances(ctx context.Context) ([]*Instance, error)
 	CheckCredentials(ctx context.Context, instanceName string) (CredentialStatus, error)
+	SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request RuntimeGitSSHKeySeedRequest) error
 	SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error
 	ReadEndpointManifest(ctx context.Context, instanceName string) ([]RuntimeEndpointDeclaration, error)
 	RuntimeResourceUsage(ctx context.Context, instanceName string) (RuntimeResourceUsage, error)

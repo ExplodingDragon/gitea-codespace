@@ -1,11 +1,11 @@
 set -eu
 
 write_result() {
-  tmp="${CODESPACE_RESULT}.tmp.$$"
+  result_tmp_path="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"%s","stage":"start-environment"}\n' "$1" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
+  printf '{"outcome":"%s","stage":"start-environment"}\n' "$1" > "$result_tmp_path"
+  chmod 600 "$result_tmp_path"
+  mv "$result_tmp_path" "$CODESPACE_RESULT"
 }
 
 fail_recoverable() {
@@ -73,8 +73,8 @@ ensure_docker() {
 
 [ -n "${CODESPACE_WORKSPACE_DIR:-}" ] || fail_unrecoverable
 [ -d "$CODESPACE_WORKSPACE_DIR/.git" ] || fail_unrecoverable
-remote_url="$(git_user -C "$CODESPACE_WORKSPACE_DIR" remote get-url origin)" || fail_unrecoverable
-case "$remote_url" in
+start_remote_url="$(git_user -C "$CODESPACE_WORKSPACE_DIR" remote get-url origin)" || fail_unrecoverable
+case "$start_remote_url" in
   http://*|https://*)
     git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
     git_user -C "$CODESPACE_WORKSPACE_DIR" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
@@ -86,20 +86,20 @@ case "$remote_url" in
 esac
 
 ensure_docker || fail_recoverable
-container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
-if [ -z "$container_id" ]; then
-  container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
+devcontainer_container_id="${DEVCONTAINER_EXAMPLE_CONTAINER_ID:-}"
+if [ -z "$devcontainer_container_id" ]; then
+  devcontainer_container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
 fi
-if [ -n "$container_id" ]; then
-  docker start "$container_id" >/dev/null || fail_recoverable
+if [ -n "$devcontainer_container_id" ]; then
+  docker start "$devcontainer_container_id" >/dev/null || fail_recoverable
 else
   sudo -u codespace devcontainer up --workspace-folder "$CODESPACE_WORKSPACE_DIR" || fail_recoverable
-  container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
-  [ -n "$container_id" ] || fail_recoverable
+  devcontainer_container_id="$(container_id_from_workspace "$CODESPACE_WORKSPACE_DIR")"
+  [ -n "$devcontainer_container_id" ] || fail_recoverable
 fi
 
 printf '%s\n' \
   "CODESPACE_WORKSPACE_DIR=${CODESPACE_WORKSPACE_DIR}" \
-  "DEVCONTAINER_EXAMPLE_CONTAINER_ID=${container_id}" \
+  "DEVCONTAINER_EXAMPLE_CONTAINER_ID=${devcontainer_container_id}" \
   >> "$CODESPACE_ENV"
 write_result done

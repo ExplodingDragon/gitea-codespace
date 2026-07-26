@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -140,6 +141,8 @@ type codespaceRuntimeResourceUsage struct {
 type gatewayWorkspaceTarget struct {
 	instanceName string
 	workdir      string
+	uid          uint32
+	gid          uint32
 }
 
 // NewCodespaceStateStore creates a Codespace state store rooted at stateDir.
@@ -642,7 +645,16 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 		return gatewayWorkspaceTarget{}, false, nil
 	}
 	target, ok := gatewayWorkspaceTargetFromRuntimeMetadata(state.RuntimeMetadata)
-	return target, ok, nil
+	if !ok {
+		return gatewayWorkspaceTarget{}, false, nil
+	}
+	uid, gid, ok := gatewayWorkspaceTargetIdentity(state.SharedEnvironment)
+	if !ok {
+		return gatewayWorkspaceTarget{}, false, fmt.Errorf("workspace credential identity is missing")
+	}
+	target.uid = uid
+	target.gid = gid
+	return target, true, nil
 }
 
 // UpdateRuntimeResourceUsage stores the latest resource usage sample.
@@ -767,6 +779,27 @@ func gatewayWorkspaceTargetFromRuntimeMetadata(snapshot *codespaceRuntimeMetadat
 		instanceName: instanceName,
 		workdir:      workdir,
 	}, true
+}
+
+func gatewayWorkspaceTargetIdentity(env map[string]string) (uint32, uint32, bool) {
+	uid, uidOK := gatewayWorkspaceTargetIdentityValue(env, "CODESPACE_CREDENTIAL_UID")
+	gid, gidOK := gatewayWorkspaceTargetIdentityValue(env, "CODESPACE_CREDENTIAL_GID")
+	if !uidOK || !gidOK || uid == 0 || gid == 0 {
+		return 0, 0, false
+	}
+	return uid, gid, true
+}
+
+func gatewayWorkspaceTargetIdentityValue(env map[string]string, name string) (uint32, bool) {
+	value := strings.TrimSpace(env[name])
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseUint(value, 10, 32)
+	if err != nil {
+		return 0, false
+	}
+	return uint32(parsed), true
 }
 
 // RebaseRuntimeMetadataGeneration moves a persisted metadata snapshot above a stale server generation.

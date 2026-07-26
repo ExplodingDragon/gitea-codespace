@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gorilla/websocket"
 
@@ -31,8 +32,62 @@ func TestGatewayWorkspaceFallsBackToBuiltInWebSSHPage(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("web ssh page content-type = %q", contentType)
 	}
+	csp := response.Header().Get("Content-Security-Policy")
+	if !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, "style-src 'self' 'unsafe-inline'") {
+		t.Fatalf("web ssh page csp = %q", csp)
+	}
 	if !strings.Contains(response.Body.String(), "Workspace terminal") {
 		t.Fatalf("web ssh page body = %q", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "Codespace") || !strings.Contains(response.Body.String(), `id="status"`) {
+		t.Fatalf("web ssh page does not include workspace chrome: %q", response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), "/xterm.css") ||
+		!strings.Contains(response.Body.String(), "/xterm.js") ||
+		!strings.Contains(response.Body.String(), "/xterm-addon-fit.js") {
+		t.Fatalf("web ssh page does not load xterm assets: %q", response.Body.String())
+	}
+}
+
+func TestGatewayWorkspaceBuiltInWebSSHServesXtermAssets(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	handler, _, cookie := newGatewayWebSSHTestHandler(t, codespaceUUID, nil, nil, nil)
+	for _, tc := range []struct {
+		path        string
+		contentType string
+		contains    string
+	}{
+		{
+			path:        "/w/" + codespaceUUID + "/.gitea-codespace/assets/xterm.js",
+			contentType: "application/javascript",
+			contains:    "Terminal",
+		},
+		{
+			path:        "/w/" + codespaceUUID + "/.gitea-codespace/assets/xterm.css",
+			contentType: "text/css",
+			contains:    ".xterm",
+		},
+		{
+			path:        "/w/" + codespaceUUID + "/.gitea-codespace/assets/xterm-addon-fit.js",
+			contentType: "application/javascript",
+			contains:    "FitAddon",
+		},
+	} {
+		request := httptest.NewRequest(http.MethodGet, tc.path, nil)
+		request.AddCookie(cookie)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", tc.path, response.Code, response.Body.String())
+		}
+		if !strings.Contains(response.Header().Get("Content-Type"), tc.contentType) {
+			t.Fatalf("%s content-type = %q", tc.path, response.Header().Get("Content-Type"))
+		}
+		if !strings.Contains(response.Body.String(), tc.contains) {
+			t.Fatalf("%s body does not contain %q", tc.path, tc.contains)
+		}
 	}
 }
 
@@ -74,8 +129,11 @@ func TestGatewayWorkspaceBuiltInWebSSHConnectsWorkspaceCommand(t *testing.T) {
 	if messageType != websocket.BinaryMessage || string(message) != "shell ready\n" {
 		t.Fatalf("terminal output type=%d payload=%q", messageType, message)
 	}
-	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":120,"rows":40}`)); err != nil {
+	if err := conn.WriteMessage(websocket.TextMessage, []byte(`{"type":"resize","cols":101,"rows":37}`)); err != nil {
 		t.Fatalf("write resize message: %v", err)
+	}
+	if resize := waitTestWorkspaceResize(t, backend, 101, 37); resize.cols != 101 || resize.rows != 37 {
+		t.Fatalf("terminal resize = %#v", resize)
 	}
 	if err := conn.WriteMessage(websocket.BinaryMessage, make([]byte, gatewayWebSSHInputLimit+1)); err != nil {
 		t.Fatalf("write oversized input: %v", err)
@@ -86,6 +144,52 @@ func TestGatewayWorkspaceBuiltInWebSSHConnectsWorkspaceCommand(t *testing.T) {
 	}
 	if messageType != websocket.TextMessage || !strings.Contains(string(message), `"protocol_error"`) {
 		t.Fatalf("protocol error message type=%d payload=%s", messageType, message)
+	}
+}
+
+func TestGatewayWorkspaceBuiltInWebSSHForwardsTerminalInput(t *testing.T) {
+	t.Parallel()
+
+	codespaceUUID := "11111111-1111-4111-8111-111111111111"
+	store := NewCodespaceStateStore(t.TempDir())
+	saveGatewayWebSSHMetadata(t, store, codespaceUUID)
+	backend := newTestWorkspaceCommandBackend("")
+	backend.block = true
+	backend.captureStdin()
+	handler, _, cookie := newGatewayWebSSHTestHandler(t, codespaceUUID, store, backend, nil)
+	gateway := httptest.NewServer(handler)
+	defer gateway.Close()
+
+	headers := http.Header{}
+	headers.Add("Cookie", cookie.String())
+	headers.Set("Origin", gateway.URL)
+	conn, response, err := websocket.DefaultDialer.Dial("ws"+strings.TrimPrefix(gateway.URL, "http")+"/w/"+codespaceUUID+"/.gitea-codespace/terminal", headers)
+	if err != nil {
+		if response != nil {
+			t.Fatalf("dial web ssh status = %d error = %v", response.StatusCode, err)
+		}
+		t.Fatalf("dial web ssh: %v", err)
+	}
+	defer conn.Close()
+
+	messageType, message, err := conn.ReadMessage()
+	if err != nil {
+		t.Fatalf("read ready message: %v", err)
+	}
+	if messageType != websocket.TextMessage || !strings.Contains(string(message), `"ready"`) {
+		t.Fatalf("ready message type=%d payload=%s", messageType, message)
+	}
+	input := []byte("ab\x7f\x1b[3~\t\r")
+	if err := conn.WriteMessage(websocket.BinaryMessage, input); err != nil {
+		t.Fatalf("write terminal input: %v", err)
+	}
+	select {
+	case got := <-backend.stdin:
+		if string(got) != string(input) {
+			t.Fatalf("terminal input = %q", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for terminal input")
 	}
 }
 
@@ -254,4 +358,5 @@ func saveGatewayWebSSHMetadata(t *testing.T, store *CodespaceStateStore, codespa
 	}); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 }

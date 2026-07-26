@@ -1,12 +1,12 @@
 set -eu
 
 write_result() {
-  outcome="${1:-done}"
-  tmp="${CODESPACE_RESULT}.tmp.$$"
+  result_outcome="${1:-done}"
+  result_tmp_path="${CODESPACE_RESULT}.tmp.$$"
   umask 177
-  printf '{"outcome":"%s","stage":"start-environment"}\n' "$outcome" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
+  printf '{"outcome":"%s","stage":"start-environment"}\n' "$result_outcome" > "$result_tmp_path"
+  chmod 600 "$result_tmp_path"
+  mv "$result_tmp_path" "$CODESPACE_RESULT"
 }
 
 fail_unrecoverable() {
@@ -52,19 +52,19 @@ ensure_git_ssh() {
   export GIT_SSH_COMMAND="ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes"
 }
 
-workspace="${CODESPACE_WORKSPACE_DIR:-${CODESPACE_WORKSPACES_DIR}/${CODESPACE_REPO_NAME:-repo}}"
-[ -d "$workspace/.git" ] || fail_unrecoverable
-remote_url="$(git_user -C "$workspace" remote get-url origin)" || fail_unrecoverable
-case "$remote_url" in
+start_workspace="${CODESPACE_WORKSPACE_DIR:-${CODESPACE_WORKSPACES_DIR}/${CODESPACE_REPO_NAME:-repo}}"
+[ -d "$start_workspace/.git" ] || fail_unrecoverable
+start_remote_url="$(git_user -C "$start_workspace" remote get-url origin)" || fail_unrecoverable
+case "$start_remote_url" in
   http://*|https://*)
     git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
-    git_user -C "$workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
+    git_user -C "$start_workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || fail_unrecoverable
     ;;
   *)
     ensure_git_ssh || fail_unrecoverable
-    git_user -C "$workspace" config core.sshCommand "ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes" || fail_unrecoverable
+    git_user -C "$start_workspace" config core.sshCommand "ssh -i $private_key_file -o IdentitiesOnly=yes -o UserKnownHostsFile=$known_hosts_file -o StrictHostKeyChecking=yes" || fail_unrecoverable
     ;;
 esac
 
-printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$workspace" >> "$CODESPACE_ENV"
+printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$start_workspace" >> "$CODESPACE_ENV"
 write_result done

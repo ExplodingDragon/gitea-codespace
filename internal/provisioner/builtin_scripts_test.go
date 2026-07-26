@@ -113,44 +113,6 @@ func TestBuiltinStartKeepsWorkspaceHEAD(t *testing.T) {
 	}
 }
 
-func TestBuiltinInitScriptDeclaresSystemDependencies(t *testing.T) {
-	t.Parallel()
-
-	for _, expected := range []string{
-		"for command in git ssh sudo flock getent useradd groupadd",
-		"mirrors.tuna.tsinghua.edu.cn/debian",
-		"mirrors.tuna.tsinghua.edu.cn/ubuntu",
-		"mirrors.tuna.tsinghua.edu.cn/fedora",
-		"mirrors.tuna.tsinghua.edu.cn/archlinux/$repo/os/$arch",
-		"configure_apt_mirrors",
-		"configure_dnf_mirrors",
-		"configure_pacman_mirrors",
-		"apt-get install -y --no-install-recommends ca-certificates curl git openssh-client sudo util-linux passwd python3",
-		"dnf install -y --setopt=install_weak_deps=False ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3",
-		"pacman -Sy --noconfirm ca-certificates curl git openssh sudo util-linux shadow python",
-		`codespace_user="${CODESPACE_USER:-codespace}"`,
-		`useradd -m -s /bin/bash "$codespace_user"`,
-		`codespace_uid="$(id -u "$codespace_user")"`,
-		`passwd -l "$codespace_user"`,
-		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_token" "$token_file"`,
-		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_private_key" "$private_key_file"`,
-		`install -m 0644 -o "$codespace_uid" -g "$codespace_gid" "$seed_public_key" "$public_key_file"`,
-		`[ -f "$seed_known_hosts" ] || exit 25`,
-		`install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_known_hosts" "$known_hosts_file"`,
-		`if [ "${CODESPACE_OPERATION:-}" = "create" ]; then`,
-		`restore_existing_workspace "$workspace"`,
-		`prepare_workspace_from_repo "$repo_url" "$workspace"`,
-		`git_user clone "$repo_url" "$temp_workspace"`,
-		`write_result unrecoverable_failed`,
-		`printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$codespace_user" > /etc/sudoers.d/gitea-codespace`,
-		"visudo -cf /etc/sudoers.d/gitea-codespace",
-		"CODESPACE_CREDENTIAL_UID=%s",
-		"CODESPACE_CREDENTIAL_GID=%s",
-	} {
-		assertScriptContains(t, builtinInitScript, expected)
-	}
-}
-
 func TestDevcontainerExampleStartStopAndPortForward(t *testing.T) {
 	t.Parallel()
 
@@ -323,14 +285,14 @@ func runDevcontainerExampleScriptForTest(t *testing.T, name string, environment 
 func installBuiltinScriptFakes(t *testing.T, binDir string) {
 	t.Helper()
 
-	writeExecutableForTest(t, filepath.Join(binDir, "id"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "id"), `#!/bin/bash
 set -eu
 case "${1:-}" in
   -u|-g) printf '1000\n' ;;
   *) exit 0 ;;
 esac
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "install"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "install"), `#!/bin/bash
 set -eu
 directory=0
 args=""
@@ -356,7 +318,7 @@ dst="$2"
 mkdir -p "$(dirname "$dst")"
 cp "$src" "$dst"
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "sudo"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "sudo"), `#!/bin/bash
 set -eu
 if [ "${1:-}" = "-u" ]; then
   shift 2
@@ -372,14 +334,14 @@ if [ "${1:-}" = "env" ]; then
 fi
 exec "$@"
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "chown"), "#!/bin/sh\nexit 0\n")
-	writeExecutableForTest(t, filepath.Join(binDir, "chmod"), "#!/bin/sh\nexit 0\n")
-	writeExecutableForTest(t, filepath.Join(binDir, "curl"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "chown"), "#!/bin/bash\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(binDir, "chmod"), "#!/bin/bash\nexit 0\n")
+	writeExecutableForTest(t, filepath.Join(binDir, "curl"), `#!/bin/bash
 set -eu
 printf 'curl %s\n' "$*" >> "$GITEA_TEST_LOG"
 printf '{"known_hosts_lines":["gitea.example.com ssh-ed25519 AAAA"]}\n'
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "ssh-keygen"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "ssh-keygen"), `#!/bin/bash
 set -eu
 printf 'ssh-keygen %s\n' "$*" >> "$GITEA_TEST_LOG"
 while [ "$#" -gt 0 ]; do
@@ -393,7 +355,7 @@ while [ "$#" -gt 0 ]; do
   shift
 done
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "git"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "git"), `#!/bin/bash
 set -eu
 printf 'git %s\n' "$*" >> "$GITEA_TEST_LOG"
 workdir=""
@@ -435,12 +397,12 @@ func installDevcontainerScriptFakes(t *testing.T, binDir string) {
 	t.Helper()
 
 	installBuiltinScriptFakes(t, binDir)
-	writeExecutableForTest(t, filepath.Join(binDir, "devcontainer"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "devcontainer"), `#!/bin/bash
 set -eu
 printf 'devcontainer %s\n' "$*" >> "$GITEA_TEST_LOG"
 printf 'container-1\n' > "$GITEA_TEST_CONTAINER_ID_FILE"
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "docker"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "docker"), `#!/bin/bash
 set -eu
 printf 'docker %s\n' "$*" >> "$GITEA_TEST_LOG"
 case "${1:-}" in
@@ -463,7 +425,7 @@ case "${1:-}" in
     ;;
 esac
 `)
-	writeExecutableForTest(t, filepath.Join(binDir, "nohup"), `#!/bin/sh
+	writeExecutableForTest(t, filepath.Join(binDir, "nohup"), `#!/bin/bash
 set -eu
 printf 'nohup %s\n' "$*" >> "$GITEA_TEST_LOG"
 `)
@@ -517,13 +479,6 @@ func writeTestRuntimeSeed(t *testing.T, seedDir string) {
 		if err := os.WriteFile(filepath.Join(seedDir, name), []byte(content), 0o600); err != nil {
 			t.Fatalf("write seed %s: %v", name, err)
 		}
-	}
-}
-
-func assertScriptContains(t *testing.T, script, expected string) {
-	t.Helper()
-	if !strings.Contains(script, expected) {
-		t.Fatalf("script does not contain %q", expected)
 	}
 }
 

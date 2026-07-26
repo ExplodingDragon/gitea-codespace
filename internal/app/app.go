@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"log"
 	"net"
@@ -456,24 +457,6 @@ func (h *processHealth) writeHealthz(writer http.ResponseWriter) {
 	}
 }
 
-func newProcessInfoHandler(health *processHealth) http.Handler {
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/" {
-			http.NotFound(writer, request)
-			return
-		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"name":   "gitea-codespace",
-			"status": "ok",
-		})
-	})
-	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		health.writeHealthz(writer)
-	})
-	return loggingMiddleware(mux)
-}
-
 func newGatewayHandler(
 	health *processHealth,
 	sessions *gatewaySessionRegistry,
@@ -508,14 +491,11 @@ func newGatewayHandlerWithOriginAndBrowserAuth(
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/" {
-			http.NotFound(writer, request)
+		if originPolicy.domain == "" {
+			writeGatewayNotFound(writer, request, "Codespace gateway")
 			return
 		}
-		writeJSON(writer, http.StatusOK, map[string]any{
-			"name":   "gitea-codespace-gateway",
-			"status": "ok",
-		})
+		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
 	})
 	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
 		health.writeHealthz(writer)
@@ -562,32 +542,32 @@ func handleGatewayOpen(
 		return
 	}
 	if request.Method != http.MethodGet {
-		writer.WriteHeader(http.StatusMethodNotAllowed)
+		writeGatewayError(writer, request, http.StatusMethodNotAllowed, "Method not allowed", "This gateway endpoint only accepts GET requests.", "method_not_allowed")
 		return
 	}
 	if originPolicy.domain != "" && request.URL.Path != "/.gitea-codespace/open" {
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Open codespace")
 		return
 	}
 	if sessions == nil || access == nil || controlPlane == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
 	hostBinding, hasHostBinding := originPolicy.bindingForRequest(request)
 	if originPolicy.domain != "" && !hasHostBinding {
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Open codespace")
 		return
 	}
 	code, ok := gatewayOpenCode(request)
 	if !ok {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "invalid open code request"})
+		writeGatewayError(writer, request, http.StatusForbidden, "Open link is invalid", "The open link is missing a valid one-time code. Open the codespace again from Gitea.", "invalid open code request")
 		return
 	}
 	reservation, limitStatus := access.reserveRequest()
 	if limitStatus != 0 {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is busy", "Codespace Gateway has no request capacity available right now. Try again shortly.", "gateway capacity unavailable")
 		return
 	}
 	defer reservation.Release()
@@ -596,19 +576,19 @@ func handleGatewayOpen(
 	if err != nil {
 		log.Printf("validate open token: %v", err)
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this open link with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
 	}
 	if !decision.allowed {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": decision.deniedCategory})
+		writeGatewayError(writer, request, http.StatusForbidden, "Codespace cannot be opened", "Gitea rejected this open link because the codespace is not currently available for this request.", decision.deniedCategory)
 		return
 	}
 	if hasHostBinding &&
 		(hostBinding.codespaceUUID != decision.binding.codespaceUUID ||
 			hostBinding.endpointID != decision.binding.endpointID) {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway host binding mismatch"})
+		writeGatewayError(writer, request, http.StatusForbidden, "Open link does not match this host", "This open link belongs to a different codespace endpoint. Open the codespace again from Gitea.", "gateway host binding mismatch")
 		return
 	}
 	replaceSessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
@@ -617,14 +597,14 @@ func handleGatewayOpen(
 		log.Printf("create gateway session: %v", err)
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		if errors.Is(err, errGatewaySessionAmbiguous) {
-			writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is ambiguous"})
+			writeGatewayError(writer, request, http.StatusUnauthorized, "Session is ambiguous", "More than one gateway session matched this request. Open the codespace again from Gitea.", "gateway session is ambiguous")
 			return
 		}
 		if errors.Is(err, errGatewaySessionLimitReached) {
-			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway session limit reached"})
+			writeGatewayError(writer, request, http.StatusTooManyRequests, "Session limit reached", "This codespace or user already has the maximum number of gateway sessions.", "gateway session limit reached")
 			return
 		}
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway session unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Session is unavailable", "Codespace Gateway could not create a session for this open link. Try again shortly.", "gateway session unavailable")
 		return
 	}
 	setGatewaySessionCookie(writer, sessionID, originPolicy)
@@ -660,19 +640,19 @@ func handleGatewayWorkspace(
 	browserAuth *gatewayBrowserAuth,
 ) {
 	if sessions == nil || access == nil || controlPlane == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
 	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
 	if !ok {
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Codespace workspace")
 		return
 	}
 	if rejectGatewayServiceWorkerRequest(writer, request) {
 		return
 	}
 	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": "gateway source is not allowed"})
+		writeGatewayError(writer, request, http.StatusForbidden, "Request source is not allowed", "This request did not come from an allowed codespace gateway origin.", "gateway source is not allowed")
 		return
 	}
 	sessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
@@ -680,28 +660,28 @@ func handleGatewayWorkspace(
 		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
 			return
 		}
-		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is required"})
+		writeGatewayError(writer, request, http.StatusUnauthorized, "Sign in required", "Open this codespace from Gitea to create a gateway session.", "gateway session is required")
 		return
 	}
 	session, ok, ambiguous := sessions.AuthenticateAny(sessionIDs, codespaceUUID, endpointID, time.Now())
 	if ambiguous {
-		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is ambiguous"})
+		writeGatewayError(writer, request, http.StatusUnauthorized, "Session is ambiguous", "More than one gateway session matched this request. Open the codespace again from Gitea.", "gateway session is ambiguous")
 		return
 	}
 	if !ok {
 		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
 			return
 		}
-		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "gateway session is invalid"})
+		writeGatewayError(writer, request, http.StatusUnauthorized, "Session expired", "This gateway session is no longer valid. Open the codespace again from Gitea.", "gateway session is invalid")
 		return
 	}
 	reservation, limitStatus := access.reserveSessionRequest(session.id)
 	if limitStatus != 0 {
 		if limitStatus == http.StatusTooManyRequests {
-			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway session request limit reached"})
+			writeGatewayError(writer, request, http.StatusTooManyRequests, "Too many requests", "This gateway session has too many concurrent requests. Close unused tabs and try again.", "gateway session request limit reached")
 			return
 		}
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is busy", "Codespace Gateway has no request capacity available right now. Try again shortly.", "gateway capacity unavailable")
 		return
 	}
 	defer reservation.Release()
@@ -717,16 +697,16 @@ func handleGatewayWorkspace(
 		},
 	)
 	if validationFull {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization capacity unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is busy", "Codespace Gateway has no authorization capacity available right now. Try again shortly.", "gateway authorization capacity unavailable")
 		return
 	}
 	if err != nil {
 		log.Printf("revalidate gateway session: %v", err)
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this session with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
 	}
 	if !decision.allowed {
-		writeJSON(writer, http.StatusForbidden, map[string]any{"error": decision.deniedCategory})
+		writeGatewayError(writer, request, http.StatusForbidden, "Codespace is unavailable", "Gitea reports that this codespace endpoint is not currently available for this session.", decision.deniedCategory)
 		return
 	}
 	requestContext, cancelRequest := context.WithCancel(request.Context())
@@ -774,7 +754,7 @@ func handleGatewayWorkspace(
 				return
 			}
 		}
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway route unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Workspace is not ready", "The codespace endpoint is authorized, but the runtime route is not ready yet. Try again after the codespace finishes starting.", "gateway route unavailable")
 		return
 	}
 	defer releaseRoute()
@@ -818,12 +798,12 @@ func handleGatewayPublicEndpoint(
 	originPolicy gatewayOriginPolicy,
 ) {
 	if access == nil || controlPlane == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway is not ready"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
 	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
 	if !ok {
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
 	if rejectGatewayServiceWorkerRequest(writer, request) {
@@ -833,17 +813,17 @@ func handleGatewayPublicEndpoint(
 	if routes != nil {
 		route, ok := routes.Get(codespaceUUID, endpointID)
 		if !ok || !route.public {
-			http.NotFound(writer, request)
+			writeGatewayNotFound(writer, request, "Codespace endpoint")
 			return
 		}
 	}
 	reservation, limitStatus := access.reservePublic(codespaceUUID, endpointID, gatewayPeerIP(request))
 	if limitStatus != 0 {
 		if limitStatus == http.StatusTooManyRequests {
-			writeJSON(writer, http.StatusTooManyRequests, map[string]any{"error": "gateway public connection limit reached"})
+			writeGatewayError(writer, request, http.StatusTooManyRequests, "Connection limit reached", "This public endpoint has too many active connections. Try again shortly.", "gateway public connection limit reached")
 			return
 		}
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway capacity unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is busy", "Codespace Gateway has no request capacity available right now. Try again shortly.", "gateway capacity unavailable")
 		return
 	}
 	defer reservation.Release()
@@ -858,16 +838,16 @@ func handleGatewayPublicEndpoint(
 		},
 	)
 	if validationFull {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization capacity unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is busy", "Codespace Gateway has no authorization capacity available right now. Try again shortly.", "gateway authorization capacity unavailable")
 		return
 	}
 	if err != nil {
 		log.Printf("validate public endpoint: %v", err)
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "gateway authorization unavailable"})
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this public endpoint with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
 	}
 	if !decision.allowed {
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
 	if routes == nil {
@@ -884,7 +864,7 @@ func handleGatewayPublicEndpoint(
 		if ok {
 			releaseRoute()
 		}
-		http.NotFound(writer, request)
+		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
 	defer releaseRoute()
@@ -948,14 +928,11 @@ func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayO
 	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
 		return "", "", "", false
 	}
-	if !pathOK && request.URL.Path != "/w/" {
-		if strings.HasPrefix(request.URL.Path, "/.gitea-codespace/") {
-			return hostBinding.codespaceUUID, hostBinding.endpointID, request.URL.Path, true
-		}
-		return "", "", "", false
-	}
 	if !pathOK {
-		upstreamPath = "/"
+		if request.URL.Path == "/w/" {
+			return hostBinding.codespaceUUID, hostBinding.endpointID, "/", true
+		}
+		return hostBinding.codespaceUUID, hostBinding.endpointID, request.URL.Path, true
 	}
 	return hostBinding.codespaceUUID, hostBinding.endpointID, upstreamPath, true
 }
@@ -1032,7 +1009,7 @@ func proxyGatewayEndpoint(
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
 		log.Printf("gateway proxy %s/%s: %v", route.codespaceUUID, route.endpointID, err)
-		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": "gateway upstream unavailable"})
+		writeGatewayError(writer, request, http.StatusBadGateway, "Endpoint is unavailable", "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting.", "gateway upstream unavailable")
 	}
 	proxy.ServeHTTP(writer, request)
 }
@@ -1107,7 +1084,7 @@ func rejectGatewayServiceWorkerRequest(writer http.ResponseWriter, request *http
 		return false
 	}
 	writer.Header().Del("Service-Worker-Allowed")
-	writeJSON(writer, http.StatusForbidden, map[string]any{"error": "service worker is not allowed"})
+	writeGatewayError(writer, request, http.StatusForbidden, "Service worker is not allowed", "Codespace Gateway does not allow runtime pages to register a service worker on the gateway origin.", "service worker is not allowed")
 	return true
 }
 
@@ -1211,6 +1188,134 @@ func writeJSON(writer http.ResponseWriter, statusCode int, value any) {
 		log.Printf("encode json response: %v", err)
 	}
 }
+
+func writeGatewayNotFound(writer http.ResponseWriter, request *http.Request, context string) {
+	writeGatewayError(writer, request, http.StatusNotFound, "Page not found", context+" was not found on this gateway.", "not_found")
+}
+
+func writeGatewayError(writer http.ResponseWriter, request *http.Request, statusCode int, title, message, category string) {
+	if gatewayRequestAcceptsHTML(request) {
+		writeGatewayErrorHTML(writer, statusCode, title, message, category)
+		return
+	}
+	writeJSON(writer, statusCode, map[string]any{"error": category})
+}
+
+func gatewayRequestAcceptsHTML(request *http.Request) bool {
+	if request == nil || request.Method != http.MethodGet {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(request.Header.Get("Upgrade")), "websocket") {
+		return false
+	}
+	accept := request.Header.Get("Accept")
+	if accept == "" || strings.Contains(accept, "application/json") {
+		return false
+	}
+	for _, part := range strings.Split(accept, ",") {
+		mediaType := strings.TrimSpace(strings.SplitN(part, ";", 2)[0])
+		if strings.EqualFold(mediaType, "text/html") {
+			return true
+		}
+	}
+	return false
+}
+
+func writeGatewayErrorHTML(writer http.ResponseWriter, statusCode int, title, message, category string) {
+	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Referrer-Policy", "no-referrer")
+	writer.Header().Set("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; frame-ancestors 'none'")
+	writer.WriteHeader(statusCode)
+	_, _ = fmt.Fprintf(writer, gatewayErrorPageHTML,
+		statusCode,
+		html.EscapeString(http.StatusText(statusCode)),
+		html.EscapeString(title),
+		html.EscapeString(message),
+		html.EscapeString(category),
+	)
+}
+
+const gatewayErrorPageHTML = `<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Codespace Gateway</title>
+<style>
+html, body {
+  box-sizing: border-box;
+  min-height: 100%%;
+  margin: 0;
+}
+body {
+  display: grid;
+  place-items: center;
+  padding: 32px;
+  background: #0f1419;
+  color: #dce3ea;
+  font: 14px/1.5 ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+main {
+  width: min(560px, 100%%);
+  border: 1px solid #27313b;
+  border-radius: 8px;
+  background: #151b22;
+  box-shadow: 0 18px 60px rgba(0, 0, 0, .32);
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 18px;
+  border-bottom: 1px solid #27313b;
+}
+.brand {
+  font-weight: 600;
+}
+.status {
+  color: #8ea0b2;
+  font-size: 12px;
+}
+section {
+  padding: 28px;
+}
+h1 {
+  margin: 0 0 10px;
+  font-size: 22px;
+  line-height: 1.25;
+}
+p {
+  margin: 0;
+  color: #aab7c4;
+}
+.category {
+  margin-top: 22px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  background: #0f1419;
+  color: #91a4b7;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+</style>
+</head>
+<body>
+<main>
+<header>
+<div class="brand">Codespace Gateway</div>
+<div class="status">%d %s</div>
+</header>
+<section>
+<h1>%s</h1>
+<p>%s</p>
+<div class="category">%s</div>
+</section>
+</main>
+</body>
+</html>
+`
 
 func loggingMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

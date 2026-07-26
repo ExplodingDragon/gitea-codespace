@@ -352,6 +352,28 @@ func TestProjectFeatureEnabled(t *testing.T) {
 	}
 }
 
+func TestManagedProjectFeaturesShareDefaultNetworks(t *testing.T) {
+	t.Parallel()
+
+	config := map[string]string{
+		"features.profiles":        "false",
+		"features.networks":        "true",
+		"features.storage.volumes": "false",
+	}
+	if !managedProjectFeaturesNeedUpdate(config) {
+		t.Fatalf("expected managed project features to require update")
+	}
+	applyManagedProjectFeatures(config)
+	if !projectFeatureEnabled(config, "features.profiles") ||
+		projectFeatureEnabled(config, "features.networks") ||
+		!projectFeatureEnabled(config, "features.storage.volumes") {
+		t.Fatalf("managed project features = %#v", config)
+	}
+	if managedProjectFeaturesNeedUpdate(config) {
+		t.Fatalf("managed project features still require update: %#v", config)
+	}
+}
+
 func TestProfileHasManagedDevices(t *testing.T) {
 	t.Parallel()
 
@@ -551,7 +573,7 @@ func TestWorkspaceSFTPHandlersMapRequestsUnderWorkspace(t *testing.T) {
 	if err := instanceClient.Mkdir("/workspaces/repo"); err != nil {
 		t.Fatalf("mkdir /workspaces/repo: %v", err)
 	}
-	workspaceClient, closeWorkspace := newTestSFTPClient(t, workspaceSFTPHandlers(instanceClient, "/workspaces/repo"))
+	workspaceClient, closeWorkspace := newTestSFTPClient(t, workspaceSFTPHandlers(instanceClient, "/workspaces/repo", 0, 0))
 	defer closeWorkspace()
 
 	if err := workspaceClient.Mkdir("/dir"); err != nil {
