@@ -20,6 +20,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/controlplane"
 	"gitea.dev/codespace/internal/provisioner"
 	"google.golang.org/protobuf/proto"
 )
@@ -3183,7 +3184,7 @@ func TestAgentUpdateLogBatchesByControlPlaneLimit(t *testing.T) {
 	}
 	firstLine := &codespacev1.LogLine{TimestampUnixNano: 1, Message: "alpha"}
 	maxSize := int64(proto.Size(&codespacev1.UpdateLogRequest{
-		ProtocolVersion:   protocolVersion,
+		ProtocolVersion:   controlplane.ProtocolVersion,
 		CodespaceUuid:     operation.GetCodespaceUuid(),
 		OperationRversion: operation.GetOperationRversion(),
 		Offset:            operation.GetLogOffset(),
@@ -3842,8 +3843,8 @@ func (s *managerService) FinalizeOperation(
 }
 
 func (s *managerService) captureAuth(header http.Header) {
-	s.managerID = header.Get(managerIDHeader)
-	s.managerSecret = header.Get(managerSecretHeader)
+	s.managerID = header.Get(controlplane.ManagerIDHeader)
+	s.managerSecret = header.Get(controlplane.ManagerSecretHeader)
 }
 
 func (s *managerService) observedOperations() []*codespacev1.ObservedOperation {

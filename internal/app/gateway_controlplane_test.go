@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/controlplane"
 	"gitea.dev/codespace/internal/manager"
 	"google.golang.org/protobuf/proto"
 )
@@ -107,34 +108,6 @@ func TestGatewayControlPlaneVerifySSHPublicKeyAllowed(t *testing.T) {
 	}
 	if string(service.sshRequest.GetPublicKey()) != "ssh-wire-key" {
 		t.Fatalf("ssh public key request = %q", service.sshRequest.GetPublicKey())
-	}
-	assertGatewayManagerAuth(t, service)
-}
-
-func TestGatewayControlPlaneEnsureCodespaceGitSSHKey(t *testing.T) {
-	t.Parallel()
-
-	service := &gatewayManagerService{
-		ensureGitSSHKeyResponse: &codespacev1.EnsureCodespaceGitSSHKeyResponse{
-			KnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
-		},
-	}
-	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
-	defer closeServer()
-
-	publicKey := []byte("ssh-wire-key")
-	lines, err := controlPlane.ensureCodespaceGitSSHKey(context.Background(), "codespace-uuid", publicKey)
-	if err != nil {
-		t.Fatalf("ensure git ssh key: %v", err)
-	}
-	publicKey[0] = 'X'
-	if len(lines) != 1 || lines[0] != "gitea.example.com ssh-ed25519 AAAA" {
-		t.Fatalf("known hosts lines = %#v", lines)
-	}
-	if service.ensureGitSSHKeyRequest.GetProtocolVersion() != 1 ||
-		service.ensureGitSSHKeyRequest.GetCodespaceUuid() != "codespace-uuid" ||
-		string(service.ensureGitSSHKeyRequest.GetPublicKey()) != "ssh-wire-key" {
-		t.Fatalf("ensure git ssh key request = %#v", service.ensureGitSSHKeyRequest)
 	}
 	assertGatewayManagerAuth(t, service)
 }
@@ -247,36 +220,34 @@ func TestGatewayControlPlaneMissingOutcomeFails(t *testing.T) {
 type gatewayManagerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 
-	mu                      sync.Mutex
-	managerID               string
-	managerSecret           string
-	openTokenRequest        *codespacev1.ValidateOpenTokenRequest
-	publicEndpointRequest   *codespacev1.ValidatePublicEndpointRequest
-	sshRequest              *codespacev1.VerifySSHPublicKeyRequest
-	ensureGitSSHKeyRequest  *codespacev1.EnsureCodespaceGitSSHKeyRequest
-	metadataRequest         *codespacev1.ReportRuntimeMetadataRequest
-	revalidateRequest       *codespacev1.RevalidateGatewaySessionRequest
-	publicEndpointCalls     int
-	sshCalls                int
-	openTokenResponse       *codespacev1.ValidateOpenTokenResponse
-	openTokenCalls          int
-	openTokenStarted        chan struct{}
-	openTokenRelease        chan struct{}
-	publicEndpointResponse  *codespacev1.ValidatePublicEndpointResponse
-	publicEndpointStarted   chan struct{}
-	publicEndpointRelease   chan struct{}
-	sshResponse             *codespacev1.VerifySSHPublicKeyResponse
-	ensureGitSSHKeyResponse *codespacev1.EnsureCodespaceGitSSHKeyResponse
-	metadataErr             error
-	metadataErrs            []error
-	metadataResponse        *codespacev1.ReportRuntimeMetadataResponse
-	metadataCalls           int
-	metadataStarted         chan struct{}
-	metadataRelease         chan struct{}
-	revalidateResponse      *codespacev1.RevalidateGatewaySessionResponse
-	revalidateCalls         int
-	revalidateStarted       chan struct{}
-	revalidateRelease       chan struct{}
+	mu                     sync.Mutex
+	managerID              string
+	managerSecret          string
+	openTokenRequest       *codespacev1.ValidateOpenTokenRequest
+	publicEndpointRequest  *codespacev1.ValidatePublicEndpointRequest
+	sshRequest             *codespacev1.VerifySSHPublicKeyRequest
+	metadataRequest        *codespacev1.ReportRuntimeMetadataRequest
+	revalidateRequest      *codespacev1.RevalidateGatewaySessionRequest
+	publicEndpointCalls    int
+	sshCalls               int
+	openTokenResponse      *codespacev1.ValidateOpenTokenResponse
+	openTokenCalls         int
+	openTokenStarted       chan struct{}
+	openTokenRelease       chan struct{}
+	publicEndpointResponse *codespacev1.ValidatePublicEndpointResponse
+	publicEndpointStarted  chan struct{}
+	publicEndpointRelease  chan struct{}
+	sshResponse            *codespacev1.VerifySSHPublicKeyResponse
+	metadataErr            error
+	metadataErrs           []error
+	metadataResponse       *codespacev1.ReportRuntimeMetadataResponse
+	metadataCalls          int
+	metadataStarted        chan struct{}
+	metadataRelease        chan struct{}
+	revalidateResponse     *codespacev1.RevalidateGatewaySessionResponse
+	revalidateCalls        int
+	revalidateStarted      chan struct{}
+	revalidateRelease      chan struct{}
 }
 
 func (s *gatewayManagerService) ValidateOpenToken(
@@ -348,13 +319,6 @@ func (s *gatewayManagerService) EnsureCodespaceGitSSHKey(
 	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
 ) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
 	s.captureAuth(req.Header())
-	s.mu.Lock()
-	s.ensureGitSSHKeyRequest = cloneProtoForTest(req.Msg)
-	response := s.ensureGitSSHKeyResponse
-	s.mu.Unlock()
-	if response != nil {
-		return connect.NewResponse(response), nil
-	}
 	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{}), nil
 }
 
@@ -422,8 +386,8 @@ func (s *gatewayManagerService) captureAuth(header http.Header) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.managerID = header.Get(gatewayManagerIDHeader)
-	s.managerSecret = header.Get(gatewayManagerSecretHeader)
+	s.managerID = header.Get(controlplane.ManagerIDHeader)
+	s.managerSecret = header.Get(controlplane.ManagerSecretHeader)
 }
 
 func (s *gatewayManagerService) publicEndpointCallCount() int {

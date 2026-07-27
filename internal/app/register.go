@@ -15,6 +15,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/controlplane"
 )
 
 // Register registers the manager with Gitea and writes the state directory.
@@ -55,7 +56,7 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), config.Manager.HTTPTimeout.ToStdlib())
 	defer cancel()
 	response, err := client.RegisterManager(ctx, connect.NewRequest(&codespacev1.RegisterManagerRequest{
-		ProtocolVersion:   1,
+		ProtocolVersion:   controlplane.ProtocolVersion,
 		RegistrationToken: registrationToken,
 	}))
 	if err != nil {

@@ -14,7 +14,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -28,15 +27,13 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/internal/controlplane"
 	"gitea.dev/codespace/internal/provisioner"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 )
 
 const (
-	managerIDHeader     = "x-codespace-manager-id"
-	managerSecretHeader = "x-codespace-manager-secret"
-	protocolVersion     = 1
 	initialReadMaxBytes = 64 * 1024
 
 	gitSSHKeyTypeEd25519 = "ed25519"
@@ -488,7 +485,7 @@ type Agent struct {
 
 // New creates one Manager worker.
 func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Provisioner) *Agent {
-	client := newManagerServiceClient(httpClient, config.BaseURL, initialReadMaxBytes)
+	client := controlplane.NewManagerServiceClient(httpClient, config.BaseURL, config.ManagerID, config.ManagerSecret, initialReadMaxBytes)
 	metadataGeneration := config.RuntimeMetadataGeneration
 	if metadataGeneration <= 0 {
 		metadataGeneration = 1
@@ -577,18 +574,6 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 	return agent
 }
 
-func newManagerServiceClient(httpClient connect.HTTPClient, baseURL string, maxBytes int64) codespacev1connect.ManagerServiceClient {
-	opts := []connect.ClientOption(nil)
-	if maxBytes > 0 {
-		max := int(maxBytes)
-		if int64(max) != maxBytes {
-			max = math.MaxInt
-		}
-		opts = append(opts, connect.WithReadMaxBytes(max), connect.WithSendMaxBytes(max))
-	}
-	return codespacev1connect.NewManagerServiceClient(httpClient, baseURL, opts...)
-}
-
 func (a *Agent) managerClient() codespacev1connect.ManagerServiceClient {
 	a.clientMu.RLock()
 	defer a.clientMu.RUnlock()
@@ -609,7 +594,7 @@ func (a *Agent) saveServiceSettings(settings ManagerServiceSettings) error {
 	}
 	a.clientMu.Lock()
 	if settings.ControlPlaneMaxMessageSize > 0 {
-		a.client = newManagerServiceClient(a.httpClient, a.baseURL, settings.ControlPlaneMaxMessageSize)
+		a.client = controlplane.NewManagerServiceClient(a.httpClient, a.baseURL, a.config.ManagerID, a.config.ManagerSecret, settings.ControlPlaneMaxMessageSize)
 	}
 	a.serviceSettings = settings
 	a.clientMu.Unlock()
@@ -753,7 +738,7 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 	instances, listErr := a.provisioner.ListInstances(ctx)
 	capacity := a.fetchCapacity(instances, listErr)
 	request := connect.NewRequest(&codespacev1.DeclareManagerRequest{
-		ProtocolVersion:                    protocolVersion,
+		ProtocolVersion:                    controlplane.ProtocolVersion,
 		GatewayUrl:                         a.config.GatewayURL,
 		GatewaySshAddr:                     a.config.GatewaySSHAddr,
 		Tags:                               append([]string(nil), a.config.Tags...),
@@ -766,7 +751,6 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 		StartupCapacityTotal:               a.config.CapacityTotal,
 		StartupCapacityAvailable:           capacity.startup,
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().DeclareManager(ctx, request)
 	if err != nil {
 		return fmt.Errorf("declare rpc: %w", err)
@@ -789,14 +773,13 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 	defer a.releaseFetchReservation(capacity)
 	capacity = a.applyStartupAdmission(ctx, capacity)
 	request := connect.NewRequest(&codespacev1.FetchOperationsRequest{
-		ProtocolVersion:          protocolVersion,
+		ProtocolVersion:          controlplane.ProtocolVersion,
 		StartupCapacityAvailable: capacity.startup,
 		AcceptedOperationTypes:   capacity.acceptedOperationTypes(),
 		MaxNewOperations:         capacity.maxOperations(),
 		ObservedOperations:       a.observedOperations(),
 		CleanupCapacityAvailable: capacity.cleanup,
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().FetchOperations(ctx, request)
 	if err != nil {
 		return fmt.Errorf("fetch operations rpc: %w", err)
@@ -875,11 +858,10 @@ func (a *Agent) reportInventoryOnce(ctx context.Context) error {
 	runtimeStates := runtimeStatesByUUID(refs)
 	requestOperationVersions := a.currentOperationVersions()
 	request := connect.NewRequest(&codespacev1.ReportInstancesRequest{
-		ProtocolVersion:     protocolVersion,
+		ProtocolVersion:     controlplane.ProtocolVersion,
 		InventoryGeneration: generation,
 		Instances:           refs,
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().ReportInstances(ctx, request)
 	if err != nil {
 		return fmt.Errorf("report instances rpc: %w", err)
@@ -1800,13 +1782,12 @@ func (a *Agent) reportRuntimeTransition(
 
 func (a *Agent) sendRuntimeTransition(ctx context.Context, transition RuntimeTransitionSnapshot) error {
 	request := connect.NewRequest(&codespacev1.ReportRuntimeTransitionRequest{
-		ProtocolVersion:           protocolVersion,
+		ProtocolVersion:           controlplane.ProtocolVersion,
 		CodespaceUuid:             transition.CodespaceUUID,
 		RuntimeGeneration:         transition.RuntimeGeneration,
 		ObservedOperationRversion: transition.ObservedOperationRVersion,
 		RuntimeState:              transition.TargetState,
 	})
-	a.setManagerAuth(request.Header())
 	if _, err := a.managerClient().ReportRuntimeTransition(ctx, request); err != nil {
 		return fmt.Errorf("report runtime transition rpc: %w", err)
 	}
@@ -3001,11 +2982,10 @@ func normalizeRuntimeGitSSHKeyType(keyType string) string {
 
 func (a *Agent) ensureCodespaceGitSSHKey(ctx context.Context, codespaceUUID string, publicKey []byte) ([]string, error) {
 	request := connect.NewRequest(&codespacev1.EnsureCodespaceGitSSHKeyRequest{
-		ProtocolVersion: protocolVersion,
+		ProtocolVersion: controlplane.ProtocolVersion,
 		CodespaceUuid:   codespaceUUID,
 		PublicKey:       publicKey,
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().EnsureCodespaceGitSSHKey(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("ensure codespace git ssh key rpc: %w", err)
@@ -3216,10 +3196,9 @@ func (a *Agent) deactivateRuntimeMetadata(codespaceUUID string) error {
 
 func (a *Agent) requestGiteaToken(ctx context.Context, codespaceUUID string) (*codespacev1.RequestGiteaTokenResponse, error) {
 	request := connect.NewRequest(&codespacev1.RequestGiteaTokenRequest{
-		ProtocolVersion: protocolVersion,
+		ProtocolVersion: controlplane.ProtocolVersion,
 		CodespaceUuid:   codespaceUUID,
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().RequestGiteaToken(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("request gitea token rpc: %w", err)
@@ -3236,13 +3215,12 @@ func (a *Agent) requestIdleStop(
 		return nil, fmt.Errorf("runtime settings are required")
 	}
 	request := connect.NewRequest(&codespacev1.RequestIdleStopRequest{
-		ProtocolVersion:               protocolVersion,
+		ProtocolVersion:               controlplane.ProtocolVersion,
 		CodespaceUuid:                 codespaceUUID,
 		ObservedAutoStopEnabled:       runtimeSettings.GetAutoStopEnabled(),
 		ObservedIdleTimeoutSeconds:    runtimeSettings.GetIdleTimeoutSeconds(),
 		ObservedInteractionGeneration: runtimeSettings.GetInteractionGeneration(),
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().RequestIdleStop(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("request idle stop rpc: %w", err)
@@ -3344,12 +3322,11 @@ func (a *Agent) publishRuntimeMetadataDirect(ctx context.Context, snapshot Runti
 		return err
 	}
 	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
-		ProtocolVersion:    protocolVersion,
+		ProtocolVersion:    controlplane.ProtocolVersion,
 		CodespaceUuid:      snapshot.CodespaceUUID,
 		MetadataGeneration: snapshot.MetadataGeneration,
 		Metadata:           metadata,
 	})
-	a.setManagerAuth(request.Header())
 	if err := a.checkControlPlaneMessageSize(request.Msg); err != nil {
 		return err
 	}
@@ -3412,13 +3389,12 @@ func (a *Agent) updateLogLines(ctx context.Context, operation *codespacev1.Opera
 			return err
 		}
 		request := connect.NewRequest(&codespacev1.UpdateLogRequest{
-			ProtocolVersion:   protocolVersion,
+			ProtocolVersion:   controlplane.ProtocolVersion,
 			CodespaceUuid:     operation.GetCodespaceUuid(),
 			OperationRversion: operation.GetOperationRversion(),
 			Offset:            offset,
 			Lines:             lines[:count],
 		})
-		a.setManagerAuth(request.Header())
 		response, err := a.managerClient().UpdateLog(ctx, request)
 		if err != nil {
 			return fmt.Errorf("update log rpc: %w", err)
@@ -3435,7 +3411,7 @@ func (a *Agent) updateLogBatchSize(operation *codespacev1.OperationPayload, offs
 		return 0, nil
 	}
 	request := connect.NewRequest(&codespacev1.UpdateLogRequest{
-		ProtocolVersion:   protocolVersion,
+		ProtocolVersion:   controlplane.ProtocolVersion,
 		CodespaceUuid:     operation.GetCodespaceUuid(),
 		OperationRversion: operation.GetOperationRversion(),
 		Offset:            offset,
@@ -3460,7 +3436,7 @@ func (a *Agent) finalize(
 	typ codespacev1.OperationType,
 ) (finalizeOutcome, error) {
 	request := connect.NewRequest(&codespacev1.FinalizeOperationRequest{
-		ProtocolVersion:   protocolVersion,
+		ProtocolVersion:   controlplane.ProtocolVersion,
 		CodespaceUuid:     operation.GetCodespaceUuid(),
 		OperationRversion: operation.GetOperationRversion(),
 		Final: &codespacev1.FinalResult{
@@ -3468,7 +3444,6 @@ func (a *Agent) finalize(
 			OperationType: typ,
 		},
 	})
-	a.setManagerAuth(request.Header())
 	response, err := a.managerClient().FinalizeOperation(ctx, request)
 	if err != nil {
 		return finalizeOutcomeAccepted, fmt.Errorf("finalize operation rpc: %w", err)
@@ -3495,11 +3470,6 @@ func (a *Agent) triggerResourceAbsentInventory(ctx context.Context, operation *c
 	}
 }
 
-func (a *Agent) setManagerAuth(header http.Header) {
-	header.Set(managerIDHeader, fmt.Sprintf("%d", a.config.ManagerID))
-	header.Set(managerSecretHeader, a.config.ManagerSecret)
-}
-
 func (a *Agent) intervalOrDefault(value, fallback time.Duration) time.Duration {
 	if value > 0 {
 		return value
@@ -3509,15 +3479,7 @@ func (a *Agent) intervalOrDefault(value, fallback time.Duration) time.Duration {
 
 func (a *Agent) checkControlPlaneMessageSize(message proto.Message) error {
 	settings := a.currentServiceSettings()
-	maxSize := settings.ControlPlaneMaxMessageSize
-	if maxSize <= 0 || message == nil {
-		return nil
-	}
-	size := proto.Size(message)
-	if int64(size) <= maxSize {
-		return nil
-	}
-	return fmt.Errorf("control plane message size %d exceeds limit %d", size, maxSize)
+	return controlplane.CheckMessageSize(message, settings.ControlPlaneMaxMessageSize)
 }
 
 func validateDeclareResponse(response *codespacev1.DeclareManagerResponse) (ManagerServiceSettings, error) {
