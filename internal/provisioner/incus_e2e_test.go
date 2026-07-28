@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -210,10 +211,10 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 		skipOrFailIncusE2E(t, "Incus E2E server cannot create the lifecycle test instance", err)
 	}
 	assertIncusE2EInstanceRunID(t, ctx, provisioner, instanceName, codespaceUUID, runID)
-	request := incusE2EBootstrapRequest(codespaceUUID, instanceName, instance.Workdir, ScriptOperationCreate)
+	request := incusE2ELifecycleRequest(codespaceUUID, instanceName, instance.Workdir, ScriptOperationCreate)
 	workspace := runIncusE2ELifecycleStart(t, ctx, provisioner, instance, request)
 
-	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
+	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2ELifecycleRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
 		t.Fatalf("stop e2e lifecycle runtime: %v", err)
 	}
 	if err := provisioner.Stop(ctx, instanceName); err != nil {
@@ -225,10 +226,10 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume e2e lifecycle instance: %v", err)
 	}
-	resumeRequest := incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationResume)
+	resumeRequest := incusE2ELifecycleRequest(codespaceUUID, instanceName, workspace, ScriptOperationResume)
 	runIncusE2ELifecycleResume(t, ctx, provisioner, resumed, resumeRequest)
 
-	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2EBootstrapRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
+	if _, err := provisioner.StopRuntime(ctx, instanceName, incusE2ELifecycleRequest(codespaceUUID, instanceName, workspace, ScriptOperationStop)); err != nil {
 		t.Fatalf("stop resumed e2e lifecycle runtime: %v", err)
 	}
 	if err := provisioner.Stop(ctx, instanceName); err != nil {
@@ -240,7 +241,7 @@ func TestIncusE2EBuiltinLifecycle(t *testing.T) {
 	assertIncusE2EInstanceAbsent(t, ctx, provisioner, codespaceUUID)
 }
 
-func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) string {
+func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) string {
 	t.Helper()
 	logs := &recordingLifecycleLogSink{}
 	request.LogSink = logs
@@ -272,20 +273,65 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	}
 	startRequest := request
 	startRequest.Workdir = workspace
-	if _, err := provisioner.StartRuntime(ctx, instance.Name, startRequest); err != nil {
+	result, err := provisioner.StartRuntime(ctx, instance.Name, startRequest)
+	if err != nil {
 		t.Fatalf("start e2e lifecycle runtime: %v\nlifecycle log:\n%s", err, strings.Join(logs.lines, "\n"))
 	}
+	assertIncusE2EWorkspaceCommand(t, ctx, provisioner, instance.Name, result)
 	return workspace
 }
 
-func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request BootstrapRequest) {
+func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) {
 	t.Helper()
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e resume credentials: %v", err)
 	}
 	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, request.Workdir)
-	if _, err := provisioner.StartRuntime(ctx, instance.Name, request); err != nil {
+	result, err := provisioner.StartRuntime(ctx, instance.Name, request)
+	if err != nil {
 		t.Fatalf("start e2e resume runtime: %v", err)
+	}
+	assertIncusE2EWorkspaceCommand(t, ctx, provisioner, instance.Name, result)
+}
+
+func assertIncusE2EWorkspaceCommand(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName string, result LifecycleScriptResult) {
+	t.Helper()
+	containerID := strings.TrimSpace(result.SharedEnv["CODESPACE_DEVCONTAINER_ID"])
+	containerUser := strings.TrimSpace(result.SharedEnv["CODESPACE_DEVCONTAINER_USER"])
+	containerWorkdir := strings.TrimSpace(result.SharedEnv["CODESPACE_DEVCONTAINER_WORKDIR"])
+	if containerID == "" || containerUser == "" || !filepath.IsAbs(containerWorkdir) {
+		t.Fatalf("Dev Container target = %#v", result.SharedEnv)
+	}
+	if err := provisioner.CheckDevContainer(ctx, instanceName, containerID); err != nil {
+		t.Fatalf("check e2e Dev Container: %v", err)
+	}
+	editorPort, err := strconv.ParseUint(strings.TrimSpace(result.SharedEnv[WorkspaceIDEPortEnv]), 10, 16)
+	if err != nil || editorPort != WorkspaceIDEPort {
+		t.Fatalf("Web IDE port = %q", result.SharedEnv[WorkspaceIDEPortEnv])
+	}
+	if err := provisioner.CheckWorkspaceIDE(ctx, instanceName, uint32(editorPort)); err != nil {
+		t.Fatalf("check e2e Web IDE: %v", err)
+	}
+	session, err := provisioner.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{
+		InstanceName:     instanceName,
+		ContainerID:      containerID,
+		ContainerUser:    containerUser,
+		ContainerWorkdir: containerWorkdir,
+		Command:          "pwd",
+	})
+	if err != nil {
+		t.Fatalf("open e2e Dev Container command: %v", err)
+	}
+	defer session.Close()
+	output, err := io.ReadAll(session.Stdout())
+	if err != nil {
+		t.Fatalf("read e2e Dev Container command: %v", err)
+	}
+	if err := session.Wait(); err != nil {
+		t.Fatalf("wait e2e Dev Container command: %v", err)
+	}
+	if strings.TrimSpace(string(output)) != containerWorkdir {
+		t.Fatalf("Dev Container pwd = %q, want %q", strings.TrimSpace(string(output)), containerWorkdir)
 	}
 }
 
@@ -299,11 +345,16 @@ func incusE2ERuntimeCredentialSeed(codespaceUUID, token string) RuntimeCredentia
 	}
 }
 
-func incusE2EBootstrapRequest(codespaceUUID, instanceName, workdir string, operation ScriptOperation) BootstrapRequest {
-	return BootstrapRequest{
+func incusE2ELifecycleRequest(codespaceUUID, instanceName, workdir string, operation ScriptOperation) LifecycleRequest {
+	return LifecycleRequest{
 		CodespaceUUID:      codespaceUUID,
 		CodespaceName:      instanceName,
 		CodespaceOwnerName: "e2e",
+		UserID:             1,
+		UserName:           "e2e",
+		GitUserName:        "Codespace E2E",
+		GitUserEmail:       "codespace-e2e@example.com",
+		RuntimeUserName:    "e2e",
 		GiteaToken:         "gcs_e2e",
 		ServerURL:          "https://gitea.example.com/",
 		RepoCloneHTTPURL:   "https://github.com/octocat/Hello-World.git",
@@ -312,8 +363,13 @@ func incusE2EBootstrapRequest(codespaceUUID, instanceName, workdir string, opera
 		StartRef:           "",
 		CommitSHA:          "",
 		Workdir:            workdir,
+		EnvironmentTag:     "e2e",
 		GitProtocol:        "http",
-		Operation:          operation,
+		DevContainer: DevContainerConfiguration{
+			Source:       DevContainerSourcePlatformDefault,
+			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
+		},
+		Operation: operation,
 	}
 }
 
@@ -402,11 +458,19 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 	}
 	defer client.Close()
 	defer conn.Close()
+	currentDirectory, err := client.Getwd()
+	if err != nil {
+		t.Fatalf("get e2e sftp directory: %v", err)
+	}
+	if currentDirectory != workdir {
+		t.Fatalf("e2e sftp directory = %q, want %q", currentDirectory, workdir)
+	}
 
-	file, err := client.Create("/sftp-e2e.txt")
+	file, err := client.Create("sftp-e2e.txt")
 	if err != nil {
 		t.Fatalf("create e2e sftp file: %v", err)
 	}
+	defer client.Remove(path.Join(workdir, "sftp-e2e.txt"))
 	if _, err := file.Write([]byte("incus sftp ready")); err != nil {
 		_ = file.Close()
 		t.Fatalf("write e2e sftp file: %v", err)
@@ -414,7 +478,7 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 	if err := file.Close(); err != nil {
 		t.Fatalf("close e2e sftp file: %v", err)
 	}
-	opened, err := client.Open("/sftp-e2e.txt")
+	opened, err := client.Open("sftp-e2e.txt")
 	if err != nil {
 		t.Fatalf("open e2e sftp file: %v", err)
 	}
@@ -426,8 +490,22 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 	if string(content) != "incus sftp ready" {
 		t.Fatalf("e2e sftp content = %q", content)
 	}
-	if _, err := client.Stat("/../sftp-e2e.txt"); err != nil {
-		t.Fatalf("cleaned e2e sftp path did not stay under workspace: %v", err)
+	rootFile := "/tmp/gitea-codespace-sftp-e2e.txt"
+	outside, err := client.Create(rootFile)
+	if err != nil {
+		t.Fatalf("create e2e sftp file outside workspace: %v", err)
+	}
+	if err := outside.Close(); err != nil {
+		t.Fatalf("close e2e sftp file outside workspace: %v", err)
+	}
+	defer client.Remove(rootFile)
+	if err := provisioner.execScript(ctx, instanceName, `
+set -eu
+test "$(stat -c '%u:%g' -- "$CODESPACE_E2E_FILE")" = "1000:1000"
+`, map[string]string{
+		"CODESPACE_E2E_FILE": path.Join(workdir, "sftp-e2e.txt"),
+	}, "/"); err != nil {
+		t.Fatalf("verify e2e sftp file ownership: %v", err)
 	}
 }
 

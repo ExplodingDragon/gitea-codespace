@@ -65,7 +65,13 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 	go func() {
 		runDone <- runWithConfigContext(ctx, &output, config)
 	}()
-	waitAppE2EFinalized(t, service.finalized)
+	select {
+	case <-service.finalized:
+	case err := <-runDone:
+		t.Fatalf("manager process exited before operation finalization: %v\noutput:\n%s", err, output.String())
+	case <-time.After(2 * time.Second):
+		t.Fatalf("manager operation was not finalized\noutput:\n%s", output.String())
+	}
 	cancel()
 	select {
 	case err := <-runDone:
@@ -304,7 +310,6 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	gatewaySSH, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
-		newGatewayRouteStore(),
 		newTestWorkspaceCommandBackend("internal ready\n"),
 		controlPlane,
 		newGatewaySessionRegistry(),
@@ -764,9 +769,10 @@ func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codes
 			GitUserEmail: "e2e-user@example.com",
 		}
 	}
-	if payload.RepositoryConfig == nil {
-		payload.RepositoryConfig = &codespacev1.RepositoryCodespaceConfig{
-			Path: ".gitea/codespace.yaml",
+	if payload.DevContainer == nil {
+		payload.DevContainer = &codespacev1.DevContainerConfiguration{
+			Source:       codespacev1.DevContainerConfigurationSource_DEV_CONTAINER_CONFIGURATION_SOURCE_PLATFORM_DEFAULT,
+			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		}
 	}
 	return operation

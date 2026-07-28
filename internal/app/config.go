@@ -115,6 +115,7 @@ type GatewayConfig struct {
 	MaxSessionsPerUser               int      `yaml:"-"`
 	MaxInflightTotal                 int      `yaml:"-"`
 	MaxInflightPerSession            int      `yaml:"-"`
+	SSHHandshakeTimeout              Duration `yaml:"-"`
 	SSHMaxChannelsPerConnection      int      `yaml:"-"`
 	SSHAuthMaxAttemptsPerIP          int      `yaml:"-"`
 	SSHAuthMaxAttemptsPerCodespace   int      `yaml:"-"`
@@ -138,6 +139,7 @@ type GatewayHTTPConfig struct {
 type GatewaySSHConfig struct {
 	Listen                   string               `yaml:"listen"`
 	PublicAddr               string               `yaml:"public_addr"`
+	HandshakeTimeout         Duration             `yaml:"handshake_timeout"`
 	MaxChannelsPerConnection int                  `yaml:"max_channels_per_connection"`
 	Auth                     GatewaySSHAuthConfig `yaml:"auth"`
 }
@@ -204,7 +206,7 @@ type IncusConfig struct {
 	NetworkManage bool
 }
 
-// RuntimeEnvironmentConfig stores one repository tag to an internal runtime environment mapping.
+// RuntimeEnvironmentConfig stores one deployment-defined runtime environment.
 type RuntimeEnvironmentConfig struct {
 	Image         string
 	InstanceType  string
@@ -336,6 +338,7 @@ func DefaultConfig() Config {
 			SSH: GatewaySSHConfig{
 				Listen:                   ":2222",
 				PublicAddr:               "gateway.example.com:22",
+				HandshakeTimeout:         Duration(30 * time.Second),
 				MaxChannelsPerConnection: 32,
 				Auth: GatewaySSHAuthConfig{
 					MaxAttemptsPerIP:          30,
@@ -370,6 +373,7 @@ func DefaultConfig() Config {
 			MaxSessionsPerUser:               128,
 			MaxInflightTotal:                 4096,
 			MaxInflightPerSession:            32,
+			SSHHandshakeTimeout:              Duration(30 * time.Second),
 			SSHMaxChannelsPerConnection:      32,
 			SSHAuthMaxAttemptsPerIP:          30,
 			SSHAuthMaxAttemptsPerCodespace:   20,
@@ -862,6 +866,9 @@ func (c GatewayConfig) Validate() error {
 	if c.SSHMaxChannelsPerConnection < 1 || c.SSHMaxChannelsPerConnection > 1024 {
 		return fmt.Errorf("gateway.ssh.max_channels_per_connection must be between 1 and 1024")
 	}
+	if timeout := c.SSHHandshakeTimeout.ToStdlib(); timeout < time.Second || timeout > time.Minute {
+		return fmt.Errorf("gateway.ssh.handshake_timeout must be between 1s and 1m")
+	}
 	if c.SSHAuthMaxAttemptsPerIP < 1 {
 		return fmt.Errorf("gateway.ssh.auth.max_attempts_per_ip_per_minute must be at least 1")
 	}
@@ -926,6 +933,9 @@ func (c *GatewayConfig) applyDefaults(defaults GatewayConfig) {
 	if strings.TrimSpace(c.SSH.PublicAddr) == "" {
 		c.SSH.PublicAddr = defaults.SSH.PublicAddr
 	}
+	if c.SSH.HandshakeTimeout == 0 {
+		c.SSH.HandshakeTimeout = defaults.SSH.HandshakeTimeout
+	}
 	if c.SSH.MaxChannelsPerConnection == 0 {
 		c.SSH.MaxChannelsPerConnection = defaults.SSH.MaxChannelsPerConnection
 	}
@@ -988,6 +998,7 @@ func (c *GatewayConfig) applyDefaults(defaults GatewayConfig) {
 	c.MaxSessionsPerUser = c.Sessions.MaxPerUser
 	c.MaxInflightTotal = c.Limits.MaxInflightTotal
 	c.MaxInflightPerSession = c.Limits.MaxInflightPerSession
+	c.SSHHandshakeTimeout = c.SSH.HandshakeTimeout
 	c.SSHMaxChannelsPerConnection = c.SSH.MaxChannelsPerConnection
 	c.SSHAuthMaxAttemptsPerIP = c.SSH.Auth.MaxAttemptsPerIP
 	c.SSHAuthMaxAttemptsPerCodespace = c.SSH.Auth.MaxAttemptsPerCodespace

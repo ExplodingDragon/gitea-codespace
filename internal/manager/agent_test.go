@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1114,7 +1115,7 @@ func TestAgentStopSavesSuccessfulScriptEnvironment(t *testing.T) {
 	}}
 	runtimeProvisioner := &stopEnvironmentProvisioner{
 		DummyProvisioner: provisioner.NewDummy(),
-		access: provisioner.RuntimeAccess{SharedEnv: map[string]string{
+		access: provisioner.LifecycleScriptResult{SharedEnv: map[string]string{
 			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
 			"OLD_VALUE":               "kept",
 			"STOP_VALUE":              "saved",
@@ -1835,7 +1836,7 @@ func TestReportInventoryStopsStableRunningWhenGiteaTokenMissing(t *testing.T) {
 	defer server.Close()
 
 	repairProvisioner := newCredentialRepairProvisioner()
-	if _, err := repairProvisioner.base.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
+	if _, err := repairProvisioner.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	repairProvisioner.status = provisioner.CredentialStatus{
@@ -1889,7 +1890,7 @@ func TestReportInventoryStopsStableRunningWhenWorkspaceGitInvalid(t *testing.T) 
 			CredentialConfigured: false,
 		},
 	}
-	if _, err := repairProvisioner.base.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
+	if _, err := repairProvisioner.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	runtimeStore := &memoryRuntimeStateStore{}
@@ -1951,7 +1952,7 @@ func TestReportInventoryStopsStableRunningAfterHealthFailures(t *testing.T) {
 	defer server.Close()
 
 	repairProvisioner := newCredentialRepairProvisioner()
-	if _, err := repairProvisioner.base.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
+	if _, err := repairProvisioner.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	repairProvisioner.accessResults = []error{
@@ -2019,7 +2020,7 @@ func TestReportInventoryDefersHealthCheckForNewRuntimeToNextRound(t *testing.T) 
 	defer server.Close()
 
 	repairProvisioner := newCredentialRepairProvisioner()
-	if _, err := repairProvisioner.base.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
+	if _, err := repairProvisioner.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	repairProvisioner.accessResults = []error{errors.New("workspace unavailable")}
@@ -2074,7 +2075,7 @@ func TestReportInventoryHealthSuccessResetsFailures(t *testing.T) {
 	defer server.Close()
 
 	repairProvisioner := newCredentialRepairProvisioner()
-	if _, err := repairProvisioner.base.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
+	if _, err := repairProvisioner.CreateOrStart(context.Background(), provisionerSpec(codespaceUUID)); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
 	repairProvisioner.accessResults = []error{
@@ -2632,7 +2633,7 @@ func TestCleanupLocalRuntimeKeepsStateUntilInstanceIsAbsent(t *testing.T) {
 	agent := New(AgentConfig{
 		BaseURL:           "http://127.0.0.1",
 		CleanupStateStore: cleanupStore,
-	}, http.DefaultClient, &nonDeletingProvisioner{base: dummyProvisioner})
+	}, http.DefaultClient, &nonDeletingProvisioner{DummyProvisioner: dummyProvisioner})
 
 	if err := agent.cleanupLocalRuntime(context.Background(), codespaceUUID); err == nil {
 		t.Fatalf("expected cleanup confirmation error")
@@ -3384,6 +3385,29 @@ func TestRuntimeInstanceNameUsesShortUUID(t *testing.T) {
 	}
 }
 
+func TestValidateRuntimeReadyChecksDevelopmentEnvironmentWithoutGitChecker(t *testing.T) {
+	t.Parallel()
+
+	const codespaceUUID = "11111111-1111-4111-8111-111111111111"
+	backend := &developmentEnvironmentProvisioner{Provisioner: provisioner.NewDummy()}
+	agent := &Agent{
+		provisioner: backend,
+		scriptEnvStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
+			codespaceUUID: {
+				"CODESPACE_DEVCONTAINER_ID":     "devcontainer-id",
+				provisioner.WorkspaceIDEPortEnv: strconv.Itoa(provisioner.WorkspaceIDEPort),
+			},
+		}},
+	}
+	instance := &provisioner.Instance{Name: "cs-11111111111141118111", Workdir: "/workspaces/repo"}
+	if err := agent.validateRuntimeReady(t.Context(), codespaceUUID, instance); err != nil {
+		t.Fatalf("validate runtime ready: %v", err)
+	}
+	if backend.containerID != "devcontainer-id" || backend.idePort != provisioner.WorkspaceIDEPort {
+		t.Fatalf("development environment check = container %q, IDE port %d", backend.containerID, backend.idePort)
+	}
+}
+
 type managerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 
@@ -3436,6 +3460,22 @@ type startupAdmissionProvisioner struct {
 	*provisioner.DummyProvisioner
 	admission provisioner.StartupAdmission
 	err       error
+}
+
+type developmentEnvironmentProvisioner struct {
+	provisioner.Provisioner
+	containerID string
+	idePort     uint32
+}
+
+func (p *developmentEnvironmentProvisioner) CheckDevContainer(_ context.Context, _ string, containerID string) error {
+	p.containerID = containerID
+	return nil
+}
+
+func (p *developmentEnvironmentProvisioner) CheckWorkspaceIDE(_ context.Context, _ string, port uint32) error {
+	p.idePort = port
+	return nil
 }
 
 func (p *startupAdmissionProvisioner) CheckStartupAdmission(context.Context) (provisioner.StartupAdmission, error) {
@@ -3573,9 +3613,10 @@ func completeCreatePayloadForTest(operation *codespacev1.OperationPayload) *code
 			GitUserEmail: "test-user@example.com",
 		}
 	}
-	if payload.RepositoryConfig == nil {
-		payload.RepositoryConfig = &codespacev1.RepositoryCodespaceConfig{
-			Path: ".gitea/codespace.yaml",
+	if payload.DevContainer == nil {
+		payload.DevContainer = &codespacev1.DevContainerConfiguration{
+			Source:       codespacev1.DevContainerConfigurationSource_DEV_CONTAINER_CONFIGURATION_SOURCE_PLATFORM_DEFAULT,
+			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		}
 	}
 	return operation
@@ -3594,8 +3635,9 @@ func startupInputStoreForTest(codespaceUUID string) StartupInputStateStore {
 			GitUserName:  "test-user",
 			GitUserEmail: "test-user@example.com",
 		},
-		RepositoryConfig: StartupRepositoryConfig{
-			Path: ".gitea/codespace.yaml",
+		DevContainer: provisioner.DevContainerConfiguration{
+			Source:       "platform_default",
+			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		},
 	})
 	return store
@@ -3976,13 +4018,13 @@ func testFailureError(code connect.Code, category string) error {
 }
 
 type blockingProvisioner struct {
-	base    *provisioner.DummyProvisioner
+	*provisioner.DummyProvisioner
 	mu      sync.Mutex
 	once    sync.Once
 	started chan struct{}
 	stopped chan struct{}
 	release chan struct{}
-	startup []provisioner.BootstrapRequest
+	startup []provisioner.LifecycleRequest
 }
 
 type stopBlockingProvisioner struct {
@@ -3995,7 +4037,7 @@ type stopBlockingProvisioner struct {
 type stopEnvironmentProvisioner struct {
 	*provisioner.DummyProvisioner
 	mu      sync.Mutex
-	access  provisioner.RuntimeAccess
+	access  provisioner.LifecycleScriptResult
 	stopErr error
 	stopped int
 }
@@ -4006,16 +4048,16 @@ type runtimeCredentialSeedRecord struct {
 }
 
 type credentialTrackingProvisioner struct {
-	base *provisioner.DummyProvisioner
-	mu   sync.Mutex
+	*provisioner.DummyProvisioner
+	mu sync.Mutex
 
 	events []string
 	seeds  []runtimeCredentialSeedRecord
 }
 
 type credentialRepairProvisioner struct {
-	base *provisioner.DummyProvisioner
-	mu   sync.Mutex
+	*provisioner.DummyProvisioner
+	mu sync.Mutex
 
 	status        provisioner.CredentialStatus
 	stopped       int
@@ -4043,7 +4085,7 @@ type listFailingProvisioner struct {
 }
 
 type nonDeletingProvisioner struct {
-	base *provisioner.DummyProvisioner
+	*provisioner.DummyProvisioner
 }
 
 type recordingRuntimeEndpointApplier struct {
@@ -4058,22 +4100,22 @@ func (a *recordingRuntimeEndpointApplier) ApplyRuntimeEndpointRoutes(codespaceUU
 }
 
 func newCredentialTrackingProvisioner() *credentialTrackingProvisioner {
-	return &credentialTrackingProvisioner{base: provisioner.NewDummy()}
+	return &credentialTrackingProvisioner{DummyProvisioner: provisioner.NewDummy()}
 }
 
 func newCredentialRepairProvisioner() *credentialRepairProvisioner {
 	return &credentialRepairProvisioner{
-		base:   provisioner.NewDummy(),
-		status: provisioner.CredentialStatus{GiteaTokenPresent: true},
+		DummyProvisioner: provisioner.NewDummy(),
+		status:           provisioner.CredentialStatus{GiteaTokenPresent: true},
 	}
 }
 
 func newBlockingProvisioner() *blockingProvisioner {
 	return &blockingProvisioner{
-		base:    provisioner.NewDummy(),
-		started: make(chan struct{}),
-		stopped: make(chan struct{}),
-		release: make(chan struct{}),
+		DummyProvisioner: provisioner.NewDummy(),
+		started:          make(chan struct{}),
+		stopped:          make(chan struct{}),
+		release:          make(chan struct{}),
 	}
 }
 
@@ -4085,28 +4127,12 @@ func newStopBlockingProvisioner() *stopBlockingProvisioner {
 	}
 }
 
-func (p *credentialTrackingProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.CreateOrStart(ctx, spec)
-}
-
-func (p *credentialTrackingProvisioner) StartExisting(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.StartExisting(ctx, spec)
-}
-
-func (p *credentialTrackingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
-	return p.base.ListInstances(ctx)
-}
-
 func (p *listFailingProvisioner) ListInstances(context.Context) ([]*provisioner.Instance, error) {
 	return nil, p.err
 }
 
-func (p *credentialTrackingProvisioner) CheckCredentials(ctx context.Context, instanceName string) (provisioner.CredentialStatus, error) {
-	return p.base.CheckCredentials(ctx, instanceName)
-}
-
 func (p *credentialTrackingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
-	if err := p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request); err != nil {
+	if err := p.DummyProvisioner.SeedRuntimeGitSSHKey(ctx, instanceName, request); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -4116,7 +4142,7 @@ func (p *credentialTrackingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context
 }
 
 func (p *credentialTrackingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
-	if err := p.base.SeedRuntimeCredentials(ctx, instanceName, request); err != nil {
+	if err := p.DummyProvisioner.SeedRuntimeCredentials(ctx, instanceName, request); err != nil {
 		return err
 	}
 	p.mu.Lock()
@@ -4129,39 +4155,11 @@ func (p *credentialTrackingProvisioner) SeedRuntimeCredentials(ctx context.Conte
 	return nil
 }
 
-func (p *credentialTrackingProvisioner) ReadEndpointManifest(ctx context.Context, instanceName string) ([]provisioner.RuntimeEndpointDeclaration, error) {
-	return p.base.ReadEndpointManifest(ctx, instanceName)
-}
-
-func (p *credentialTrackingProvisioner) RuntimeResourceUsage(ctx context.Context, instanceName string) (provisioner.RuntimeResourceUsage, error) {
-	return p.base.RuntimeResourceUsage(ctx, instanceName)
-}
-
-func (p *credentialTrackingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
-	return p.base.InitializeSystem(ctx, instanceName, request)
-}
-
-func (p *initFailureProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
+func (p *initFailureProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return provisioner.SystemIdentity{}, err
 	}
 	return provisioner.SystemIdentity{}, p.err
-}
-
-func (p *credentialTrackingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StartRuntime(ctx, instanceName, request)
-}
-
-func (p *credentialTrackingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StopRuntime(ctx, instanceName, request)
-}
-
-func (p *credentialTrackingProvisioner) Stop(ctx context.Context, instanceName string) error {
-	return p.base.Stop(ctx, instanceName)
-}
-
-func (p *credentialTrackingProvisioner) Delete(ctx context.Context, instanceName string) error {
-	return p.base.Delete(ctx, instanceName)
 }
 
 func (p *credentialTrackingProvisioner) runtimeCredentialSeeds() []runtimeCredentialSeedRecord {
@@ -4180,18 +4178,6 @@ func (p *credentialTrackingProvisioner) recordedEvents() []string {
 	return append([]string(nil), p.events...)
 }
 
-func (p *credentialRepairProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.CreateOrStart(ctx, spec)
-}
-
-func (p *credentialRepairProvisioner) StartExisting(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.StartExisting(ctx, spec)
-}
-
-func (p *credentialRepairProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
-	return p.base.ListInstances(ctx)
-}
-
 func (p *credentialRepairProvisioner) CheckCredentials(ctx context.Context, _ string) (provisioner.CredentialStatus, error) {
 	if err := ctx.Err(); err != nil {
 		return provisioner.CredentialStatus{}, err
@@ -4200,10 +4186,6 @@ func (p *credentialRepairProvisioner) CheckCredentials(ctx context.Context, _ st
 	defer p.mu.Unlock()
 
 	return p.status, nil
-}
-
-func (p *credentialRepairProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
-	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
 }
 
 func (p *credentialRepairProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceName string, workdir string) error {
@@ -4221,45 +4203,17 @@ func (p *credentialRepairProvisioner) CheckWorkspaceAccess(ctx context.Context, 
 	if result != nil {
 		return result
 	}
-	return p.base.CheckWorkspaceAccess(ctx, instanceName, workdir)
-}
-
-func (p *credentialRepairProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
-	return p.base.SeedRuntimeCredentials(ctx, instanceName, request)
-}
-
-func (p *credentialRepairProvisioner) ReadEndpointManifest(ctx context.Context, instanceName string) ([]provisioner.RuntimeEndpointDeclaration, error) {
-	return p.base.ReadEndpointManifest(ctx, instanceName)
-}
-
-func (p *credentialRepairProvisioner) RuntimeResourceUsage(ctx context.Context, instanceName string) (provisioner.RuntimeResourceUsage, error) {
-	return p.base.RuntimeResourceUsage(ctx, instanceName)
-}
-
-func (p *credentialRepairProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
-	return p.base.InitializeSystem(ctx, instanceName, request)
-}
-
-func (p *credentialRepairProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StartRuntime(ctx, instanceName, request)
-}
-
-func (p *credentialRepairProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StopRuntime(ctx, instanceName, request)
+	return p.DummyProvisioner.CheckWorkspaceAccess(ctx, instanceName, workdir)
 }
 
 func (p *credentialRepairProvisioner) Stop(ctx context.Context, instanceName string) error {
-	if err := p.base.Stop(ctx, instanceName); err != nil {
+	if err := p.DummyProvisioner.Stop(ctx, instanceName); err != nil {
 		return err
 	}
 	p.mu.Lock()
 	p.stopped++
 	p.mu.Unlock()
 	return nil
-}
-
-func (p *credentialRepairProvisioner) Delete(ctx context.Context, instanceName string) error {
-	return p.base.Delete(ctx, instanceName)
 }
 
 func (p *credentialRepairProvisioner) stoppedCount() int {
@@ -4296,39 +4250,7 @@ func (p *workspaceGitRepairProvisioner) gitWorkdir() string {
 	return p.workdir
 }
 
-func (p *blockingProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.CreateOrStart(ctx, spec)
-}
-
-func (p *blockingProvisioner) StartExisting(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.StartExisting(ctx, spec)
-}
-
-func (p *blockingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
-	return p.base.ListInstances(ctx)
-}
-
-func (p *blockingProvisioner) CheckCredentials(ctx context.Context, instanceName string) (provisioner.CredentialStatus, error) {
-	return p.base.CheckCredentials(ctx, instanceName)
-}
-
-func (p *blockingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
-	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
-}
-
-func (p *blockingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
-	return p.base.SeedRuntimeCredentials(ctx, instanceName, request)
-}
-
-func (p *blockingProvisioner) ReadEndpointManifest(ctx context.Context, instanceName string) ([]provisioner.RuntimeEndpointDeclaration, error) {
-	return p.base.ReadEndpointManifest(ctx, instanceName)
-}
-
-func (p *blockingProvisioner) RuntimeResourceUsage(ctx context.Context, instanceName string) (provisioner.RuntimeResourceUsage, error) {
-	return p.base.RuntimeResourceUsage(ctx, instanceName)
-}
-
-func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
+func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
 	if request.Operation == provisioner.ScriptOperationCreate {
 		p.mu.Lock()
 		p.startup = append(p.startup, request)
@@ -4342,10 +4264,10 @@ func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName
 		case <-p.release:
 		}
 	}
-	return p.base.InitializeSystem(ctx, instanceName, request)
+	return p.DummyProvisioner.InitializeSystem(ctx, instanceName, request)
 }
 
-func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleScriptResult, error) {
 	p.mu.Lock()
 	p.startup = append(p.startup, request)
 	p.mu.Unlock()
@@ -4354,14 +4276,10 @@ func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName str
 	})
 	select {
 	case <-ctx.Done():
-		return provisioner.RuntimeAccess{}, ctx.Err()
+		return provisioner.LifecycleScriptResult{}, ctx.Err()
 	case <-p.release:
 	}
-	return p.base.StartRuntime(ctx, instanceName, request)
-}
-
-func (p *blockingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StopRuntime(ctx, instanceName, request)
+	return p.DummyProvisioner.StartRuntime(ctx, instanceName, request)
 }
 
 func (p *blockingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4370,7 +4288,7 @@ func (p *blockingProvisioner) Stop(ctx context.Context, instanceName string) err
 	default:
 		close(p.stopped)
 	}
-	return p.base.Stop(ctx, instanceName)
+	return p.DummyProvisioner.Stop(ctx, instanceName)
 }
 
 func (p *stopBlockingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4385,12 +4303,12 @@ func (p *stopBlockingProvisioner) Stop(ctx context.Context, instanceName string)
 	return p.DummyProvisioner.Stop(ctx, instanceName)
 }
 
-func (p *stopEnvironmentProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
+func (p *stopEnvironmentProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleScriptResult, error) {
 	if err := ctx.Err(); err != nil {
-		return provisioner.RuntimeAccess{}, err
+		return provisioner.LifecycleScriptResult{}, err
 	}
 	if p.stopErr != nil {
-		return provisioner.RuntimeAccess{}, p.stopErr
+		return provisioner.LifecycleScriptResult{}, p.stopErr
 	}
 	return p.access, nil
 }
@@ -4412,65 +4330,13 @@ func (p *stopEnvironmentProvisioner) stoppedCount() int {
 	return p.stopped
 }
 
-func (p *blockingProvisioner) Delete(ctx context.Context, instanceName string) error {
-	return p.base.Delete(ctx, instanceName)
-}
-
-func (p *blockingProvisioner) startupRequests() []provisioner.BootstrapRequest {
+func (p *blockingProvisioner) startupRequests() []provisioner.LifecycleRequest {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	requests := make([]provisioner.BootstrapRequest, len(p.startup))
+	requests := make([]provisioner.LifecycleRequest, len(p.startup))
 	copy(requests, p.startup)
 	return requests
-}
-
-func (p *nonDeletingProvisioner) CreateOrStart(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.CreateOrStart(ctx, spec)
-}
-
-func (p *nonDeletingProvisioner) StartExisting(ctx context.Context, spec provisioner.InstanceSpec) (*provisioner.Instance, error) {
-	return p.base.StartExisting(ctx, spec)
-}
-
-func (p *nonDeletingProvisioner) ListInstances(ctx context.Context) ([]*provisioner.Instance, error) {
-	return p.base.ListInstances(ctx)
-}
-
-func (p *nonDeletingProvisioner) CheckCredentials(ctx context.Context, instanceName string) (provisioner.CredentialStatus, error) {
-	return p.base.CheckCredentials(ctx, instanceName)
-}
-
-func (p *nonDeletingProvisioner) SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request provisioner.RuntimeGitSSHKeySeedRequest) error {
-	return p.base.SeedRuntimeGitSSHKey(ctx, instanceName, request)
-}
-
-func (p *nonDeletingProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceName string, request provisioner.RuntimeCredentialSeedRequest) error {
-	return p.base.SeedRuntimeCredentials(ctx, instanceName, request)
-}
-
-func (p *nonDeletingProvisioner) ReadEndpointManifest(ctx context.Context, instanceName string) ([]provisioner.RuntimeEndpointDeclaration, error) {
-	return p.base.ReadEndpointManifest(ctx, instanceName)
-}
-
-func (p *nonDeletingProvisioner) RuntimeResourceUsage(ctx context.Context, instanceName string) (provisioner.RuntimeResourceUsage, error) {
-	return p.base.RuntimeResourceUsage(ctx, instanceName)
-}
-
-func (p *nonDeletingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.SystemIdentity, error) {
-	return p.base.InitializeSystem(ctx, instanceName, request)
-}
-
-func (p *nonDeletingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StartRuntime(ctx, instanceName, request)
-}
-
-func (p *nonDeletingProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.BootstrapRequest) (provisioner.RuntimeAccess, error) {
-	return p.base.StopRuntime(ctx, instanceName, request)
-}
-
-func (p *nonDeletingProvisioner) Stop(ctx context.Context, instanceName string) error {
-	return p.base.Stop(ctx, instanceName)
 }
 
 func (p *nonDeletingProvisioner) Delete(ctx context.Context, _ string) error {

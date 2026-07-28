@@ -4,10 +4,12 @@
 package provisioner
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path"
 	"strconv"
@@ -26,6 +28,7 @@ const (
 	defaultWorkspaceCommandRows = 40
 	workspaceCommandTerm        = "xterm-256color"
 	workspaceCommandControlWait = 2 * time.Second
+	workspaceTCPDialTimeout     = 10 * time.Second
 )
 
 // OpenWorkspaceCommand opens one Gateway user shell or exec command through Incus exec.
@@ -36,19 +39,25 @@ func (p *IncusProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	if strings.TrimSpace(request.InstanceName) == "" {
 		return nil, fmt.Errorf("instance name is empty")
 	}
-	if strings.TrimSpace(request.Workdir) == "" {
-		return nil, fmt.Errorf("workdir is empty")
+	if strings.TrimSpace(request.ContainerID) == "" || strings.TrimSpace(request.ContainerUser) == "" {
+		return nil, fmt.Errorf("Dev Container target is required")
 	}
-	if request.User == 0 || request.Group == 0 {
-		return nil, fmt.Errorf("workspace user and group are required")
+	if !path.IsAbs(strings.TrimSpace(request.ContainerWorkdir)) {
+		return nil, fmt.Errorf("Dev Container workdir must be absolute")
 	}
 	if err := p.waitInstanceFileAPI(ctx, request.InstanceName); err != nil {
 		return nil, err
 	}
 	cols, rows := normalizeWorkspaceTerminalSize(request.Cols, request.Rows)
-	command := []string{p.bootstrap.Shell}
+	command := []string{"docker", "exec", "--interactive"}
+	if request.Interactive {
+		command = append(command, "--tty", "--env", "TERM="+workspaceCommandTerm, "--env", "COLORTERM=truecolor")
+	}
+	command = append(command, "--user", request.ContainerUser, "--workdir", request.ContainerWorkdir, request.ContainerID, "/bin/sh")
 	if request.Command != "" {
-		command = []string{p.bootstrap.Shell, "-lc", request.Command}
+		command = append(command, "-lc", request.Command)
+	} else {
+		command = append(command, "-l")
 	}
 
 	stdinReader, stdinWriter := io.Pipe()
@@ -77,12 +86,12 @@ func (p *IncusProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 		Command:     command,
 		WaitForWS:   true,
 		Interactive: request.Interactive,
-		Environment: workspaceCommandEnvironment(request.Interactive),
+		Environment: nil,
 		Width:       cols,
 		Height:      rows,
-		User:        request.User,
-		Group:       request.Group,
-		Cwd:         request.Workdir,
+		User:        0,
+		Group:       0,
+		Cwd:         "/",
 	}, args)
 	if err != nil {
 		cancel()
@@ -95,16 +104,6 @@ func (p *IncusProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	session.operation = operation
 	go session.wait(runCtx)
 	return session, nil
-}
-
-func workspaceCommandEnvironment(interactive bool) map[string]string {
-	if !interactive {
-		return nil
-	}
-	return map[string]string{
-		"TERM":      workspaceCommandTerm,
-		"COLORTERM": "truecolor",
-	}
 }
 
 type incusWorkspaceCommandSession struct {
@@ -140,6 +139,23 @@ func (s *incusWorkspaceCommandSession) Stderr() io.Reader {
 
 func (s *incusWorkspaceCommandSession) Resize(cols, rows int) error {
 	cols, rows = normalizeWorkspaceTerminalSize(cols, rows)
+	return s.writeControl(api.InstanceExecControl{
+		Command: "window-resize",
+		Args: map[string]string{
+			"width":  strconv.Itoa(cols),
+			"height": strconv.Itoa(rows),
+		},
+	})
+}
+
+func (s *incusWorkspaceCommandSession) Signal(signal int) error {
+	if signal <= 0 {
+		return fmt.Errorf("workspace command signal must be positive")
+	}
+	return s.writeControl(api.InstanceExecControl{Command: "signal", Signal: signal})
+}
+
+func (s *incusWorkspaceCommandSession) writeControl(message api.InstanceExecControl) error {
 	if err := s.waitControlReady(); err != nil {
 		return err
 	}
@@ -149,13 +165,7 @@ func (s *incusWorkspaceCommandSession) Resize(cols, rows int) error {
 	if control == nil {
 		return fmt.Errorf("workspace command control socket is unavailable")
 	}
-	return control.WriteJSON(api.InstanceExecControl{
-		Command: "window-resize",
-		Args: map[string]string{
-			"width":  strconv.Itoa(cols),
-			"height": strconv.Itoa(rows),
-		},
-	})
+	return control.WriteJSON(message)
 }
 
 func (s *incusWorkspaceCommandSession) Wait() error {
@@ -242,7 +252,63 @@ func normalizeWorkspaceTerminalSize(cols, rows int) (int, int) {
 	return cols, rows
 }
 
-// OpenWorkspaceSFTP opens one workspace-rooted SFTP subsystem through Incus file APIs.
+// OpenWorkspaceTCP connects one port on the current runtime instance.
+func (p *IncusProvisioner) OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	instanceName = strings.TrimSpace(instanceName)
+	if instanceName == "" {
+		return nil, fmt.Errorf("instance name is empty")
+	}
+	if port == 0 || port > 65535 {
+		return nil, fmt.Errorf("workspace tcp port is invalid")
+	}
+	dialCtx, cancel := context.WithTimeout(ctx, workspaceTCPDialTimeout)
+	defer cancel()
+	host, err := p.instanceCommunicationHost(dialCtx, instanceName)
+	if err != nil {
+		return nil, err
+	}
+	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	if err != nil {
+		return nil, fmt.Errorf("connect runtime localhost port %d: %w", port, err)
+	}
+	return conn, nil
+}
+
+// CheckWorkspaceIDE verifies that code-server is serving its health endpoint.
+func (p *IncusProvisioner) CheckWorkspaceIDE(ctx context.Context, instanceName string, port uint32) error {
+	conn, err := p.OpenWorkspaceTCP(ctx, instanceName, port)
+	if err != nil {
+		return err
+	}
+	defer conn.Close()
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(workspaceTCPDialTimeout))
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://codespace-workspace/healthz", nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Connection", "close")
+	if err := request.Write(conn); err != nil {
+		return fmt.Errorf("request code-server health: %w", err)
+	}
+	response, err := http.ReadResponse(bufio.NewReader(conn), request)
+	if err != nil {
+		return fmt.Errorf("read code-server health: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("code-server health returned %s", response.Status)
+	}
+	return nil
+}
+
+// OpenWorkspaceSFTP opens an instance SFTP subsystem at the workspace directory.
 func (p *IncusProvisioner) OpenWorkspaceSFTP(ctx context.Context, request WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -250,8 +316,9 @@ func (p *IncusProvisioner) OpenWorkspaceSFTP(ctx context.Context, request Worksp
 	if strings.TrimSpace(request.InstanceName) == "" {
 		return nil, fmt.Errorf("instance name is empty")
 	}
-	if strings.TrimSpace(request.Workdir) == "" {
-		return nil, fmt.Errorf("workdir is empty")
+	workdir := strings.TrimSpace(request.Workdir)
+	if !path.IsAbs(workdir) {
+		return nil, fmt.Errorf("workdir must be absolute")
 	}
 	if request.User == 0 || request.Group == 0 {
 		return nil, fmt.Errorf("workspace user and group are required")
@@ -264,7 +331,7 @@ func (p *IncusProvisioner) OpenWorkspaceSFTP(ctx context.Context, request Worksp
 		return nil, fmt.Errorf("open instance sftp: %w", err)
 	}
 	clientConn, serverConn := net.Pipe()
-	server := sftp.NewRequestServer(serverConn, workspaceSFTPHandlers(client, request.Workdir, request.User, request.Group), sftp.WithStartDirectory("/"))
+	server := sftp.NewRequestServer(serverConn, workspaceSFTPHandlers(client, workdir, request.User, request.Group), sftp.WithStartDirectory(path.Clean(workdir)))
 	go func() {
 		_ = server.Serve()
 		_ = serverConn.Close()
@@ -276,7 +343,7 @@ func (p *IncusProvisioner) OpenWorkspaceSFTP(ctx context.Context, request Worksp
 func workspaceSFTPHandlers(client *sftp.Client, workdir string, uid, gid uint32) sftp.Handlers {
 	handler := &workspaceSFTPHandler{
 		client:  client,
-		workdir: path.Clean("/" + strings.Trim(strings.TrimSpace(workdir), "/")),
+		workdir: path.Clean(workdir),
 		uid:     uid,
 		gid:     gid,
 	}
@@ -323,6 +390,10 @@ func (h *workspaceSFTPHandler) Filecmd(request *sftp.Request) error {
 			return err
 		}
 		return h.chown(path)
+	case "Link":
+		return h.client.Link(h.path(request.Filepath), h.path(request.Target))
+	case "Symlink":
+		return h.client.Symlink(request.Filepath, h.path(request.Target))
 	default:
 		return fmt.Errorf("sftp command %s is unsupported", request.Method)
 	}
@@ -330,6 +401,10 @@ func (h *workspaceSFTPHandler) Filecmd(request *sftp.Request) error {
 
 func (h *workspaceSFTPHandler) PosixRename(request *sftp.Request) error {
 	return h.client.PosixRename(h.path(request.Filepath), h.path(request.Target))
+}
+
+func (h *workspaceSFTPHandler) StatVFS(request *sftp.Request) (*sftp.StatVFS, error) {
+	return h.client.StatVFS(h.path(request.Filepath))
 }
 
 func (h *workspaceSFTPHandler) Filelist(request *sftp.Request) (sftp.ListerAt, error) {
@@ -360,23 +435,18 @@ func (h *workspaceSFTPHandler) Lstat(request *sftp.Request) (sftp.ListerAt, erro
 }
 
 func (h *workspaceSFTPHandler) RealPath(value string) (string, error) {
-	cleaned := workspaceSFTPClientPath(value)
-	return cleaned, nil
+	value = strings.TrimSpace(value)
+	if value == "" || value == "." {
+		return h.workdir, nil
+	}
+	if path.IsAbs(value) {
+		return path.Clean(value), nil
+	}
+	return path.Clean(path.Join(h.workdir, value)), nil
 }
 
 func (h *workspaceSFTPHandler) Readlink(value string) (string, error) {
-	target, err := h.client.ReadLink(h.path(value))
-	if err != nil {
-		return "", err
-	}
-	if strings.HasPrefix(target, h.workdir+"/") || target == h.workdir {
-		relative := strings.TrimPrefix(strings.TrimPrefix(target, h.workdir), "/")
-		if relative == "" {
-			return "/", nil
-		}
-		return "/" + relative, nil
-	}
-	return target, nil
+	return h.client.ReadLink(h.path(value))
 }
 
 func (h *workspaceSFTPHandler) openFile(request *sftp.Request) (*sftp.File, error) {
@@ -423,20 +493,12 @@ func (h *workspaceSFTPHandler) setStat(request *sftp.Request) error {
 		}
 	}
 	if flags.UidGid {
-		return fmt.Errorf("sftp uid/gid change is unsupported")
+		return h.client.Chown(path, int(attributes.UID), int(attributes.GID))
 	}
 	return nil
 }
 
 func (h *workspaceSFTPHandler) path(value string) string {
-	cleaned := workspaceSFTPClientPath(value)
-	if cleaned == "/" {
-		return h.workdir
-	}
-	return path.Join(h.workdir, strings.TrimPrefix(cleaned, "/"))
-}
-
-func workspaceSFTPClientPath(value string) string {
 	value = strings.TrimSpace(value)
 	if value == "" {
 		return "/"

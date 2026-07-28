@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -122,8 +124,8 @@ func (p *DummyProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	if request.InstanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
 	}
-	if request.Workdir == "" {
-		return nil, fmt.Errorf("workdir is empty")
+	if request.ContainerID == "" || request.ContainerUser == "" || request.ContainerWorkdir == "" {
+		return nil, fmt.Errorf("Dev Container target is missing")
 	}
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -149,7 +151,7 @@ func (p *DummyProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	return session, nil
 }
 
-// OpenWorkspaceSFTP simulates a workspace-rooted SFTP subsystem.
+// OpenWorkspaceSFTP simulates an instance SFTP subsystem at the workspace directory.
 func (p *DummyProvisioner) OpenWorkspaceSFTP(ctx context.Context, request WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -160,6 +162,9 @@ func (p *DummyProvisioner) OpenWorkspaceSFTP(ctx context.Context, request Worksp
 	if request.Workdir == "" {
 		return nil, fmt.Errorf("workdir is empty")
 	}
+	if request.User == 0 || request.Group == 0 {
+		return nil, fmt.Errorf("workspace user and group are required")
+	}
 	clientConn, serverConn := net.Pipe()
 	server := sftp.NewRequestServer(serverConn, sftp.InMemHandler(), sftp.WithStartDirectory("/"))
 	go func() {
@@ -167,6 +172,34 @@ func (p *DummyProvisioner) OpenWorkspaceSFTP(ctx context.Context, request Worksp
 		_ = serverConn.Close()
 	}()
 	return clientConn, nil
+}
+
+// OpenWorkspaceTCP connects one port on the simulated runtime host.
+func (p *DummyProvisioner) OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return nil, fmt.Errorf("instance name is empty")
+	}
+	if port == 0 || port > 65535 {
+		return nil, fmt.Errorf("workspace tcp port is invalid")
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port))))
+}
+
+// CheckWorkspaceIDE simulates a healthy platform Web IDE.
+func (p *DummyProvisioner) CheckWorkspaceIDE(ctx context.Context, instanceName string, port uint32) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if port != WorkspaceIDEPort {
+		return fmt.Errorf("workspace IDE port is invalid")
+	}
+	return nil
 }
 
 // CheckCredentials returns the simulated runtime credential file state.
@@ -208,6 +241,20 @@ func (p *DummyProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceNam
 	}
 	if workdir == "" {
 		return fmt.Errorf("workdir is empty")
+	}
+	return nil
+}
+
+// CheckDevContainer simulates a running inner development container.
+func (p *DummyProvisioner) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if strings.TrimSpace(containerID) == "" {
+		return fmt.Errorf("Dev Container ID is empty")
 	}
 	return nil
 }
@@ -290,7 +337,7 @@ func (p *DummyProvisioner) RuntimeResourceUsage(ctx context.Context, instanceNam
 }
 
 // InitializeSystem simulates init.sh, including create workspace initialization.
-func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error) {
+func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
 	}
@@ -312,34 +359,39 @@ func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName st
 }
 
 // StartRuntime simulates start.sh for an existing workspace.
-func (p *DummyProvisioner) StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+func (p *DummyProvisioner) StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
 	if err := ctx.Err(); err != nil {
-		return RuntimeAccess{}, err
+		return LifecycleScriptResult{}, err
 	}
 	if instanceName == "" {
-		return RuntimeAccess{}, fmt.Errorf("instance name is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
 	}
 	if request.CodespaceUUID == "" {
-		return RuntimeAccess{}, fmt.Errorf("codespace uuid is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("codespace uuid is empty")
 	}
 	if request.Workdir == "" {
-		return RuntimeAccess{}, fmt.Errorf("workdir is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("workdir is empty")
 	}
-	return RuntimeAccess{SharedEnv: map[string]string{}}, nil
+	return LifecycleScriptResult{SharedEnv: map[string]string{
+		"CODESPACE_DEVCONTAINER_ID":      "dummy-devcontainer",
+		"CODESPACE_DEVCONTAINER_USER":    "codespace",
+		"CODESPACE_DEVCONTAINER_WORKDIR": request.Workdir,
+		WorkspaceIDEPortEnv:              strconv.Itoa(WorkspaceIDEPort),
+	}}, nil
 }
 
 // StopRuntime simulates stop.sh.
-func (p *DummyProvisioner) StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+func (p *DummyProvisioner) StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
 	if err := ctx.Err(); err != nil {
-		return RuntimeAccess{}, err
+		return LifecycleScriptResult{}, err
 	}
 	if instanceName == "" {
-		return RuntimeAccess{}, fmt.Errorf("instance name is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
 	}
 	if request.CodespaceUUID == "" {
-		return RuntimeAccess{}, fmt.Errorf("codespace uuid is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("codespace uuid is empty")
 	}
-	return RuntimeAccess{
+	return LifecycleScriptResult{
 		SharedEnv: map[string]string{},
 	}, nil
 }
@@ -391,6 +443,10 @@ func (s *dummyWorkspaceCommandSession) Stderr() io.Reader {
 }
 
 func (s *dummyWorkspaceCommandSession) Resize(int, int) error {
+	return nil
+}
+
+func (s *dummyWorkspaceCommandSession) Signal(int) error {
 	return nil
 }
 

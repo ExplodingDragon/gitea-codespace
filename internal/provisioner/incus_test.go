@@ -10,6 +10,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -302,6 +303,9 @@ func TestIncusCreateRequestUsesEnvironmentResources(t *testing.T) {
 	if request.Config["limits.cpu"] != "2" || request.Config["limits.memory"] != "1GiB" {
 		t.Fatalf("instance config = %#v", request.Config)
 	}
+	if request.Config["security.nesting"] != "true" {
+		t.Fatalf("container nesting config = %#v", request.Config)
+	}
 	if request.Devices["root"]["type"] != "disk" ||
 		request.Devices["root"]["path"] != "/" ||
 		request.Devices["root"]["pool"] != "default" ||
@@ -333,6 +337,9 @@ func TestIncusCreateRequestUsesInstanceSource(t *testing.T) {
 		request.Source.Project != "base-images" ||
 		!request.Source.InstanceOnly {
 		t.Fatalf("instance source = %#v", request.Source)
+	}
+	if _, ok := request.Config["security.nesting"]; ok {
+		t.Fatalf("virtual machine config = %#v", request.Config)
 	}
 }
 
@@ -560,7 +567,7 @@ func TestIncusStartupAdmissionRequiresEveryEnvironmentToFit(t *testing.T) {
 	}
 }
 
-func TestWorkspaceSFTPHandlersMapRequestsUnderWorkspace(t *testing.T) {
+func TestWorkspaceSFTPHandlersUseInstancePaths(t *testing.T) {
 	t.Parallel()
 
 	instanceClient, closeInstance := newTestSFTPClient(t, sftp.InMemHandler())
@@ -573,11 +580,18 @@ func TestWorkspaceSFTPHandlersMapRequestsUnderWorkspace(t *testing.T) {
 	}
 	workspaceClient, closeWorkspace := newTestSFTPClient(t, workspaceSFTPHandlers(instanceClient, "/workspaces/repo", 0, 0))
 	defer closeWorkspace()
+	workdir, err := workspaceClient.Getwd()
+	if err != nil {
+		t.Fatalf("get workspace directory: %v", err)
+	}
+	if workdir != "/workspaces/repo" {
+		t.Fatalf("workspace directory = %q", workdir)
+	}
 
-	if err := workspaceClient.Mkdir("/dir"); err != nil {
+	if err := workspaceClient.Mkdir(path.Join(workdir, "dir")); err != nil {
 		t.Fatalf("mkdir workspace dir: %v", err)
 	}
-	file, err := workspaceClient.Create("/dir/file.txt")
+	file, err := workspaceClient.Create(path.Join(workdir, "dir/file.txt"))
 	if err != nil {
 		t.Fatalf("create workspace file: %v", err)
 	}
@@ -600,16 +614,13 @@ func TestWorkspaceSFTPHandlersMapRequestsUnderWorkspace(t *testing.T) {
 		t.Fatalf("mapped file content = %q", content)
 	}
 
-	escaped, err := workspaceClient.Create("/../outside.txt")
+	escaped, err := workspaceClient.Create("/outside.txt")
 	if err != nil {
-		t.Fatalf("create cleaned workspace file: %v", err)
+		t.Fatalf("create instance root file: %v", err)
 	}
 	_ = escaped.Close()
-	if _, err := instanceClient.Stat("/outside.txt"); err == nil {
-		t.Fatalf("path escaped workspace root")
-	}
-	if _, err := instanceClient.Stat("/workspaces/repo/outside.txt"); err != nil {
-		t.Fatalf("cleaned path was not written under workspace: %v", err)
+	if _, err := instanceClient.Stat("/outside.txt"); err != nil {
+		t.Fatalf("instance root file is unavailable: %v", err)
 	}
 }
 
@@ -966,6 +977,27 @@ func TestValidateIncusServerRejectsUnsupportedServer(t *testing.T) {
 				t.Fatalf("expected validation error")
 			}
 		})
+	}
+}
+
+func TestWorkspaceGitCredentialConfigured(t *testing.T) {
+	t.Parallel()
+
+	if !workspaceGitCredentialConfigured(
+		"ssh://git@gitea.example.com/owner/repo.git",
+		"",
+		"",
+		"/var/lib/gitea-codespace/bin/gitea-codespace-git-ssh",
+	) {
+		t.Fatal("Dev Container Git SSH helper was not accepted")
+	}
+	if !workspaceGitCredentialConfigured(
+		"https://gitea.example.com/owner/repo.git",
+		"!/var/lib/gitea-codespace/bin/gitea-codespace-git-credential",
+		"",
+		"",
+	) {
+		t.Fatal("Dev Container Git HTTP helper was not accepted")
 	}
 }
 

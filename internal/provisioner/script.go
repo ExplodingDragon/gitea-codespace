@@ -145,7 +145,7 @@ func (p *IncusProvisioner) runLifecycleScript(
 	scriptName string,
 	script string,
 	stage string,
-	request BootstrapRequest,
+	request LifecycleRequest,
 ) (map[string]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -154,9 +154,6 @@ func (p *IncusProvisioner) runLifecycleScript(
 		return nil, fmt.Errorf("codespace uuid is empty")
 	}
 	if err := p.ensureScriptStateFiles(ctx, instanceName); err != nil {
-		return nil, err
-	}
-	if err := p.writeRuntimeRepositoryConfig(ctx, instanceName, request); err != nil {
 		return nil, err
 	}
 	scriptPath := filepath.Join(runtimeScriptDir, scriptName)
@@ -187,7 +184,7 @@ func (p *IncusProvisioner) runLifecycleScript(
 	for name, value := range sharedEnv {
 		environment[name] = value
 	}
-	for name, value := range p.predefinedScriptEnv(request, stage, resultPath) {
+	for name, value := range p.predefinedScriptEnv(request, resultPath) {
 		environment[name] = value
 	}
 	if _, ok := sharedEnv["CODESPACE_WORKSPACE_DIR"]; !ok && request.Workdir != "" {
@@ -266,13 +263,6 @@ func (p *IncusProvisioner) ensureScriptStateFiles(ctx context.Context, instanceN
 	return nil
 }
 
-func (p *IncusProvisioner) writeRuntimeRepositoryConfig(ctx context.Context, instanceName string, request BootstrapRequest) error {
-	if err := p.writeRuntimeFile(ctx, instanceName, runtimeRepositoryConfig, string(request.RepoConfigContent), 0o644, "file"); err != nil {
-		return fmt.Errorf("write repository config: %w", err)
-	}
-	return nil
-}
-
 func (p *IncusProvisioner) writeRuntimeFile(ctx context.Context, instanceName, path, content string, mode int, kind string) error {
 	args := incus.InstanceFileArgs{
 		Content:   strings.NewReader(content),
@@ -317,12 +307,7 @@ func (p *IncusProvisioner) readRuntimeFile(ctx context.Context, instanceName, pa
 	return string(data), true, nil
 }
 
-func (p *IncusProvisioner) predefinedScriptEnv(request BootstrapRequest, stage, resultPath string) map[string]string {
-	repoURL := request.RepoCloneHTTPURL
-	if request.GitProtocol == "ssh" && request.RepoCloneSSHURL != "" {
-		repoURL = request.RepoCloneSSHURL
-	}
-	authPrefix, httpsPrefix, _ := buildGitURLPrefixes(request.RepoCloneHTTPURL, "codespace", request.GiteaToken)
+func (p *IncusProvisioner) predefinedScriptEnv(request LifecycleRequest, resultPath string) map[string]string {
 	runtimeUserName := strings.TrimSpace(request.RuntimeUserName)
 	if runtimeUserName == "" {
 		runtimeUserName = p.bootstrap.UserName
@@ -366,29 +351,20 @@ func (p *IncusProvisioner) predefinedScriptEnv(request BootstrapRequest, stage, 
 		"GITEA_START_REF":                   request.StartRef,
 		"GITEA_COMMIT_SHA":                  request.CommitSHA,
 		"GITEA_CODESPACE_ENVIRONMENT_TAG":   request.EnvironmentTag,
-		"GITEA_CODESPACE_CONFIG_PRESENT":    boolString(request.RepoConfigPresent),
-		"GITEA_CODESPACE_CONFIG_PATH":       request.RepoConfigPath,
-		"GITEA_CODESPACE_CONFIG_FILE":       runtimeRepositoryConfig,
-		"GITEA_CODESPACE_CONFIG_SOURCE_REF": request.RepoConfigSourceRef,
-		"GITEA_CODESPACE_CONFIG_SHA256":     request.RepoConfigSHA256,
+		"GITEA_DEVCONTAINER_SOURCE":         request.DevContainer.Source,
+		"GITEA_DEVCONTAINER_PATH":           request.DevContainer.Path,
+		"GITEA_DEVCONTAINER_COMMIT_SHA":     request.DevContainer.CommitSHA,
+		"GITEA_DEVCONTAINER_CONTENT_SHA256": request.DevContainer.ContentSHA256,
+		"GITEA_DEVCONTAINER_DEFAULT_IMAGE":  request.DevContainer.DefaultImage,
+		"GITEA_DEVCONTAINER_DEFAULT_CONFIG": runtimeDevContainerConfig,
 		"CODESPACE_REPO_NAME":               request.RepoName,
-		"GITEA_LEGACY_REPO_URL":             repoURL,
-		"GITEA_LEGACY_AUTH_PREFIX":          authPrefix,
-		"GITEA_LEGACY_HTTPS_PREFIX":         httpsPrefix,
 	}
 	return values
 }
 
-func boolString(value bool) string {
-	if value {
-		return "true"
-	}
-	return "false"
-}
-
 func predefinedScriptEnvNames() map[string]struct{} {
 	names := map[string]struct{}{}
-	for name := range (&IncusProvisioner{}).predefinedScriptEnv(BootstrapRequest{}, "", "") {
+	for name := range (&IncusProvisioner{}).predefinedScriptEnv(LifecycleRequest{}, "") {
 		names[name] = struct{}{}
 	}
 	return names

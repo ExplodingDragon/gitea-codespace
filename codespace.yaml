@@ -19,6 +19,7 @@ gateway:
   ssh:
     listen: ":2222"
     public_addr: "codespace.fbi.com:2222"
+    handshake_timeout: "30s"
     max_channels_per_connection: 32
     auth:
       max_attempts_per_ip_per_minute: 30

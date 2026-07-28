@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 
@@ -63,7 +64,6 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
-		newGatewayRouteStore(),
 		backend,
 		controlPlane,
 		newGatewaySessionRegistry(),
@@ -109,6 +109,9 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	if service.sshRequest == nil || service.sshRequest.GetCodespaceUuid() != codespaceUUID {
 		t.Fatalf("verify ssh request = %#v", service.sshRequest)
 	}
+	if request := backend.lastRequest(); request.Interactive {
+		t.Fatalf("exec without pty request opened an interactive tty")
+	}
 	cancel()
 	_ = listener.Close()
 	assertNoListenerError(t, errorChannel)
@@ -152,7 +155,6 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
-		newGatewayRouteStore(),
 		newTestWorkspaceCommandBackend(""),
 		controlPlane,
 		newGatewaySessionRegistry(),
@@ -235,47 +237,57 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 	assertNoListenerError(t, errorChannel)
 }
 
-func TestGatewaySSHDirectTCPIPUsesEndpointRoute(t *testing.T) {
+func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
 	backendListener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen endpoint backend: %v", err)
+		t.Fatalf("listen runtime backend: %v", err)
 	}
 	defer backendListener.Close()
-	backendDone := make(chan error, 1)
+	backendDone := make(chan error, 3)
 	go func() {
-		conn, err := backendListener.Accept()
-		if err != nil {
+		for range 3 {
+			conn, err := backendListener.Accept()
+			if err != nil {
+				backendDone <- err
+				return
+			}
+			buffer := make([]byte, len("ping"))
+			if _, err := io.ReadFull(conn, buffer); err != nil {
+				_ = conn.Close()
+				backendDone <- err
+				return
+			}
+			if string(buffer) != "ping" {
+				_ = conn.Close()
+				backendDone <- io.ErrUnexpectedEOF
+				return
+			}
+			_, err = conn.Write([]byte("pong"))
+			_ = conn.Close()
 			backendDone <- err
-			return
 		}
-		defer conn.Close()
-		buffer := make([]byte, len("ping"))
-		if _, err := io.ReadFull(conn, buffer); err != nil {
-			backendDone <- err
-			return
-		}
-		if string(buffer) != "ping" {
-			backendDone <- io.ErrUnexpectedEOF
-			return
-		}
-		_, err = conn.Write([]byte("pong"))
-		backendDone <- err
 	}()
 
-	routeStore := newGatewayRouteStore()
-	if err := routeStore.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		label:          "Web",
-		upstreamScheme: "http",
-		upstreamHost:   backendListener.Addr().String(),
+	store := NewCodespaceStateStore(t.TempDir())
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID:      codespaceUUID,
+		MetadataGeneration: 1,
+		InstanceName:       "cs-11111111111141118111",
+		Workdir:            "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{
+			OperationRVersion: 1,
+			Stage:             manager.RuntimeBootStageReady,
+			StartedUnix:       100,
+			LastUpdateUnix:    100,
+		},
 	}); err != nil {
-		t.Fatalf("put endpoint route: %v", err)
+		t.Fatalf("save runtime metadata: %v", err)
 	}
+	saveGatewayWorkspaceIdentityForTest(t, store, codespaceUUID)
 	service := &gatewayManagerService{
 		sshResponse: &codespacev1.VerifySSHPublicKeyResponse{
 			Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{
@@ -292,8 +304,7 @@ func TestGatewaySSHDirectTCPIPUsesEndpointRoute(t *testing.T) {
 	defer closeControlPlane()
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
-		nil,
-		routeStore,
+		store,
 		newTestWorkspaceCommandBackend(""),
 		controlPlane,
 		newGatewaySessionRegistry(),
@@ -325,37 +336,43 @@ func TestGatewaySSHDirectTCPIPUsesEndpointRoute(t *testing.T) {
 	}
 	defer client.Close()
 
-	conn, err := client.Dial("tcp", backendListener.Addr().String())
+	_, backendPort, err := net.SplitHostPort(backendListener.Addr().String())
 	if err != nil {
-		t.Fatalf("open direct-tcpip route: %v", err)
+		t.Fatalf("parse backend address: %v", err)
 	}
-	if _, err := conn.Write([]byte("ping")); err != nil {
-		_ = conn.Close()
-		t.Fatalf("write direct-tcpip: %v", err)
-	}
-	response := make([]byte, len("pong"))
-	if _, err := io.ReadFull(conn, response); err != nil {
-		_ = conn.Close()
-		t.Fatalf("read direct-tcpip: %v", err)
-	}
-	if string(response) != "pong" {
-		_ = conn.Close()
-		t.Fatalf("direct-tcpip response = %q", response)
-	}
-	if err := conn.Close(); err != nil && !errors.Is(err, io.EOF) {
-		t.Fatalf("close direct-tcpip: %v", err)
-	}
-	select {
-	case err := <-backendDone:
+	for _, targetHost := range []string{"localhost", "127.0.0.1", "::1"} {
+		conn, err := client.Dial("tcp", net.JoinHostPort(targetHost, backendPort))
 		if err != nil {
-			t.Fatalf("endpoint backend: %v", err)
+			t.Fatalf("open direct-tcpip route for %s: %v", targetHost, err)
 		}
-	case <-time.After(time.Second):
-		t.Fatalf("endpoint backend was not reached")
+		if _, err := conn.Write([]byte("ping")); err != nil {
+			_ = conn.Close()
+			t.Fatalf("write direct-tcpip for %s: %v", targetHost, err)
+		}
+		response := make([]byte, len("pong"))
+		if _, err := io.ReadFull(conn, response); err != nil {
+			_ = conn.Close()
+			t.Fatalf("read direct-tcpip for %s: %v", targetHost, err)
+		}
+		if string(response) != "pong" {
+			_ = conn.Close()
+			t.Fatalf("direct-tcpip response for %s = %q", targetHost, response)
+		}
+		if err := conn.Close(); err != nil && !errors.Is(err, io.EOF) {
+			t.Fatalf("close direct-tcpip for %s: %v", targetHost, err)
+		}
+		select {
+		case err := <-backendDone:
+			if err != nil {
+				t.Fatalf("runtime backend for %s: %v", targetHost, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("runtime backend for %s was not reached", targetHost)
+		}
 	}
-	if blocked, err := client.Dial("tcp", "127.0.0.1:65535"); err == nil {
+	if blocked, err := client.Dial("tcp", net.JoinHostPort("other-host", backendPort)); err == nil {
 		_ = blocked.Close()
-		t.Fatalf("expected undeclared direct-tcpip route to fail")
+		t.Fatalf("expected non-loopback direct-tcpip target to fail")
 	}
 	cancel()
 	_ = listener.Close()
@@ -408,7 +425,6 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
-		newGatewayRouteStore(),
 		backend,
 		controlPlane,
 		registry,
@@ -446,6 +462,17 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	defer session.Close()
 	if err := session.Start("sleep"); err != nil {
 		t.Fatalf("start command through gateway: %v", err)
+	}
+	if err := session.Signal(ssh.SIGINT); err != nil {
+		t.Fatalf("signal command through gateway: %v", err)
+	}
+	select {
+	case signal := <-backend.signal:
+		if signal != int(syscall.SIGINT) {
+			t.Fatalf("workspace signal = %d", signal)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("workspace signal was not delivered")
 	}
 	waitDone := make(chan error, 1)
 	go func() {
@@ -515,7 +542,6 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
 		store,
-		newGatewayRouteStore(),
 		backend,
 		controlPlane,
 		newGatewaySessionRegistry(),
@@ -581,7 +607,6 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 		nil,
 		nil,
 		nil,
-		nil,
 		access,
 		gatewayConfig,
 	)
@@ -614,6 +639,56 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 	assertNoListenerError(t, errorChannel)
 }
 
+func TestGatewaySSHClosesIncompleteHandshake(t *testing.T) {
+	t.Parallel()
+
+	gatewayConfig := DefaultConfig().Gateway
+	gatewayConfig.SSHHandshakeTimeout = Duration(50 * time.Millisecond)
+	gatewayServer, err := newGatewaySSHServer(
+		newTestSSHSigner(t),
+		nil,
+		nil,
+		nil,
+		nil,
+		newGatewayAccessControllerFromConfig(gatewayConfig),
+		gatewayConfig,
+	)
+	if err != nil {
+		t.Fatalf("create gateway ssh server: %v", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen gateway ssh: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errorChannel := make(chan error, 1)
+	go serveSSH(ctx, errorChannel, listener, gatewayServer)
+	defer listener.Close()
+
+	conn, err := net.Dial("tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial raw gateway ssh: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("set raw ssh read deadline: %v", err)
+	}
+	buffer := make([]byte, 128)
+	for {
+		_, err = conn.Read(buffer)
+		if err != nil {
+			break
+		}
+	}
+	if timeout, ok := err.(net.Error); ok && timeout.Timeout() {
+		t.Fatalf("incomplete ssh handshake remained open")
+	}
+	cancel()
+	_ = listener.Close()
+	assertNoListenerError(t, errorChannel)
+}
+
 func TestGatewaySSHAuthLimiterBlocksBeforeControlPlane(t *testing.T) {
 	t.Parallel()
 
@@ -630,7 +705,6 @@ func TestGatewaySSHAuthLimiterBlocksBeforeControlPlane(t *testing.T) {
 	gatewayConfig := DefaultConfig().Gateway
 	gatewayServer, err := newGatewaySSHServer(
 		gatewayHostKey,
-		nil,
 		nil,
 		nil,
 		controlPlane,

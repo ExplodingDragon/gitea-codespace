@@ -42,15 +42,7 @@ func TestGatewayWorkspaceProxiesAuthenticatedRoute(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "workspace",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -509,16 +501,7 @@ func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "workspace",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         false,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -673,7 +656,7 @@ func TestGatewayOpenReturnsTooManyRequestsWhenSessionLimitReached(t *testing.T) 
 	}
 }
 
-func TestGatewayWorkspaceRouteUnavailableUsesBrowserErrorPage(t *testing.T) {
+func TestGatewayWorkspaceIDEUnavailableUsesBrowserErrorPage(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
@@ -706,12 +689,12 @@ func TestGatewayWorkspaceRouteUnavailableUsesBrowserErrorPage(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("route unavailable content-type = %q", contentType)
 	}
-	if body := response.Body.String(); !strings.Contains(body, "Workspace is not ready") || !strings.Contains(body, "gateway route unavailable") {
+	if body := response.Body.String(); !strings.Contains(body, "Workspace is not ready") || !strings.Contains(body, "gateway workspace IDE unavailable") {
 		t.Fatalf("route unavailable body = %s", body)
 	}
 }
 
-func TestGatewayWorkspaceRouteUnavailableKeepsJSONForAPI(t *testing.T) {
+func TestGatewayWorkspaceIDEUnavailableKeepsJSONForAPI(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
@@ -744,7 +727,7 @@ func TestGatewayWorkspaceRouteUnavailableKeepsJSONForAPI(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 		t.Fatalf("route unavailable content-type = %q", contentType)
 	}
-	if !strings.Contains(response.Body.String(), "gateway route unavailable") {
+	if !strings.Contains(response.Body.String(), "gateway workspace IDE unavailable") {
 		t.Fatalf("route unavailable body = %s", response.Body.String())
 	}
 }
@@ -981,15 +964,7 @@ func TestGatewayOpenReplacementCancelsOldSessionConnection(t *testing.T) {
 		close(upstreamCanceled)
 	}))
 	defer upstream.Close()
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "workspace",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -1155,16 +1130,6 @@ func TestGatewayOpenWithConfiguredHostUsesReservedPath(t *testing.T) {
 	defer closeServer()
 	policy := mustGatewayOriginPolicy(t, "http://gateway.example.test")
 	handler := newGatewayHandlerWithOrigin(newProcessHealth(), newGatewaySessionRegistry(), newTestGatewayAccess(), controlPlane, policy)
-
-	legacyTarget := "http://" + gatewayTestUUID32(codespaceUUID) + ".gateway.example.test/open?code=open-code"
-	legacyResponse := httptest.NewRecorder()
-	handler.ServeHTTP(legacyResponse, httptest.NewRequest(http.MethodGet, legacyTarget, nil))
-	if legacyResponse.Code != http.StatusNotFound {
-		t.Fatalf("legacy open status = %d", legacyResponse.Code)
-	}
-	if calls := service.openTokenCallCount(); calls != 0 {
-		t.Fatalf("legacy open token rpc calls = %d", calls)
-	}
 
 	target := "http://" + gatewayTestUUID32(codespaceUUID) + ".gateway.example.test/.gitea-codespace/open?code=open-code"
 	response := httptest.NewRecorder()

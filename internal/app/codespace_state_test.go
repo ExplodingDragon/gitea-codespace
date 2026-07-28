@@ -22,7 +22,7 @@ import (
 	"gitea.dev/codespace/internal/provisioner"
 )
 
-func TestValidateCodespaceStateFilesAcceptsVersionOne(t *testing.T) {
+func TestValidateCodespaceStateFilesAcceptsCurrentVersion(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -34,7 +34,7 @@ func TestValidateCodespaceStateFilesAcceptsVersionOne(t *testing.T) {
 		t.Fatalf("create codespace state dir: %v", err)
 	}
 	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
-	if err := os.WriteFile(path, []byte(`{"state_format_version":1}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"state_format_version":2}`), 0o600); err != nil {
 		t.Fatalf("write codespace state: %v", err)
 	}
 	if err := ValidateCodespaceStateFiles(stateDir); err != nil {
@@ -557,8 +557,8 @@ func TestCodespaceStateStoreEndpointRoutePreservesRuntimeState(t *testing.T) {
 		t.Fatalf("save runtime transition: %v", err)
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{{
-		EndpointID:     "workspace",
-		Label:          "Workspace",
+		EndpointID:     "web",
+		Label:          "Web",
 		UpstreamScheme: "http",
 		UpstreamHost:   "localhost:8080",
 	}}); err != nil {
@@ -716,6 +716,10 @@ func TestCodespaceStateStoreClearRuntimeMetadataKeepsResumeState(t *testing.T) {
 			Username:     "developer",
 			GitUserName:  "Developer",
 			GitUserEmail: "developer@example.com",
+		},
+		DevContainer: provisioner.DevContainerConfiguration{
+			Source:       "platform_default",
+			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		},
 	}
 	if err := store.SaveStartupInput(input); err != nil {
@@ -1086,9 +1090,9 @@ func TestValidateCodespaceStateFilesRejectsInvalidEndpointSnapshot(t *testing.T)
 	}
 	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
 	if err := os.WriteFile(path, []byte(`{
-		"state_format_version": 1,
+		"state_format_version": 2,
 		"endpoints": [
-			{"endpoint_id": "workspace", "label": "Bad\u003cLabel", "upstream_scheme": "http", "upstream_host": "127.0.0.1:3000", "public": false}
+			{"endpoint_id": "web", "label": "Bad\u003cLabel", "upstream_scheme": "http", "upstream_host": "127.0.0.1:3000", "public": false}
 		]
 	}`), 0o600); err != nil {
 		t.Fatalf("write codespace state: %v", err)
@@ -1167,7 +1171,7 @@ func TestValidateCodespaceStateFilesRejectsWrongFormat(t *testing.T) {
 		t.Fatalf("create codespace state dir: %v", err)
 	}
 	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
-	if err := os.WriteFile(path, []byte(`{"state_format_version":2}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"state_format_version":1}`), 0o600); err != nil {
 		t.Fatalf("write codespace state: %v", err)
 	}
 	if err := ValidateCodespaceStateFiles(stateDir); err == nil {
@@ -1228,7 +1232,7 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 		t.Fatalf("create codespace state dir: %v", err)
 	}
 	path := filepath.Join(codespaceDir, "11111111-1111-4111-8111-111111111111.json")
-	if err := os.WriteFile(path, []byte(`{"state_format_version":2}`), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"state_format_version":1}`), 0o600); err != nil {
 		t.Fatalf("write codespace state: %v", err)
 	}
 

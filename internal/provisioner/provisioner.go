@@ -5,7 +5,10 @@ package provisioner
 
 import (
 	"context"
+	"encoding/hex"
+	"fmt"
 	"io"
+	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -55,44 +58,95 @@ type StartupAdmissionChecker interface {
 	CheckStartupAdmission(ctx context.Context) (StartupAdmission, error)
 }
 
-// BootstrapRequest stores the codespace bootstrap inputs.
-type BootstrapRequest struct {
-	CodespaceUUID       string
-	CodespaceName       string
-	CodespaceOwnerName  string
-	UserID              int64
-	UserName            string
-	UserDisplayName     string
-	GitUserName         string
-	GitUserEmail        string
-	RuntimeUserName     string
-	GiteaToken          string
-	ServerURL           string
-	RepoCloneHTTPURL    string
-	RepoCloneSSHURL     string
-	RepoWebURL          string
-	RepoID              int64
-	RepoFullName        string
-	RepoName            string
-	OwnerID             int64
-	OwnerName           string
-	OwnerType           string
-	OwnerDisplayName    string
-	StartRef            string
-	RefType             string
-	RefName             string
-	CommitSHA           string
-	Workdir             string
-	EnvironmentTag      string
-	GitProtocol         string
-	RepoConfigPresent   bool
-	RepoConfigPath      string
-	RepoConfigContent   []byte
-	RepoConfigSourceRef string
-	RepoConfigSHA256    string
-	Operation           ScriptOperation
-	Scripts             ScriptSnapshot
-	LogSink             LifecycleLogSink
+const (
+	DevContainerSourcePlatformDefault = "platform_default"
+	DevContainerSourceRepository      = "repository"
+	// WorkspaceIDEPort is reserved for the platform-managed code-server process.
+	WorkspaceIDEPort = 13337
+	// WorkspaceIDEPortEnv persists the ready code-server port in runtime state.
+	WorkspaceIDEPortEnv = "CODESPACE_WEB_IDE_PORT"
+)
+
+// DevContainerConfiguration identifies the selected internal development environment.
+type DevContainerConfiguration struct {
+	Source        string
+	Path          string
+	CommitSHA     string
+	ContentSHA256 string
+	DefaultImage  string
+}
+
+// Validate checks source-specific Dev Container fields before provisioning.
+func (config DevContainerConfiguration) Validate() error {
+	switch strings.TrimSpace(config.Source) {
+	case DevContainerSourcePlatformDefault:
+		if strings.TrimSpace(config.DefaultImage) == "" {
+			return fmt.Errorf("platform default image is required")
+		}
+		if config.Path != "" || config.CommitSHA != "" || config.ContentSHA256 != "" {
+			return fmt.Errorf("platform default contains repository fields")
+		}
+	case DevContainerSourceRepository:
+		configPath := strings.TrimSpace(config.Path)
+		if configPath == "" || configPath == "." || configPath == ".." || path.IsAbs(configPath) || path.Clean(configPath) != configPath || strings.HasPrefix(configPath, "../") {
+			return fmt.Errorf("repository path is invalid")
+		}
+		commitSHA := strings.TrimSpace(config.CommitSHA)
+		if (len(commitSHA) != 40 && len(commitSHA) != 64) || !validHex(commitSHA) {
+			return fmt.Errorf("repository commit SHA is invalid")
+		}
+		contentSHA256 := strings.TrimSpace(config.ContentSHA256)
+		if len(contentSHA256) != 64 || !validHex(contentSHA256) {
+			return fmt.Errorf("repository content SHA256 is invalid")
+		}
+		if config.DefaultImage != "" {
+			return fmt.Errorf("repository configuration contains a default image")
+		}
+	default:
+		return fmt.Errorf("source is invalid")
+	}
+	return nil
+}
+
+func validHex(value string) bool {
+	_, err := hex.DecodeString(value)
+	return err == nil
+}
+
+// LifecycleRequest stores the inputs for one init, start, or stop script.
+type LifecycleRequest struct {
+	CodespaceUUID      string
+	CodespaceName      string
+	CodespaceOwnerName string
+	UserID             int64
+	UserName           string
+	UserDisplayName    string
+	GitUserName        string
+	GitUserEmail       string
+	RuntimeUserName    string
+	GiteaToken         string
+	ServerURL          string
+	RepoCloneHTTPURL   string
+	RepoCloneSSHURL    string
+	RepoWebURL         string
+	RepoID             int64
+	RepoFullName       string
+	RepoName           string
+	OwnerID            int64
+	OwnerName          string
+	OwnerType          string
+	OwnerDisplayName   string
+	StartRef           string
+	RefType            string
+	RefName            string
+	CommitSHA          string
+	Workdir            string
+	EnvironmentTag     string
+	GitProtocol        string
+	DevContainer       DevContainerConfiguration
+	Operation          ScriptOperation
+	Scripts            ScriptSnapshot
+	LogSink            LifecycleLogSink
 }
 
 // LifecycleLogSink receives lifecycle script output as complete text lines.
@@ -188,21 +242,21 @@ type SystemIdentity struct {
 	SharedEnv map[string]string
 }
 
-// RuntimeAccess stores the shared environment produced by start.
-type RuntimeAccess struct {
+// LifecycleScriptResult stores the shared environment produced by a lifecycle entry.
+type LifecycleScriptResult struct {
 	SharedEnv map[string]string
 }
 
 // WorkspaceCommandRequest stores one user command or shell opened through the Gateway.
 type WorkspaceCommandRequest struct {
-	InstanceName string
-	Workdir      string
-	User         uint32
-	Group        uint32
-	Command      string
-	Interactive  bool
-	Cols         int
-	Rows         int
+	InstanceName     string
+	ContainerID      string
+	ContainerUser    string
+	ContainerWorkdir string
+	Command          string
+	Interactive      bool
+	Cols             int
+	Rows             int
 }
 
 // WorkspaceSFTPRequest stores one SFTP subsystem opened through the Gateway.
@@ -219,6 +273,7 @@ type WorkspaceCommandSession interface {
 	Stdout() io.Reader
 	Stderr() io.Reader
 	Resize(cols, rows int) error
+	Signal(signal int) error
 	Wait() error
 	Close() error
 }
@@ -251,9 +306,9 @@ type Provisioner interface {
 	SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error
 	ReadEndpointManifest(ctx context.Context, instanceName string) ([]RuntimeEndpointDeclaration, error)
 	RuntimeResourceUsage(ctx context.Context, instanceName string) (RuntimeResourceUsage, error)
-	InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error)
-	StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error)
-	StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error)
+	InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error)
+	StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error)
+	StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error)
 	Stop(ctx context.Context, instanceName string) error
 	Delete(ctx context.Context, instanceName string) error
 }

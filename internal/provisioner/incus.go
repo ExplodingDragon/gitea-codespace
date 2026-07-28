@@ -11,7 +11,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -42,7 +41,7 @@ const (
 	runtimeManifestDir          = "/var/lib/gitea-codespace/runtime"
 	runtimeGiteaTokenFilePath   = "/var/lib/gitea-codespace/gitea-token"
 	runtimeEndpointManifest     = "/var/lib/gitea-codespace/runtime/endpoints.json"
-	runtimeRepositoryConfig     = "/var/lib/gitea-codespace/runtime/repository-codespace.yaml"
+	runtimeDevContainerConfig   = "/var/lib/gitea-codespace/runtime/devcontainer.json"
 	runtimeGitSSHPrivateKey     = "/var/lib/gitea-codespace/git/id_ed25519"
 	runtimeGitSSHPublicKey      = "/var/lib/gitea-codespace/git/id_ed25519.pub"
 	runtimeGitSSHKnownHosts     = "/var/lib/gitea-codespace/git/known_hosts"
@@ -92,7 +91,7 @@ type IncusConfig struct {
 	Scripts             ScriptConfig
 }
 
-// IncusEnvironmentConfig stores one Incus environment selected by repository tag.
+// IncusEnvironmentConfig stores one deployment-defined Incus runtime environment.
 type IncusEnvironmentConfig struct {
 	Image         string
 	InstanceType  string
@@ -432,7 +431,7 @@ func (p *IncusProvisioner) StartExisting(ctx context.Context, spec InstanceSpec)
 }
 
 // InitializeSystem runs init.sh and returns the credential file identity and create workspace.
-func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName string, request BootstrapRequest) (SystemIdentity, error) {
+func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
 	}
@@ -459,39 +458,39 @@ func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName st
 }
 
 // StartRuntime runs start.sh and returns shared environment.
-func (p *IncusProvisioner) StartRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+func (p *IncusProvisioner) StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
 	scripts := p.scriptsForRequest(request)
-	return p.runRuntimeAccessScript(ctx, instanceName, request, "start.sh", scripts.Start.Content, "start-environment")
+	return p.runRuntimeScript(ctx, instanceName, request, "start.sh", scripts.Start.Content, "start-environment")
 }
 
 // StopRuntime runs stop.sh and returns shared environment.
-func (p *IncusProvisioner) StopRuntime(ctx context.Context, instanceName string, request BootstrapRequest) (RuntimeAccess, error) {
+func (p *IncusProvisioner) StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
 	scripts := p.scriptsForRequest(request)
-	return p.runRuntimeAccessScript(ctx, instanceName, request, "stop.sh", scripts.Stop.Content, "stop-environment")
+	return p.runRuntimeScript(ctx, instanceName, request, "stop.sh", scripts.Stop.Content, "stop-environment")
 }
 
-func (p *IncusProvisioner) runRuntimeAccessScript(
+func (p *IncusProvisioner) runRuntimeScript(
 	ctx context.Context,
 	instanceName string,
-	request BootstrapRequest,
+	request LifecycleRequest,
 	scriptName string,
 	script string,
 	stage string,
-) (RuntimeAccess, error) {
+) (LifecycleScriptResult, error) {
 	if err := ctx.Err(); err != nil {
-		return RuntimeAccess{}, err
+		return LifecycleScriptResult{}, err
 	}
 	if instanceName == "" {
-		return RuntimeAccess{}, fmt.Errorf("instance name is empty")
+		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
 	}
 	env, err := p.runLifecycleScript(ctx, instanceName, scriptName, script, stage, request)
 	if err != nil {
-		return RuntimeAccess{}, err
+		return LifecycleScriptResult{}, err
 	}
-	return RuntimeAccess{SharedEnv: copyStringMap(env)}, nil
+	return LifecycleScriptResult{SharedEnv: copyStringMap(env)}, nil
 }
 
-func (p *IncusProvisioner) scriptsForRequest(request BootstrapRequest) ScriptSnapshot {
+func (p *IncusProvisioner) scriptsForRequest(request LifecycleRequest) ScriptSnapshot {
 	if scriptSnapshotComplete(request.Scripts) {
 		return request.Scripts
 	}
@@ -616,6 +615,18 @@ sudo -u "#$workspace_uid" -g "#$workspace_gid" env HOME="$workspace_home" bash -
 `, map[string]string{"CODESPACE_WORKSPACE_DIR": workdir}, "/")
 }
 
+// CheckDevContainer verifies that the selected inner development container is running.
+func (p *IncusProvisioner) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
+	containerID = strings.TrimSpace(containerID)
+	if containerID == "" {
+		return fmt.Errorf("Dev Container ID is empty")
+	}
+	return p.execCommand(ctx, instanceName, []string{p.bootstrap.Shell, "-c", `
+set -eu
+[ "$(docker inspect --format '{{.State.Running}}' "$CODESPACE_DEVCONTAINER_ID")" = "true" ]
+`}, map[string]string{"CODESPACE_DEVCONTAINER_ID": containerID}, "/")
+}
+
 func workspaceGitCredentialConfigured(origin, helper, globalHelper, sshCommand string) bool {
 	origin = strings.TrimSpace(origin)
 	switch {
@@ -623,9 +634,10 @@ func workspaceGitCredentialConfigured(origin, helper, globalHelper, sshCommand s
 		return strings.Contains(helper, "gitea-codespace-git-credential") ||
 			strings.Contains(globalHelper, "gitea-codespace-git-credential")
 	case origin != "":
-		return strings.Contains(sshCommand, "/var/lib/gitea-codespace/git/id_ed25519") &&
-			strings.Contains(sshCommand, "/var/lib/gitea-codespace/git/known_hosts") &&
-			strings.Contains(sshCommand, "StrictHostKeyChecking=yes")
+		return strings.Contains(sshCommand, "/var/lib/gitea-codespace/bin/gitea-codespace-git-ssh") ||
+			(strings.Contains(sshCommand, "/var/lib/gitea-codespace/git/id_ed25519") &&
+				strings.Contains(sshCommand, "/var/lib/gitea-codespace/git/known_hosts") &&
+				strings.Contains(sshCommand, "StrictHostKeyChecking=yes"))
 	default:
 		return false
 	}
@@ -921,6 +933,9 @@ func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec
 }
 
 func incusCreateRequest(spec InstanceSpec, environment incusEnvironment, rootDiskName string, rootDiskDevice map[string]string, instanceConfig map[string]string) api.InstancesPost {
+	if environment.instanceType == api.InstanceTypeContainer {
+		instanceConfig["security.nesting"] = "true"
+	}
 	if environment.memoryLimit != "" {
 		instanceConfig["limits.memory"] = environment.memoryLimit
 	}
@@ -1582,29 +1597,6 @@ func isLikelyIncusFingerprint(value string) bool {
 		return false
 	}
 	return true
-}
-
-func buildGitURLPrefixes(repoURL string, username string, token string) (string, string, error) {
-	if username == "" || token == "" {
-		return "", "", nil
-	}
-
-	parsedURL, err := url.Parse(repoURL)
-	if err != nil {
-		return "", "", fmt.Errorf("parse repo url %q: %w", repoURL, err)
-	}
-	if parsedURL.Scheme != "http" && parsedURL.Scheme != "https" {
-		return "", "", nil
-	}
-
-	baseURL := &url.URL{
-		Scheme: parsedURL.Scheme,
-		Host:   parsedURL.Host,
-		Path:   "/",
-	}
-	authURL := *baseURL
-	authURL.User = url.UserPassword(username, token)
-	return authURL.String(), baseURL.String(), nil
 }
 
 func (p *IncusProvisioner) execScript(

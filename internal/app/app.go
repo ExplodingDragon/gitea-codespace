@@ -219,7 +219,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 
 	sessionRegistry := newGatewaySessionRegistryFromConfig(config.Gateway)
 	gatewayRoutes := newGatewayRouteStore()
-	gatewayRoutes.SetWorkspaceTerminal(newGatewayWorkspaceTerminal(state.codespaceStateStore, gatewayBackend))
+	gatewayRoutes.SetWorkspaceIDE(newGatewayWorkspaceIDE(state.codespaceStateStore, gatewayBackend))
 	state.codespaceStateStore.SetSessionRegistry(sessionRegistry)
 	gatewayRoutes.SetSessionRegistry(sessionRegistry)
 	for _, route := range state.initialGatewayRoutes {
@@ -301,7 +301,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		gatewayBrowserAuth,
 		gatewayRoutes,
 	))
-	gatewaySSHServer, err := newGatewaySSHServer(state.gatewaySSHHostKey.signer, state.codespaceStateStore, gatewayRoutes, gatewayBackend, gatewayControlPlane, sessionRegistry, gatewayAccess, config.Gateway)
+	gatewaySSHServer, err := newGatewaySSHServer(state.gatewaySSHHostKey.signer, state.codespaceStateStore, gatewayBackend, gatewayControlPlane, sessionRegistry, gatewayAccess, config.Gateway)
 	if err != nil {
 		return nil, fmt.Errorf("create gateway ssh server: %w", err)
 	}
@@ -498,12 +498,6 @@ func newGatewayHandlerWithOriginAndBrowserAuth(
 	})
 	mux.HandleFunc("/.gitea-codespace/open", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayOpen(writer, request, sessions, access, controlPlane, originPolicy)
-	})
-	mux.HandleFunc("/.gitea-codespace/assets/", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
-	})
-	mux.HandleFunc("/.gitea-codespace/terminal", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
 	})
 	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
@@ -716,70 +710,56 @@ func handleGatewayWorkspace(
 		})
 		return
 	}
-	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
-	if !ok {
-		if session.endpointID == "workspace" {
-			terminal, terminalRequest, releaseTerminal, terminalOK := routes.BeginWorkspaceTerminal(request, session.codespaceUUID)
-			if terminalOK {
-				defer releaseTerminal()
-				terminalRequest, cancelTerminalRevalidation := withGatewayProxyRevalidation(
-					terminalRequest,
-					access.config.streamRevalidateInterval,
-					"revalidate gateway web ssh session",
-					func(ctx context.Context) (gatewayAccessDecision, error) {
-						decision, validationFull, err := access.revalidateEndpointSession(
-							ctx,
-							session.userID,
-							session.codespaceUUID,
-							session.endpointID,
-							func(ctx context.Context) (gatewayAccessDecision, error) {
-								return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
-							},
-						)
-						if validationFull {
-							return gatewayAccessDecision{}, errGatewayAccessLimitReached
-						}
-						return decision, err
-					},
-				)
-				defer cancelTerminalRevalidation()
-				terminal.ServeHTTP(writer, terminalRequest, session.codespaceUUID, upstreamPath)
-				return
-			}
+	revalidate := func(ctx context.Context) (gatewayAccessDecision, error) {
+		decision, validationFull, err := access.revalidateEndpointSession(
+			ctx,
+			session.userID,
+			session.codespaceUUID,
+			session.endpointID,
+			func(ctx context.Context) (gatewayAccessDecision, error) {
+				return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+			},
+		)
+		if validationFull {
+			return gatewayAccessDecision{}, errGatewayAccessLimitReached
 		}
-		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Workspace is not ready", "The codespace endpoint is authorized, but the runtime route is not ready yet. Try again after the codespace finishes starting.", "gateway route unavailable")
-		return
+		return decision, err
 	}
-	defer releaseRoute()
-	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
-		routeRequest,
-		access.config.streamRevalidateInterval,
-		"revalidate gateway endpoint session",
-		func(ctx context.Context) (gatewayAccessDecision, error) {
-			decision, validationFull, err := access.revalidateEndpointSession(
-				ctx,
-				session.userID,
-				session.codespaceUUID,
-				session.endpointID,
-				func(ctx context.Context) (gatewayAccessDecision, error) {
-					return controlPlane.revalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
-				},
-			)
-			if validationFull {
-				return gatewayAccessDecision{}, errGatewayAccessLimitReached
-			}
-			return decision, err
-		},
-	)
-	defer cancelProxyRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, gatewayProxyRequestContext{
+	proxyContext := gatewayProxyRequestContext{
 		codespaceUUID:  session.codespaceUUID,
 		endpointID:     session.endpointID,
 		access:         "authenticated",
 		userID:         session.userID,
 		externalScheme: gatewayExternalScheme(request, originPolicy),
 		externalHost:   gatewayExternalHost(request),
-	})
+	}
+	if session.endpointID == "workspace" {
+		workspace, workspaceRequest, releaseWorkspace, ok := routes.BeginWorkspaceIDE(request, session.codespaceUUID)
+		if !ok {
+			writeGatewayError(writer, request, http.StatusServiceUnavailable, "Workspace is not ready", "The Web IDE is not ready yet. Try again after the codespace finishes starting.", "gateway workspace IDE unavailable")
+			return
+		}
+		defer releaseWorkspace()
+		workspaceRequest, cancelRevalidation := withGatewayProxyRevalidation(
+			workspaceRequest,
+			access.config.streamRevalidateInterval,
+			"revalidate gateway workspace IDE session",
+			revalidate,
+		)
+		defer cancelRevalidation()
+		workspace.ServeHTTP(writer, workspaceRequest, session.codespaceUUID, upstreamPath, proxyContext)
+		return
+	}
+
+	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
+	if !ok {
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Endpoint is not ready", "The runtime endpoint is not ready yet. Try again after the service starts.", "gateway route unavailable")
+		return
+	}
+	defer releaseRoute()
+	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.config.streamRevalidateInterval, "revalidate gateway endpoint session", revalidate)
+	defer cancelRevalidation()
+	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, proxyContext)
 }
 
 func handleGatewayPublicEndpoint(

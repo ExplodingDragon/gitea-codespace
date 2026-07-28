@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	codespaceStateFormatVersion = 1
+	codespaceStateFormatVersion = 2
 	codespaceStateDirName       = "codespaces"
 	maxCodespaceEndpoints       = 64
 )
@@ -86,10 +86,10 @@ type codespacePendingRuntimeTransition struct {
 }
 
 type codespaceStartupInputSnapshot struct {
-	UserIdentity     codespaceStartupUserIdentity     `json:"user_identity"`
-	RuntimeUserName  string                           `json:"runtime_user_name"`
-	EnvironmentTag   string                           `json:"environment_tag"`
-	RepositoryConfig codespaceStartupRepositoryConfig `json:"repository_config"`
+	UserIdentity    codespaceStartupUserIdentity  `json:"user_identity"`
+	RuntimeUserName string                        `json:"runtime_user_name"`
+	EnvironmentTag  string                        `json:"environment_tag"`
+	DevContainer    codespaceDevContainerSnapshot `json:"dev_container"`
 }
 
 type codespaceStartupUserIdentity struct {
@@ -100,12 +100,12 @@ type codespaceStartupUserIdentity struct {
 	GitUserEmail string `json:"git_user_email"`
 }
 
-type codespaceStartupRepositoryConfig struct {
-	Present       bool   `json:"present"`
+type codespaceDevContainerSnapshot struct {
+	Source        string `json:"source"`
 	Path          string `json:"path,omitempty"`
-	Content       []byte `json:"content,omitempty"`
-	SourceRef     string `json:"source_ref,omitempty"`
+	CommitSHA     string `json:"commit_sha,omitempty"`
 	ContentSHA256 string `json:"content_sha256,omitempty"`
+	DefaultImage  string `json:"default_image,omitempty"`
 }
 
 type codespaceEndpointSnapshot struct {
@@ -143,10 +143,23 @@ type codespaceRuntimeResourceUsage struct {
 }
 
 type gatewayWorkspaceTarget struct {
-	instanceName string
-	workdir      string
-	uid          uint32
-	gid          uint32
+	instanceName     string
+	workdir          string
+	uid              uint32
+	gid              uint32
+	containerID      string
+	containerUser    string
+	containerWorkdir string
+	editorPort       uint32
+}
+
+func (target gatewayWorkspaceTarget) commandRequest() provisioner.WorkspaceCommandRequest {
+	return provisioner.WorkspaceCommandRequest{
+		InstanceName:     target.instanceName,
+		ContainerID:      target.containerID,
+		ContainerUser:    target.containerUser,
+		ContainerWorkdir: target.containerWorkdir,
+	}
 }
 
 // NewCodespaceStateStore creates a Codespace state store rooted at stateDir.
@@ -681,6 +694,17 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 	}
 	target.uid = uid
 	target.gid = gid
+	target.containerID = strings.TrimSpace(state.SharedEnvironment["CODESPACE_DEVCONTAINER_ID"])
+	target.containerUser = strings.TrimSpace(state.SharedEnvironment["CODESPACE_DEVCONTAINER_USER"])
+	target.containerWorkdir = strings.TrimSpace(state.SharedEnvironment["CODESPACE_DEVCONTAINER_WORKDIR"])
+	if target.containerID == "" || target.containerUser == "" || !filepath.IsAbs(target.containerWorkdir) {
+		return gatewayWorkspaceTarget{}, false, fmt.Errorf("Dev Container runtime target is missing")
+	}
+	editorPort, err := strconv.ParseUint(strings.TrimSpace(state.SharedEnvironment[provisioner.WorkspaceIDEPortEnv]), 10, 16)
+	if err != nil || editorPort != provisioner.WorkspaceIDEPort {
+		return gatewayWorkspaceTarget{}, false, fmt.Errorf("Web IDE runtime target is missing")
+	}
+	target.editorPort = uint32(editorPort)
 	return target, true, nil
 }
 
@@ -1373,12 +1397,12 @@ func startupInputToState(input manager.StartupInput) *codespaceStartupInputSnaps
 			GitUserName:  strings.TrimSpace(input.UserIdentity.GitUserName),
 			GitUserEmail: strings.TrimSpace(input.UserIdentity.GitUserEmail),
 		},
-		RepositoryConfig: codespaceStartupRepositoryConfig{
-			Present:       input.RepositoryConfig.Present,
-			Path:          strings.TrimSpace(input.RepositoryConfig.Path),
-			Content:       append([]byte(nil), input.RepositoryConfig.Content...),
-			SourceRef:     strings.TrimSpace(input.RepositoryConfig.SourceRef),
-			ContentSHA256: strings.TrimSpace(input.RepositoryConfig.ContentSHA256),
+		DevContainer: codespaceDevContainerSnapshot{
+			Source:        strings.TrimSpace(input.DevContainer.Source),
+			Path:          strings.TrimSpace(input.DevContainer.Path),
+			CommitSHA:     strings.TrimSpace(input.DevContainer.CommitSHA),
+			ContentSHA256: strings.TrimSpace(input.DevContainer.ContentSHA256),
+			DefaultImage:  strings.TrimSpace(input.DevContainer.DefaultImage),
 		},
 	}
 }
@@ -1395,12 +1419,12 @@ func startupInputFromState(codespaceUUID string, snapshot *codespaceStartupInput
 			GitUserName:  strings.TrimSpace(snapshot.UserIdentity.GitUserName),
 			GitUserEmail: strings.TrimSpace(snapshot.UserIdentity.GitUserEmail),
 		},
-		RepositoryConfig: manager.StartupRepositoryConfig{
-			Present:       snapshot.RepositoryConfig.Present,
-			Path:          strings.TrimSpace(snapshot.RepositoryConfig.Path),
-			Content:       append([]byte(nil), snapshot.RepositoryConfig.Content...),
-			SourceRef:     strings.TrimSpace(snapshot.RepositoryConfig.SourceRef),
-			ContentSHA256: strings.TrimSpace(snapshot.RepositoryConfig.ContentSHA256),
+		DevContainer: provisioner.DevContainerConfiguration{
+			Source:        strings.TrimSpace(snapshot.DevContainer.Source),
+			Path:          strings.TrimSpace(snapshot.DevContainer.Path),
+			CommitSHA:     strings.TrimSpace(snapshot.DevContainer.CommitSHA),
+			ContentSHA256: strings.TrimSpace(snapshot.DevContainer.ContentSHA256),
+			DefaultImage:  strings.TrimSpace(snapshot.DevContainer.DefaultImage),
 		},
 	}
 }
@@ -1420,6 +1444,9 @@ func validateStartupInput(input manager.StartupInput) error {
 	}
 	if strings.TrimSpace(input.EnvironmentTag) == "" {
 		return fmt.Errorf("startup input environment tag is required")
+	}
+	if err := input.DevContainer.Validate(); err != nil {
+		return fmt.Errorf("startup input Dev Container configuration is invalid: %w", err)
 	}
 	return nil
 }

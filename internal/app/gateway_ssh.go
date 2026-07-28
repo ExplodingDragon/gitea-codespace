@@ -12,6 +12,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -39,24 +40,23 @@ type gatewayWorkspaceCommandBackend interface {
 	OpenWorkspaceCommand(ctx context.Context, request provisioner.WorkspaceCommandRequest) (provisioner.WorkspaceCommandSession, error)
 }
 
-type gatewayWorkspaceSFTPBackend interface {
-	OpenWorkspaceSFTP(ctx context.Context, request provisioner.WorkspaceSFTPRequest) (io.ReadWriteCloser, error)
-}
-
 type gatewayWorkspaceBackend interface {
 	gatewayWorkspaceCommandBackend
-	gatewayWorkspaceSFTPBackend
+	OpenWorkspaceSFTP(ctx context.Context, request provisioner.WorkspaceSFTPRequest) (io.ReadWriteCloser, error)
+	OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error)
+	CheckWorkspaceAccess(ctx context.Context, instanceName, workdir string) error
+	CheckDevContainer(ctx context.Context, instanceName, containerID string) error
 }
 
 type gatewaySSHServer struct {
 	config             *ssh.ServerConfig
 	state              gatewayWorkspaceTargetStore
-	routes             *gatewayRouteStore
 	backend            gatewayWorkspaceBackend
 	controlPlane       *gatewayControlPlane
 	sessions           *gatewaySessionRegistry
 	access             *gatewayAccessController
 	authLimiter        *gatewaySSHAuthLimiter
+	handshakeTimeout   time.Duration
 	sessionIdleTimeout time.Duration
 	revalidateInterval time.Duration
 	maxChannels        int
@@ -70,7 +70,6 @@ type gatewaySSHAuthContext struct {
 func newGatewaySSHServer(
 	hostKey ssh.Signer,
 	state gatewayWorkspaceTargetStore,
-	routes *gatewayRouteStore,
 	backend gatewayWorkspaceBackend,
 	controlPlane *gatewayControlPlane,
 	sessions *gatewaySessionRegistry,
@@ -92,28 +91,29 @@ func newGatewaySSHServer(
 	if maxChannels <= 0 {
 		maxChannels = DefaultConfig().Gateway.SSHMaxChannelsPerConnection
 	}
+	handshakeTimeout := gatewayConfig.SSHHandshakeTimeout.ToStdlib()
+	if handshakeTimeout <= 0 {
+		handshakeTimeout = DefaultConfig().Gateway.SSHHandshakeTimeout.ToStdlib()
+	}
 	server := &gatewaySSHServer{
 		state:              state,
-		routes:             routes,
 		backend:            backend,
 		controlPlane:       controlPlane,
 		sessions:           sessions,
 		access:             access,
 		authLimiter:        newGatewaySSHAuthLimiterFromConfig(gatewayConfig),
+		handshakeTimeout:   handshakeTimeout,
 		sessionIdleTimeout: idleTimeout,
 		revalidateInterval: revalidateInterval,
 		maxChannels:        maxChannels,
 	}
-	config := &ssh.ServerConfig{
-		PublicKeyCallback: server.authenticatePublicKey,
-		ServerVersion:     "SSH-2.0-gitea-codespace",
-	}
+	config := &ssh.ServerConfig{ServerVersion: "SSH-2.0-gitea-codespace"}
 	config.AddHostKey(hostKey)
 	server.config = config
 	return server, nil
 }
 
-func (s *gatewaySSHServer) authenticatePublicKey(conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+func (s *gatewaySSHServer) authenticatePublicKey(ctx context.Context, conn ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
 	sourceIP := gatewaySSHSourceIP(conn.RemoteAddr())
 	publicKeyHash := gatewaySSHPublicKeyHash(key)
 	codespaceUUID, ok := codespaceUUIDFromGatewaySSHUser(conn.User())
@@ -127,13 +127,23 @@ func (s *gatewaySSHServer) authenticatePublicKey(conn ssh.ConnMetadata, key ssh.
 	if s.controlPlane == nil {
 		return nil, fmt.Errorf("gateway control plane is not ready")
 	}
-	decision, err := s.controlPlane.verifySSHPublicKey(context.Background(), codespaceUUID, key.Marshal())
+	decision, err := s.controlPlane.verifySSHPublicKey(ctx, codespaceUUID, key.Marshal())
 	if err != nil {
 		return nil, err
 	}
 	if !decision.allowed {
 		s.authLimiter.RecordFailure(sourceIP, codespaceUUID, publicKeyHash, decision.deniedCategory, time.Now())
 		return nil, fmt.Errorf("ssh public key denied: %s", decision.deniedCategory)
+	}
+	target, ok, err := s.loadWorkspaceTarget(codespaceUUID)
+	if err != nil || !ok {
+		return nil, fmt.Errorf("codespace workspace is unavailable")
+	}
+	if err := s.backend.CheckWorkspaceAccess(ctx, target.instanceName, target.workdir); err != nil {
+		return nil, fmt.Errorf("codespace workspace is unavailable")
+	}
+	if err := s.backend.CheckDevContainer(ctx, target.instanceName, target.containerID); err != nil {
+		return nil, fmt.Errorf("codespace Dev Container is unavailable")
 	}
 	return &ssh.Permissions{
 		Extensions: map[string]string{
@@ -150,11 +160,31 @@ func (s *gatewaySSHServer) serveConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	defer releaseTransport()
-	sshConn, channels, requests, err := ssh.NewServerConn(conn, s.config)
+	handshakeCtx, cancelHandshake := context.WithTimeout(ctx, s.handshakeTimeout)
+	handshakeDone := make(chan struct{})
+	handshakeWatcherDone := make(chan struct{})
+	go func() {
+		defer close(handshakeWatcherDone)
+		select {
+		case <-handshakeCtx.Done():
+			_ = conn.Close()
+		case <-handshakeDone:
+		}
+	}()
+	_ = conn.SetDeadline(time.Now().Add(s.handshakeTimeout))
+	config := *s.config
+	config.PublicKeyCallback = func(metadata ssh.ConnMetadata, key ssh.PublicKey) (*ssh.Permissions, error) {
+		return s.authenticatePublicKey(handshakeCtx, metadata, key)
+	}
+	sshConn, channels, requests, err := ssh.NewServerConn(conn, &config)
+	close(handshakeDone)
+	<-handshakeWatcherDone
+	cancelHandshake()
 	if err != nil {
 		log.Printf("gateway ssh handshake: %v", err)
 		return
 	}
+	_ = conn.SetDeadline(time.Time{})
 	defer sshConn.Close()
 	go ssh.DiscardRequests(requests)
 
@@ -174,6 +204,9 @@ func (s *gatewaySSHServer) serveConn(ctx context.Context, conn net.Conn) {
 		}
 	}
 	defer release()
+	if _, ok, err := s.loadWorkspaceTarget(auth.codespaceUUID); err != nil || !ok {
+		return
+	}
 	activity := make(chan struct{}, 1)
 	go s.revalidateSession(sessionCtx, auth, cancel)
 	go s.cancelIdleSession(sessionCtx, cancel, activity)
@@ -251,11 +284,7 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 	defer clientChannel.Close()
 
 	target, ok, err := s.loadWorkspaceTarget(auth.codespaceUUID)
-	if err != nil {
-		_ = clientChannel.Close()
-		return
-	}
-	if !ok {
+	if err != nil || !ok {
 		_ = clientChannel.Close()
 		return
 	}
@@ -282,16 +311,12 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 					continue
 				}
 			}
-			session, err := s.backend.OpenWorkspaceCommand(ctx, provisioner.WorkspaceCommandRequest{
-				InstanceName: target.instanceName,
-				Workdir:      target.workdir,
-				User:         target.uid,
-				Group:        target.gid,
-				Command:      command,
-				Interactive:  pty.enabled || request.Type == "shell",
-				Cols:         pty.cols,
-				Rows:         pty.rows,
-			})
+			commandRequest := target.commandRequest()
+			commandRequest.Command = command
+			commandRequest.Interactive = pty.enabled
+			commandRequest.Cols = pty.cols
+			commandRequest.Rows = pty.rows
+			session, err := s.backend.OpenWorkspaceCommand(ctx, commandRequest)
 			if err != nil {
 				if request.WantReply {
 					_ = request.Reply(false, nil)
@@ -326,7 +351,7 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 			if request.WantReply {
 				_ = request.Reply(true, nil)
 			}
-			s.serveWorkspaceSFTP(ctx, clientChannel, requests, conn, activity)
+			s.proxyWorkspaceStream(ctx, clientChannel, requests, conn, activity)
 			return
 		default:
 			if request.WantReply {
@@ -343,15 +368,13 @@ func (s *gatewaySSHServer) loadWorkspaceTarget(codespaceUUID string) (gatewayWor
 	return s.state.LoadGatewayWorkspaceTarget(codespaceUUID)
 }
 
-type gatewaySSHDirectTCPIPPayload struct {
-	Host           string
-	Port           uint32
-	OriginatorHost string
-	OriginatorPort uint32
-}
-
 func (s *gatewaySSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthContext, channel ssh.NewChannel, activity chan<- struct{}) {
-	payload := gatewaySSHDirectTCPIPPayload{}
+	payload := struct {
+		Host           string
+		Port           uint32
+		OriginatorHost string
+		OriginatorPort uint32
+	}{}
 	if err := ssh.Unmarshal(channel.ExtraData(), &payload); err != nil ||
 		strings.TrimSpace(payload.Host) == "" ||
 		payload.Port == 0 ||
@@ -359,20 +382,21 @@ func (s *gatewaySSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySS
 		_ = channel.Reject(ssh.Prohibited, "invalid direct-tcpip target")
 		return
 	}
-	if s.routes == nil {
-		_ = channel.Reject(ssh.ConnectionFailed, "gateway endpoint route unavailable")
+	targetHost := strings.TrimSpace(payload.Host)
+	switch targetHost {
+	case "localhost", "127.0.0.1", "::1":
+	default:
+		_ = channel.Reject(ssh.Prohibited, "direct-tcpip target must be localhost, 127.0.0.1, or ::1")
 		return
 	}
-	route, proxyCtx, releaseRoute, ok := s.routes.BeginSSHDirectTCPIP(ctx, auth.codespaceUUID, strings.TrimSpace(payload.Host), payload.Port)
-	if !ok {
-		_ = channel.Reject(ssh.ConnectionFailed, "gateway endpoint route unavailable")
+	target, ok, err := s.loadWorkspaceTarget(auth.codespaceUUID)
+	if err != nil || !ok {
+		_ = channel.Reject(ssh.ConnectionFailed, "workspace tcp target unavailable")
 		return
 	}
-	defer releaseRoute()
-
-	backendConn, err := (&net.Dialer{}).DialContext(proxyCtx, "tcp", route.upstreamHost)
+	backendConn, err := s.backend.OpenWorkspaceTCP(ctx, target.instanceName, payload.Port)
 	if err != nil {
-		_ = channel.Reject(ssh.ConnectionFailed, "gateway endpoint route unavailable")
+		_ = channel.Reject(ssh.ConnectionFailed, "workspace tcp target unavailable")
 		return
 	}
 	clientChannel, requests, err := channel.Accept()
@@ -381,9 +405,8 @@ func (s *gatewaySSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySS
 		return
 	}
 	defer clientChannel.Close()
-	defer backendConn.Close()
 	notifyGatewaySSHActivity(activity)
-	s.serveDirectTCPIP(proxyCtx, clientChannel, requests, backendConn, activity)
+	s.proxyWorkspaceStream(ctx, clientChannel, requests, backendConn, activity)
 }
 
 func (s *gatewaySSHServer) revalidateSession(ctx context.Context, auth gatewaySSHAuthContext, cancel context.CancelFunc) {
@@ -416,7 +439,9 @@ func (s *gatewaySSHServer) revalidateSession(ctx context.Context, auth gatewaySS
 
 func (s *gatewaySSHServer) serveWorkspaceSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, session provisioner.WorkspaceCommandSession, pty gatewaySSHPty, activity chan<- struct{}) {
 	defer session.Close()
-	_ = session.Resize(pty.cols, pty.rows)
+	if pty.enabled {
+		_ = session.Resize(pty.cols, pty.rows)
+	}
 	stdinDone := make(chan struct{}, 1)
 	stdoutDone := make(chan struct{}, 1)
 	stderrDone := make(chan struct{}, 1)
@@ -439,7 +464,7 @@ func (s *gatewaySSHServer) serveWorkspaceSession(ctx context.Context, channel ss
 		waitDone <- session.Wait()
 	}()
 	go func() {
-		s.handleWorkspaceSessionRequests(session, requests, activity)
+		s.handleWorkspaceSessionRequests(session, requests, pty.enabled, activity)
 		requestsDone <- struct{}{}
 	}()
 
@@ -458,40 +483,7 @@ func (s *gatewaySSHServer) serveWorkspaceSession(ctx context.Context, channel ss
 	waitGatewaySSHChannelDone(stderrDone)
 }
 
-func (s *gatewaySSHServer) serveWorkspaceSFTP(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
-	defer conn.Close()
-	requestsDone := make(chan struct{}, 1)
-	go func() {
-		s.rejectWorkspaceSessionRequests(requests, activity)
-		requestsDone <- struct{}{}
-	}()
-	clientToBackendDone := make(chan struct{}, 1)
-	backendToClientDone := make(chan struct{}, 1)
-	go func() {
-		_ = copyGatewaySSHData(conn, channel, activity)
-		clientToBackendDone <- struct{}{}
-	}()
-	go func() {
-		_ = copyGatewaySSHData(channel, conn, activity)
-		backendToClientDone <- struct{}{}
-	}()
-	select {
-	case <-ctx.Done():
-	case <-requestsDone:
-	case <-backendToClientDone:
-	case <-clientToBackendDone:
-		select {
-		case <-ctx.Done():
-		case <-requestsDone:
-		case <-backendToClientDone:
-		}
-	}
-	_ = channel.Close()
-	waitGatewaySSHChannelDone(clientToBackendDone)
-	waitGatewaySSHChannelDone(backendToClientDone)
-}
-
-func (s *gatewaySSHServer) serveDirectTCPIP(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn net.Conn, activity chan<- struct{}) {
+func (s *gatewaySSHServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
 	requestsDone := make(chan struct{}, 1)
 	go func() {
 		s.rejectWorkspaceSessionRequests(requests, activity)
@@ -524,13 +516,23 @@ func (s *gatewaySSHServer) serveDirectTCPIP(ctx context.Context, channel ssh.Cha
 	waitGatewaySSHChannelDone(backendToClientDone)
 }
 
-func (s *gatewaySSHServer) handleWorkspaceSessionRequests(session provisioner.WorkspaceCommandSession, requests <-chan *ssh.Request, activity chan<- struct{}) {
+func (s *gatewaySSHServer) handleWorkspaceSessionRequests(session provisioner.WorkspaceCommandSession, requests <-chan *ssh.Request, ptyEnabled bool, activity chan<- struct{}) {
 	for request := range requests {
 		notifyGatewaySSHActivity(activity)
 		switch request.Type {
 		case "window-change":
-			pty := parseGatewaySSHWindowChange(request.Payload, gatewaySSHPty{})
-			_ = session.Resize(pty.cols, pty.rows)
+			if ptyEnabled {
+				pty := parseGatewaySSHWindowChange(request.Payload, gatewaySSHPty{})
+				_ = session.Resize(pty.cols, pty.rows)
+			}
+		case "signal":
+			signal, ok := parseGatewaySSHSignal(request.Payload)
+			if ok {
+				ok = session.Signal(signal) == nil
+			}
+			if request.WantReply {
+				_ = request.Reply(ok, nil)
+			}
 		default:
 			if request.WantReply {
 				_ = request.Reply(false, nil)
@@ -650,6 +652,45 @@ func parseGatewaySSHSubsystem(payload []byte) string {
 	return request.Name
 }
 
+func parseGatewaySSHSignal(payload []byte) (int, bool) {
+	var request struct {
+		Signal string
+	}
+	if err := ssh.Unmarshal(payload, &request); err != nil {
+		return 0, false
+	}
+	switch strings.TrimPrefix(strings.ToUpper(strings.TrimSpace(request.Signal)), "SIG") {
+	case "ABRT":
+		return int(syscall.SIGABRT), true
+	case "ALRM":
+		return int(syscall.SIGALRM), true
+	case "FPE":
+		return int(syscall.SIGFPE), true
+	case "HUP":
+		return int(syscall.SIGHUP), true
+	case "ILL":
+		return int(syscall.SIGILL), true
+	case "INT":
+		return int(syscall.SIGINT), true
+	case "KILL":
+		return int(syscall.SIGKILL), true
+	case "PIPE":
+		return int(syscall.SIGPIPE), true
+	case "QUIT":
+		return int(syscall.SIGQUIT), true
+	case "SEGV":
+		return int(syscall.SIGSEGV), true
+	case "TERM":
+		return int(syscall.SIGTERM), true
+	case "USR1":
+		return int(syscall.SIGUSR1), true
+	case "USR2":
+		return int(syscall.SIGUSR2), true
+	default:
+		return 0, false
+	}
+}
+
 func gatewaySSHExitStatus(err error) int {
 	if err == nil {
 		return 0
@@ -675,15 +716,11 @@ func gatewaySSHAuthFromPermissions(permissions *ssh.Permissions) (gatewaySSHAuth
 		return gatewaySSHAuthContext{}, false
 	}
 	codespaceUUID := permissions.Extensions["codespace_uuid"]
-	userID, err := parseInt64(permissions.Extensions["user_id"])
+	userID, err := strconv.ParseInt(strings.TrimSpace(permissions.Extensions["user_id"]), 10, 64)
 	if err != nil || codespaceUUID == "" || userID <= 0 {
 		return gatewaySSHAuthContext{}, false
 	}
 	return gatewaySSHAuthContext{codespaceUUID: codespaceUUID, userID: userID}, true
-}
-
-func parseInt64(value string) (int64, error) {
-	return strconv.ParseInt(strings.TrimSpace(value), 10, 64)
 }
 
 func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {

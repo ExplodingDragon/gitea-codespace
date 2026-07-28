@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 	"sync"
 	"time"
 
@@ -19,8 +20,12 @@ import (
 func saveGatewayWorkspaceIdentityForTest(t testingT, store *CodespaceStateStore, codespaceUUID string) {
 	t.Helper()
 	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{
-		"CODESPACE_CREDENTIAL_UID": "1000",
-		"CODESPACE_CREDENTIAL_GID": "1000",
+		"CODESPACE_CREDENTIAL_UID":       "1000",
+		"CODESPACE_CREDENTIAL_GID":       "1000",
+		"CODESPACE_DEVCONTAINER_ID":      "container-1",
+		"CODESPACE_DEVCONTAINER_USER":    "developer",
+		"CODESPACE_DEVCONTAINER_WORKDIR": "/workspaces/repo",
+		provisioner.WorkspaceIDEPortEnv:  strconv.Itoa(provisioner.WorkspaceIDEPort),
 	}); err != nil {
 		t.Fatalf("save script environment: %v", err)
 	}
@@ -38,9 +43,13 @@ type testWorkspaceCommandBackend struct {
 	block       bool
 	stdin       chan []byte
 	resize      chan testWorkspaceResize
+	signal      chan int
 	requests    []provisioner.WorkspaceCommandRequest
 	resizes     []testWorkspaceResize
+	signals     []int
 	openedShell chan struct{}
+	tcpAddress  string
+	tcpPorts    []uint32
 }
 
 type testWorkspaceResize struct {
@@ -52,6 +61,7 @@ func newTestWorkspaceCommandBackend(output string) *testWorkspaceCommandBackend 
 	return &testWorkspaceCommandBackend{
 		output:      output,
 		resize:      make(chan testWorkspaceResize, 16),
+		signal:      make(chan int, 16),
 		openedShell: make(chan struct{}, 1),
 	}
 }
@@ -63,11 +73,8 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	if request.InstanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
 	}
-	if request.Workdir == "" {
-		return nil, fmt.Errorf("workdir is empty")
-	}
-	if request.User == 0 || request.Group == 0 {
-		return nil, fmt.Errorf("workspace user and group are required")
+	if request.ContainerID == "" || request.ContainerUser == "" || request.ContainerWorkdir == "" {
+		return nil, fmt.Errorf("Dev Container target is missing")
 	}
 	b.mu.Lock()
 	b.requests = append(b.requests, request)
@@ -160,6 +167,43 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceSFTP(ctx context.Context, req
 	return clientConn, nil
 }
 
+func (b *testWorkspaceCommandBackend) OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if instanceName == "" || port == 0 || port > 65535 {
+		return nil, fmt.Errorf("workspace tcp target is invalid")
+	}
+	b.mu.Lock()
+	b.tcpPorts = append(b.tcpPorts, port)
+	address := b.tcpAddress
+	b.mu.Unlock()
+	if address == "" {
+		address = net.JoinHostPort("127.0.0.1", strconv.Itoa(int(port)))
+	}
+	return (&net.Dialer{}).DialContext(ctx, "tcp", address)
+}
+
+func (b *testWorkspaceCommandBackend) CheckWorkspaceAccess(ctx context.Context, instanceName, workdir string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" || workdir == "" {
+		return fmt.Errorf("workspace target is missing")
+	}
+	return nil
+}
+
+func (b *testWorkspaceCommandBackend) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" || containerID == "" {
+		return fmt.Errorf("Dev Container target is missing")
+	}
+	return nil
+}
+
 func (b *testWorkspaceCommandBackend) lastRequest() provisioner.WorkspaceCommandRequest {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -200,6 +244,17 @@ func (s *testWorkspaceCommandSession) Resize(cols, rows int) error {
 	s.backend.mu.Unlock()
 	select {
 	case s.backend.resize <- resize:
+	default:
+	}
+	return nil
+}
+
+func (s *testWorkspaceCommandSession) Signal(signal int) error {
+	s.backend.mu.Lock()
+	s.backend.signals = append(s.backend.signals, signal)
+	s.backend.mu.Unlock()
+	select {
+	case s.backend.signal <- signal:
 	default:
 	}
 	return nil

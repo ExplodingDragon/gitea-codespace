@@ -1,4 +1,4 @@
-set -eu
+set -euo pipefail
 
 write_result() {
   result_outcome="${1:-done}"
@@ -89,7 +89,7 @@ configure_pacman_mirrors() {
 
 install_missing() {
   missing_commands=""
-  for command in bash git ssh sudo flock getent useradd groupadd; do
+  for command in bash git ssh sudo flock getent useradd usermod groupadd python3 curl tar xz docker sha256sum; do
     if ! command -v "$command" >/dev/null 2>&1; then
       missing_commands="$missing_commands $command"
     fi
@@ -106,13 +106,13 @@ install_missing() {
       policy_rc_created=1
     fi
     apt-get update
-    apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client sudo util-linux passwd python3
+    apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client sudo util-linux passwd python3 tar xz-utils docker.io coreutils
   elif command -v dnf >/dev/null 2>&1; then
     configure_dnf_mirrors
-    dnf install -y --setopt=install_weak_deps=False bash ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3
+    dnf install -y --setopt=install_weak_deps=False bash ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3 tar xz docker coreutils
   elif command -v pacman >/dev/null 2>&1; then
     configure_pacman_mirrors
-    pacman -Sy --noconfirm bash ca-certificates curl git openssh sudo util-linux shadow python
+    pacman -Sy --noconfirm bash ca-certificates curl git openssh sudo util-linux shadow python tar xz docker coreutils
   else
     fail_unrecoverable "no supported package manager found for installing runtime dependencies"
   fi
@@ -136,6 +136,10 @@ if [ "$codespace_uid" = "0" ] || [ "$codespace_gid" = "0" ]; then
   fail_unrecoverable "codespace user must not resolve to uid or gid 0: $codespace_user"
 fi
 
+if getent group docker >/dev/null 2>&1; then
+  usermod -aG docker "$codespace_user" || fail_unrecoverable "add Codespace user to docker group failed"
+fi
+
 passwd -l "$codespace_user" >/dev/null 2>&1 || true
 mkdir -p /workspaces
 chown "$codespace_uid:$codespace_gid" /workspaces
@@ -147,6 +151,8 @@ token_file="${CODESPACE_GITEA_TOKEN_FILE:-$runtime_dir/gitea-token}"
 private_key_file="${CODESPACE_GIT_SSH_PRIVATE_KEY:-$runtime_dir/git/id_ed25519}"
 public_key_file="${CODESPACE_GIT_SSH_PUBLIC_KEY:-$runtime_dir/git/id_ed25519.pub}"
 known_hosts_file="${CODESPACE_GIT_SSH_KNOWN_HOSTS:-$runtime_dir/git/known_hosts}"
+runtime_bin_dir="$runtime_dir/bin"
+git_credential_helper="$runtime_bin_dir/gitea-codespace-git-credential"
 seed_token="$runtime_seed_dir/gitea-token"
 seed_private_key="$runtime_seed_dir/id_ed25519"
 seed_public_key="$runtime_seed_dir/id_ed25519.pub"
@@ -158,7 +164,8 @@ done
 [ -f "$seed_known_hosts" ] || fail_unrecoverable "missing runtime seed known_hosts file: $seed_known_hosts"
 
 install -d -m 0755 -o 0 -g 0 "$runtime_dir"
-install -d -m 0700 -o "$codespace_uid" -g "$codespace_gid" "$runtime_dir/git" "$runtime_dir/runtime"
+install -d -m 0755 -o 0 -g 0 "$runtime_bin_dir"
+install -d -m 0700 -o "$codespace_uid" -g "$codespace_gid" "$runtime_dir/git" "$runtime_dir/runtime" "$runtime_dir/devcontainer"
 install -d -m 0700 -o 0 -g 0 "$runtime_dir/results"
 install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_token" "$token_file"
 install -m 0600 -o "$codespace_uid" -g "$codespace_gid" "$seed_private_key" "$private_key_file"
@@ -182,7 +189,7 @@ ensure_git_ssh() {
 configure_git_credentials() {
   credential_repo_url="$1"
   if [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ]; then
-    git_user config --global credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
+    git_user config --global credential.helper "!$git_credential_helper" || return 1
   fi
   if [ -n "${GITEA_GIT_USER_NAME:-}" ]; then
     git_user config --global user.name "$GITEA_GIT_USER_NAME" || return 1
@@ -202,7 +209,7 @@ configure_workspace_credentials() {
   case "$credential_remote_url" in
     http://*|https://*)
       [ -n "${GITEA_REPO_CLONE_HTTP_URL:-}" ] || return 1
-      git_user -C "$credential_workspace" config credential.helper '!/usr/local/bin/gitea-codespace-git-credential' || return 1
+      git_user -C "$credential_workspace" config credential.helper "!$git_credential_helper" || return 1
       ;;
     *)
       ensure_git_ssh || return 1
@@ -272,7 +279,7 @@ prepare_workspace_from_repo() {
   mv "$clone_temp_workspace" "$target_workspace" || { log_error "move prepared workspace into place failed: $clone_temp_workspace -> $target_workspace"; return 1; }
 }
 
-cat >/usr/local/bin/gitea-codespace-git-credential <<'EOF'
+cat >"$git_credential_helper" <<'EOF'
 #!/bin/bash
 set -eu
 while IFS= read -r line; do
@@ -281,9 +288,21 @@ done
 printf 'username=codespace\n'
 printf 'password=%s\n\n' "$(cat /var/lib/gitea-codespace/gitea-token)"
 EOF
-chmod 0755 /usr/local/bin/gitea-codespace-git-credential
+chmod 0755 "$git_credential_helper"
 
-cat >/usr/local/bin/gitea-codespace-endpoint <<'EOF'
+cat >"$runtime_bin_dir/gitea-codespace-git-ssh" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+seed_dir="/var/lib/gitea-codespace/git"
+key_dir="${HOME}/.cache/gitea-codespace/git"
+install -d -m 0700 "$key_dir"
+install -m 0600 "$seed_dir/id_ed25519" "$key_dir/id_ed25519"
+install -m 0600 "$seed_dir/known_hosts" "$key_dir/known_hosts"
+exec ssh -i "$key_dir/id_ed25519" -o IdentitiesOnly=yes -o UserKnownHostsFile="$key_dir/known_hosts" -o StrictHostKeyChecking=yes "$@"
+EOF
+chmod 0755 "$runtime_bin_dir/gitea-codespace-git-ssh"
+
+cat >"$runtime_bin_dir/gitea-codespace-endpoint" <<'EOF'
 #!/usr/bin/env python3
 import json
 import os
@@ -292,6 +311,9 @@ import sys
 manifest = "/var/lib/gitea-codespace/runtime/endpoints.json"
 if len(sys.argv) < 2 or sys.argv[1] not in ("set", "delete"):
     print("usage: gitea-codespace-endpoint set <id> <label> <http|https> <port> [--public] | delete <id>", file=sys.stderr)
+    sys.exit(2)
+if len(sys.argv) < 3 or sys.argv[2] == "workspace":
+    print("endpoint id 'workspace' is reserved for the Web IDE", file=sys.stderr)
     sys.exit(2)
 try:
     with open(manifest, "r", encoding="utf-8") as handle:
@@ -319,13 +341,42 @@ with open(tmp, "w", encoding="utf-8") as handle:
     os.fsync(handle.fileno())
 os.replace(tmp, manifest)
 EOF
-chmod 0755 /usr/local/bin/gitea-codespace-endpoint
+chmod 0755 "$runtime_bin_dir/gitea-codespace-endpoint"
 
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$codespace_user" > /etc/sudoers.d/gitea-codespace
 chmod 0440 /etc/sudoers.d/gitea-codespace
 if command -v visudo >/dev/null 2>&1; then
   visudo -cf /etc/sudoers.d/gitea-codespace >/dev/null
 fi
+
+if ! docker info >/dev/null 2>&1; then
+  if command -v dockerd >/dev/null 2>&1; then
+    nohup dockerd >/var/log/gitea-codespace-dockerd.log 2>&1 &
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+      docker info >/dev/null 2>&1 && break
+      sleep 1
+    done
+  fi
+fi
+docker info >/dev/null 2>&1 || fail_unrecoverable "docker daemon is unavailable"
+
+devcontainer_cli_version="0.88.0"
+devcontainer_install_dir="/opt/gitea-codespace/devcontainers"
+devcontainer_bin="$devcontainer_install_dir/bin/devcontainer"
+if [ ! -x "$devcontainer_bin" ] || [ "$("$devcontainer_bin" --version)" != "$devcontainer_cli_version" ]; then
+  install -d -m 0755 -o 0 -g 0 "$devcontainer_install_dir"
+  devcontainer_installer="$runtime_dir/devcontainer-install.sh"
+  curl -fL --retry 3 --retry-delay 2 \
+    -o "$devcontainer_installer" \
+    "https://raw.githubusercontent.com/devcontainers/cli/v$devcontainer_cli_version/scripts/install.sh" \
+    || fail_unrecoverable "download Dev Container CLI installer failed"
+  sh "$devcontainer_installer" \
+    --prefix "$devcontainer_install_dir" \
+    --version "$devcontainer_cli_version" \
+    --node-version 20 \
+    || fail_unrecoverable "install Dev Container CLI failed"
+fi
+ln -sfn "$devcontainer_bin" /usr/local/bin/devcontainer
 
 if [ "${CODESPACE_OPERATION:-}" = "create" ]; then
   create_repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"

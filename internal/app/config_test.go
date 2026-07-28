@@ -34,6 +34,7 @@ gateway:
   ssh:
     listen: ":19022"
     public_addr: "codespace.example.com:2222"
+    handshake_timeout: "20s"
     max_channels_per_connection: 7
     auth:
       max_attempts_per_ip_per_minute: 11
@@ -109,7 +110,8 @@ runtime:
 		config.Gateway.MaxSessionsPerUser != 99 {
 		t.Fatalf("gateway session config = %#v", config.Gateway)
 	}
-	if config.Gateway.SSHMaxChannelsPerConnection != 7 ||
+	if config.Gateway.SSHHandshakeTimeout.ToStdlib() != 20*time.Second ||
+		config.Gateway.SSHMaxChannelsPerConnection != 7 ||
 		config.Gateway.SSHAuthMaxAttemptsPerIP != 11 ||
 		config.Gateway.SSHAuthMaxAttemptsPerCodespace != 12 ||
 		config.Gateway.SSHAuthMaxAttemptsPerIPCodespace != 13 ||
@@ -252,6 +254,12 @@ func TestGatewayConfigValidation(t *testing.T) {
 	config.Gateway.SSHMaxChannelsPerConnection = 1025
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected ssh max channels validation error")
+	}
+
+	config = DefaultConfig()
+	config.Gateway.SSHHandshakeTimeout = Duration(time.Millisecond)
+	if err := config.Validate(); err == nil {
+		t.Fatalf("expected ssh handshake timeout validation error")
 	}
 
 	config = DefaultConfig()

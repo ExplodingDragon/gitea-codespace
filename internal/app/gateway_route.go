@@ -25,12 +25,12 @@ type gatewayEndpointRoute struct {
 }
 
 type gatewayRouteStore struct {
-	mu             sync.RWMutex
-	routes         map[gatewayRouteKey]*gatewayRouteEntry
-	fallbackLeases map[gatewayRouteKey]map[int64]context.CancelFunc
-	nextLeaseID    int64
-	sessions       *gatewaySessionRegistry
-	terminal       *gatewayWorkspaceTerminal
+	mu              sync.RWMutex
+	routes          map[gatewayRouteKey]*gatewayRouteEntry
+	workspaceLeases map[string]map[int64]context.CancelFunc
+	nextLeaseID     int64
+	sessions        *gatewaySessionRegistry
+	workspace       *gatewayWorkspaceIDE
 }
 
 type gatewayRouteEntry struct {
@@ -45,8 +45,8 @@ type gatewayRouteKey struct {
 
 func newGatewayRouteStore() *gatewayRouteStore {
 	return &gatewayRouteStore{
-		routes:         make(map[gatewayRouteKey]*gatewayRouteEntry),
-		fallbackLeases: make(map[gatewayRouteKey]map[int64]context.CancelFunc),
+		routes:          make(map[gatewayRouteKey]*gatewayRouteEntry),
+		workspaceLeases: make(map[string]map[int64]context.CancelFunc),
 	}
 }
 
@@ -74,14 +74,14 @@ func (s *gatewayRouteStore) SetSessionRegistry(sessions *gatewaySessionRegistry)
 	s.sessions = sessions
 }
 
-func (s *gatewayRouteStore) SetWorkspaceTerminal(terminal *gatewayWorkspaceTerminal) {
+func (s *gatewayRouteStore) SetWorkspaceIDE(workspace *gatewayWorkspaceIDE) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.terminal = terminal
+	s.workspace = workspace
 }
 
 func (s *gatewayRouteStore) BeginProxy(request *http.Request, codespaceUUID, endpointID string) (gatewayEndpointRoute, *http.Request, func(), bool) {
@@ -120,26 +120,25 @@ func (s *gatewayRouteStore) BeginProxy(request *http.Request, codespaceUUID, end
 	return route, request.WithContext(ctx), release, true
 }
 
-func (s *gatewayRouteStore) BeginWorkspaceTerminal(request *http.Request, codespaceUUID string) (*gatewayWorkspaceTerminal, *http.Request, func(), bool) {
+func (s *gatewayRouteStore) BeginWorkspaceIDE(request *http.Request, codespaceUUID string) (*gatewayWorkspaceIDE, *http.Request, func(), bool) {
 	if s == nil || request == nil {
 		return nil, request, func() {}, false
 	}
 	ctx, cancel := context.WithCancel(request.Context())
-	key := gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: "workspace"}
 
 	s.mu.Lock()
-	if s.terminal == nil || s.routes[key] != nil {
+	if s.workspace == nil {
 		s.mu.Unlock()
 		cancel()
 		return nil, request, func() {}, false
 	}
 	s.nextLeaseID++
 	leaseID := s.nextLeaseID
-	if s.fallbackLeases[key] == nil {
-		s.fallbackLeases[key] = make(map[int64]context.CancelFunc)
+	if s.workspaceLeases[codespaceUUID] == nil {
+		s.workspaceLeases[codespaceUUID] = make(map[int64]context.CancelFunc)
 	}
-	s.fallbackLeases[key][leaseID] = cancel
-	terminal := s.terminal
+	s.workspaceLeases[codespaceUUID][leaseID] = cancel
+	workspace := s.workspace
 	s.mu.Unlock()
 
 	var once sync.Once
@@ -149,55 +148,13 @@ func (s *gatewayRouteStore) BeginWorkspaceTerminal(request *http.Request, codesp
 			s.mu.Lock()
 			defer s.mu.Unlock()
 
-			delete(s.fallbackLeases[key], leaseID)
-			if len(s.fallbackLeases[key]) == 0 {
-				delete(s.fallbackLeases, key)
+			delete(s.workspaceLeases[codespaceUUID], leaseID)
+			if len(s.workspaceLeases[codespaceUUID]) == 0 {
+				delete(s.workspaceLeases, codespaceUUID)
 			}
 		})
 	}
-	return terminal, request.WithContext(ctx), release, true
-}
-
-func (s *gatewayRouteStore) BeginSSHDirectTCPIP(ctx context.Context, codespaceUUID, targetHost string, targetPort uint32) (gatewayEndpointRoute, context.Context, func(), bool) {
-	if s == nil || ctx == nil || codespaceUUID == "" || targetHost == "" || targetPort == 0 || targetPort > 65535 {
-		return gatewayEndpointRoute{}, ctx, func() {}, false
-	}
-	target := net.JoinHostPort(targetHost, strconv.Itoa(int(targetPort)))
-	proxyCtx, cancel := context.WithCancel(ctx)
-
-	s.mu.Lock()
-	var entry *gatewayRouteEntry
-	for key, candidate := range s.routes {
-		if key.codespaceUUID == codespaceUUID && candidate.route.upstreamHost == target {
-			entry = candidate
-			break
-		}
-	}
-	if entry == nil {
-		s.mu.Unlock()
-		cancel()
-		return gatewayEndpointRoute{}, ctx, func() {}, false
-	}
-	s.nextLeaseID++
-	leaseID := s.nextLeaseID
-	if entry.leases == nil {
-		entry.leases = make(map[int64]context.CancelFunc)
-	}
-	entry.leases[leaseID] = cancel
-	route := entry.route
-	s.mu.Unlock()
-
-	var once sync.Once
-	release := func() {
-		once.Do(func() {
-			cancel()
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			delete(entry.leases, leaseID)
-		})
-	}
-	return route, proxyCtx, release, true
+	return workspace, request.WithContext(ctx), release, true
 }
 
 func (s *gatewayRouteStore) Put(route gatewayEndpointRoute) error {
@@ -220,14 +177,12 @@ func (s *gatewayRouteStore) Put(route gatewayEndpointRoute) error {
 	s.routes[key] = &gatewayRouteEntry{route: route}
 	sessions := s.sessions
 	cancels := oldEntry.takeCancels()
-	fallbackCancels := s.takeFallbackCancels(key)
 	s.mu.Unlock()
 
-	if (oldEntry != nil || len(fallbackCancels) > 0) && sessions != nil {
+	if oldEntry != nil && sessions != nil {
 		sessions.DeleteEndpoint(route.codespaceUUID, route.endpointID)
 	}
 	cancelGatewayRouteLeases(cancels)
-	cancelGatewayRouteLeases(fallbackCancels)
 	return nil
 }
 
@@ -271,7 +226,6 @@ func (s *gatewayRouteStore) ReplaceRuntimeEndpointRoutes(codespaceUUID string, r
 	}
 	for key, route := range normalized {
 		s.routes[key] = &gatewayRouteEntry{route: route}
-		cancelGroups = append(cancelGroups, s.takeFallbackCancels(key))
 		sessionDeletes = append(sessionDeletes, key)
 	}
 	s.mu.Unlock()
@@ -316,12 +270,7 @@ func (s *gatewayRouteStore) CloseCodespaceAccess(codespaceUUID string) {
 		}
 		cancels = append(cancels, entry.takeCancels()...)
 	}
-	for key := range s.fallbackLeases {
-		if key.codespaceUUID != codespaceUUID {
-			continue
-		}
-		cancels = append(cancels, s.takeFallbackCancels(key)...)
-	}
+	cancels = append(cancels, s.takeWorkspaceCancels(codespaceUUID)...)
 	sessions := s.sessions
 	s.mu.Unlock()
 
@@ -331,15 +280,15 @@ func (s *gatewayRouteStore) CloseCodespaceAccess(codespaceUUID string) {
 	cancelGatewayRouteLeases(cancels)
 }
 
-func (s *gatewayRouteStore) takeFallbackCancels(key gatewayRouteKey) []context.CancelFunc {
-	if s == nil || len(s.fallbackLeases[key]) == 0 {
+func (s *gatewayRouteStore) takeWorkspaceCancels(codespaceUUID string) []context.CancelFunc {
+	if s == nil || len(s.workspaceLeases[codespaceUUID]) == 0 {
 		return nil
 	}
-	cancels := make([]context.CancelFunc, 0, len(s.fallbackLeases[key]))
-	for _, cancel := range s.fallbackLeases[key] {
+	cancels := make([]context.CancelFunc, 0, len(s.workspaceLeases[codespaceUUID]))
+	for _, cancel := range s.workspaceLeases[codespaceUUID] {
 		cancels = append(cancels, cancel)
 	}
-	delete(s.fallbackLeases, key)
+	delete(s.workspaceLeases, codespaceUUID)
 	return cancels
 }
 
@@ -378,8 +327,11 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	if route.codespaceUUID == "" {
 		return gatewayEndpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}
-	if route.endpointID != "workspace" && !isGatewayEndpointID(route.endpointID) {
+	if !isGatewayEndpointID(route.endpointID) {
 		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id is invalid")
+	}
+	if route.endpointID == "workspace" {
+		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id workspace is reserved for the platform Web IDE")
 	}
 	switch route.upstreamScheme {
 	case "http", "https":
@@ -388,9 +340,6 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	}
 	if !isValidGatewayUpstreamHost(route.upstreamHost) {
 		return gatewayEndpointRoute{}, fmt.Errorf("upstream host is invalid")
-	}
-	if route.endpointID == "workspace" && route.public {
-		return gatewayEndpointRoute{}, fmt.Errorf("workspace endpoint cannot be public")
 	}
 	return route, nil
 }

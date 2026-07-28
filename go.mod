@@ -57,4 +57,4 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 )
 
-replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260725174102-55e927239725
+replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260728180544-cd97db223b79
