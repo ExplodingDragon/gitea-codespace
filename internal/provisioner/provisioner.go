@@ -12,6 +12,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"gitea.dev/codespace/internal/devcontainer"
 )
 
 // RuntimeState stores the locally observed runtime state.
@@ -113,43 +115,45 @@ func validHex(value string) bool {
 	return err == nil
 }
 
-// LifecycleRequest stores the inputs for one init, start, or stop script.
+// LifecycleRequest stores the inputs for one native runtime transition.
 type LifecycleRequest struct {
-	CodespaceUUID      string
-	CodespaceName      string
-	CodespaceOwnerName string
-	UserID             int64
-	UserName           string
-	UserDisplayName    string
-	GitUserName        string
-	GitUserEmail       string
-	RuntimeUserName    string
-	GiteaToken         string
-	ServerURL          string
-	RepoCloneHTTPURL   string
-	RepoCloneSSHURL    string
-	RepoWebURL         string
-	RepoID             int64
-	RepoFullName       string
-	RepoName           string
-	OwnerID            int64
-	OwnerName          string
-	OwnerType          string
-	OwnerDisplayName   string
-	StartRef           string
-	RefType            string
-	RefName            string
-	CommitSHA          string
-	Workdir            string
-	EnvironmentTag     string
-	GitProtocol        string
-	DevContainer       DevContainerConfiguration
-	Operation          ScriptOperation
-	Scripts            ScriptSnapshot
-	LogSink            LifecycleLogSink
+	CodespaceUUID    string
+	CodespaceName    string
+	UserName         string
+	GitUserEmail     string
+	RuntimeUserName  string
+	GiteaToken       string
+	ServerURL        string
+	RepoCloneHTTPURL string
+	RepoCloneSSHURL  string
+	RepoFullName     string
+	StartRef         string
+	CommitSHA        string
+	Workdir          string
+	EnvironmentTag   string
+	GitProtocol      string
+	DevContainer     DevContainerConfiguration
+	Environment      *devcontainer.Environment
+	OperationVersion int64
+	Operation        LifecycleOperation
+	LogSink          LifecycleLogSink
 }
 
-// LifecycleLogSink receives lifecycle script output as complete text lines.
+// RuntimeEnvironment is the complete outer identity and inner Dev Container target.
+type RuntimeEnvironment struct {
+	User        uint32                   `json:"user"`
+	Group       uint32                   `json:"group"`
+	Environment devcontainer.Environment `json:"environment"`
+}
+
+func (environment RuntimeEnvironment) Validate() error {
+	if environment.User == 0 || environment.Group == 0 {
+		return fmt.Errorf("runtime user and group are required")
+	}
+	return environment.Environment.Validate()
+}
+
+// LifecycleLogSink receives lifecycle output as complete text lines.
 type LifecycleLogSink interface {
 	WriteLifecycleLog(ctx context.Context, message string) error
 }
@@ -171,10 +175,11 @@ type WorkspaceGitStatus struct {
 type RuntimeCredentialSeedRequest struct {
 	CodespaceUUID    string
 	GiteaToken       string
-	GitSSHPrivateKey []byte
-	GitSSHPublicKey  []byte
 	GitSSHKnownHosts []string
 }
+
+// RuntimeSecretEnvironment stores environment variables that only live while an instance is running.
+type RuntimeSecretEnvironment map[string]string
 
 // RuntimeGitSSHKeySeedRequest stores root-owned git SSH key seed material.
 type RuntimeGitSSHKeySeedRequest struct {
@@ -182,14 +187,8 @@ type RuntimeGitSSHKeySeedRequest struct {
 	GitSSHPublicKey  []byte
 }
 
-// RuntimeEndpointDeclaration stores one endpoint declared inside the runtime.
-type RuntimeEndpointDeclaration struct {
-	EndpointID     string `json:"endpoint_id"`
-	Label          string `json:"label"`
-	UpstreamScheme string `json:"upstream_scheme"`
-	UpstreamPort   int    `json:"upstream_port"`
-	Public         bool   `json:"public"`
-}
+// RuntimeEndpointDeclaration stores one ordinary endpoint declared inside the runtime.
+type RuntimeEndpointDeclaration = devcontainer.Endpoint
 
 // RuntimeResourceUsage stores externally observed runtime resource usage.
 type RuntimeResourceUsage struct {
@@ -203,60 +202,38 @@ type RuntimeResourceUsage struct {
 	ObservedUnix       int64
 }
 
-// ScriptOperation identifies which lifecycle command is running.
-type ScriptOperation string
+// LifecycleOperation identifies which lifecycle transition is running.
+type LifecycleOperation string
 
 const (
-	// ScriptOperationCreate prepares a new workspace from a repository payload.
-	ScriptOperationCreate ScriptOperation = "create"
-	// ScriptOperationResume starts an existing workspace without repository payload.
-	ScriptOperationResume ScriptOperation = "resume"
-	// ScriptOperationStop stops a running workspace.
-	ScriptOperationStop ScriptOperation = "stop"
+	// LifecycleOperationCreate prepares a new workspace from a repository payload.
+	LifecycleOperationCreate LifecycleOperation = "create"
+	// LifecycleOperationResume starts an existing workspace without repository payload.
+	LifecycleOperationResume LifecycleOperation = "resume"
+	// LifecycleOperationStop stops a running workspace.
+	LifecycleOperationStop LifecycleOperation = "stop"
 )
 
-// ScriptConfig stores the init/start/stop script sources.
-type ScriptConfig struct {
-	Init  string
-	Start string
-	Stop  string
-}
-
-// ScriptSnapshot stores one complete lifecycle script suite fixed for an operation.
-type ScriptSnapshot struct {
-	Init  ScriptFileSnapshot
-	Start ScriptFileSnapshot
-	Stop  ScriptFileSnapshot
-}
-
-// ScriptFileSnapshot stores one script and its content digest.
-type ScriptFileSnapshot struct {
-	Content string
-	SHA256  string
-}
-
-// SystemIdentity stores the non-root identity and create workspace produced by init.
+// SystemIdentity stores the non-root identity and workspace produced by bootstrap.
 type SystemIdentity struct {
 	UID       uint32
 	GID       uint32
-	SharedEnv map[string]string
+	Workspace string
+	Home      string
 }
 
-// LifecycleScriptResult stores the shared environment produced by a lifecycle entry.
-type LifecycleScriptResult struct {
-	SharedEnv map[string]string
+// LifecycleResult stores the complete Dev Container environment after a transition.
+type LifecycleResult struct {
+	Environment devcontainer.Environment
 }
 
 // WorkspaceCommandRequest stores one user command or shell opened through the Gateway.
 type WorkspaceCommandRequest struct {
-	InstanceName     string
-	ContainerID      string
-	ContainerUser    string
-	ContainerWorkdir string
-	Command          string
-	Interactive      bool
-	Cols             int
-	Rows             int
+	InstanceName string
+	Command      string
+	Interactive  bool
+	Cols         int
+	Rows         int
 }
 
 // WorkspaceSFTPRequest stores one SFTP subsystem opened through the Gateway.
@@ -304,11 +281,13 @@ type Provisioner interface {
 	CheckCredentials(ctx context.Context, instanceName string) (CredentialStatus, error)
 	SeedRuntimeGitSSHKey(ctx context.Context, instanceName string, request RuntimeGitSSHKeySeedRequest) error
 	SeedRuntimeCredentials(ctx context.Context, instanceName string, request RuntimeCredentialSeedRequest) error
+	WriteRuntimeSecrets(ctx context.Context, instanceName string, uid, gid uint32, secrets RuntimeSecretEnvironment) error
+	ClearRuntimeSecrets(ctx context.Context, instanceName string) error
 	ReadEndpointManifest(ctx context.Context, instanceName string) ([]RuntimeEndpointDeclaration, error)
 	RuntimeResourceUsage(ctx context.Context, instanceName string) (RuntimeResourceUsage, error)
-	InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error)
-	StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error)
-	StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error)
+	BootstrapSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error)
+	StartEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error)
+	StopEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error)
 	Stop(ctx context.Context, instanceName string) error
 	Delete(ctx context.Context, instanceName string) error
 }

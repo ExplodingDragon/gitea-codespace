@@ -5,11 +5,5 @@ package provisioner
 
 import _ "embed"
 
-//go:embed builtin/init.sh
-var builtinInitScript string
-
-//go:embed builtin/start.sh
-var builtinStartScript string
-
-//go:embed builtin/stop.sh
-var builtinStopScript string
+//go:embed builtin/bootstrap.sh
+var builtinBootstrapScript string

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+
+	"gitea.dev/codespace/internal/devcontainer"
 )
 
 type gatewayOriginPolicy struct {
@@ -92,7 +94,7 @@ func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 	if len(label) == 32 && isGatewayUUID32(label) {
 		return gatewayEndpointHost{
 			codespaceUUID: uuid32ToCanonical(label),
-			endpointID:    "workspace",
+			endpointID:    devcontainer.WorkspaceEndpointID,
 		}, true
 	}
 	prefix, uuid32, ok := strings.Cut(label, "-")
@@ -115,7 +117,7 @@ func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 }
 
 func isGatewayEndpointID(value string) bool {
-	if value == "workspace" || len(value) < 1 || len(value) > 30 {
+	if value == devcontainer.WorkspaceEndpointID || len(value) < 1 || len(value) > 30 {
 		return false
 	}
 	for i, r := range value {

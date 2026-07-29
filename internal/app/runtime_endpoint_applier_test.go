@@ -18,14 +18,15 @@ func TestRuntimeEndpointApplierUpdatesRoutesAndNotifiesOnChange(t *testing.T) {
 	routes := newGatewayRouteStore()
 	notifier := &runtimeEndpointNotifierForTest{}
 	applier := newRuntimeEndpointApplier(state, routes, notifier)
-	endpointRoutes := []manager.RuntimeEndpointRoute{{
+	endpointRoutes := completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
 		CodespaceUUID:  codespaceUUID,
 		EndpointID:     "web",
 		Label:          "Web",
 		UpstreamScheme: "http",
-		UpstreamHost:   "127.0.0.1:3000",
+		InstanceName:   "runtime-1",
+		UpstreamPort:   3000,
 		Public:         true,
-	}}
+	})
 
 	if err := applier.ApplyRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {
 		t.Fatalf("apply endpoint routes: %v", err)
@@ -34,7 +35,7 @@ func TestRuntimeEndpointApplierUpdatesRoutesAndNotifiesOnChange(t *testing.T) {
 		t.Fatalf("metadata notifications = %d uuid=%q", notifier.calls, notifier.codespaceUUID)
 	}
 	route, ok := routes.Get(codespaceUUID, "web")
-	if !ok || !route.public || route.upstreamHost != "127.0.0.1:3000" {
+	if !ok || !route.public || route.instanceName != "runtime-1" || route.upstreamPort != 3000 {
 		t.Fatalf("gateway route ok=%v route=%#v", ok, route)
 	}
 

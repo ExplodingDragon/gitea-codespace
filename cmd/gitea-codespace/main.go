@@ -4,11 +4,14 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"os"
 
 	"gitea.dev/codespace/internal/app"
+	"gitea.dev/codespace/internal/runtimecmd"
 )
 
 func main() {
@@ -23,11 +26,17 @@ func main() {
 		err = runRegister(os.Args[2:])
 	case "serve":
 		err = runServe(os.Args[2:])
+	case "runtime":
+		err = runtimecmd.Run(context.Background(), os.Args[2:], os.Stdin, os.Stdout, os.Stderr)
 	default:
 		printUsage()
 		os.Exit(1)
 	}
 	if err != nil {
+		var exit *runtimecmd.ExitError
+		if errors.As(err, &exit) {
+			os.Exit(exit.Status)
+		}
 		fmt.Fprintf(os.Stderr, "gitea-codespace %s: %v\n", os.Args[1], err)
 		os.Exit(1)
 	}
@@ -44,7 +53,7 @@ func runRegister(args []string) error {
 
 func runServe(args []string) error {
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
-	configPath := flags.String("config", "", "Path to the codespace config file (.yaml, .yml, or .json).")
+	configPath := flags.String("config", "", "Path to the codespace config file (.yaml or .yml).")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}

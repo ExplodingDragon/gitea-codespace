@@ -89,7 +89,7 @@ configure_pacman_mirrors() {
 
 install_missing() {
   missing_commands=""
-  for command in bash git ssh sudo flock getent useradd usermod groupadd python3 curl tar xz docker sha256sum; do
+  for command in bash git ssh sudo flock getent useradd usermod groupadd docker sha256sum; do
     if ! command -v "$command" >/dev/null 2>&1; then
       missing_commands="$missing_commands $command"
     fi
@@ -106,13 +106,13 @@ install_missing() {
       policy_rc_created=1
     fi
     apt-get update
-    apt-get install -y --no-install-recommends bash ca-certificates curl git openssh-client sudo util-linux passwd python3 tar xz-utils docker.io coreutils
+    apt-get install -y --no-install-recommends bash ca-certificates git openssh-client sudo util-linux passwd docker.io coreutils
   elif command -v dnf >/dev/null 2>&1; then
     configure_dnf_mirrors
-    dnf install -y --setopt=install_weak_deps=False bash ca-certificates curl git openssh-clients sudo util-linux shadow-utils python3 tar xz docker coreutils
+    dnf install -y --setopt=install_weak_deps=False bash ca-certificates git openssh-clients sudo util-linux shadow-utils docker coreutils
   elif command -v pacman >/dev/null 2>&1; then
     configure_pacman_mirrors
-    pacman -Sy --noconfirm bash ca-certificates curl git openssh sudo util-linux shadow python tar xz docker coreutils
+    pacman -Sy --noconfirm bash ca-certificates git openssh sudo util-linux shadow docker coreutils
   else
     fail_unrecoverable "no supported package manager found for installing runtime dependencies"
   fi
@@ -303,43 +303,9 @@ EOF
 chmod 0755 "$runtime_bin_dir/gitea-codespace-git-ssh"
 
 cat >"$runtime_bin_dir/gitea-codespace-endpoint" <<'EOF'
-#!/usr/bin/env python3
-import json
-import os
-import sys
-
-manifest = "/var/lib/gitea-codespace/runtime/endpoints.json"
-if len(sys.argv) < 2 or sys.argv[1] not in ("set", "delete"):
-    print("usage: gitea-codespace-endpoint set <id> <label> <http|https> <port> [--public] | delete <id>", file=sys.stderr)
-    sys.exit(2)
-if len(sys.argv) < 3 or sys.argv[2] == "workspace":
-    print("endpoint id 'workspace' is reserved for the Web IDE", file=sys.stderr)
-    sys.exit(2)
-try:
-    with open(manifest, "r", encoding="utf-8") as handle:
-        data = json.load(handle)
-except FileNotFoundError:
-    data = {"version": 1, "endpoints": []}
-endpoints = [entry for entry in data.get("endpoints", []) if entry.get("endpoint_id") != sys.argv[2]]
-if sys.argv[1] == "set":
-    if len(sys.argv) not in (6, 7):
-        sys.exit(2)
-    public = len(sys.argv) == 7 and sys.argv[6] == "--public"
-    endpoints.append({
-        "endpoint_id": sys.argv[2],
-        "label": sys.argv[3],
-        "upstream_scheme": sys.argv[4],
-        "upstream_port": int(sys.argv[5]),
-        "public": public,
-    })
-data = {"version": 1, "endpoints": endpoints}
-tmp = manifest + ".tmp." + str(os.getpid())
-with open(tmp, "w", encoding="utf-8") as handle:
-    json.dump(data, handle, separators=(",", ":"), sort_keys=True)
-    handle.write("\n")
-    handle.flush()
-    os.fsync(handle.fileno())
-os.replace(tmp, manifest)
+#!/bin/bash
+set -eu
+exec /usr/local/libexec/gitea-codespace-runtime runtime endpoint "$@"
 EOF
 chmod 0755 "$runtime_bin_dir/gitea-codespace-endpoint"
 
@@ -360,24 +326,6 @@ if ! docker info >/dev/null 2>&1; then
 fi
 docker info >/dev/null 2>&1 || fail_unrecoverable "docker daemon is unavailable"
 
-devcontainer_cli_version="0.88.0"
-devcontainer_install_dir="/opt/gitea-codespace/devcontainers"
-devcontainer_bin="$devcontainer_install_dir/bin/devcontainer"
-if [ ! -x "$devcontainer_bin" ] || [ "$("$devcontainer_bin" --version)" != "$devcontainer_cli_version" ]; then
-  install -d -m 0755 -o 0 -g 0 "$devcontainer_install_dir"
-  devcontainer_installer="$runtime_dir/devcontainer-install.sh"
-  curl -fL --retry 3 --retry-delay 2 \
-    -o "$devcontainer_installer" \
-    "https://raw.githubusercontent.com/devcontainers/cli/v$devcontainer_cli_version/scripts/install.sh" \
-    || fail_unrecoverable "download Dev Container CLI installer failed"
-  sh "$devcontainer_installer" \
-    --prefix "$devcontainer_install_dir" \
-    --version "$devcontainer_cli_version" \
-    --node-version 20 \
-    || fail_unrecoverable "install Dev Container CLI failed"
-fi
-ln -sfn "$devcontainer_bin" /usr/local/bin/devcontainer
-
 if [ "${CODESPACE_OPERATION:-}" = "create" ]; then
   create_repo_url="${GITEA_REPO_CLONE_HTTP_URL:-}"
   create_fallback_url="${GITEA_REPO_CLONE_SSH_URL:-}"
@@ -396,8 +344,8 @@ if [ "${CODESPACE_OPERATION:-}" = "create" ]; then
       fail_unrecoverable "clone failed and no fallback repository URL is available"
     fi
   fi
-  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$create_workspace" >> "$CODESPACE_ENV"
+  printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$create_workspace" >> "$CODESPACE_BOOTSTRAP_OUTPUT"
 fi
 
-printf 'CODESPACE_CREDENTIAL_UID=%s\nCODESPACE_CREDENTIAL_GID=%s\nCODESPACE_USER=%s\n' "$codespace_uid" "$codespace_gid" "$codespace_user" >> "$CODESPACE_ENV"
+printf 'CODESPACE_CREDENTIAL_UID=%s\nCODESPACE_CREDENTIAL_GID=%s\nCODESPACE_USER=%s\n' "$codespace_uid" "$codespace_gid" "$codespace_user" >> "$CODESPACE_BOOTSTRAP_OUTPUT"
 write_result done

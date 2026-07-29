@@ -7,8 +7,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -42,7 +44,7 @@ func TestGatewayWorkspaceProxiesAuthenticatedRoute(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
+	routes := newTestWorkspaceEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -95,16 +97,7 @@ func TestGatewayPublicEndpointProxiesPublicRoute(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         true,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		publicEndpointResponse: &codespacev1.ValidatePublicEndpointResponse{
 			Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{
@@ -164,16 +157,7 @@ func TestGatewayPublicEndpointProxiesWebSocketRoute(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         true,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		publicEndpointResponse: &codespacev1.ValidatePublicEndpointResponse{
 			Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{
@@ -232,16 +216,7 @@ func TestGatewayPublicEndpointWebSocketClosesWhenRevalidationDenies(t *testing.T
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         true,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		publicEndpointResponse: allowedPublicEndpointResponse(),
 	}
@@ -297,16 +272,7 @@ func TestGatewayPublicEndpointStreamingHTTPClosesWhenRevalidationDenies(t *testi
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         true,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		publicEndpointResponse: allowedPublicEndpointResponse(),
 	}
@@ -363,16 +329,7 @@ func TestGatewayPublicEndpointStreamingHTTPClosesWhenRouteDeleted(t *testing.T) 
 	}))
 	defer upstream.Close()
 
-	routes := newGatewayRouteStore()
-	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     "web",
-		upstreamScheme: "http",
-		upstreamHost:   strings.TrimPrefix(upstream.URL, "http://"),
-		public:         true,
-	}); err != nil {
-		t.Fatalf("put route: %v", err)
-	}
+	routes := newTestEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		publicEndpointResponse: allowedPublicEndpointResponse(),
 	}
@@ -501,7 +458,7 @@ func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
+	routes := newTestWorkspaceEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -689,7 +646,7 @@ func TestGatewayWorkspaceIDEUnavailableUsesBrowserErrorPage(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "text/html") {
 		t.Fatalf("route unavailable content-type = %q", contentType)
 	}
-	if body := response.Body.String(); !strings.Contains(body, "Workspace is not ready") || !strings.Contains(body, "gateway workspace IDE unavailable") {
+	if body := response.Body.String(); !strings.Contains(body, "Workspace is not ready") || !strings.Contains(body, "gateway route unavailable") {
 		t.Fatalf("route unavailable body = %s", body)
 	}
 }
@@ -727,7 +684,7 @@ func TestGatewayWorkspaceIDEUnavailableKeepsJSONForAPI(t *testing.T) {
 	if contentType := response.Header().Get("Content-Type"); !strings.Contains(contentType, "application/json") {
 		t.Fatalf("route unavailable content-type = %q", contentType)
 	}
-	if !strings.Contains(response.Body.String(), "gateway workspace IDE unavailable") {
+	if !strings.Contains(response.Body.String(), "gateway route unavailable") {
 		t.Fatalf("route unavailable body = %s", response.Body.String())
 	}
 }
@@ -964,7 +921,7 @@ func TestGatewayOpenReplacementCancelsOldSessionConnection(t *testing.T) {
 		close(upstreamCanceled)
 	}))
 	defer upstream.Close()
-	routes := newTestGatewayWorkspaceIDERoutes(t, codespaceUUID, upstream.URL)
+	routes := newTestWorkspaceEndpointRoutes(t, codespaceUUID, upstream.URL)
 	service := &gatewayManagerService{
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
@@ -2661,6 +2618,24 @@ func mustGatewayOriginPolicy(t *testing.T, gatewayURL string) gatewayOriginPolic
 		t.Fatalf("gateway origin policy: %v", err)
 	}
 	return policy
+}
+
+func newTestEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL string) *gatewayRouteStore {
+	t.Helper()
+	host, port := splitTestHostPort(t, upstreamURL)
+	routes := newGatewayRouteStore()
+	routes.SetTCPBackend(&testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(host, strconv.Itoa(port))})
+	if err := routes.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     "web",
+		upstreamScheme: "http",
+		instanceName:   "runtime-1",
+		upstreamPort:   uint32(port),
+		public:         true,
+	}); err != nil {
+		t.Fatalf("put route: %v", err)
+	}
+	return routes
 }
 
 func gatewayTestUUID32(codespaceUUID string) string {

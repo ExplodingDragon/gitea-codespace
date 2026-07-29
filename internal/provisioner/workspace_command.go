@@ -26,9 +26,9 @@ import (
 const (
 	defaultWorkspaceCommandCols = 120
 	defaultWorkspaceCommandRows = 40
-	workspaceCommandTerm        = "xterm-256color"
 	workspaceCommandControlWait = 2 * time.Second
 	workspaceTCPDialTimeout     = 10 * time.Second
+	workspaceIDEReadyTimeout    = 30 * time.Second
 )
 
 // OpenWorkspaceCommand opens one Gateway user shell or exec command through Incus exec.
@@ -39,21 +39,15 @@ func (p *IncusProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	if strings.TrimSpace(request.InstanceName) == "" {
 		return nil, fmt.Errorf("instance name is empty")
 	}
-	if strings.TrimSpace(request.ContainerID) == "" || strings.TrimSpace(request.ContainerUser) == "" {
-		return nil, fmt.Errorf("Dev Container target is required")
-	}
-	if !path.IsAbs(strings.TrimSpace(request.ContainerWorkdir)) {
-		return nil, fmt.Errorf("Dev Container workdir must be absolute")
-	}
 	if err := p.waitInstanceFileAPI(ctx, request.InstanceName); err != nil {
 		return nil, err
 	}
 	cols, rows := normalizeWorkspaceTerminalSize(request.Cols, request.Rows)
-	command := []string{"docker", "exec", "--interactive"}
+	command := []string{runtimeExecutable, "runtime", "exec", "--state", runtimeEnvironmentFile, "--secrets", runtimeSecretFile}
 	if request.Interactive {
-		command = append(command, "--tty", "--env", "TERM="+workspaceCommandTerm, "--env", "COLORTERM=truecolor")
+		command = append(command, "--interactive")
 	}
-	command = append(command, "--user", request.ContainerUser, "--workdir", request.ContainerWorkdir, request.ContainerID, "/bin/sh")
+	command = append(command, "--", "/bin/sh")
 	if request.Command != "" {
 		command = append(command, "-lc", request.Command)
 	} else {
@@ -264,21 +258,88 @@ func (p *IncusProvisioner) OpenWorkspaceTCP(ctx context.Context, instanceName st
 	if port == 0 || port > 65535 {
 		return nil, fmt.Errorf("workspace tcp port is invalid")
 	}
-	dialCtx, cancel := context.WithTimeout(ctx, workspaceTCPDialTimeout)
-	defer cancel()
-	host, err := p.instanceCommunicationHost(dialCtx, instanceName)
-	if err != nil {
+	if err := p.waitInstanceFileAPI(ctx, instanceName); err != nil {
 		return nil, err
 	}
-	conn, err := (&net.Dialer{}).DialContext(dialCtx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
+	clientConn, runtimeConn := net.Pipe()
+	dataDone := make(chan bool)
+	operation, err := p.client.ExecInstance(instanceName, api.InstanceExecPost{
+		Command: []string{
+			runtimeExecutable, "runtime", "tcp",
+			"--state", runtimeEnvironmentFile,
+			"--port", strconv.Itoa(int(port)),
+		},
+		WaitForWS: true,
+		User:      0,
+		Group:     0,
+		Cwd:       "/",
+	}, &incus.InstanceExecArgs{
+		Stdin:    runtimeConn,
+		Stdout:   runtimeConn,
+		Stderr:   io.Discard,
+		DataDone: dataDone,
+	})
 	if err != nil {
-		return nil, fmt.Errorf("connect runtime localhost port %d: %w", port, err)
+		_ = clientConn.Close()
+		_ = runtimeConn.Close()
+		return nil, fmt.Errorf("open Dev Container localhost port %d: %w", port, err)
 	}
-	return conn, nil
+	connection := &incusWorkspaceTCPConn{Conn: clientConn, operation: operation}
+	go func() {
+		_ = operation.WaitContext(ctx)
+		select {
+		case <-dataDone:
+		case <-ctx.Done():
+		}
+		_ = runtimeConn.Close()
+		_ = clientConn.Close()
+	}()
+	return connection, nil
+}
+
+type incusWorkspaceTCPConn struct {
+	net.Conn
+	operation incus.Operation
+	once      sync.Once
+}
+
+func (connection *incusWorkspaceTCPConn) Close() error {
+	var err error
+	connection.once.Do(func() {
+		if connection.operation != nil {
+			_ = connection.operation.Cancel()
+		}
+		err = connection.Conn.Close()
+	})
+	return err
 }
 
 // CheckWorkspaceIDE verifies that code-server is serving its health endpoint.
 func (p *IncusProvisioner) CheckWorkspaceIDE(ctx context.Context, instanceName string, port uint32) error {
+	readyDeadline := time.Now().Add(workspaceIDEReadyTimeout)
+	var lastErr error
+	for {
+		if err := p.checkWorkspaceIDEOnce(ctx, instanceName, port); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if time.Now().After(readyDeadline) {
+			return fmt.Errorf("wait for code-server readiness: %w", lastErr)
+		}
+		timer := time.NewTimer(500 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
+}
+
+func (p *IncusProvisioner) checkWorkspaceIDEOnce(ctx context.Context, instanceName string, port uint32) error {
 	conn, err := p.OpenWorkspaceTCP(ctx, instanceName, port)
 	if err != nil {
 		return err

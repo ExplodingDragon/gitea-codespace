@@ -314,12 +314,12 @@ func (s *gatewayManagerService) VerifySSHPublicKey(
 	return connect.NewResponse(&codespacev1.VerifySSHPublicKeyResponse{}), nil
 }
 
-func (s *gatewayManagerService) EnsureCodespaceGitSSHKey(
+func (s *gatewayManagerService) RequestRuntimeAccess(
 	_ context.Context,
-	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
-) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
+	req *connect.Request[codespacev1.RequestRuntimeAccessRequest],
+) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
 	s.captureAuth(req.Header())
-	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{}), nil
+	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{}), nil
 }
 
 func (s *gatewayManagerService) ReportRuntimeMetadata(

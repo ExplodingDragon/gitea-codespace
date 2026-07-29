@@ -19,15 +19,8 @@ import (
 
 func saveGatewayWorkspaceIdentityForTest(t testingT, store *CodespaceStateStore, codespaceUUID string) {
 	t.Helper()
-	if err := store.SaveScriptEnvironment(codespaceUUID, map[string]string{
-		"CODESPACE_CREDENTIAL_UID":       "1000",
-		"CODESPACE_CREDENTIAL_GID":       "1000",
-		"CODESPACE_DEVCONTAINER_ID":      "container-1",
-		"CODESPACE_DEVCONTAINER_USER":    "developer",
-		"CODESPACE_DEVCONTAINER_WORKDIR": "/workspaces/repo",
-		provisioner.WorkspaceIDEPortEnv:  strconv.Itoa(provisioner.WorkspaceIDEPort),
-	}); err != nil {
-		t.Fatalf("save script environment: %v", err)
+	if err := store.SaveRuntimeEnvironment(codespaceUUID, runtimeEnvironmentForTest(codespaceUUID)); err != nil {
+		t.Fatalf("save runtime environment: %v", err)
 	}
 }
 
@@ -72,9 +65,6 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	}
 	if request.InstanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
-	}
-	if request.ContainerID == "" || request.ContainerUser == "" || request.ContainerWorkdir == "" {
-		return nil, fmt.Errorf("Dev Container target is missing")
 	}
 	b.mu.Lock()
 	b.requests = append(b.requests, request)
@@ -194,11 +184,11 @@ func (b *testWorkspaceCommandBackend) CheckWorkspaceAccess(ctx context.Context, 
 	return nil
 }
 
-func (b *testWorkspaceCommandBackend) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
+func (b *testWorkspaceCommandBackend) CheckDevContainer(ctx context.Context, instanceName string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	if instanceName == "" || containerID == "" {
+	if instanceName == "" {
 		return fmt.Errorf("Dev Container target is missing")
 	}
 	return nil

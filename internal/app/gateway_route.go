@@ -8,29 +8,34 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 
+	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/manager"
+	"gitea.dev/codespace/internal/provisioner"
 )
+
+type gatewayTCPBackend interface {
+	OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error)
+}
 
 type gatewayEndpointRoute struct {
 	codespaceUUID  string
 	endpointID     string
 	label          string
 	upstreamScheme string
-	upstreamHost   string
+	instanceName   string
+	upstreamPort   uint32
 	public         bool
 }
 
 type gatewayRouteStore struct {
-	mu              sync.RWMutex
-	routes          map[gatewayRouteKey]*gatewayRouteEntry
-	workspaceLeases map[string]map[int64]context.CancelFunc
-	nextLeaseID     int64
-	sessions        *gatewaySessionRegistry
-	workspace       *gatewayWorkspaceIDE
+	mu          sync.RWMutex
+	routes      map[gatewayRouteKey]*gatewayRouteEntry
+	nextLeaseID int64
+	sessions    *gatewaySessionRegistry
+	backend     gatewayTCPBackend
 }
 
 type gatewayRouteEntry struct {
@@ -45,8 +50,7 @@ type gatewayRouteKey struct {
 
 func newGatewayRouteStore() *gatewayRouteStore {
 	return &gatewayRouteStore{
-		routes:          make(map[gatewayRouteKey]*gatewayRouteEntry),
-		workspaceLeases: make(map[string]map[int64]context.CancelFunc),
+		routes: make(map[gatewayRouteKey]*gatewayRouteEntry),
 	}
 }
 
@@ -74,14 +78,27 @@ func (s *gatewayRouteStore) SetSessionRegistry(sessions *gatewaySessionRegistry)
 	s.sessions = sessions
 }
 
-func (s *gatewayRouteStore) SetWorkspaceIDE(workspace *gatewayWorkspaceIDE) {
+func (s *gatewayRouteStore) SetTCPBackend(backend gatewayTCPBackend) {
 	if s == nil {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.workspace = workspace
+	s.backend = backend
+}
+
+func (s *gatewayRouteStore) OpenEndpointTCP(ctx context.Context, route gatewayEndpointRoute) (net.Conn, error) {
+	if s == nil {
+		return nil, fmt.Errorf("gateway route store is unavailable")
+	}
+	s.mu.RLock()
+	backend := s.backend
+	s.mu.RUnlock()
+	if backend == nil {
+		return nil, fmt.Errorf("gateway endpoint backend is unavailable")
+	}
+	return backend.OpenWorkspaceTCP(ctx, route.instanceName, route.upstreamPort)
 }
 
 func (s *gatewayRouteStore) BeginProxy(request *http.Request, codespaceUUID, endpointID string) (gatewayEndpointRoute, *http.Request, func(), bool) {
@@ -118,43 +135,6 @@ func (s *gatewayRouteStore) BeginProxy(request *http.Request, codespaceUUID, end
 		})
 	}
 	return route, request.WithContext(ctx), release, true
-}
-
-func (s *gatewayRouteStore) BeginWorkspaceIDE(request *http.Request, codespaceUUID string) (*gatewayWorkspaceIDE, *http.Request, func(), bool) {
-	if s == nil || request == nil {
-		return nil, request, func() {}, false
-	}
-	ctx, cancel := context.WithCancel(request.Context())
-
-	s.mu.Lock()
-	if s.workspace == nil {
-		s.mu.Unlock()
-		cancel()
-		return nil, request, func() {}, false
-	}
-	s.nextLeaseID++
-	leaseID := s.nextLeaseID
-	if s.workspaceLeases[codespaceUUID] == nil {
-		s.workspaceLeases[codespaceUUID] = make(map[int64]context.CancelFunc)
-	}
-	s.workspaceLeases[codespaceUUID][leaseID] = cancel
-	workspace := s.workspace
-	s.mu.Unlock()
-
-	var once sync.Once
-	release := func() {
-		once.Do(func() {
-			cancel()
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			delete(s.workspaceLeases[codespaceUUID], leaseID)
-			if len(s.workspaceLeases[codespaceUUID]) == 0 {
-				delete(s.workspaceLeases, codespaceUUID)
-			}
-		})
-	}
-	return workspace, request.WithContext(ctx), release, true
 }
 
 func (s *gatewayRouteStore) Put(route gatewayEndpointRoute) error {
@@ -270,7 +250,6 @@ func (s *gatewayRouteStore) CloseCodespaceAccess(codespaceUUID string) {
 		}
 		cancels = append(cancels, entry.takeCancels()...)
 	}
-	cancels = append(cancels, s.takeWorkspaceCancels(codespaceUUID)...)
 	sessions := s.sessions
 	s.mu.Unlock()
 
@@ -278,18 +257,6 @@ func (s *gatewayRouteStore) CloseCodespaceAccess(codespaceUUID string) {
 		sessions.DeleteCodespace(codespaceUUID)
 	}
 	cancelGatewayRouteLeases(cancels)
-}
-
-func (s *gatewayRouteStore) takeWorkspaceCancels(codespaceUUID string) []context.CancelFunc {
-	if s == nil || len(s.workspaceLeases[codespaceUUID]) == 0 {
-		return nil
-	}
-	cancels := make([]context.CancelFunc, 0, len(s.workspaceLeases[codespaceUUID]))
-	for _, cancel := range s.workspaceLeases[codespaceUUID] {
-		cancels = append(cancels, cancel)
-	}
-	delete(s.workspaceLeases, codespaceUUID)
-	return cancels
 }
 
 func (e *gatewayRouteEntry) takeCancels() []context.CancelFunc {
@@ -314,7 +281,8 @@ func sameGatewayEndpointRouting(left, right gatewayEndpointRoute) bool {
 	return left.codespaceUUID == right.codespaceUUID &&
 		left.endpointID == right.endpointID &&
 		left.upstreamScheme == right.upstreamScheme &&
-		left.upstreamHost == right.upstreamHost &&
+		left.instanceName == right.instanceName &&
+		left.upstreamPort == right.upstreamPort &&
 		left.public == right.public
 }
 
@@ -323,23 +291,27 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	route.endpointID = strings.TrimSpace(route.endpointID)
 	route.label = strings.TrimSpace(route.label)
 	route.upstreamScheme = strings.ToLower(strings.TrimSpace(route.upstreamScheme))
-	route.upstreamHost = strings.TrimSpace(route.upstreamHost)
+	route.instanceName = strings.TrimSpace(route.instanceName)
 	if route.codespaceUUID == "" {
 		return gatewayEndpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}
-	if !isGatewayEndpointID(route.endpointID) {
+	if route.endpointID != devcontainer.WorkspaceEndpointID && !isGatewayEndpointID(route.endpointID) {
 		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id is invalid")
-	}
-	if route.endpointID == "workspace" {
-		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id workspace is reserved for the platform Web IDE")
 	}
 	switch route.upstreamScheme {
 	case "http", "https":
 	default:
 		return gatewayEndpointRoute{}, fmt.Errorf("upstream_scheme must be http or https")
 	}
-	if !isValidGatewayUpstreamHost(route.upstreamHost) {
-		return gatewayEndpointRoute{}, fmt.Errorf("upstream host is invalid")
+	if route.instanceName == "" {
+		return gatewayEndpointRoute{}, fmt.Errorf("runtime instance name is required")
+	}
+	if route.upstreamPort == 0 || route.upstreamPort > 65535 {
+		return gatewayEndpointRoute{}, fmt.Errorf("upstream port is invalid")
+	}
+	if route.endpointID == devcontainer.WorkspaceEndpointID &&
+		(route.label != devcontainer.WorkspaceEndpointLabel || route.upstreamScheme != "http" || route.upstreamPort != provisioner.WorkspaceIDEPort || route.public) {
+		return gatewayEndpointRoute{}, fmt.Errorf("workspace endpoint route is invalid")
 	}
 	return route, nil
 }
@@ -350,33 +322,8 @@ func gatewayEndpointRouteFromManager(route manager.RuntimeEndpointRoute) (gatewa
 		endpointID:     route.EndpointID,
 		label:          route.Label,
 		upstreamScheme: route.UpstreamScheme,
-		upstreamHost:   route.UpstreamHost,
+		instanceName:   route.InstanceName,
+		upstreamPort:   route.UpstreamPort,
 		public:         route.Public,
 	})
-}
-
-func isValidGatewayUpstreamHost(host string) bool {
-	if host == "" {
-		return false
-	}
-	if strings.HasSuffix(host, ".") {
-		return false
-	}
-	hostOnly, port, err := net.SplitHostPort(host)
-	if err != nil {
-		return false
-	}
-	if portValue, parseErr := strconv.Atoi(port); parseErr != nil || portValue < 1 || portValue > 65535 {
-		return false
-	}
-	if ip := net.ParseIP(hostOnly); ip != nil {
-		return true
-	}
-	if hostOnly == "localhost" {
-		return true
-	}
-	if strings.ContainsAny(hostOnly, "/\\") {
-		return false
-	}
-	return hostOnly != ""
 }

@@ -70,10 +70,10 @@ type Config struct {
 
 	Server              ServerConfig                        `yaml:"-"`
 	Manager             ManagerConfig                       `yaml:"-"`
-	Scripts             ScriptsConfig                       `yaml:"-"`
 	Incus               IncusConfig                         `yaml:"-"`
 	RuntimeEnvironments map[string]RuntimeEnvironmentConfig `yaml:"-"`
 	Provisioner         ProvisionerConfig                   `yaml:"-"`
+	runtimeExecutable   string
 }
 
 // NodeConfig stores manager node behavior and local state.
@@ -188,13 +188,6 @@ type ManagerConfig struct {
 	HTTPTimeout     Duration
 }
 
-// ScriptsConfig stores the init/start/stop script entry points.
-type ScriptsConfig struct {
-	Init  string `yaml:"init"`
-	Start string `yaml:"start"`
-	Stop  string `yaml:"stop"`
-}
-
 // IncusConfig stores Incus connection settings.
 type IncusConfig struct {
 	Endpoint      string
@@ -242,7 +235,6 @@ type RuntimeConfig struct {
 	CodespaceRoot string              `yaml:"codespace_root"`
 	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
 	Git           RuntimeGitConfig    `yaml:"git"`
-	Scripts       ScriptsConfig       `yaml:"scripts"`
 	Incus         RuntimeIncusConfig  `yaml:"incus"`
 	Environments  []EnvironmentConfig `yaml:"environments"`
 }
@@ -397,11 +389,6 @@ func DefaultConfig() Config {
 			Git: RuntimeGitConfig{
 				SSHKeyType: "ed25519",
 			},
-			Scripts: ScriptsConfig{
-				Init:  "builtin",
-				Start: "builtin",
-				Stop:  "builtin",
-			},
 			Incus: RuntimeIncusConfig{
 				Connect: RuntimeIncusConnectConfig{
 					UnixSocket: "/var/lib/incus/unix.socket",
@@ -524,7 +511,6 @@ func (c Config) Validate() error {
 		c.Manager.Validate,
 		c.Provisioner.Validate,
 		c.validateRuntimeEnvironments,
-		c.Scripts.Validate,
 		c.Gateway.Validate,
 	} {
 		if err := validate(); err != nil {
@@ -611,7 +597,6 @@ func (c *Config) syncRuntimeFields() {
 		CleanupWorkers:  c.Node.CleanupWorkers,
 		HTTPTimeout:     c.Node.HTTPTimeout,
 	}
-	c.Scripts = c.Runtime.Scripts
 	c.Provisioner = ProvisionerConfig{
 		Kind:          c.Runtime.Driver,
 		CodespaceRoot: c.Runtime.CodespaceRoot,
@@ -1125,7 +1110,6 @@ func (c *RuntimeConfig) applyDefaults(defaults RuntimeConfig) {
 	if strings.TrimSpace(c.Git.SSHKeyType) == "" {
 		c.Git.SSHKeyType = defaults.Git.SSHKeyType
 	}
-	c.Scripts.applyDefaults(defaults.Scripts)
 	if strings.TrimSpace(c.Incus.Connect.UnixSocket) == "" && strings.TrimSpace(c.Incus.Connect.RemoteAddr) == "" {
 		c.Incus.Connect.UnixSocket = defaults.Incus.Connect.UnixSocket
 	}
@@ -1173,18 +1157,6 @@ func (c *EnvironmentConfig) applyDefaults(defaults EnvironmentConfig) {
 	}
 	if len(c.Profiles.Use) == 0 {
 		c.Profiles.Use = append([]string(nil), defaults.Profiles.Use...)
-	}
-}
-
-func (c *ScriptsConfig) applyDefaults(defaults ScriptsConfig) {
-	if strings.TrimSpace(c.Init) == "" {
-		c.Init = defaults.Init
-	}
-	if strings.TrimSpace(c.Start) == "" {
-		c.Start = defaults.Start
-	}
-	if strings.TrimSpace(c.Stop) == "" {
-		c.Stop = defaults.Stop
 	}
 }
 
@@ -1272,52 +1244,5 @@ func (c *Config) resolveRelativePaths(configPath string) {
 	if !filepath.IsAbs(c.Node.StateDir) {
 		c.Node.StateDir = filepath.Clean(filepath.Join(configDir, c.Node.StateDir))
 	}
-	c.Runtime.Scripts.Init = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Init)
-	c.Runtime.Scripts.Start = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Start)
-	c.Runtime.Scripts.Stop = resolveConfigScriptPath(configDir, c.Runtime.Scripts.Stop)
 	c.syncRuntimeFields()
-}
-
-func resolveConfigScriptPath(configDir, path string) string {
-	path = strings.TrimSpace(path)
-	if path == "" || path == "builtin" || filepath.IsAbs(path) {
-		return path
-	}
-	return filepath.Clean(filepath.Join(configDir, path))
-}
-
-// Validate checks whether the script entry points are usable.
-func (c ScriptsConfig) Validate() error {
-	entries := []struct {
-		name  string
-		value string
-	}{
-		{name: "runtime.scripts.init", value: c.Init},
-		{name: "runtime.scripts.start", value: c.Start},
-		{name: "runtime.scripts.stop", value: c.Stop},
-	}
-	builtinCount := 0
-	customCount := 0
-	for _, entry := range entries {
-		value := strings.TrimSpace(entry.value)
-		if value == "builtin" {
-			builtinCount++
-			continue
-		}
-		customCount++
-		if !filepath.IsAbs(value) {
-			return fmt.Errorf("%s must be builtin or an absolute local file path", entry.name)
-		}
-		info, err := os.Stat(value)
-		if err != nil {
-			return fmt.Errorf("%s file %s is not accessible: %w", entry.name, value, err)
-		}
-		if !info.Mode().IsRegular() {
-			return fmt.Errorf("%s file %s must be a regular file", entry.name, value)
-		}
-	}
-	if builtinCount != 0 && customCount != 0 {
-		return fmt.Errorf("runtime.scripts.init, runtime.scripts.start, and runtime.scripts.stop must all be builtin or all be local file paths")
-	}
-	return nil
 }

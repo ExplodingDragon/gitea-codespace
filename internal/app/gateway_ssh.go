@@ -45,7 +45,7 @@ type gatewayWorkspaceBackend interface {
 	OpenWorkspaceSFTP(ctx context.Context, request provisioner.WorkspaceSFTPRequest) (io.ReadWriteCloser, error)
 	OpenWorkspaceTCP(ctx context.Context, instanceName string, port uint32) (net.Conn, error)
 	CheckWorkspaceAccess(ctx context.Context, instanceName, workdir string) error
-	CheckDevContainer(ctx context.Context, instanceName, containerID string) error
+	CheckDevContainer(ctx context.Context, instanceName string) error
 }
 
 type gatewaySSHServer struct {
@@ -142,7 +142,7 @@ func (s *gatewaySSHServer) authenticatePublicKey(ctx context.Context, conn ssh.C
 	if err := s.backend.CheckWorkspaceAccess(ctx, target.instanceName, target.workdir); err != nil {
 		return nil, fmt.Errorf("codespace workspace is unavailable")
 	}
-	if err := s.backend.CheckDevContainer(ctx, target.instanceName, target.containerID); err != nil {
+	if err := s.backend.CheckDevContainer(ctx, target.instanceName); err != nil {
 		return nil, fmt.Errorf("codespace Dev Container is unavailable")
 	}
 	return &ssh.Permissions{

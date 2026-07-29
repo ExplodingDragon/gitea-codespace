@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"strconv"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
+
+	"gitea.dev/codespace/internal/devcontainer"
 )
 
 // DummyProvisioner simulates backend operations for tests.
@@ -25,6 +28,7 @@ type DummyProvisioner struct {
 	publicKey  map[string][]byte
 	endpoints  map[string][]RuntimeEndpointDeclaration
 	knownHosts map[string][]string
+	secrets    map[string]RuntimeSecretEnvironment
 }
 
 // NewDummy creates one dummy provisioner.
@@ -36,6 +40,7 @@ func NewDummy() *DummyProvisioner {
 		publicKey:  make(map[string][]byte),
 		endpoints:  make(map[string][]RuntimeEndpointDeclaration),
 		knownHosts: make(map[string][]string),
+		secrets:    make(map[string]RuntimeSecretEnvironment),
 	}
 }
 
@@ -123,9 +128,6 @@ func (p *DummyProvisioner) OpenWorkspaceCommand(ctx context.Context, request Wor
 	}
 	if request.InstanceName == "" {
 		return nil, fmt.Errorf("instance name is empty")
-	}
-	if request.ContainerID == "" || request.ContainerUser == "" || request.ContainerWorkdir == "" {
-		return nil, fmt.Errorf("Dev Container target is missing")
 	}
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
@@ -246,15 +248,12 @@ func (p *DummyProvisioner) CheckWorkspaceAccess(ctx context.Context, instanceNam
 }
 
 // CheckDevContainer simulates a running inner development container.
-func (p *DummyProvisioner) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
+func (p *DummyProvisioner) CheckDevContainer(ctx context.Context, instanceName string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	if strings.TrimSpace(instanceName) == "" {
 		return fmt.Errorf("instance name is empty")
-	}
-	if strings.TrimSpace(containerID) == "" {
-		return fmt.Errorf("Dev Container ID is empty")
 	}
 	return nil
 }
@@ -291,14 +290,34 @@ func (p *DummyProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceN
 	if request.GiteaToken == "" {
 		return fmt.Errorf("gitea token is empty")
 	}
-	if len(request.GitSSHPrivateKey) == 0 || len(request.GitSSHPublicKey) == 0 {
-		return fmt.Errorf("git ssh key seed is empty")
-	}
 	p.mu.Lock()
 	p.tokens[instanceName] = request.GiteaToken
-	p.privateKey[instanceName] = append([]byte(nil), request.GitSSHPrivateKey...)
-	p.publicKey[instanceName] = append([]byte(nil), request.GitSSHPublicKey...)
 	p.knownHosts[instanceName] = append([]string(nil), request.GitSSHKnownHosts...)
+	p.mu.Unlock()
+	return nil
+}
+
+// WriteRuntimeSecrets simulates replacing the ephemeral runtime secret file.
+func (p *DummyProvisioner) WriteRuntimeSecrets(ctx context.Context, instanceName string, uid, gid uint32, secrets RuntimeSecretEnvironment) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if instanceName == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	p.mu.Lock()
+	p.secrets[instanceName] = maps.Clone(secrets)
+	p.mu.Unlock()
+	return nil
+}
+
+// ClearRuntimeSecrets simulates removing ephemeral runtime secrets.
+func (p *DummyProvisioner) ClearRuntimeSecrets(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	delete(p.secrets, instanceName)
 	p.mu.Unlock()
 	return nil
 }
@@ -336,8 +355,8 @@ func (p *DummyProvisioner) RuntimeResourceUsage(ctx context.Context, instanceNam
 	}, nil
 }
 
-// InitializeSystem simulates init.sh, including create workspace initialization.
-func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
+// BootstrapSystem simulates the fixed outer-system bootstrap.
+func (p *DummyProvisioner) BootstrapSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
 	}
@@ -347,53 +366,60 @@ func (p *DummyProvisioner) InitializeSystem(ctx context.Context, instanceName st
 	if request.CodespaceUUID == "" {
 		return SystemIdentity{}, fmt.Errorf("codespace uuid is empty")
 	}
-	sharedEnv := map[string]string{}
-	if request.Operation == ScriptOperationCreate {
-		workdir := request.Workdir
+	workdir := request.Workdir
+	if request.Operation == LifecycleOperationCreate {
 		if workdir == "" {
 			workdir = "/codespace/" + repoDirName(request.RepoFullName)
 		}
-		sharedEnv["CODESPACE_WORKSPACE_DIR"] = workdir
 	}
-	return SystemIdentity{UID: 1000, GID: 1000, SharedEnv: sharedEnv}, nil
+	return SystemIdentity{UID: 1000, GID: 1000, Workspace: workdir, Home: "/home/codespace"}, nil
 }
 
-// StartRuntime simulates start.sh for an existing workspace.
-func (p *DummyProvisioner) StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
+// StartEnvironment simulates creating or resuming the Dev Container environment.
+func (p *DummyProvisioner) StartEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return LifecycleScriptResult{}, err
+		return LifecycleResult{}, err
 	}
 	if instanceName == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
+		return LifecycleResult{}, fmt.Errorf("instance name is empty")
 	}
 	if request.CodespaceUUID == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("codespace uuid is empty")
+		return LifecycleResult{}, fmt.Errorf("codespace uuid is empty")
 	}
 	if request.Workdir == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("workdir is empty")
+		return LifecycleResult{}, fmt.Errorf("workdir is empty")
 	}
-	return LifecycleScriptResult{SharedEnv: map[string]string{
-		"CODESPACE_DEVCONTAINER_ID":      "dummy-devcontainer",
-		"CODESPACE_DEVCONTAINER_USER":    "codespace",
-		"CODESPACE_DEVCONTAINER_WORKDIR": request.Workdir,
-		WorkspaceIDEPortEnv:              strconv.Itoa(WorkspaceIDEPort),
+	if request.Environment != nil {
+		return LifecycleResult{Environment: *request.Environment}, nil
+	}
+	return LifecycleResult{Environment: devcontainer.Environment{
+		Version:            devcontainer.RuntimeFormatVersion,
+		ID:                 "dummy-environment",
+		CodespaceUUID:      request.CodespaceUUID,
+		Workspace:          request.Workdir,
+		WorkspaceFolder:    request.Workdir,
+		PrimaryContainerID: "dummy-devcontainer",
+		RemoteUser:         "codespace",
+		RemoteWorkdir:      request.Workdir,
+		WebIDEPort:         WorkspaceIDEPort,
 	}}, nil
 }
 
-// StopRuntime simulates stop.sh.
-func (p *DummyProvisioner) StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
+// StopEnvironment simulates stopping the complete Dev Container environment.
+func (p *DummyProvisioner) StopEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return LifecycleScriptResult{}, err
+		return LifecycleResult{}, err
 	}
 	if instanceName == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
+		return LifecycleResult{}, fmt.Errorf("instance name is empty")
 	}
 	if request.CodespaceUUID == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("codespace uuid is empty")
+		return LifecycleResult{}, fmt.Errorf("codespace uuid is empty")
 	}
-	return LifecycleScriptResult{
-		SharedEnv: map[string]string{},
-	}, nil
+	if request.Environment == nil {
+		return LifecycleResult{}, fmt.Errorf("runtime environment is required")
+	}
+	return LifecycleResult{Environment: *request.Environment}, nil
 }
 
 // Stop marks one instance as stopped.

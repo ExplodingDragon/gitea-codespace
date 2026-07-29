@@ -16,11 +16,13 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
 )
@@ -128,7 +130,6 @@ type processStateSnapshot struct {
 	initialHealthStopPendings []manager.HealthStopSnapshot
 	initialGatewayRoutes      []gatewayEndpointRoute
 	gatewaySSHHostKey         gatewaySSHHostKey
-	scriptSnapshot            provisioner.ScriptSnapshot
 }
 
 func loadProcessState(config Config) (processStateSnapshot, error) {
@@ -176,14 +177,6 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load gateway ssh host key: %w", err)
 	}
-	scriptSnapshot, err := provisioner.LoadScripts(provisioner.ScriptConfig{
-		Init:  config.Scripts.Init,
-		Start: config.Scripts.Start,
-		Stop:  config.Scripts.Stop,
-	})
-	if err != nil {
-		return processStateSnapshot{}, fmt.Errorf("load lifecycle scripts: %w", err)
-	}
 	return processStateSnapshot{
 		identity:                  identity,
 		credentials:               credentials,
@@ -196,7 +189,6 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 		initialHealthStopPendings: initialHealthStopPendings,
 		initialGatewayRoutes:      initialGatewayRoutes,
 		gatewaySSHHostKey:         gatewaySSHHostKey,
-		scriptSnapshot:            scriptSnapshot,
 	}, nil
 }
 
@@ -219,7 +211,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 
 	sessionRegistry := newGatewaySessionRegistryFromConfig(config.Gateway)
 	gatewayRoutes := newGatewayRouteStore()
-	gatewayRoutes.SetWorkspaceIDE(newGatewayWorkspaceIDE(state.codespaceStateStore, gatewayBackend))
+	gatewayRoutes.SetTCPBackend(gatewayBackend)
 	state.codespaceStateStore.SetSessionRegistry(sessionRegistry)
 	gatewayRoutes.SetSessionRegistry(sessionRegistry)
 	for _, route := range state.initialGatewayRoutes {
@@ -249,46 +241,45 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
 
 	agent := manager.New(manager.AgentConfig{
-		BaseURL:                     managerServiceBaseURL(state.identity.GiteaURL),
-		ManagerID:                   state.identity.ManagerID,
-		ManagerSecret:               state.credentials.ManagerSecret,
-		Name:                        config.Manager.Name,
-		GatewayURL:                  config.Manager.GatewayURL,
-		GatewaySSHAddr:              config.Manager.GatewaySSHAddr,
-		GatewaySSHHostKeyAlgo:       state.gatewaySSHHostKey.algorithm,
-		GatewaySSHHostKeySHA256:     state.gatewaySSHHostKey.fingerprintSHA256,
-		GatewaySSHHostKeyUnix:       state.gatewaySSHHostKey.updatedUnix,
-		Version:                     config.Manager.Version,
-		Tags:                        config.environmentTags(),
-		PollInterval:                config.Manager.PollInterval.ToStdlib(),
-		DeclareInterval:             config.Manager.DeclareInterval.ToStdlib(),
-		CapacityTotal:               config.Manager.CapacityTotal,
-		StartupWorkers:              config.Manager.StartupWorkers,
-		CleanupWorkers:              config.Manager.CleanupWorkers,
-		HTTPTimeout:                 config.Manager.HTTPTimeout.ToStdlib(),
-		RuntimeMetadataGeneration:   1,
-		InventoryGeneration:         state.rootState.InventoryGeneration,
-		Scripts:                     state.scriptSnapshot,
-		InitialRuntimeGenerations:   state.initialRuntimeGenerations,
-		InitialRuntimeTransitions:   state.initialRuntimeTransitions,
-		InitialCleanupPendings:      state.initialCleanupPendings,
-		InitialHealthStopPendings:   state.initialHealthStopPendings,
-		InitialOperations:           state.initialOperations,
-		OperationStateStore:         state.codespaceStateStore,
-		InventoryStateStore:         NewManagerRootStateStore(config.Manager.StateDir, state.identity.ManagerID),
-		RuntimeStateStore:           state.codespaceStateStore,
-		CleanupStateStore:           state.codespaceStateStore,
-		HealthStopStateStore:        state.codespaceStateStore,
-		ScriptEnvironmentStateStore: state.codespaceStateStore,
-		RuntimeMetadataStateStore:   state.codespaceStateStore,
-		StartupInputStateStore:      state.codespaceStateStore,
-		RuntimeEndpointApplier:      endpointApplier,
-		RuntimeHealthStateStore:     state.codespaceStateStore,
-		RuntimeMetadataPublisher:    runtimeMetadataPublisher,
-		SessionTracker:              sessionRegistry,
-		AccessController:            gatewayRoutes,
-		ManagerServiceSettings:      managerServiceSettings,
-		GitSSHKeyType:               config.runtimeGitSSHKeyType(),
+		BaseURL:                      managerServiceBaseURL(state.identity.GiteaURL),
+		ManagerID:                    state.identity.ManagerID,
+		ManagerSecret:                state.credentials.ManagerSecret,
+		Name:                         config.Manager.Name,
+		GatewayURL:                   config.Manager.GatewayURL,
+		GatewaySSHAddr:               config.Manager.GatewaySSHAddr,
+		GatewaySSHHostKeyAlgo:        state.gatewaySSHHostKey.algorithm,
+		GatewaySSHHostKeySHA256:      state.gatewaySSHHostKey.fingerprintSHA256,
+		GatewaySSHHostKeyUnix:        state.gatewaySSHHostKey.updatedUnix,
+		Version:                      config.Manager.Version,
+		Tags:                         config.environmentTags(),
+		PollInterval:                 config.Manager.PollInterval.ToStdlib(),
+		DeclareInterval:              config.Manager.DeclareInterval.ToStdlib(),
+		CapacityTotal:                config.Manager.CapacityTotal,
+		StartupWorkers:               config.Manager.StartupWorkers,
+		CleanupWorkers:               config.Manager.CleanupWorkers,
+		HTTPTimeout:                  config.Manager.HTTPTimeout.ToStdlib(),
+		RuntimeMetadataGeneration:    1,
+		InventoryGeneration:          state.rootState.InventoryGeneration,
+		InitialRuntimeGenerations:    state.initialRuntimeGenerations,
+		InitialRuntimeTransitions:    state.initialRuntimeTransitions,
+		InitialCleanupPendings:       state.initialCleanupPendings,
+		InitialHealthStopPendings:    state.initialHealthStopPendings,
+		InitialOperations:            state.initialOperations,
+		OperationStateStore:          state.codespaceStateStore,
+		InventoryStateStore:          NewManagerRootStateStore(config.Manager.StateDir, state.identity.ManagerID),
+		RuntimeStateStore:            state.codespaceStateStore,
+		CleanupStateStore:            state.codespaceStateStore,
+		HealthStopStateStore:         state.codespaceStateStore,
+		RuntimeEnvironmentStateStore: state.codespaceStateStore,
+		RuntimeMetadataStateStore:    state.codespaceStateStore,
+		StartupInputStateStore:       state.codespaceStateStore,
+		RuntimeEndpointApplier:       endpointApplier,
+		RuntimeHealthStateStore:      state.codespaceStateStore,
+		RuntimeMetadataPublisher:     runtimeMetadataPublisher,
+		SessionTracker:               sessionRegistry,
+		AccessController:             gatewayRoutes,
+		ManagerServiceSettings:       managerServiceSettings,
+		GitSSHKeyType:                config.runtimeGitSSHKeyType(),
 	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
 
 	processHealth := newProcessHealth()
@@ -376,17 +367,13 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 			NetworkManage:       config.Incus.NetworkManage,
 			RuntimeEnvironments: provisionerEnvironments(config.RuntimeEnvironments),
 			CodespaceRoot:       config.Provisioner.CodespaceRoot,
+			RuntimeExecutable:   config.runtimeExecutable,
 			Bootstrap: provisioner.BootstrapConfig{
 				Shell:    config.Provisioner.Bootstrap.Shell,
 				HomeDir:  config.Provisioner.Bootstrap.HomeDir,
 				UserName: config.Provisioner.Bootstrap.UserName,
 				User:     config.Provisioner.Bootstrap.User,
 				Group:    config.Provisioner.Bootstrap.Group,
-			},
-			Scripts: provisioner.ScriptConfig{
-				Init:  config.Scripts.Init,
-				Start: config.Scripts.Start,
-				Stop:  config.Scripts.Stop,
 			},
 		})
 	default:
@@ -733,33 +720,21 @@ func handleGatewayWorkspace(
 		externalScheme: gatewayExternalScheme(request, originPolicy),
 		externalHost:   gatewayExternalHost(request),
 	}
-	if session.endpointID == "workspace" {
-		workspace, workspaceRequest, releaseWorkspace, ok := routes.BeginWorkspaceIDE(request, session.codespaceUUID)
-		if !ok {
-			writeGatewayError(writer, request, http.StatusServiceUnavailable, "Workspace is not ready", "The Web IDE is not ready yet. Try again after the codespace finishes starting.", "gateway workspace IDE unavailable")
-			return
-		}
-		defer releaseWorkspace()
-		workspaceRequest, cancelRevalidation := withGatewayProxyRevalidation(
-			workspaceRequest,
-			access.config.streamRevalidateInterval,
-			"revalidate gateway workspace IDE session",
-			revalidate,
-		)
-		defer cancelRevalidation()
-		workspace.ServeHTTP(writer, workspaceRequest, session.codespaceUUID, upstreamPath, proxyContext)
-		return
-	}
-
 	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
 	if !ok {
-		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Endpoint is not ready", "The runtime endpoint is not ready yet. Try again after the service starts.", "gateway route unavailable")
+		title := "Endpoint is not ready"
+		message := "The runtime endpoint is not ready yet. Try again after the service starts."
+		if session.endpointID == devcontainer.WorkspaceEndpointID {
+			title = "Workspace is not ready"
+			message = "The Web IDE is not ready yet. Try again after the codespace finishes starting."
+		}
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, title, message, "gateway route unavailable")
 		return
 	}
 	defer releaseRoute()
 	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.config.streamRevalidateInterval, "revalidate gateway endpoint session", revalidate)
 	defer cancelRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, proxyContext)
+	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, proxyContext)
 }
 
 func handleGatewayPublicEndpoint(
@@ -861,7 +836,7 @@ func handleGatewayPublicEndpoint(
 		},
 	)
 	defer cancelProxyRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, route, upstreamPath, gatewayProxyRequestContext{
+	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, gatewayProxyRequestContext{
 		codespaceUUID:  codespaceUUID,
 		endpointID:     endpointID,
 		access:         "public",
@@ -881,12 +856,12 @@ func parseGatewayWorkspacePath(path string) (string, string, string, bool) {
 	}
 	parts := strings.Split(trimmed, "/")
 	if len(parts) == 1 {
-		return parts[0], "workspace", "/", true
+		return parts[0], devcontainer.WorkspaceEndpointID, "/", true
 	}
-	if len(parts) >= 3 && parts[1] == "e" && parts[2] != "" && parts[2] != "workspace" {
+	if len(parts) >= 3 && parts[1] == "e" && parts[2] != "" && parts[2] != devcontainer.WorkspaceEndpointID {
 		return parts[0], parts[2], gatewayProxyPathFromParts(parts[3:]), true
 	}
-	return parts[0], "workspace", gatewayProxyPathFromParts(parts[1:]), true
+	return parts[0], devcontainer.WorkspaceEndpointID, gatewayProxyPathFromParts(parts[1:]), true
 }
 
 func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy gatewayOriginPolicy) (string, string, string, bool) {
@@ -920,7 +895,7 @@ func parseGatewayPublicEndpointPath(path string) (string, string, string, bool) 
 		return "", "", "", false
 	}
 	parts := strings.Split(trimmed, "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[1] == "workspace" {
+	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[1] == devcontainer.WorkspaceEndpointID {
 		return "", "", "", false
 	}
 	return parts[0], parts[1], gatewayProxyPathFromParts(parts[2:]), true
@@ -931,7 +906,7 @@ func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy gat
 		return parseGatewayPublicEndpointPath(request.URL.Path)
 	}
 	hostBinding, ok := originPolicy.bindingForRequest(request)
-	if !ok || hostBinding.endpointID == "workspace" {
+	if !ok || hostBinding.endpointID == devcontainer.WorkspaceEndpointID {
 		return "", "", "", false
 	}
 	pathUUID, pathEndpoint, upstreamPath, pathOK := parseGatewayPublicEndpointPath(request.URL.Path)
@@ -957,12 +932,25 @@ func gatewayProxyPathFromParts(parts []string) string {
 func proxyGatewayEndpoint(
 	writer http.ResponseWriter,
 	request *http.Request,
+	routes *gatewayRouteStore,
 	route gatewayEndpointRoute,
 	upstreamPath string,
 	proxyContext gatewayProxyRequestContext,
 ) {
-	target := &url.URL{Scheme: route.upstreamScheme, Host: route.upstreamHost}
+	upstreamHost := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(route.upstreamPort)))
+	target := &url.URL{Scheme: route.upstreamScheme, Host: upstreamHost}
 	proxy := httputil.NewSingleHostReverseProxy(target)
+	transport := &http.Transport{
+		Proxy: nil,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			if routes == nil {
+				return nil, fmt.Errorf("gateway route store is unavailable")
+			}
+			return routes.OpenEndpointTCP(ctx, route)
+		},
+	}
+	defer transport.CloseIdleConnections()
+	proxy.Transport = transport
 	proxy.Director = func(upstream *http.Request) {
 		upstream.URL.Scheme = target.Scheme
 		upstream.URL.Host = target.Host
@@ -976,13 +964,19 @@ func proxyGatewayEndpoint(
 			externalScheme: proxyContext.externalScheme,
 			externalHost:   proxyContext.externalHost,
 			upstreamScheme: route.upstreamScheme,
-			upstreamHost:   route.upstreamHost,
+			upstreamHost:   upstreamHost,
 		})
 		return nil
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
 		log.Printf("gateway proxy %s/%s: %v", route.codespaceUUID, route.endpointID, err)
-		writeGatewayError(writer, request, http.StatusBadGateway, "Endpoint is unavailable", "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting.", "gateway upstream unavailable")
+		title := "Endpoint is unavailable"
+		message := "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting."
+		if route.endpointID == devcontainer.WorkspaceEndpointID {
+			title = "Workspace is unavailable"
+			message = "Codespace Gateway could not connect to the Web IDE. The development environment may still be starting."
+		}
+		writeGatewayError(writer, request, http.StatusBadGateway, title, message, "gateway upstream unavailable")
 	}
 	proxy.ServeHTTP(writer, request)
 }
@@ -1080,7 +1074,7 @@ func isGatewayServiceWorkerRequest(request *http.Request) bool {
 }
 
 func gatewayWorkspacePath(codespaceUUID, endpointID string) string {
-	if endpointID == "" || endpointID == "workspace" {
+	if endpointID == "" || endpointID == devcontainer.WorkspaceEndpointID {
 		return "/w/" + codespaceUUID + "/"
 	}
 	return "/w/" + codespaceUUID + "/e/" + endpointID + "/"

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/manager"
 )
 
@@ -51,7 +52,7 @@ func (a *gatewayBrowserAuth) openURL(codespaceUUID, endpointID string) (string, 
 	}
 	openPath := strings.TrimRight(parsed.Path, "/") + "/-/codespaces/" + url.PathEscape(codespaceUUID)
 	if endpointID == "" {
-		endpointID = "workspace"
+		endpointID = devcontainer.WorkspaceEndpointID
 	}
 	parsed.Path = openPath
 	parsed.RawPath = ""

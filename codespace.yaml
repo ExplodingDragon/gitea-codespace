@@ -53,10 +53,6 @@ runtime:
     group: 0
   git:
     ssh_key_type: "ed25519"
-  scripts:
-    init: "builtin"
-    start: "builtin"
-    stop: "builtin"
   incus:
     connect:
       unix_socket: "/var/lib/incus/unix.socket"

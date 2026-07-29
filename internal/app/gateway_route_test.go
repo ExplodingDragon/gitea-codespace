@@ -8,6 +8,9 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/internal/provisioner"
 )
 
 func TestGatewayRouteStoreKeepsLeasesForLabelOnlyUpdate(t *testing.T) {
@@ -19,7 +22,8 @@ func TestGatewayRouteStoreKeepsLeasesForLabelOnlyUpdate(t *testing.T) {
 		endpointID:     "web",
 		label:          "Web",
 		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
+		instanceName:   "runtime-1",
+		upstreamPort:   3000,
 		public:         true,
 	}
 	if err := store.Put(route); err != nil {
@@ -51,7 +55,8 @@ func TestGatewayRouteStoreCancelsLeasesForRoutingUpdate(t *testing.T) {
 		endpointID:     "web",
 		label:          "Web",
 		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
+		instanceName:   "runtime-1",
+		upstreamPort:   3000,
 		public:         true,
 	}
 	if err := store.Put(route); err != nil {
@@ -63,7 +68,7 @@ func TestGatewayRouteStoreCancelsLeasesForRoutingUpdate(t *testing.T) {
 	}
 	defer release()
 
-	route.upstreamHost = "10.0.0.12:3001"
+	route.upstreamPort = 3001
 	if err := store.Put(route); err != nil {
 		t.Fatalf("put routing update: %v", err)
 	}
@@ -81,7 +86,8 @@ func TestGatewayRouteStoreDeletesEndpointSessionsForRoutingUpdate(t *testing.T) 
 		endpointID:     "web",
 		label:          "Web",
 		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
+		instanceName:   "runtime-1",
+		upstreamPort:   3000,
 		public:         false,
 	}
 	if err := store.Put(route); err != nil {
@@ -117,7 +123,8 @@ func TestGatewayRouteStoreCancelsLeasesForDelete(t *testing.T) {
 		endpointID:     "web",
 		label:          "Web",
 		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
+		instanceName:   "runtime-1",
+		upstreamPort:   3000,
 		public:         true,
 	}
 	if err := store.Put(route); err != nil {
@@ -133,49 +140,61 @@ func TestGatewayRouteStoreCancelsLeasesForDelete(t *testing.T) {
 	assertGatewayRouteProxyCancelled(t, request)
 }
 
-func TestGatewayRouteStoreClosesWorkspaceIDELease(t *testing.T) {
+func TestGatewayRouteStoreClosesWorkspaceEndpointLease(t *testing.T) {
 	t.Parallel()
 
 	store := newGatewayRouteStore()
 	sessions := newGatewaySessionRegistry()
 	store.SetSessionRegistry(sessions)
-	store.SetWorkspaceIDE(newGatewayWorkspaceIDE(nil, nil))
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	_, request, release, ok := store.BeginWorkspaceIDE(httptest.NewRequest("GET", "/w/", nil), codespaceUUID)
+	if err := store.Put(gatewayEndpointRoute{
+		codespaceUUID:  codespaceUUID,
+		endpointID:     devcontainer.WorkspaceEndpointID,
+		label:          devcontainer.WorkspaceEndpointLabel,
+		upstreamScheme: "http",
+		instanceName:   "runtime-1",
+		upstreamPort:   provisioner.WorkspaceIDEPort,
+	}); err != nil {
+		t.Fatalf("put workspace endpoint: %v", err)
+	}
+	_, request, release, ok := store.BeginProxy(httptest.NewRequest("GET", "/w/", nil), codespaceUUID, devcontainer.WorkspaceEndpointID)
 	if !ok {
-		t.Fatalf("begin workspace IDE failed")
+		t.Fatalf("begin workspace endpoint failed")
 	}
 	defer release()
 	sessionID, err := sessions.Create(gatewayOpenTokenBinding{
 		userID:        42,
 		codespaceUUID: codespaceUUID,
-		endpointID:    "workspace",
+		endpointID:    devcontainer.WorkspaceEndpointID,
 	}, time.Now())
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, "workspace", time.Now()); !ok {
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, devcontainer.WorkspaceEndpointID, time.Now()); !ok {
 		t.Fatalf("session did not authenticate before access close")
 	}
 
 	store.CloseCodespaceAccess(codespaceUUID)
 	assertGatewayRouteProxyCancelled(t, request)
-	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, "workspace", time.Now()); ok {
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, devcontainer.WorkspaceEndpointID, time.Now()); ok {
 		t.Fatalf("session authenticated after access close")
 	}
 }
 
-func TestGatewayRouteStoreReservesWorkspaceForIDE(t *testing.T) {
+func TestGatewayRouteStoreRejectsInvalidWorkspaceEndpoint(t *testing.T) {
 	t.Parallel()
 
 	err := newGatewayRouteStore().Put(gatewayEndpointRoute{
 		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     "workspace",
+		endpointID:     devcontainer.WorkspaceEndpointID,
+		label:          devcontainer.WorkspaceEndpointLabel,
 		upstreamScheme: "http",
-		upstreamHost:   "10.0.0.12:3000",
+		instanceName:   "runtime-1",
+		upstreamPort:   provisioner.WorkspaceIDEPort,
+		public:         true,
 	})
 	if err == nil {
-		t.Fatalf("workspace endpoint route was accepted")
+		t.Fatalf("public workspace endpoint route was accepted")
 	}
 }
 
@@ -193,7 +212,8 @@ func TestGatewayRouteStoreCloseCodespaceAccessCancelsLeasesAndSessions(t *testin
 			endpointID:     "web",
 			label:          "Web",
 			upstreamScheme: "http",
-			upstreamHost:   "10.0.0.12:3000",
+			instanceName:   "runtime-1",
+			upstreamPort:   3000,
 			public:         true,
 		},
 		{
@@ -201,7 +221,8 @@ func TestGatewayRouteStoreCloseCodespaceAccessCancelsLeasesAndSessions(t *testin
 			endpointID:     "web",
 			label:          "Web",
 			upstreamScheme: "http",
-			upstreamHost:   "10.0.0.13:3000",
+			instanceName:   "runtime-2",
+			upstreamPort:   3000,
 			public:         true,
 		},
 	} {

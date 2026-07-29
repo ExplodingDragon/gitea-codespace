@@ -11,7 +11,10 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +22,8 @@ import (
 	incus "github.com/lxc/incus/v6/client"
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/units"
+
+	"gitea.dev/codespace/internal/devcontainer"
 )
 
 const defaultCodespaceRoot = "/codespace"
@@ -39,16 +44,22 @@ const (
 	runtimeSeedGitSSHKnownHosts = "/var/lib/gitea-codespace/seed/known_hosts"
 	runtimeGitCredentialDir     = "/var/lib/gitea-codespace/git"
 	runtimeManifestDir          = "/var/lib/gitea-codespace/runtime"
+	runtimeStateDir             = "/var/lib/gitea-codespace/state"
 	runtimeGiteaTokenFilePath   = "/var/lib/gitea-codespace/gitea-token"
-	runtimeEndpointManifest     = "/var/lib/gitea-codespace/runtime/endpoints.json"
-	runtimeDevContainerConfig   = "/var/lib/gitea-codespace/runtime/devcontainer.json"
+	runtimeEndpointManifest     = devcontainer.EndpointManifestPath
 	runtimeGitSSHPrivateKey     = "/var/lib/gitea-codespace/git/id_ed25519"
 	runtimeGitSSHPublicKey      = "/var/lib/gitea-codespace/git/id_ed25519.pub"
 	runtimeGitSSHKnownHosts     = "/var/lib/gitea-codespace/git/known_hosts"
-	runtimeSharedEnvFilePath    = "/var/lib/gitea-codespace/env"
-	runtimeScriptResultDir      = "/var/lib/gitea-codespace/results"
-	runtimeScriptParentDir      = "/usr/local/libexec"
-	runtimeScriptDir            = "/usr/local/libexec/gitea-codespace"
+	runtimeBootstrapOutputFile  = "/var/lib/gitea-codespace/state/bootstrap.env"
+	bootstrapResultDir          = "/var/lib/gitea-codespace/state/results"
+	runtimeExecutableDir        = "/usr/local/libexec"
+	bootstrapScriptDir          = "/usr/local/libexec/gitea-codespace"
+	runtimeSecretDir            = "/run/gitea-codespace"
+	runtimeSecretFile           = "/run/gitea-codespace/secrets.json"
+	runtimeExecutable           = "/usr/local/libexec/gitea-codespace-runtime-host"
+	runtimeEnvironmentFile      = "/var/lib/gitea-codespace/state/environment.json"
+	runtimeRequestFile          = "/var/lib/gitea-codespace/state/request.json"
+	runtimeResultFile           = "/var/lib/gitea-codespace/state/result.json"
 	runtimeRootDirMode          = 0o755
 	runtimePrivateDirMode       = 0o700
 	runtimeCredentialFileMode   = 0o600
@@ -69,11 +80,6 @@ type bootstrapCredentialFile struct {
 	mode    int
 }
 
-type runtimeEndpointManifestFile struct {
-	Version   int                          `json:"version"`
-	Endpoints []RuntimeEndpointDeclaration `json:"endpoints"`
-}
-
 // IncusConfig configures one Incus-backed provisioner.
 type IncusConfig struct {
 	ManagerID           int64
@@ -88,7 +94,7 @@ type IncusConfig struct {
 	ExtraConfig         map[string]string
 	CodespaceRoot       string
 	Bootstrap           BootstrapConfig
-	Scripts             ScriptConfig
+	RuntimeExecutable   string
 }
 
 // IncusEnvironmentConfig stores one deployment-defined Incus runtime environment.
@@ -115,7 +121,7 @@ type IncusProvisioner struct {
 	extraConfig   map[string]string
 	codespaceRoot string
 	bootstrap     BootstrapConfig
-	scripts       ScriptSnapshot
+	runtimeBinary string
 	mu            sync.Mutex
 	cpuSamples    map[string]incusCPUSample
 }
@@ -177,10 +183,6 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	if codespaceRoot == "" {
 		codespaceRoot = defaultCodespaceRoot
 	}
-	scripts, err := LoadScripts(config.Scripts)
-	if err != nil {
-		return nil, err
-	}
 	environments, err := normalizeIncusEnvironments(config)
 	if err != nil {
 		return nil, err
@@ -197,7 +199,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 		extraConfig:   copyStringMap(config.ExtraConfig),
 		codespaceRoot: codespaceRoot,
 		bootstrap:     bootstrap,
-		scripts:       scripts,
+		runtimeBinary: strings.TrimSpace(config.RuntimeExecutable),
 		cpuSamples:    make(map[string]incusCPUSample),
 	}, nil
 }
@@ -430,16 +432,15 @@ func (p *IncusProvisioner) StartExisting(ctx context.Context, spec InstanceSpec)
 	return p.startExistingInstance(ctx, spec, *instance)
 }
 
-// InitializeSystem runs init.sh and returns the credential file identity and create workspace.
-func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
+// BootstrapSystem runs the fixed bootstrap and returns the runtime identity and workspace.
+func (p *IncusProvisioner) BootstrapSystem(ctx context.Context, instanceName string, request LifecycleRequest) (SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return SystemIdentity{}, err
 	}
 	if instanceName == "" {
 		return SystemIdentity{}, fmt.Errorf("instance name is empty")
 	}
-	scripts := p.scriptsForRequest(request)
-	env, err := p.runLifecycleScript(ctx, instanceName, "init.sh", scripts.Init.Content, "initialize-system", request)
+	env, err := p.runBootstrap(ctx, instanceName, request)
 	if err != nil {
 		return SystemIdentity{}, err
 	}
@@ -454,47 +455,216 @@ func (p *IncusProvisioner) InitializeSystem(ctx context.Context, instanceName st
 	if uid == 0 || gid == 0 {
 		return SystemIdentity{}, fmt.Errorf("credential uid and gid must be non-root")
 	}
-	return SystemIdentity{UID: uid, GID: gid, SharedEnv: copyStringMap(env)}, nil
+	workspace := strings.TrimSpace(env["CODESPACE_WORKSPACE_DIR"])
+	if !filepath.IsAbs(workspace) {
+		return SystemIdentity{}, fmt.Errorf("bootstrap workspace path must be absolute")
+	}
+	home, err := p.execScriptOutput(ctx, instanceName, `getent passwd "$CODESPACE_UID" | cut -d: -f6`, map[string]string{"CODESPACE_UID": fmt.Sprintf("%d", uid)}, "/")
+	if err != nil || !filepath.IsAbs(strings.TrimSpace(home)) {
+		return SystemIdentity{}, fmt.Errorf("resolve runtime user home: %w", err)
+	}
+	return SystemIdentity{UID: uid, GID: gid, Workspace: workspace, Home: strings.TrimSpace(home)}, nil
 }
 
-// StartRuntime runs start.sh and returns shared environment.
-func (p *IncusProvisioner) StartRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
-	scripts := p.scriptsForRequest(request)
-	return p.runRuntimeScript(ctx, instanceName, request, "start.sh", scripts.Start.Content, "start-environment")
+// StartEnvironment creates or resumes the native Dev Container environment.
+func (p *IncusProvisioner) StartEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error) {
+	action := "create"
+	if request.Operation == LifecycleOperationResume {
+		action = "resume"
+	}
+	return p.applyRuntime(ctx, instanceName, request, action)
 }
 
-// StopRuntime runs stop.sh and returns shared environment.
-func (p *IncusProvisioner) StopRuntime(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleScriptResult, error) {
-	scripts := p.scriptsForRequest(request)
-	return p.runRuntimeScript(ctx, instanceName, request, "stop.sh", scripts.Stop.Content, "stop-environment")
+// StopEnvironment stops every container that belongs to the saved environment.
+func (p *IncusProvisioner) StopEnvironment(ctx context.Context, instanceName string, request LifecycleRequest) (LifecycleResult, error) {
+	return p.applyRuntime(ctx, instanceName, request, "stop")
 }
 
-func (p *IncusProvisioner) runRuntimeScript(
-	ctx context.Context,
-	instanceName string,
-	request LifecycleRequest,
-	scriptName string,
-	script string,
-	stage string,
-) (LifecycleScriptResult, error) {
+func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string, request LifecycleRequest, action string) (LifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return LifecycleScriptResult{}, err
+		return LifecycleResult{}, err
 	}
-	if instanceName == "" {
-		return LifecycleScriptResult{}, fmt.Errorf("instance name is empty")
+	if strings.TrimSpace(instanceName) == "" {
+		return LifecycleResult{}, fmt.Errorf("instance name is empty")
 	}
-	env, err := p.runLifecycleScript(ctx, instanceName, scriptName, script, stage, request)
+	if err := p.installRuntimeExecutable(ctx, instanceName); err != nil {
+		return LifecycleResult{}, err
+	}
+	secrets := map[string]string{}
+	if content, exists, err := p.readRuntimeFile(ctx, instanceName, runtimeSecretFile); err != nil {
+		return LifecycleResult{}, err
+	} else if exists {
+		decoder := json.NewDecoder(strings.NewReader(content))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&secrets); err != nil {
+			return LifecycleResult{}, fmt.Errorf("decode runtime secrets: %w", err)
+		}
+	}
+	runtimeRequest := devcontainer.RuntimeRequest{
+		Version:          devcontainer.RuntimeFormatVersion,
+		Action:           action,
+		CodespaceUUID:    request.CodespaceUUID,
+		OperationVersion: request.OperationVersion,
+		Workspace:        request.Workdir,
+		Selection: devcontainer.Selection{
+			Source:        request.DevContainer.Source,
+			Path:          request.DevContainer.Path,
+			CommitSHA:     request.DevContainer.CommitSHA,
+			ContentSHA256: request.DevContainer.ContentSHA256,
+			DefaultImage:  request.DevContainer.DefaultImage,
+		},
+		RuntimeUser: devcontainer.RuntimeUser{
+			Name: request.RuntimeUserName,
+		},
+		GitUserName:  request.UserName,
+		GitUserEmail: request.GitUserEmail,
+		LocalEnvironment: map[string]string{
+			"GITEA_SERVER_URL":     request.ServerURL,
+			"GITEA_REPOSITORY":     request.RepoFullName,
+			"GITEA_CODESPACE_UUID": request.CodespaceUUID,
+		},
+		Secrets:     secrets,
+		Environment: request.Environment,
+	}
+	if request.Operation == LifecycleOperationCreate {
+		uid, gid, home, err := p.runtimeUserIdentity(ctx, instanceName, request.RuntimeUserName)
+		if err != nil {
+			return LifecycleResult{}, err
+		}
+		runtimeRequest.RuntimeUser.UID = uid
+		runtimeRequest.RuntimeUser.GID = gid
+		runtimeRequest.RuntimeUser.Home = home
+	} else if request.Environment != nil {
+		// Resume and stop use the target fixed at create time; the outer UID/GID are not consumed by the Docker engine.
+		runtimeRequest.RuntimeUser.Name = request.Environment.RemoteUser
+	}
+	encoded, err := json.Marshal(runtimeRequest)
 	if err != nil {
-		return LifecycleScriptResult{}, err
+		return LifecycleResult{}, err
 	}
-	return LifecycleScriptResult{SharedEnv: copyStringMap(env)}, nil
+	if err := p.writeRuntimeFile(ctx, instanceName, runtimeRequestFile, string(encoded), 0o600, "file"); err != nil {
+		return LifecycleResult{}, err
+	}
+	if err := p.writeRuntimeFile(ctx, instanceName, runtimeResultFile, "", 0o600, "file"); err != nil {
+		return LifecycleResult{}, err
+	}
+	p.writeLifecycleLog(ctx, request.LogSink, action+" Dev Container environment started")
+	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{runtimeExecutable, "runtime", "apply", "--request", runtimeRequestFile, "--result", runtimeResultFile}, nil, "/", request.LogSink)
+	requestCleanupErr := p.deleteRuntimeControlFile(instanceName, runtimeRequestFile)
+	content, exists, readErr := p.readRuntimeFile(ctx, instanceName, runtimeResultFile)
+	resultCleanupErr := p.deleteRuntimeControlFile(instanceName, runtimeResultFile)
+	if readErr != nil || !exists {
+		return LifecycleResult{}, fmt.Errorf("read native runtime result: %w", errors.Join(execErr, readErr, requestCleanupErr, resultCleanupErr))
+	}
+	if cleanupErr := errors.Join(requestCleanupErr, resultCleanupErr); cleanupErr != nil {
+		return LifecycleResult{}, fmt.Errorf("remove native runtime control files: %w", cleanupErr)
+	}
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.DisallowUnknownFields()
+	var result devcontainer.RuntimeResult
+	if err := decoder.Decode(&result); err != nil {
+		return LifecycleResult{}, fmt.Errorf("decode native runtime result: %w", errors.Join(execErr, err))
+	}
+	if result.Version != devcontainer.RuntimeFormatVersion {
+		return LifecycleResult{}, fmt.Errorf("native runtime result version is invalid")
+	}
+	if result.Error != "" {
+		failure := &RuntimeFailureError{Kind: RuntimeFailureUnrecoverable, Message: result.Error}
+		if result.Recoverable {
+			failure.Kind = RuntimeFailureRecoverable
+		}
+		return LifecycleResult{}, failure
+	}
+	if execErr != nil {
+		return LifecycleResult{}, fmt.Errorf("execute native runtime: %w", execErr)
+	}
+	if result.Environment == nil {
+		return LifecycleResult{}, fmt.Errorf("native runtime result environment is missing")
+	}
+	if err := result.Environment.Validate(); err != nil {
+		return LifecycleResult{}, err
+	}
+	state, err := json.Marshal(result.Environment)
+	if err != nil {
+		return LifecycleResult{}, err
+	}
+	if err := p.writeRuntimeFile(ctx, instanceName, runtimeEnvironmentFile, string(state), 0o600, "file"); err != nil {
+		return LifecycleResult{}, err
+	}
+	p.writeLifecycleLog(ctx, request.LogSink, action+" Dev Container environment completed")
+	return LifecycleResult{Environment: *result.Environment}, nil
 }
 
-func (p *IncusProvisioner) scriptsForRequest(request LifecycleRequest) ScriptSnapshot {
-	if scriptSnapshotComplete(request.Scripts) {
-		return request.Scripts
+func (p *IncusProvisioner) deleteRuntimeControlFile(instanceName, path string) error {
+	if err := p.client.DeleteInstanceFile(instanceName, path); err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("delete %s: %w", path, err)
 	}
-	return p.scripts
+	return nil
+}
+
+func (p *IncusProvisioner) installRuntimeExecutable(ctx context.Context, instanceName string) error {
+	architecture, err := p.execScriptOutput(ctx, instanceName, "uname -m", nil, "/")
+	if err != nil {
+		return fmt.Errorf("inspect runtime architecture: %w", err)
+	}
+	compatible := map[string][]string{
+		"amd64": {"x86_64", "amd64"},
+		"arm64": {"aarch64", "arm64"},
+		"arm":   {"armv6l", "armv7l", "arm"},
+		"386":   {"i386", "i486", "i586", "i686", "x86"},
+	}
+	if !slices.Contains(compatible[runtime.GOARCH], strings.TrimSpace(architecture)) {
+		return fmt.Errorf("Manager executable architecture %s does not match runtime architecture %q", runtime.GOARCH, strings.TrimSpace(architecture))
+	}
+	managerExecutable := p.runtimeBinary
+	if managerExecutable == "" {
+		path, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("locate Manager executable: %w", err)
+		}
+		managerExecutable = path
+	}
+	content, err := os.Open(managerExecutable)
+	if err != nil {
+		return fmt.Errorf("read Manager executable: %w", err)
+	}
+	defer content.Close()
+	if err := p.writeRuntimeFile(ctx, instanceName, runtimeExecutableDir, "", 0o755, "directory"); err != nil {
+		return err
+	}
+	if err := p.writeRuntimeContent(ctx, instanceName, runtimeExecutable, content, 0o755, "file"); err != nil {
+		return fmt.Errorf("install native runtime executable: %w", err)
+	}
+	return nil
+}
+
+func (p *IncusProvisioner) runtimeUserIdentity(ctx context.Context, instanceName, userName string) (uint32, uint32, string, error) {
+	output, err := p.execScriptOutput(ctx, instanceName, `
+set -eu
+entry="$(getent passwd "$CODESPACE_USER")"
+[ -n "$entry" ]
+printf 'UID=%s\nGID=%s\nHOME=%s\n' "$(printf '%s' "$entry" | cut -d: -f3)" "$(printf '%s' "$entry" | cut -d: -f4)" "$(printf '%s' "$entry" | cut -d: -f6)"
+`, map[string]string{"CODESPACE_USER": userName}, "/")
+	if err != nil {
+		return 0, 0, "", fmt.Errorf("resolve runtime user identity: %w", err)
+	}
+	values, err := parseEnvironmentFile(output, nil)
+	if err != nil {
+		return 0, 0, "", err
+	}
+	uid, err := parseUint32Env(values, "UID")
+	if err != nil {
+		return 0, 0, "", err
+	}
+	gid, err := parseUint32Env(values, "GID")
+	if err != nil {
+		return 0, 0, "", err
+	}
+	home := strings.TrimSpace(values["HOME"])
+	if uid == 0 || gid == 0 || !filepath.IsAbs(home) {
+		return 0, 0, "", fmt.Errorf("runtime user identity is invalid")
+	}
+	return uid, gid, home, nil
 }
 
 // CheckCredentials reads the current runtime credential files from the instance.
@@ -569,7 +739,7 @@ printf 'SSH_COMMAND=%s\n' "$ssh_command"
 	if err != nil {
 		return WorkspaceGitStatus{}, err
 	}
-	values, err := parseSharedEnv(output, nil)
+	values, err := parseEnvironmentFile(output, nil)
 	if err != nil {
 		return WorkspaceGitStatus{}, fmt.Errorf("parse git status: %w", err)
 	}
@@ -616,15 +786,11 @@ sudo -u "#$workspace_uid" -g "#$workspace_gid" env HOME="$workspace_home" bash -
 }
 
 // CheckDevContainer verifies that the selected inner development container is running.
-func (p *IncusProvisioner) CheckDevContainer(ctx context.Context, instanceName, containerID string) error {
-	containerID = strings.TrimSpace(containerID)
-	if containerID == "" {
-		return fmt.Errorf("Dev Container ID is empty")
+func (p *IncusProvisioner) CheckDevContainer(ctx context.Context, instanceName string) error {
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
 	}
-	return p.execCommand(ctx, instanceName, []string{p.bootstrap.Shell, "-c", `
-set -eu
-[ "$(docker inspect --format '{{.State.Running}}' "$CODESPACE_DEVCONTAINER_ID")" = "true" ]
-`}, map[string]string{"CODESPACE_DEVCONTAINER_ID": containerID}, "/")
+	return p.execCommand(ctx, instanceName, []string{runtimeExecutable, "runtime", "check", "--state", runtimeEnvironmentFile}, nil, "/")
 }
 
 func workspaceGitCredentialConfigured(origin, helper, globalHelper, sshCommand string) bool {
@@ -708,6 +874,49 @@ func (p *IncusProvisioner) SeedRuntimeCredentials(ctx context.Context, instanceN
 	return nil
 }
 
+// WriteRuntimeSecrets replaces the user-owned runtime secret file consumed by Dev Container and Gateway commands.
+func (p *IncusProvisioner) WriteRuntimeSecrets(ctx context.Context, instanceName string, uid, gid uint32, secrets RuntimeSecretEnvironment) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	content, err := json.Marshal(secrets)
+	if err != nil {
+		return fmt.Errorf("encode runtime secrets: %w", err)
+	}
+	if err := p.waitInstanceFileAPI(ctx, instanceName); err != nil {
+		return err
+	}
+	if err := p.createInstanceFile(ctx, instanceName, runtimeSecretDir, incus.InstanceFileArgs{
+		UID: int64(uid), GID: int64(gid), Mode: runtimePrivateDirMode, Type: "directory", WriteMode: runtimeCredentialWriteMode,
+	}); err != nil {
+		return fmt.Errorf("write runtime secret directory: %w", err)
+	}
+	if err := p.writeRuntimeOwnedFile(ctx, instanceName, runtimeSecretFile, string(content), int64(uid), int64(gid), runtimeCredentialFileMode); err != nil {
+		return fmt.Errorf("write runtime secrets: %w", err)
+	}
+	return nil
+}
+
+// ClearRuntimeSecrets removes the ephemeral secret values before an instance is stopped.
+func (p *IncusProvisioner) ClearRuntimeSecrets(ctx context.Context, instanceName string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if strings.TrimSpace(instanceName) == "" {
+		return fmt.Errorf("instance name is empty")
+	}
+	if err := p.waitInstanceFileAPI(ctx, instanceName); err != nil {
+		return err
+	}
+	if err := p.client.DeleteInstanceFile(instanceName, runtimeSecretFile); err != nil && !isNotFoundError(err) {
+		return fmt.Errorf("delete runtime secrets: %w", err)
+	}
+	return nil
+}
+
 func (p *IncusProvisioner) ensureRuntimeCredentialSeedDir(ctx context.Context, instanceName string) error {
 	for _, directory := range []struct {
 		path string
@@ -743,20 +952,12 @@ func runtimeCredentialSeedFiles(request RuntimeCredentialSeedRequest) ([]bootstr
 	if strings.TrimSpace(request.GiteaToken) == "" {
 		return nil, fmt.Errorf("gitea token is empty")
 	}
-	if len(request.GitSSHPrivateKey) == 0 {
-		return nil, fmt.Errorf("git ssh private key is empty")
-	}
-	if len(request.GitSSHPublicKey) == 0 {
-		return nil, fmt.Errorf("git ssh public key is empty")
-	}
 	content := strings.TrimSpace(strings.Join(request.GitSSHKnownHosts, "\n"))
 	if content != "" {
 		content += "\n"
 	}
 	return []bootstrapCredentialFile{
 		{path: runtimeSeedGiteaToken, content: request.GiteaToken, mode: runtimeCredentialFileMode},
-		{path: runtimeSeedGitSSHPrivateKey, content: string(request.GitSSHPrivateKey), mode: runtimeCredentialFileMode},
-		{path: runtimeSeedGitSSHPublicKey, content: string(request.GitSSHPublicKey), mode: 0o644},
 		{path: runtimeSeedGitSSHKnownHosts, content: content, mode: runtimeCredentialFileMode},
 	}, nil
 }
@@ -778,14 +979,14 @@ func (p *IncusProvisioner) ReadEndpointManifest(ctx context.Context, instanceNam
 	}
 	decoder := json.NewDecoder(strings.NewReader(content))
 	decoder.DisallowUnknownFields()
-	var manifest runtimeEndpointManifestFile
+	var manifest devcontainer.EndpointManifest
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("decode endpoint manifest: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, fmt.Errorf("decode endpoint manifest: trailing data")
 	}
-	if manifest.Version != 1 {
+	if manifest.Version != devcontainer.EndpointManifestVersion {
 		return nil, fmt.Errorf("endpoint manifest version %d is not supported", manifest.Version)
 	}
 	return append([]RuntimeEndpointDeclaration(nil), manifest.Endpoints...), nil

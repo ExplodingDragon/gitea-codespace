@@ -6,12 +6,11 @@ package manager
 import (
 	"context"
 	"errors"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +21,7 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/controlplane"
+	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/provisioner"
 	"google.golang.org/protobuf/proto"
 )
@@ -90,8 +90,8 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	if !service.sawFetch {
 		t.Fatalf("fetch was not called")
 	}
-	if !service.sawToken {
-		t.Fatalf("request gitea token was not called")
+	if !service.sawCredentials {
+		t.Fatalf("request runtime credentials was not called")
 	}
 	if !service.sawMetadata {
 		t.Fatalf("report metadata was not called")
@@ -112,16 +112,27 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		records[0].instanceName == "" ||
 		records[0].request.CodespaceUUID != codespaceUUID ||
 		records[0].request.GiteaToken != "gcs_test" ||
-		len(records[0].request.GitSSHPrivateKey) == 0 ||
-		len(records[0].request.GitSSHPublicKey) == 0 ||
 		!slices.Equal(records[0].request.GitSSHKnownHosts, testKnownHostsLines()) {
 		t.Fatalf("runtime credential seeds = %#v", records)
+	}
+	credentialStatus, err := provisioner.CheckCredentials(context.Background(), runtimeInstanceName(codespaceUUID))
+	if err != nil {
+		t.Fatalf("check runtime credentials: %v", err)
+	}
+	if !credentialStatus.GiteaTokenPresent || len(credentialStatus.GitSSHPrivateKey) == 0 || len(credentialStatus.GitSSHPublicKey) == 0 {
+		t.Fatalf("runtime credential status = %#v", credentialStatus)
 	}
 	if events := provisioner.recordedEvents(); !slices.Equal(events, []string{
 		"seed-runtime-git-ssh-key",
 		"seed-runtime-credentials",
+		"write-runtime-secrets",
 	}) {
 		t.Fatalf("credential events = %#v", events)
+	}
+	if records := provisioner.runtimeSecretWrites(); len(records) != 1 ||
+		records[0].instanceName == "" || records[0].uid != 1000 || records[0].gid != 1000 ||
+		records[0].secrets["DATABASE_PASSWORD"] != "runtime-secret-value" {
+		t.Fatalf("runtime secret writes = %#v", records)
 	}
 	if service.gitSSHKeyCallCount() != 1 {
 		t.Fatalf("git ssh key calls = %d", service.gitSSHKeyCallCount())
@@ -149,7 +160,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	}
 }
 
-func TestSyncRuntimeEndpointManifestAllowsEmptyManifestWithoutRuntimeHost(t *testing.T) {
+func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 	t.Parallel()
 
 	applier := &recordingRuntimeEndpointApplier{}
@@ -164,7 +175,13 @@ func TestSyncRuntimeEndpointManifestAllowsEmptyManifestWithoutRuntimeHost(t *tes
 	if applier.codespaceUUID != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("applied codespace uuid = %q", applier.codespaceUUID)
 	}
-	if len(applier.routes) != 0 {
+	if len(applier.routes) != 1 ||
+		applier.routes[0].EndpointID != devcontainer.WorkspaceEndpointID ||
+		applier.routes[0].Label != devcontainer.WorkspaceEndpointLabel ||
+		applier.routes[0].UpstreamScheme != "http" ||
+		applier.routes[0].InstanceName != "cs-11111111111141118111" ||
+		applier.routes[0].UpstreamPort != provisioner.WorkspaceIDEPort ||
+		applier.routes[0].Public {
 		t.Fatalf("applied routes = %#v", applier.routes)
 	}
 }
@@ -174,10 +191,11 @@ func TestAgentRedactsLifecycleLogSecrets(t *testing.T) {
 
 	agent := New(AgentConfig{ManagerSecret: "manager-secret"}, nil, provisioner.NewDummy())
 	message := agent.redactLogMessage(
-		`manager-secret gcs_test Authorization: Bearer abc http://user:pass@gitea.example/repo basic xyz`,
+		`manager-secret gcs_test runtime-secret-value Authorization: Bearer abc http://user:pass@gitea.example/repo basic xyz`,
 		"gcs_test",
+		"runtime-secret-value",
 	)
-	for _, secret := range []string{"manager-secret", "gcs_test", "Bearer abc", "user:pass", "basic xyz"} {
+	for _, secret := range []string{"manager-secret", "gcs_test", "runtime-secret-value", "Bearer abc", "user:pass", "basic xyz"} {
 		if strings.Contains(message, secret) {
 			t.Fatalf("message still contains %q: %s", secret, message)
 		}
@@ -715,8 +733,8 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 		OperationStateStore:       stateStore,
 		RuntimeMetadataStateStore: &memoryRuntimeMetadataStateStore{},
 		StartupInputStateStore:    startupInputStoreForTest(codespaceUUID),
-		ScriptEnvironmentStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
-			codespaceUUID: {"CODESPACE_WORKSPACE_DIR": "/codespace/owner/repo"},
+		RuntimeEnvironmentStateStore: memoryRuntimeEnvironmentStore{values: map[string]provisioner.RuntimeEnvironment{
+			codespaceUUID: runtimeEnvironmentForAgentTest(codespaceUUID),
 		}},
 		RuntimeMetadataPublisher: publisher,
 	}, server.Client(), runtimeProvisioner)
@@ -954,7 +972,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 		},
 	}
 
-	if err := agent.handleOperation(context.Background(), completeCreatePayloadForTest(operation), provisioner.ScriptSnapshot{}); err != nil {
+	if err := agent.handleOperation(context.Background(), completeCreatePayloadForTest(operation)); err != nil {
 		t.Fatalf("handle create operation: %v", err)
 	}
 	waitFinalized(t, service.finalized)
@@ -974,7 +992,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 	}
 }
 
-func TestAgentRecoverableInitScriptFailurePausesOperation(t *testing.T) {
+func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
@@ -1019,10 +1037,10 @@ func TestAgentRecoverableInitScriptFailurePausesOperation(t *testing.T) {
 		OperationStateStore:       stateStore,
 	}, server.Client(), &initFailureProvisioner{
 		credentialTrackingProvisioner: newCredentialTrackingProvisioner(),
-		err: &provisioner.ScriptFailureError{
-			Kind:    provisioner.ScriptFailureRecoverable,
+		err: &provisioner.RuntimeFailureError{
+			Kind:    provisioner.RuntimeFailureRecoverable,
 			Outcome: "recoverable_failed",
-			Stage:   RuntimeBootStageInitializeSystem,
+			Stage:   RuntimeBootStageBootstrapSystem,
 		},
 	})
 
@@ -1087,7 +1105,7 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	}, http.DefaultClient, provisioner.NewDummy())
 
 	stopOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
-	if err := agent.handleStop(context.Background(), stopOperation, provisioner.ScriptSnapshot{}); err != nil {
+	if err := agent.handleStop(context.Background(), stopOperation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
 	deleteOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
@@ -1103,38 +1121,32 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	}
 }
 
-func TestAgentStopSavesSuccessfulScriptEnvironment(t *testing.T) {
+func TestAgentStopSavesRuntimeEnvironment(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111122"
-	store := memoryScriptEnvironmentStore{values: map[string]map[string]string{
-		codespaceUUID: {
-			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
-			"OLD_VALUE":               "kept",
-		},
-	}}
+	previous := runtimeEnvironmentForAgentTest(codespaceUUID)
+	store := memoryRuntimeEnvironmentStore{values: map[string]provisioner.RuntimeEnvironment{codespaceUUID: previous}}
+	stopped := previous
+	stopped.Environment.RemoteEnvironment = map[string]string{"STOP_VALUE": "saved"}
 	runtimeProvisioner := &stopEnvironmentProvisioner{
 		DummyProvisioner: provisioner.NewDummy(),
-		access: provisioner.LifecycleScriptResult{SharedEnv: map[string]string{
-			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
-			"OLD_VALUE":               "kept",
-			"STOP_VALUE":              "saved",
-		}},
+		access:           provisioner.LifecycleResult{Environment: stopped.Environment},
 	}
 	agent := New(AgentConfig{
-		BaseURL:                     "http://127.0.0.1",
-		ScriptEnvironmentStateStore: store,
+		BaseURL:                      "http://127.0.0.1",
+		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
 
 	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
-	if err := agent.handleStop(context.Background(), operation, provisioner.ScriptSnapshot{}); err != nil {
+	if err := agent.handleStop(context.Background(), operation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
-	environment, ok, err := store.LoadScriptEnvironment(codespaceUUID)
+	environment, ok, err := store.LoadRuntimeEnvironment(codespaceUUID)
 	if err != nil || !ok {
 		t.Fatalf("load environment ok=%v err=%v", ok, err)
 	}
-	if environment["STOP_VALUE"] != "saved" || environment["OLD_VALUE"] != "kept" {
+	if environment.Environment.RemoteEnvironment["STOP_VALUE"] != "saved" {
 		t.Fatalf("environment = %#v", environment)
 	}
 	if runtimeProvisioner.stoppedCount() != 1 {
@@ -1142,34 +1154,30 @@ func TestAgentStopSavesSuccessfulScriptEnvironment(t *testing.T) {
 	}
 }
 
-func TestAgentStopScriptFailureKeepsPreviousEnvironment(t *testing.T) {
+func TestAgentStopEnvironmentFailureKeepsPreviousEnvironment(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111123"
-	store := memoryScriptEnvironmentStore{values: map[string]map[string]string{
-		codespaceUUID: {
-			"CODESPACE_WORKSPACE_DIR": "/workspaces/repo",
-			"OLD_VALUE":               "kept",
-		},
-	}}
+	previous := runtimeEnvironmentForAgentTest(codespaceUUID)
+	store := memoryRuntimeEnvironmentStore{values: map[string]provisioner.RuntimeEnvironment{codespaceUUID: previous}}
 	runtimeProvisioner := &stopEnvironmentProvisioner{
 		DummyProvisioner: provisioner.NewDummy(),
-		stopErr:          errors.New("stop script failed"),
+		stopErr:          errors.New("stop runtime failed"),
 	}
 	agent := New(AgentConfig{
-		BaseURL:                     "http://127.0.0.1",
-		ScriptEnvironmentStateStore: store,
+		BaseURL:                      "http://127.0.0.1",
+		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
 
 	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
-	if err := agent.handleStop(context.Background(), operation, provisioner.ScriptSnapshot{}); err != nil {
+	if err := agent.handleStop(context.Background(), operation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
-	environment, ok, err := store.LoadScriptEnvironment(codespaceUUID)
+	environment, ok, err := store.LoadRuntimeEnvironment(codespaceUUID)
 	if err != nil || !ok {
 		t.Fatalf("load environment ok=%v err=%v", ok, err)
 	}
-	if _, ok := environment["STOP_VALUE"]; ok || environment["OLD_VALUE"] != "kept" {
+	if environment.Environment.PrimaryContainerID != previous.Environment.PrimaryContainerID {
 		t.Fatalf("environment = %#v", environment)
 	}
 	if runtimeProvisioner.stoppedCount() != 1 {
@@ -1225,8 +1233,8 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 		CleanupWorkers:            1,
 		RuntimeMetadataGeneration: 1,
 		StartupInputStateStore:    startupInputStoreForTest(codespaceUUID),
-		ScriptEnvironmentStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
-			codespaceUUID: {"CODESPACE_WORKSPACE_DIR": "/codespace/owner/repo"},
+		RuntimeEnvironmentStateStore: memoryRuntimeEnvironmentStore{values: map[string]provisioner.RuntimeEnvironment{
+			codespaceUUID: runtimeEnvironmentForAgentTest(codespaceUUID),
 		}},
 	}, server.Client(), trackedProvisioner)
 
@@ -1249,10 +1257,15 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 	if records := trackedProvisioner.runtimeCredentialSeeds(); len(records) != 1 ||
 		records[0].request.CodespaceUUID != codespaceUUID ||
 		records[0].request.GiteaToken != "gcs_test" ||
-		len(records[0].request.GitSSHPrivateKey) == 0 ||
-		len(records[0].request.GitSSHPublicKey) == 0 ||
 		!slices.Equal(records[0].request.GitSSHKnownHosts, testKnownHostsLines()) {
 		t.Fatalf("runtime credential seeds = %#v", records)
+	}
+	credentialStatus, err := trackedProvisioner.CheckCredentials(context.Background(), runtimeInstanceName(codespaceUUID))
+	if err != nil {
+		t.Fatalf("check runtime credentials: %v", err)
+	}
+	if !credentialStatus.GiteaTokenPresent || len(credentialStatus.GitSSHPrivateKey) == 0 || len(credentialStatus.GitSSHPublicKey) == 0 {
+		t.Fatalf("runtime credential status = %#v", credentialStatus)
 	}
 	if service.gitSSHKeyCallCount() != 1 {
 		t.Fatalf("git ssh key calls = %d", service.gitSSHKeyCallCount())
@@ -1499,83 +1512,6 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 	}
 
 	close(provisioner.release)
-}
-
-func TestAgentReusesScriptSnapshotAfterLeasePause(t *testing.T) {
-	t.Parallel()
-
-	codespaceUUID := "44444444-4444-4444-8444-444444444444"
-	service := &managerService{
-		finalized:     make(chan struct{}, 1),
-		renewObserved: true,
-		operation: &codespacev1.OperationPayload{
-			OperationRversion:         4,
-			CodespaceUuid:             codespaceUUID,
-			LogOffset:                 0,
-			LeaseValidForMilliseconds: 100,
-			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
-			},
-		},
-	}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
-	mux := http.NewServeMux()
-	mux.Handle(path, handler)
-	server := httptest.NewServer(mux)
-	defer server.Close()
-
-	stateStore := &memoryOperationStateStore{}
-	provisioner := newBlockingProvisioner()
-	initialScripts := scriptSnapshotForTest("initial")
-	agent := New(AgentConfig{
-		BaseURL:                   server.URL,
-		ManagerID:                 7,
-		ManagerSecret:             "manager-secret",
-		Name:                      "test-manager",
-		GatewayURL:                "https://workspace.example.net",
-		GatewaySSHAddr:            "workspace.example.net:22",
-		Version:                   "test",
-		Tags:                      []string{"default"},
-		CapacityTotal:             1,
-		StartupWorkers:            1,
-		CleanupWorkers:            1,
-		RuntimeMetadataGeneration: 1,
-		OperationStateStore:       stateStore,
-		Scripts:                   initialScripts,
-	}, server.Client(), provisioner)
-
-	if err := agent.pollOnce(context.Background()); err != nil {
-		t.Fatalf("poll once: %v", err)
-	}
-	waitStarted(t, provisioner.started)
-	waitStopped(t, provisioner.stopped)
-	waitSavedStage(t, stateStore, OperationWorkerStageLeasePaused)
-	if !reflect.DeepEqual(stateStore.savedScripts(), initialScripts) {
-		t.Fatalf("paused scripts = %#v", stateStore.savedScripts())
-	}
-	agent.config.Scripts = scriptSnapshotForTest("updated")
-	close(provisioner.release)
-	if err := agent.pollOnce(context.Background()); err != nil {
-		t.Fatalf("renew poll once: %v", err)
-	}
-	waitFinalized(t, service.finalized)
-
-	requests := provisioner.startupRequests()
-	if len(requests) < 2 {
-		t.Fatalf("startup requests = %d", len(requests))
-	}
-	if requests[0].Scripts.Init.Content != initialScripts.Init.Content ||
-		requests[1].Scripts.Init.Content != initialScripts.Init.Content {
-		t.Fatalf("startup script snapshots = %#v", requests)
-	}
 }
 
 func TestAgentTriggersInventoryAfterResourceAbsentFinal(t *testing.T) {
@@ -1900,24 +1836,22 @@ func TestReportInventoryStopsStableRunningWhenWorkspaceGitInvalid(t *testing.T) 
 			codespaceUUID: readyHealthSnapshot(codespaceUUID),
 		},
 	}
-	scriptEnvStore := memoryScriptEnvironmentStore{
-		values: map[string]map[string]string{
-			codespaceUUID: {"CODESPACE_WORKSPACE_DIR": "/workspaces/repo"},
-		},
+	runtimeEnvStore := memoryRuntimeEnvironmentStore{
+		values: map[string]provisioner.RuntimeEnvironment{codespaceUUID: runtimeEnvironmentForAgentTest(codespaceUUID)},
 	}
 	repairProvisioner.status = provisioner.CredentialStatus{
 		GiteaTokenPresent: true,
 	}
 	agent := New(AgentConfig{
-		BaseURL:                     server.URL,
-		ManagerID:                   7,
-		ManagerSecret:               "manager-secret",
-		InventoryGeneration:         1,
-		InitialRuntimeGenerations:   map[string]int64{codespaceUUID: 4},
-		RuntimeStateStore:           runtimeStore,
-		ScriptEnvironmentStateStore: scriptEnvStore,
-		RuntimeHealthStateStore:     healthStore,
-		AccessController:            access,
+		BaseURL:                      server.URL,
+		ManagerID:                    7,
+		ManagerSecret:                "manager-secret",
+		InventoryGeneration:          1,
+		InitialRuntimeGenerations:    map[string]int64{codespaceUUID: 4},
+		RuntimeStateStore:            runtimeStore,
+		RuntimeEnvironmentStateStore: runtimeEnvStore,
+		RuntimeHealthStateStore:      healthStore,
+		AccessController:             access,
 	}, server.Client(), repairProvisioner)
 
 	if err := agent.reportInventoryOnce(context.Background()); err != nil {
@@ -2199,12 +2133,9 @@ func TestReportInventoryStopsOnOperationVersionRegression(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_StopLocalRuntime{
-				StopLocalRuntime: &codespacev1.StopLocalRuntime{
-					CurrentOperationRversion: 5,
-				},
-			},
+			CodespaceUuid:            codespaceUUID,
+			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME,
+			CurrentOperationRversion: 5,
 		}},
 	}
 	path, handler := codespacev1connect.NewManagerServiceHandler(service)
@@ -2279,12 +2210,9 @@ func TestInventoryActionDropsDelayedOperationVersion(t *testing.T) {
 		map[string]int64{codespaceUUID: 4},
 		nil,
 		[]*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_StopLocalRuntime{
-				StopLocalRuntime: &codespacev1.StopLocalRuntime{
-					CurrentOperationRversion: 5,
-				},
-			},
+			CodespaceUuid:            codespaceUUID,
+			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME,
+			CurrentOperationRversion: 5,
 		}},
 	)
 	if err != nil {
@@ -2317,12 +2245,9 @@ func TestReportInventoryReportsStoppedRuntimeTransition(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_ReportRuntimeTransition{
-				ReportRuntimeTransition: &codespacev1.ReportRuntimeTransitionAction{
-					CurrentOperationRversion: 31,
-				},
-			},
+			CodespaceUuid:            codespaceUUID,
+			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
+			CurrentOperationRversion: 31,
 		}},
 	}
 	runtimeStore := &memoryRuntimeStateStore{}
@@ -2385,12 +2310,9 @@ func TestReportRuntimeTransitionRequiresPendingStateBeforeRPC(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_ReportRuntimeTransition{
-				ReportRuntimeTransition: &codespacev1.ReportRuntimeTransitionAction{
-					CurrentOperationRversion: 31,
-				},
-			},
+			CodespaceUuid:            codespaceUUID,
+			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
+			CurrentOperationRversion: 31,
 		}},
 	}
 	runtimeStore := &memoryRuntimeStateStore{
@@ -2436,12 +2358,9 @@ func TestReportRuntimeTransitionRetriesLoadedPendingGeneration(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_ReportRuntimeTransition{
-				ReportRuntimeTransition: &codespacev1.ReportRuntimeTransitionAction{
-					CurrentOperationRversion: 31,
-				},
-			},
+			CodespaceUuid:            codespaceUUID,
+			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
+			CurrentOperationRversion: 31,
 		}},
 	}
 	runtimeStore := &memoryRuntimeStateStore{}
@@ -2494,9 +2413,7 @@ func TestReportInventoryPersistsCleanupPendingBeforeDelete(t *testing.T) {
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
 			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_CleanupLocalRuntime{
-				CleanupLocalRuntime: &codespacev1.CleanupLocalRuntime{},
-			},
+			Action:        codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
 		}},
 	}
 	cleanupStore := &memoryCleanupStateStore{}
@@ -2546,9 +2463,7 @@ func TestReportInventoryRequiresCleanupPendingBeforeDelete(t *testing.T) {
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
 			CodespaceUuid: codespaceUUID,
-			Action: &codespacev1.RuntimeInstanceResult_CleanupLocalRuntime{
-				CleanupLocalRuntime: &codespacev1.CleanupLocalRuntime{},
-			},
+			Action:        codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
 		}},
 	}
 	cleanupStore := &memoryCleanupStateStore{
@@ -2679,7 +2594,7 @@ func TestDeleteOperationPersistsCleanupPendingBeforeDelete(t *testing.T) {
 		},
 	}
 
-	if err := agent.handleOperation(context.Background(), operation, provisioner.ScriptSnapshot{}); err != nil {
+	if err := agent.handleOperation(context.Background(), operation); err != nil {
 		t.Fatalf("handle delete operation: %v", err)
 	}
 	waitFinalized(t, service.finalized)
@@ -2732,7 +2647,7 @@ func TestDeleteOperationRequiresCleanupPendingBeforeDelete(t *testing.T) {
 		},
 	}
 
-	err := agent.handleOperation(context.Background(), operation, provisioner.ScriptSnapshot{})
+	err := agent.handleOperation(context.Background(), operation)
 	if err == nil {
 		t.Fatalf("expected cleanup pending error")
 	}
@@ -2793,9 +2708,9 @@ func TestRequestIdleStopPending(t *testing.T) {
 	request := requests[0]
 	if request.GetProtocolVersion() != 1 ||
 		request.GetCodespaceUuid() != codespaceUUID ||
-		!request.GetObservedAutoStopEnabled() ||
-		request.GetObservedIdleTimeoutSeconds() != 1800 ||
-		request.GetObservedInteractionGeneration() != 33 {
+		!request.GetObservedSettings().GetAutoStopEnabled() ||
+		request.GetObservedSettings().GetIdleTimeoutSeconds() != 1800 ||
+		request.GetObservedSettings().GetInteractionGeneration() != 33 {
 		t.Fatalf("idle stop request = %#v", request)
 	}
 }
@@ -2920,9 +2835,9 @@ func TestAutoStopRequestsIdleStopAfterTimeout(t *testing.T) {
 		t.Fatalf("idle stop requests = %d", len(requests))
 	}
 	if requests[0].GetCodespaceUuid() != codespaceUUID ||
-		!requests[0].GetObservedAutoStopEnabled() ||
-		requests[0].GetObservedIdleTimeoutSeconds() != 1 ||
-		requests[0].GetObservedInteractionGeneration() != 1 {
+		!requests[0].GetObservedSettings().GetAutoStopEnabled() ||
+		requests[0].GetObservedSettings().GetIdleTimeoutSeconds() != 1 ||
+		requests[0].GetObservedSettings().GetInteractionGeneration() != 1 {
 		t.Fatalf("idle stop request = %#v", requests[0])
 	}
 	agent.autoStopMu.Lock()
@@ -3304,13 +3219,14 @@ func TestValidateDeclareResponseGiteaWebURL(t *testing.T) {
 func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 	t.Parallel()
 
+	codespaceUUID := "55555555-5555-4555-8555-555555555555"
 	stateStore := &memoryOperationStateStore{}
 	service := &managerService{
-		finalized: make(chan struct{}, 1),
-		tokenErr:  testFailureError(connect.CodeFailedPrecondition, failureProtocolMismatch),
+		finalized:      make(chan struct{}, 1),
+		credentialsErr: testFailureError(connect.CodeFailedPrecondition, failureProtocolMismatch),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         5,
-			CodespaceUuid:             "55555555-5555-4555-8555-555555555555",
+			CodespaceUuid:             codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -3332,6 +3248,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
+	runtimeProvisioner := provisioner.NewDummy()
 	agent := New(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
@@ -3348,7 +3265,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 		CleanupWorkers:            1,
 		RuntimeMetadataGeneration: 1,
 		OperationStateStore:       stateStore,
-	}, server.Client(), provisioner.NewDummy())
+	}, server.Client(), runtimeProvisioner)
 
 	errChannel := make(chan error, 1)
 	go func() {
@@ -3359,14 +3276,21 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 	select {
 	case err = <-errChannel:
 	case <-time.After(time.Second):
-		sawFetch, sawToken := service.callState()
-		t.Fatalf("agent did not stop after worker protocol mismatch, sawFetch=%v sawToken=%v saved=%d stage=%q", sawFetch, sawToken, stateStore.savedCount(), stateStore.savedStage())
+		sawFetch, sawCredentials := service.callState()
+		t.Fatalf("agent did not stop after worker protocol mismatch, sawFetch=%v sawCredentials=%v saved=%d stage=%q", sawFetch, sawCredentials, stateStore.savedCount(), stateStore.savedStage())
 	}
 	if err == nil {
 		t.Fatalf("expected protocol mismatch error")
 	}
 	if category := failureCategory(err); category != failureProtocolMismatch {
 		t.Fatalf("failure category = %q", category)
+	}
+	status, statusErr := runtimeProvisioner.CheckCredentials(context.Background(), runtimeInstanceName(codespaceUUID))
+	if statusErr != nil {
+		t.Fatalf("check runtime credentials: %v", statusErr)
+	}
+	if len(status.GitSSHPrivateKey) == 0 || len(status.GitSSHPublicKey) == 0 {
+		t.Fatalf("runtime credentials after access failure = %#v", status)
 	}
 	waitSavedStage(t, stateStore, OperationWorkerStageLeasePaused)
 	select {
@@ -3392,19 +3316,16 @@ func TestValidateRuntimeReadyChecksDevelopmentEnvironmentWithoutGitChecker(t *te
 	backend := &developmentEnvironmentProvisioner{Provisioner: provisioner.NewDummy()}
 	agent := &Agent{
 		provisioner: backend,
-		scriptEnvStateStore: memoryScriptEnvironmentStore{values: map[string]map[string]string{
-			codespaceUUID: {
-				"CODESPACE_DEVCONTAINER_ID":     "devcontainer-id",
-				provisioner.WorkspaceIDEPortEnv: strconv.Itoa(provisioner.WorkspaceIDEPort),
-			},
+		runtimeEnvStateStore: memoryRuntimeEnvironmentStore{values: map[string]provisioner.RuntimeEnvironment{
+			codespaceUUID: runtimeEnvironmentForAgentTest(codespaceUUID),
 		}},
 	}
 	instance := &provisioner.Instance{Name: "cs-11111111111141118111", Workdir: "/workspaces/repo"}
 	if err := agent.validateRuntimeReady(t.Context(), codespaceUUID, instance); err != nil {
 		t.Fatalf("validate runtime ready: %v", err)
 	}
-	if backend.containerID != "devcontainer-id" || backend.idePort != provisioner.WorkspaceIDEPort {
-		t.Fatalf("development environment check = container %q, IDE port %d", backend.containerID, backend.idePort)
+	if !backend.containerChecked || backend.idePort != provisioner.WorkspaceIDEPort {
+		t.Fatalf("development environment check = container %v, IDE port %d", backend.containerChecked, backend.idePort)
 	}
 }
 
@@ -3415,7 +3336,7 @@ type managerService struct {
 	operation                     *codespacev1.OperationPayload
 	sawDeclare                    bool
 	sawFetch                      bool
-	sawToken                      bool
+	sawCredentials                bool
 	gitSSHKeyCalls                int
 	sawMetadata                   bool
 	finalStatus                   codespacev1.FinalStatus
@@ -3435,7 +3356,7 @@ type managerService struct {
 	inventoryReported             chan struct{}
 	finalResourceAbsent           bool
 	renewObserved                 bool
-	tokenErr                      error
+	credentialsErr                error
 	inventoryErr                  error
 	transitionErr                 error
 	inventory                     []*codespacev1.RuntimeInstanceRef
@@ -3464,12 +3385,12 @@ type startupAdmissionProvisioner struct {
 
 type developmentEnvironmentProvisioner struct {
 	provisioner.Provisioner
-	containerID string
-	idePort     uint32
+	containerChecked bool
+	idePort          uint32
 }
 
-func (p *developmentEnvironmentProvisioner) CheckDevContainer(_ context.Context, _ string, containerID string) error {
-	p.containerID = containerID
+func (p *developmentEnvironmentProvisioner) CheckDevContainer(_ context.Context, _ string) error {
+	p.containerChecked = true
 	return nil
 }
 
@@ -3604,18 +3525,14 @@ func completeCreatePayloadForTest(operation *codespacev1.OperationPayload) *code
 	if payload == nil {
 		return operation
 	}
-	if payload.UserIdentity == nil {
-		payload.UserIdentity = &codespacev1.CodespaceUserIdentity{
-			UserId:       101,
-			Username:     "test-user",
-			DisplayName:  "Test User",
-			GitUserName:  "test-user",
-			GitUserEmail: "test-user@example.com",
-		}
+	if payload.Username == "" {
+		payload.Username = "test-user"
+	}
+	if payload.GitUserEmail == "" {
+		payload.GitUserEmail = "test-user@example.com"
 	}
 	if payload.DevContainer == nil {
 		payload.DevContainer = &codespacev1.DevContainerConfiguration{
-			Source:       codespacev1.DevContainerConfigurationSource_DEV_CONTAINER_CONFIGURATION_SOURCE_PLATFORM_DEFAULT,
 			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		}
 	}
@@ -3626,15 +3543,11 @@ func startupInputStoreForTest(codespaceUUID string) StartupInputStateStore {
 	store := newMemoryStartupInputStore()
 	_ = store.SaveStartupInput(StartupInput{
 		CodespaceUUID:   codespaceUUID,
+		RepoFullName:    "owner/repo",
+		Username:        "test-user",
+		GitUserEmail:    "test-user@example.com",
 		RuntimeUserName: "test-user",
 		EnvironmentTag:  "default",
-		UserIdentity: StartupUserIdentity{
-			UserID:       101,
-			Username:     "test-user",
-			DisplayName:  "Test User",
-			GitUserName:  "test-user",
-			GitUserEmail: "test-user@example.com",
-		},
 		DevContainer: provisioner.DevContainerConfiguration{
 			Source:       "platform_default",
 			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
@@ -3705,40 +3618,29 @@ func (s *managerService) UpdateLog(
 	}), nil
 }
 
-func (s *managerService) RequestGiteaToken(
+func (s *managerService) RequestRuntimeAccess(
 	_ context.Context,
-	req *connect.Request[codespacev1.RequestGiteaTokenRequest],
-) (*connect.Response[codespacev1.RequestGiteaTokenResponse], error) {
+	req *connect.Request[codespacev1.RequestRuntimeAccessRequest],
+) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	s.captureAuth(req.Header())
-	s.sawToken = true
-	if s.tokenErr != nil {
-		return nil, s.tokenErr
+	s.sawCredentials = true
+	if s.credentialsErr != nil {
+		return nil, s.credentialsErr
 	}
-	return connect.NewResponse(&codespacev1.RequestGiteaTokenResponse{
-		Token:     "gcs_test",
-		ServerUrl: "https://gitea.example.com/",
-	}), nil
-}
-
-func (s *managerService) EnsureCodespaceGitSSHKey(
-	_ context.Context,
-	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
-) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.captureAuth(req.Header())
-	if req.Msg.GetProtocolVersion() != 1 ||
-		req.Msg.GetCodespaceUuid() == "" ||
-		len(req.Msg.GetPublicKey()) == 0 {
+	if req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	s.gitSSHKeyCalls++
-	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{
-		KnownHostsLines: testKnownHostsLines(),
+	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{
+		Token:     "gcs_test",
+		ServerUrl: "https://gitea.example.com/",
+		Secrets: []*codespacev1.RuntimeSecretEnvironmentVariable{
+			{Name: "DATABASE_PASSWORD", Value: "runtime-secret-value"},
+		},
+		GitSshKnownHostsLines: testKnownHostsLines(),
 	}), nil
 }
 
@@ -3763,7 +3665,7 @@ func testKnownHostsLines() []string {
 func expectedRuntimeBootStages() []string {
 	return []string{
 		RuntimeBootStagePrepareRuntime,
-		RuntimeBootStageInitializeSystem,
+		RuntimeBootStageBootstrapSystem,
 		RuntimeBootStagePrepareWorkspace,
 		RuntimeBootStageStartEnvironment,
 		RuntimeBootStagePublishReady,
@@ -3839,7 +3741,7 @@ func runtimeBootStageNameForTest(stage codespacev1.RuntimeBootStage) string {
 	case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_RUNTIME:
 		return RuntimeBootStagePrepareRuntime
 	case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM:
-		return RuntimeBootStageInitializeSystem
+		return RuntimeBootStageBootstrapSystem
 	case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE:
 		return RuntimeBootStagePrepareWorkspace
 	case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT:
@@ -3861,8 +3763,8 @@ func (s *managerService) FinalizeOperation(
 	defer s.mu.Unlock()
 
 	s.captureAuth(req.Header())
-	s.finalStatus = req.Msg.GetFinal().GetStatus()
-	s.finalOperationType = req.Msg.GetFinal().GetOperationType()
+	s.finalStatus = req.Msg.GetStatus()
+	s.finalOperationType = req.Msg.GetOperationType()
 	s.finalOperationRVersion = req.Msg.GetOperationRversion()
 	if s.finalized != nil {
 		select {
@@ -3871,17 +3773,9 @@ func (s *managerService) FinalizeOperation(
 		}
 	}
 	if s.finalResourceAbsent {
-		return connect.NewResponse(&codespacev1.FinalizeOperationResponse{
-			Outcome: &codespacev1.FinalizeOperationResponse_ResourceAbsent{
-				ResourceAbsent: &codespacev1.ResourceAbsent{},
-			},
-		}), nil
+		return connect.NewResponse(&codespacev1.FinalizeOperationResponse{ResourceAbsent: true}), nil
 	}
-	return connect.NewResponse(&codespacev1.FinalizeOperationResponse{
-		Outcome: &codespacev1.FinalizeOperationResponse_FinalAccepted{
-			FinalAccepted: &codespacev1.FinalAccepted{},
-		},
-	}), nil
+	return connect.NewResponse(&codespacev1.FinalizeOperationResponse{}), nil
 }
 
 func (s *managerService) captureAuth(header http.Header) {
@@ -3900,7 +3794,7 @@ func (s *managerService) callState() (bool, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	return s.sawFetch, s.sawToken
+	return s.sawFetch, s.sawCredentials
 }
 
 func (s *managerService) inventoryState() ([]int64, []*codespacev1.RuntimeInstanceRef) {
@@ -4037,7 +3931,7 @@ type stopBlockingProvisioner struct {
 type stopEnvironmentProvisioner struct {
 	*provisioner.DummyProvisioner
 	mu      sync.Mutex
-	access  provisioner.LifecycleScriptResult
+	access  provisioner.LifecycleResult
 	stopErr error
 	stopped int
 }
@@ -4047,12 +3941,20 @@ type runtimeCredentialSeedRecord struct {
 	request      provisioner.RuntimeCredentialSeedRequest
 }
 
+type runtimeSecretRecord struct {
+	instanceName string
+	uid          uint32
+	gid          uint32
+	secrets      provisioner.RuntimeSecretEnvironment
+}
+
 type credentialTrackingProvisioner struct {
 	*provisioner.DummyProvisioner
 	mu sync.Mutex
 
-	events []string
-	seeds  []runtimeCredentialSeedRecord
+	events  []string
+	seeds   []runtimeCredentialSeedRecord
+	secrets []runtimeSecretRecord
 }
 
 type credentialRepairProvisioner struct {
@@ -4155,7 +4057,23 @@ func (p *credentialTrackingProvisioner) SeedRuntimeCredentials(ctx context.Conte
 	return nil
 }
 
-func (p *initFailureProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
+func (p *credentialTrackingProvisioner) WriteRuntimeSecrets(ctx context.Context, instanceName string, uid, gid uint32, secrets provisioner.RuntimeSecretEnvironment) error {
+	if err := p.DummyProvisioner.WriteRuntimeSecrets(ctx, instanceName, uid, gid, secrets); err != nil {
+		return err
+	}
+	p.mu.Lock()
+	p.events = append(p.events, "write-runtime-secrets")
+	p.secrets = append(p.secrets, runtimeSecretRecord{
+		instanceName: instanceName,
+		uid:          uid,
+		gid:          gid,
+		secrets:      maps.Clone(secrets),
+	})
+	p.mu.Unlock()
+	return nil
+}
+
+func (p *initFailureProvisioner) BootstrapSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
 	if err := ctx.Err(); err != nil {
 		return provisioner.SystemIdentity{}, err
 	}
@@ -4169,6 +4087,13 @@ func (p *credentialTrackingProvisioner) runtimeCredentialSeeds() []runtimeCreden
 	seeds := make([]runtimeCredentialSeedRecord, len(p.seeds))
 	copy(seeds, p.seeds)
 	return seeds
+}
+
+func (p *credentialTrackingProvisioner) runtimeSecretWrites() []runtimeSecretRecord {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return append([]runtimeSecretRecord(nil), p.secrets...)
 }
 
 func (p *credentialTrackingProvisioner) recordedEvents() []string {
@@ -4250,8 +4175,8 @@ func (p *workspaceGitRepairProvisioner) gitWorkdir() string {
 	return p.workdir
 }
 
-func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
-	if request.Operation == provisioner.ScriptOperationCreate {
+func (p *blockingProvisioner) BootstrapSystem(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.SystemIdentity, error) {
+	if request.Operation == provisioner.LifecycleOperationCreate {
 		p.mu.Lock()
 		p.startup = append(p.startup, request)
 		p.mu.Unlock()
@@ -4264,10 +4189,10 @@ func (p *blockingProvisioner) InitializeSystem(ctx context.Context, instanceName
 		case <-p.release:
 		}
 	}
-	return p.DummyProvisioner.InitializeSystem(ctx, instanceName, request)
+	return p.DummyProvisioner.BootstrapSystem(ctx, instanceName, request)
 }
 
-func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleScriptResult, error) {
+func (p *blockingProvisioner) StartEnvironment(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleResult, error) {
 	p.mu.Lock()
 	p.startup = append(p.startup, request)
 	p.mu.Unlock()
@@ -4276,10 +4201,10 @@ func (p *blockingProvisioner) StartRuntime(ctx context.Context, instanceName str
 	})
 	select {
 	case <-ctx.Done():
-		return provisioner.LifecycleScriptResult{}, ctx.Err()
+		return provisioner.LifecycleResult{}, ctx.Err()
 	case <-p.release:
 	}
-	return p.DummyProvisioner.StartRuntime(ctx, instanceName, request)
+	return p.DummyProvisioner.StartEnvironment(ctx, instanceName, request)
 }
 
 func (p *blockingProvisioner) Stop(ctx context.Context, instanceName string) error {
@@ -4303,12 +4228,12 @@ func (p *stopBlockingProvisioner) Stop(ctx context.Context, instanceName string)
 	return p.DummyProvisioner.Stop(ctx, instanceName)
 }
 
-func (p *stopEnvironmentProvisioner) StopRuntime(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleScriptResult, error) {
+func (p *stopEnvironmentProvisioner) StopEnvironment(ctx context.Context, instanceName string, request provisioner.LifecycleRequest) (provisioner.LifecycleResult, error) {
 	if err := ctx.Err(); err != nil {
-		return provisioner.LifecycleScriptResult{}, err
+		return provisioner.LifecycleResult{}, err
 	}
 	if p.stopErr != nil {
-		return provisioner.LifecycleScriptResult{}, p.stopErr
+		return provisioner.LifecycleResult{}, p.stopErr
 	}
 	return p.access, nil
 }
@@ -4409,11 +4334,21 @@ func provisionerSpec(codespaceUUID string) provisioner.InstanceSpec {
 	}
 }
 
-func scriptSnapshotForTest(prefix string) provisioner.ScriptSnapshot {
-	return provisioner.ScriptSnapshot{
-		Init:  provisioner.ScriptFileSnapshot{SHA256: prefix + "-init-sha", Content: prefix + " init"},
-		Start: provisioner.ScriptFileSnapshot{SHA256: prefix + "-start-sha", Content: prefix + " start"},
-		Stop:  provisioner.ScriptFileSnapshot{SHA256: prefix + "-stop-sha", Content: prefix + " stop"},
+func runtimeEnvironmentForAgentTest(codespaceUUID string) provisioner.RuntimeEnvironment {
+	return provisioner.RuntimeEnvironment{
+		User:  1000,
+		Group: 1000,
+		Environment: devcontainer.Environment{
+			Version:            devcontainer.RuntimeFormatVersion,
+			ID:                 "environment-id",
+			CodespaceUUID:      codespaceUUID,
+			Workspace:          "/workspaces/repo",
+			WorkspaceFolder:    "/workspaces/repo",
+			PrimaryContainerID: "container-id",
+			RemoteUser:         "developer",
+			RemoteWorkdir:      "/workspaces/repo",
+			WebIDEPort:         provisioner.WorkspaceIDEPort,
+		},
 	}
 }
 
@@ -4461,7 +4396,6 @@ type memoryOperationStateStore struct {
 	saved       int
 	deleted     int
 	lastStage   OperationWorkerStage
-	lastScripts provisioner.ScriptSnapshot
 	lastCommand string
 }
 
@@ -4483,8 +4417,8 @@ type memoryRuntimeMetadataStateStore struct {
 	cleared   []string
 }
 
-type memoryScriptEnvironmentStore struct {
-	values map[string]map[string]string
+type memoryRuntimeEnvironmentStore struct {
+	values map[string]provisioner.RuntimeEnvironment
 }
 
 type memoryRuntimeHealthStore struct {
@@ -4595,7 +4529,7 @@ func (s *memoryRuntimeMetadataStateStore) savedSnapshots() []RuntimeMetadataSnap
 	return append([]RuntimeMetadataSnapshot(nil), s.snapshots...)
 }
 
-func (s memoryScriptEnvironmentStore) SaveScriptEnvironment(codespaceUUID string, environment map[string]string) error {
+func (s memoryRuntimeEnvironmentStore) SaveRuntimeEnvironment(codespaceUUID string, environment provisioner.RuntimeEnvironment) error {
 	if s.values == nil {
 		return nil
 	}
@@ -4603,16 +4537,12 @@ func (s memoryScriptEnvironmentStore) SaveScriptEnvironment(codespaceUUID string
 	return nil
 }
 
-func (s memoryScriptEnvironmentStore) LoadScriptEnvironment(codespaceUUID string) (map[string]string, bool, error) {
+func (s memoryRuntimeEnvironmentStore) LoadRuntimeEnvironment(codespaceUUID string) (provisioner.RuntimeEnvironment, bool, error) {
 	environment, ok := s.values[codespaceUUID]
 	if !ok {
-		return nil, false, nil
+		return provisioner.RuntimeEnvironment{}, false, nil
 	}
-	copied := make(map[string]string, len(environment))
-	for name, value := range environment {
-		copied[name] = value
-	}
-	return copied, true, nil
+	return environment, true, nil
 }
 
 func (s memoryRuntimeHealthStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) (RuntimeMetadataSnapshot, bool, error) {
@@ -4726,7 +4656,6 @@ func (s *memoryOperationStateStore) SaveActiveOperation(snapshot OperationSnapsh
 	}
 	s.saved++
 	s.lastStage = snapshot.WorkerStage
-	s.lastScripts = snapshot.Scripts
 	s.lastCommand = operationCommandName(snapshot.Payload)
 	return nil
 }
@@ -4758,13 +4687,6 @@ func (s *memoryOperationStateStore) savedStage() OperationWorkerStage {
 	defer s.mu.Unlock()
 
 	return s.lastStage
-}
-
-func (s *memoryOperationStateStore) savedScripts() provisioner.ScriptSnapshot {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	return s.lastScripts
 }
 
 func (s *memoryOperationStateStore) savedCommand() string {

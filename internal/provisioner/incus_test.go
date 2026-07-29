@@ -5,13 +5,10 @@ package provisioner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"io"
 	"net"
-	"os"
 	"path"
-	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -95,6 +92,20 @@ func TestIncusInstanceFromAPISkipsMissingCodespaceUUID(t *testing.T) {
 
 func TestRuntimeCredentialSeedUsesFixedPathsAndModes(t *testing.T) {
 	t.Parallel()
+	keyFiles, err := runtimeGitSSHKeySeedFiles(RuntimeGitSSHKeySeedRequest{
+		GitSSHPrivateKey: []byte("private-key"),
+		GitSSHPublicKey:  []byte("public-key"),
+	})
+	if err != nil {
+		t.Fatalf("runtime git ssh key seed files: %v", err)
+	}
+	wantKeyFiles := []bootstrapCredentialFile{
+		{path: runtimeSeedGitSSHPrivateKey, content: "private-key", mode: runtimeCredentialFileMode},
+		{path: runtimeSeedGitSSHPublicKey, content: "public-key", mode: 0o644},
+	}
+	if !reflect.DeepEqual(keyFiles, wantKeyFiles) {
+		t.Fatalf("git ssh key seed files = %#v", keyFiles)
+	}
 
 	for _, tc := range []struct {
 		name              string
@@ -108,8 +119,6 @@ func TestRuntimeCredentialSeedUsesFixedPathsAndModes(t *testing.T) {
 			files, err := runtimeCredentialSeedFiles(RuntimeCredentialSeedRequest{
 				CodespaceUUID:    "codespace-uuid",
 				GiteaToken:       "gitea-token",
-				GitSSHPrivateKey: []byte("private-key"),
-				GitSSHPublicKey:  []byte("public-key"),
 				GitSSHKnownHosts: tc.knownHosts,
 			})
 			if err != nil {
@@ -121,8 +130,6 @@ func TestRuntimeCredentialSeedUsesFixedPathsAndModes(t *testing.T) {
 					content: "gitea-token",
 					mode:    runtimeCredentialFileMode,
 				},
-				{path: runtimeSeedGitSSHPrivateKey, content: "private-key", mode: runtimeCredentialFileMode},
-				{path: runtimeSeedGitSSHPublicKey, content: "public-key", mode: 0o644},
 				{path: runtimeSeedGitSSHKnownHosts, content: tc.knownHostsContent, mode: runtimeCredentialFileMode},
 			}
 			if !reflect.DeepEqual(files, want) {
@@ -148,25 +155,6 @@ func TestLifecycleLogWriterEmitsCompleteLines(t *testing.T) {
 	want := []string{"alpha", "beta", "gamma"}
 	if !reflect.DeepEqual(sink.lines, want) {
 		t.Fatalf("log lines = %#v", sink.lines)
-	}
-}
-
-func TestDecodeEndpointManifestFile(t *testing.T) {
-	t.Parallel()
-
-	content := `{"version":1,"endpoints":[{"endpoint_id":"web","label":"Web","upstream_scheme":"http","upstream_port":3000,"public":true}]}`
-	decoder := json.NewDecoder(strings.NewReader(content))
-	decoder.DisallowUnknownFields()
-	var manifest runtimeEndpointManifestFile
-	if err := decoder.Decode(&manifest); err != nil {
-		t.Fatalf("decode endpoint manifest: %v", err)
-	}
-	if manifest.Version != 1 ||
-		len(manifest.Endpoints) != 1 ||
-		manifest.Endpoints[0].EndpointID != "web" ||
-		manifest.Endpoints[0].UpstreamPort != 3000 ||
-		!manifest.Endpoints[0].Public {
-		t.Fatalf("manifest = %#v", manifest)
 	}
 }
 
@@ -661,41 +649,41 @@ func TestIsIncusVMAgentUnavailable(t *testing.T) {
 	}
 }
 
-func TestParseSharedEnvKeepsLastValueAndIgnoresPredefined(t *testing.T) {
+func TestParseBootstrapOutputKeepsLastValueAndIgnoresPredefined(t *testing.T) {
 	t.Parallel()
 
-	values, err := parseSharedEnv("A=1\nCODESPACE_UUID=ignored\nA=2\nPRIVATE=value=with=equals\n", map[string]struct{}{
+	values, err := parseEnvironmentFile("A=1\nCODESPACE_UUID=ignored\nA=2\nPRIVATE=value=with=equals\n", map[string]struct{}{
 		"CODESPACE_UUID": {},
 	})
 	if err != nil {
-		t.Fatalf("parse shared env: %v", err)
+		t.Fatalf("parse bootstrap output: %v", err)
 	}
 	want := map[string]string{
 		"A":       "2",
 		"PRIVATE": "value=with=equals",
 	}
 	if !reflect.DeepEqual(values, want) {
-		t.Fatalf("shared env = %#v", values)
+		t.Fatalf("bootstrap output = %#v", values)
 	}
 }
 
-func TestParseSharedEnvTrimsTrailingNULPadding(t *testing.T) {
+func TestParseBootstrapOutputTrimsTrailingNULPadding(t *testing.T) {
 	t.Parallel()
 
-	values, err := parseSharedEnv("A=1\nB=2\n\x00\x00", nil)
+	values, err := parseEnvironmentFile("A=1\nB=2\n\x00\x00", nil)
 	if err != nil {
-		t.Fatalf("parse shared env: %v", err)
+		t.Fatalf("parse bootstrap output: %v", err)
 	}
 	want := map[string]string{
 		"A": "1",
 		"B": "2",
 	}
 	if !reflect.DeepEqual(values, want) {
-		t.Fatalf("shared env = %#v", values)
+		t.Fatalf("bootstrap output = %#v", values)
 	}
 }
 
-func TestParseSharedEnvRejectsInvalidContent(t *testing.T) {
+func TestParseBootstrapOutputRejectsInvalidContent(t *testing.T) {
 	t.Parallel()
 
 	for _, content := range []string{
@@ -704,16 +692,16 @@ func TestParseSharedEnvRejectsInvalidContent(t *testing.T) {
 		"A=value\x00\n",
 		"A=value\n\x00\n",
 	} {
-		if _, err := parseSharedEnv(content, nil); err == nil {
+		if _, err := parseEnvironmentFile(content, nil); err == nil {
 			t.Fatalf("expected error for %q", content)
 		}
 	}
 }
 
-func TestValidateScriptResultRequiresDoneAtExpectedStage(t *testing.T) {
+func TestValidateBootstrapResultRequiresDoneAtExpectedStage(t *testing.T) {
 	t.Parallel()
 
-	if err := validateScriptResult(`{"outcome":"done","stage":"prepare-workspace"}`, "prepare-workspace"); err != nil {
+	if err := validateBootstrapResult(`{"outcome":"done","stage":"prepare-workspace"}`, "prepare-workspace"); err != nil {
 		t.Fatalf("validate result: %v", err)
 	}
 	recoverable := []string{
@@ -723,42 +711,16 @@ func TestValidateScriptResultRequiresDoneAtExpectedStage(t *testing.T) {
 		`{"outcome":"done","stage":"prepare-workspace","extra":true}`,
 	}
 	for _, content := range recoverable {
-		if err := validateScriptResult(content, "prepare-workspace"); err == nil {
+		if err := validateBootstrapResult(content, "prepare-workspace"); err == nil {
 			t.Fatalf("expected result error for %s", content)
-		} else if !IsRecoverableScriptFailure(err) {
+		} else if !IsRecoverableRuntimeFailure(err) {
 			t.Fatalf("expected recoverable result error for %s, got %v", content, err)
 		}
 	}
-	err := validateScriptResult(`{"outcome":"unrecoverable_failed","stage":"prepare-workspace"}`, "prepare-workspace")
-	var failure *ScriptFailureError
-	if !errors.As(err, &failure) || failure.Kind != ScriptFailureUnrecoverable {
+	err := validateBootstrapResult(`{"outcome":"unrecoverable_failed","stage":"prepare-workspace"}`, "prepare-workspace")
+	var failure *RuntimeFailureError
+	if !errors.As(err, &failure) || failure.Kind != RuntimeFailureUnrecoverable {
 		t.Fatalf("unrecoverable result error = %#v", err)
-	}
-}
-
-func TestLoadScriptSetReadsCompleteCustomSuite(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	initPath := filepath.Join(dir, "init.sh")
-	startPath := filepath.Join(dir, "start.sh")
-	stopPath := filepath.Join(dir, "stop.sh")
-	for _, path := range []string{initPath, startPath, stopPath} {
-		if err := os.WriteFile(path, []byte("echo ok\n"), 0o600); err != nil {
-			t.Fatalf("write script: %v", err)
-		}
-	}
-	scripts, err := LoadScripts(ScriptConfig{Init: initPath, Start: startPath, Stop: stopPath})
-	if err != nil {
-		t.Fatalf("load scripts: %v", err)
-	}
-	if scripts.Init.Content != "echo ok\n" ||
-		scripts.Start.Content != "echo ok\n" ||
-		scripts.Stop.Content != "echo ok\n" ||
-		scripts.Init.SHA256 == "" ||
-		scripts.Start.SHA256 == "" ||
-		scripts.Stop.SHA256 == "" {
-		t.Fatalf("scripts = %#v", scripts)
 	}
 }
 

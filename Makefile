@@ -6,9 +6,7 @@ test: test-scripts
 
 .PHONY: test-scripts
 test-scripts:
-	bash -n internal/provisioner/builtin/init.sh
-	bash -n internal/provisioner/builtin/start.sh
-	bash -n internal/provisioner/builtin/stop.sh
+	bash -n internal/provisioner/builtin/bootstrap.sh
 
 .PHONY: test-e2e
 test-e2e:
@@ -41,9 +39,9 @@ test-e2e-incus-matrix-required:
 	$(MAKE) test-e2e-vm-required
 	$(MAKE) test-e2e-manager-vm-required
 
-.PHONY: test-e2e-builtin-required
-test-e2e-builtin-required:
-	CODESPACE_E2E_INCUS=1 CODESPACE_E2E_REQUIRE_INCUS=1 CODESPACE_E2E_INCUS_BUILTIN_LIFECYCLE=1 $(GO) test -count=1 -run 'TestIncusE2EBuiltinLifecycle' ./internal/provisioner
+.PHONY: test-e2e-runtime-required
+test-e2e-runtime-required:
+	CODESPACE_E2E_INCUS=1 CODESPACE_E2E_REQUIRE_INCUS=1 CODESPACE_E2E_INCUS_RUNTIME_LIFECYCLE=1 $(GO) test -count=1 -run 'TestIncusE2ENativeDevContainerLifecycle' ./internal/provisioner
 
 .PHONY: test-e2e-manager-container-required
 test-e2e-manager-container-required:

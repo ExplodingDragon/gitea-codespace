@@ -11,7 +11,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -93,16 +95,20 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	if !appE2EEnvBool("CODESPACE_E2E_INCUS_MANAGER_LIFECYCLE") {
 		t.Skip("Manager process Incus lifecycle E2E is disabled; run the container or VM Manager E2E target to enable it")
 	}
+	repoCloneURL := strings.TrimSpace(os.Getenv("CODESPACE_E2E_REPO_CLONE_HTTP_URL"))
+	repoCommitSHA := strings.TrimSpace(os.Getenv("CODESPACE_E2E_REPO_COMMIT_SHA"))
+	if repoCloneURL == "" || repoCommitSHA == "" {
+		t.Fatal("Manager process Incus lifecycle E2E requires CODESPACE_E2E_REPO_CLONE_HTTP_URL and CODESPACE_E2E_REPO_COMMIT_SHA")
+	}
 
 	runSuffix := uint64(time.Now().UnixNano()) & 0xffffffffffff
 	codespaceUUID := fmt.Sprintf("33333333-3333-4333-8333-%012x", runSuffix)
 	managerID := time.Now().UnixNano()
-	scripts := writeAppE2EIncusScripts(t)
 	service := &appE2EManagerService{
 		finalized:      make(chan struct{}, 3),
 		operationLimit: 1,
 		operations: []*codespacev1.OperationPayload{
-			appE2ECreateOperation(codespaceUUID, 1),
+			appE2ECreateOperation(codespaceUUID, 1, repoCloneURL, repoCommitSHA),
 			{
 				OperationRversion:         2,
 				CodespaceUuid:             codespaceUUID,
@@ -132,7 +138,8 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	saveManagerRegistrationForTest(t, stateDir, controlPlane.URL, managerID)
 	defer cleanupAppE2EIncusRuntime(t, managerID, codespaceUUID)
 
-	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir, scripts)
+	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir)
+	config.runtimeExecutable = buildAppE2ERuntimeExecutable(t)
 	testBackend, err := newProvisioner(config, managerID)
 	if err != nil {
 		t.Fatalf("create Incus E2E inspection backend: %v", err)
@@ -245,6 +252,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	}))
 	defer upstream.Close()
 	upstreamHost, upstreamPort := splitTestHostPort(t, upstream.URL)
+	routes.SetTCPBackend(&testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))})
 
 	service := &gatewayManagerService{
 		publicEndpointResponse: allowedPublicEndpointResponse(),
@@ -263,10 +271,11 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 		EndpointID:     "web",
 		Label:          "Web",
 		UpstreamScheme: "http",
-		UpstreamHost:   net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort)),
+		InstanceName:   "runtime-1",
+		UpstreamPort:   uint32(upstreamPort),
 		Public:         true,
 	}
-	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{route}); err != nil {
+	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, route)); err != nil {
 		t.Fatalf("save runtime endpoint routes: %v", err)
 	}
 	if err := routes.ReplaceRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{route}); err != nil {
@@ -359,13 +368,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	}
 }
 
-type appE2EIncusScripts struct {
-	init  string
-	start string
-	stop  string
-}
-
-func appE2ECreateOperation(codespaceUUID string, version int64) *codespacev1.OperationPayload {
+func appE2ECreateOperation(codespaceUUID string, version int64, repoCloneURL, repoCommitSHA string) *codespacev1.OperationPayload {
 	return &codespacev1.OperationPayload{
 		OperationRversion:         version,
 		CodespaceUuid:             codespaceUUID,
@@ -373,18 +376,12 @@ func appE2ECreateOperation(codespaceUUID string, version int64) *codespacev1.Ope
 		LeaseValidForMilliseconds: 300000,
 		Command: &codespacev1.OperationPayload_Create{
 			Create: &codespacev1.CreateOperationPayload{
-				RepoId:           1,
 				RepoFullName:     "owner/repo",
-				RepoName:         "repo",
-				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-				RepoWebUrl:       "https://gitea.example.com/owner/repo",
-				OwnerId:          2,
-				OwnerName:        "owner",
-				OwnerType:        codespacev1.RepositoryOwnerType_REPOSITORY_OWNER_TYPE_USER,
+				RepoCloneHttpUrl: repoCloneURL,
 				EnvironmentTag:   "default",
 				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
 				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-				CommitSha:        "0123456789abcdef0123456789abcdef01234567",
+				CommitSha:        repoCommitSHA,
 			},
 		},
 	}
@@ -453,7 +450,7 @@ func assertAppE2EIncusRuntime(
 	return runtime.Name
 }
 
-func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIncusScripts) Config {
+func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
 	config := DefaultConfig()
 	config.Manager.StateDir = stateDir
 	config.Manager.Name = "app-e2e-incus-manager"
@@ -468,9 +465,6 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 	config.Server.GatewayListenAddr = "127.0.0.1:0"
 	config.Server.GatewaySSHListenAddr = "127.0.0.1:0"
 	config.Server.ShutdownTimeout = Duration(5 * time.Second)
-	config.Scripts.Init = scripts.init
-	config.Scripts.Start = scripts.start
-	config.Scripts.Stop = scripts.stop
 	config.Provisioner.Kind = "incus"
 	config.Incus.Endpoint = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE"))
 	config.Incus.UnixSocket = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET"))
@@ -487,6 +481,22 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string, scripts appE2EIn
 		},
 	}
 	return config
+}
+
+func buildAppE2ERuntimeExecutable(t *testing.T) string {
+	t.Helper()
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate app E2E source")
+	}
+	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
+	executable := filepath.Join(t.TempDir(), "gitea-codespace")
+	command := exec.Command("go", "build", "-o", executable, "./cmd/gitea-codespace")
+	command.Dir = root
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("build app E2E runtime executable: %v\n%s", err, output)
+	}
+	return executable
 }
 
 func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID string) {
@@ -530,32 +540,6 @@ func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID stri
 	}
 }
 
-func writeAppE2EIncusScripts(t *testing.T) appE2EIncusScripts {
-	t.Helper()
-	dir := t.TempDir()
-	scripts := map[string]string{
-		"init.sh":  appE2EIncusInitScript,
-		"start.sh": appE2EIncusStartScript,
-		"stop.sh":  appE2EIncusStopScript,
-	}
-	result := appE2EIncusScripts{}
-	for name, content := range scripts {
-		path := filepath.Join(dir, name)
-		if err := os.WriteFile(path, []byte(content), 0o700); err != nil {
-			t.Fatalf("write %s: %v", name, err)
-		}
-		switch name {
-		case "init.sh":
-			result.init = path
-		case "start.sh":
-			result.start = path
-		case "stop.sh":
-			result.stop = path
-		}
-	}
-	return result
-}
-
 func appE2EEnvBool(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(name))) {
 	case "1", "true", "yes", "on":
@@ -594,111 +578,6 @@ func appE2EIncusProfiles() []string {
 	}
 	return profiles
 }
-
-const appE2EIncusInitScript = `
-set -eu
-write_result() {
-  tmp="${CODESPACE_RESULT}.tmp.$$"
-  umask 177
-  printf '{"outcome":"%s","stage":"initialize-system"}\n' "$1" > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
-}
-fail_deployment() {
-  printf '%s\n' "$1" >&2
-  write_result unrecoverable_failed
-  exit 0
-}
-command -v getent >/dev/null 2>&1 || fail_deployment "getent is required"
-command -v groupadd >/dev/null 2>&1 || fail_deployment "groupadd is required"
-command -v useradd >/dev/null 2>&1 || fail_deployment "useradd is required"
-if getent group codespace >/dev/null 2>&1; then
-  if [ "$(getent group codespace | cut -d: -f3)" != "1000" ]; then
-    fail_deployment "codespace group exists with an unexpected gid"
-  fi
-else
-  groupadd -g 1000 codespace
-fi
-if id -u codespace >/dev/null 2>&1; then
-  if [ "$(id -u codespace)" != "1000" ] || [ "$(id -g codespace)" != "1000" ]; then
-    fail_deployment "codespace user exists with an unexpected uid or gid"
-  fi
-else
-  useradd -m -u 1000 -g 1000 -s /bin/bash codespace
-fi
-mkdir -p /workspaces /usr/local/bin
-chown 1000:1000 /workspaces
-chmod 0755 /workspaces
-cat >/usr/local/bin/git <<'EOF'
-#!/bin/bash
-set -eu
-if [ "${1:-}" = "-C" ]; then
-  shift
-  shift
-fi
-if [ "${1:-}" = "remote" ] && [ "${2:-}" = "get-url" ] && [ "${3:-}" = "origin" ]; then
-  printf 'https://gitea.example.com/owner/repo.git\n'
-  exit 0
-fi
-if [ "${1:-}" = "config" ]; then
-  shift
-  if [ "${1:-}" = "--global" ]; then
-    shift
-  fi
-  if [ "${1:-}" = "--get" ] && [ "${2:-}" = "credential.helper" ]; then
-    printf '!/usr/local/bin/gitea-codespace-git-credential\n'
-    exit 0
-  fi
-  if [ "${1:-}" = "--get" ] && [ "${2:-}" = "core.sshCommand" ]; then
-    exit 1
-  fi
-fi
-exit 0
-EOF
-chmod 0755 /usr/local/bin/git
-cat >/usr/local/bin/gitea-codespace-git-credential <<'EOF'
-#!/bin/bash
-set -eu
-while IFS= read -r line; do
-  [ -n "$line" ] || break
-done
-printf 'username=codespace\n'
-printf 'password=%s\n\n' "$(cat /var/lib/gitea-codespace/gitea-token)"
-EOF
-chmod 0755 /usr/local/bin/gitea-codespace-git-credential
-workspace="/workspaces/${CODESPACE_REPO_NAME:-repo}"
-mkdir -p "$workspace/.git"
-chown -R 1000:1000 "$workspace"
-printf '%s\n' 'CODESPACE_CREDENTIAL_UID=1000' 'CODESPACE_CREDENTIAL_GID=1000' "CODESPACE_WORKSPACE_DIR=${workspace}" >> "$CODESPACE_ENV"
-write_result done
-`
-
-const appE2EIncusStartScript = `
-set -eu
-write_result() {
-  tmp="${CODESPACE_RESULT}.tmp.$$"
-  umask 177
-  printf '{"outcome":"done","stage":"start-environment"}\n' > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
-}
-[ -n "${CODESPACE_WORKSPACE_DIR:-}" ] || exit 65
-[ -d "$CODESPACE_WORKSPACE_DIR/.git" ] || exit 66
-printf 'CODESPACE_WORKSPACE_DIR=%s\n' "$CODESPACE_WORKSPACE_DIR" >> "$CODESPACE_ENV"
-write_result
-`
-
-const appE2EIncusStopScript = `
-set -eu
-write_result() {
-  tmp="${CODESPACE_RESULT}.tmp.$$"
-  umask 177
-  printf '{"outcome":"done","stage":"stop-environment"}\n' > "$tmp"
-  chmod 600 "$tmp"
-  mv "$tmp" "$CODESPACE_RESULT"
-}
-write_result
-`
 
 type appE2EManagerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
@@ -760,18 +639,14 @@ func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codes
 	if payload == nil {
 		return operation
 	}
-	if payload.UserIdentity == nil {
-		payload.UserIdentity = &codespacev1.CodespaceUserIdentity{
-			UserId:       101,
-			Username:     "e2e-user",
-			DisplayName:  "E2E User",
-			GitUserName:  "e2e-user",
-			GitUserEmail: "e2e-user@example.com",
-		}
+	if payload.Username == "" {
+		payload.Username = "e2e-user"
+	}
+	if payload.GitUserEmail == "" {
+		payload.GitUserEmail = "e2e-user@example.com"
 	}
 	if payload.DevContainer == nil {
 		payload.DevContainer = &codespacev1.DevContainerConfiguration{
-			Source:       codespacev1.DevContainerConfigurationSource_DEV_CONTAINER_CONFIGURATION_SOURCE_PLATFORM_DEFAULT,
 			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
 		}
 	}
@@ -806,25 +681,17 @@ func (s *appE2EManagerService) ReportInstances(
 	return connect.NewResponse(&codespacev1.ReportInstancesResponse{Results: results}), nil
 }
 
-func (s *appE2EManagerService) RequestGiteaToken(
-	context.Context,
-	*connect.Request[codespacev1.RequestGiteaTokenRequest],
-) (*connect.Response[codespacev1.RequestGiteaTokenResponse], error) {
-	return connect.NewResponse(&codespacev1.RequestGiteaTokenResponse{
-		Token:     "gcs_test",
-		ServerUrl: "https://gitea.example.com/",
-	}), nil
-}
-
-func (s *appE2EManagerService) EnsureCodespaceGitSSHKey(
+func (s *appE2EManagerService) RequestRuntimeAccess(
 	_ context.Context,
-	req *connect.Request[codespacev1.EnsureCodespaceGitSSHKeyRequest],
-) (*connect.Response[codespacev1.EnsureCodespaceGitSSHKeyResponse], error) {
-	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || len(req.Msg.GetPublicKey()) == 0 {
+	req *connect.Request[codespacev1.RequestRuntimeAccessRequest],
+) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
+	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
-	return connect.NewResponse(&codespacev1.EnsureCodespaceGitSSHKeyResponse{
-		KnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
+	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{
+		Token:                 "gcs_test",
+		ServerUrl:             "https://gitea.example.com/",
+		GitSshKnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
 	}), nil
 }
 
@@ -865,7 +732,7 @@ func (s *appE2EManagerService) FinalizeOperation(
 	req *connect.Request[codespacev1.FinalizeOperationRequest],
 ) (*connect.Response[codespacev1.FinalizeOperationResponse], error) {
 	s.mu.Lock()
-	s.status = req.Msg.GetFinal().GetStatus()
+	s.status = req.Msg.GetStatus()
 	s.statuses = append(s.statuses, s.status)
 	finalized := s.finalized
 	s.mu.Unlock()
@@ -876,11 +743,7 @@ func (s *appE2EManagerService) FinalizeOperation(
 		default:
 		}
 	}()
-	return connect.NewResponse(&codespacev1.FinalizeOperationResponse{
-		Outcome: &codespacev1.FinalizeOperationResponse_FinalAccepted{
-			FinalAccepted: &codespacev1.FinalAccepted{},
-		},
-	}), nil
+	return connect.NewResponse(&codespacev1.FinalizeOperationResponse{}), nil
 }
 
 func (s *appE2EManagerService) sawDeclare() bool {
