@@ -29,6 +29,7 @@ import (
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/google/uuid"
 
@@ -113,9 +114,6 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if strings.TrimSpace(options.OwnerID) == "" {
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container owner ID is empty"))
 	}
-	if err := e.cleanupIncompleteCreate(ctx, options.OwnerID); err != nil {
-		return nil, fmt.Errorf("clean incomplete Dev Container environment: %w", err)
-	}
 	environmentID := uuid.NewString()
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
 		Workspace:       options.Workspace,
@@ -126,6 +124,13 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	})
 	if err != nil {
 		return nil, devcontainer.InvalidConfiguration(err)
+	}
+	composeProject := ""
+	if len(resolved.DockerComposeFile) > 0 {
+		composeProject = composeProjectName(options.OwnerID)
+	}
+	if err := e.cleanupIncompleteCreate(ctx, options.OwnerID, composeProject); err != nil {
+		return nil, fmt.Errorf("clean incomplete Dev Container environment: %w", err)
 	}
 	if err := mergeInjectedFeatures(resolved, options.InjectedFeatures); err != nil {
 		return nil, devcontainer.InvalidConfiguration(err)
@@ -158,10 +163,8 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var primaryID string
 	var related []string
 	var featureDigests map[string]string
-	var composeProject string
 	var primaryService string
 	if len(resolved.DockerComposeFile) > 0 {
-		composeProject = composeProjectName(options.OwnerID)
 		primaryService = resolved.Service
 		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, workspaceFolder, labels, options.HostUser)
 	} else {
@@ -383,10 +386,12 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 	}
 	repositoryConfiguration := resolved.Configuration
-	imageConfiguration, err := e.readImageMetadata(ctx, baseImage)
+	metadata, err := e.readImageMetadata(ctx, baseImage)
 	if err != nil {
 		return "", nil, nil, err
 	}
+	imageConfiguration := metadata.Configuration
+	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
 	if strings.TrimSpace(repositoryConfiguration.ContainerUser) == "" && strings.TrimSpace(service.User) != "" {
 		repositoryConfiguration.ContainerUser = service.User
 	}
@@ -486,12 +491,12 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		Create: api.CreateOptions{Services: services, RemoveOrphans: true, AssumeYes: true},
 		Start:  api.StartOptions{Project: project, Services: services, Wait: true, WaitTimeout: 2 * time.Minute},
 	}); err != nil {
-		_ = e.compose.Down(context.WithoutCancel(ctx), projectName, api.DownOptions{RemoveOrphans: true})
+		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, fmt.Errorf("start Docker Compose Dev Container: %w", err)
 	}
 	containers, err := e.compose.Ps(ctx, projectName, api.PsOptions{All: true})
 	if err != nil {
-		_ = e.compose.Down(context.WithoutCancel(ctx), projectName, api.DownOptions{RemoveOrphans: true})
+		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, fmt.Errorf("inspect Docker Compose Dev Container: %w", err)
 	}
 	var primary string
@@ -504,7 +509,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 	}
 	if primary == "" {
-		_ = e.compose.Down(context.WithoutCancel(ctx), projectName, api.DownOptions{RemoveOrphans: true})
+		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, fmt.Errorf("Docker Compose service %q did not create a container", resolved.Service)
 	}
 	sort.Strings(related)
@@ -541,7 +546,11 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 		return err
 	}
 	for name, value := range environment.Configuration.RemoteEnv {
-		remoteEnv[name] = value
+		if value == nil {
+			delete(remoteEnv, name)
+		} else {
+			remoteEnv[name] = *value
+		}
 	}
 	environment.RemoteEnvironment = remoteEnv
 	if prepareLifecycle != nil {
@@ -652,7 +661,7 @@ func (e *Engine) Inspect(ctx context.Context, environment *devcontainer.State) (
 func (e *Engine) Delete(ctx context.Context, environment *devcontainer.State) error {
 	var result error
 	if environment.ComposeProject != "" {
-		result = errors.Join(result, e.compose.Down(ctx, environment.ComposeProject, api.DownOptions{RemoveOrphans: true}))
+		result = errors.Join(result, e.downComposeProject(ctx, environment.ComposeProject))
 	}
 	for _, id := range environmentContainerIDs(environment) {
 		if id == "" {
@@ -665,19 +674,49 @@ func (e *Engine) Delete(ctx context.Context, environment *devcontainer.State) er
 	return result
 }
 
-func (e *Engine) cleanupIncompleteCreate(ctx context.Context, ownerID string) error {
+func (e *Engine) cleanupIncompleteCreate(ctx context.Context, ownerID, composeProject string) error {
+	var result error
+	if composeProject != "" {
+		result = errors.Join(result, e.downComposeProject(ctx, composeProject))
+	}
 	query := filters.NewArgs(filters.Arg("label", labelOwnerID+"="+ownerID))
+	containers, err := e.client.ContainerList(ctx, container.ListOptions{All: true, Filters: query})
+	if err != nil {
+		return errors.Join(result, err)
+	}
+	for _, item := range containers {
+		if err := e.client.ContainerRemove(ctx, item.ID, container.RemoveOptions{Force: true}); err != nil && !client.IsErrNotFound(err) {
+			result = errors.Join(result, err)
+		}
+	}
+	return result
+}
+
+func (e *Engine) downComposeProject(ctx context.Context, projectName string) error {
+	query := filters.NewArgs(filters.Arg("label", api.ProjectLabel+"="+projectName))
 	containers, err := e.client.ContainerList(ctx, container.ListOptions{All: true, Filters: query})
 	if err != nil {
 		return err
 	}
-	var result error
-	for _, item := range containers {
-		result = errors.Join(result, e.client.ContainerRemove(ctx, item.ID, container.RemoveOptions{Force: true}))
+	hasResources := len(containers) > 0
+	if !hasResources {
+		networks, err := e.client.NetworkList(ctx, network.ListOptions{Filters: query})
+		if err != nil {
+			return err
+		}
+		hasResources = len(networks) > 0
 	}
-	projectName := composeProjectName(ownerID)
-	result = errors.Join(result, e.compose.Down(ctx, projectName, api.DownOptions{RemoveOrphans: true}))
-	return result
+	if !hasResources {
+		volumes, err := e.client.VolumeList(ctx, volume.ListOptions{Filters: query})
+		if err != nil {
+			return err
+		}
+		hasResources = len(volumes.Volumes) > 0
+	}
+	if !hasResources {
+		return nil
+	}
+	return e.compose.Down(ctx, projectName, api.DownOptions{RemoveOrphans: true})
 }
 
 func composeProjectName(ownerID string) string {
@@ -756,29 +795,43 @@ func environmentContainerIDs(environment *devcontainer.State) []string {
 	return append([]string{environment.PrimaryContainerID}, environment.RelatedContainerIDs...)
 }
 
-func streamDockerProgress(reader io.Reader, output io.Writer) error {
+type dockerProgressMessage struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	Progress       string `json:"progress"`
+	Stream         string `json:"stream"`
+	Error          string `json:"error"`
+	ProgressDetail struct {
+		Current int64 `json:"current"`
+		Total   int64 `json:"total"`
+	} `json:"progressDetail"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
+}
+
+func (m dockerProgressMessage) err() error {
+	if m.ErrorDetail.Message != "" {
+		return errors.New(m.ErrorDetail.Message)
+	}
+	if m.Error != "" {
+		return errors.New(m.Error)
+	}
+	return nil
+}
+
+func streamDockerBuildOutput(reader io.Reader, output io.Writer) error {
 	decoder := json.NewDecoder(reader)
 	for {
-		var message struct {
-			Status      string `json:"status"`
-			Progress    string `json:"progress"`
-			Stream      string `json:"stream"`
-			Error       string `json:"error"`
-			ErrorDetail struct {
-				Message string `json:"message"`
-			} `json:"errorDetail"`
-		}
+		var message dockerProgressMessage
 		if err := decoder.Decode(&message); err != nil {
 			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
 		}
-		if message.Error != "" || message.ErrorDetail.Message != "" {
-			if message.ErrorDetail.Message != "" {
-				return errors.New(message.ErrorDetail.Message)
-			}
-			return errors.New(message.Error)
+		if err := message.err(); err != nil {
+			return err
 		}
 		line := strings.TrimSpace(message.Stream)
 		if line == "" {

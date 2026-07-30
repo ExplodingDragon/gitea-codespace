@@ -82,7 +82,9 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 		return nil, fmt.Errorf("parse Dev Container configuration: %w", err)
 	}
 	var value any
-	if err := json.Unmarshal(standard, &value); err != nil {
+	valueDecoder := json.NewDecoder(bytes.NewReader(standard))
+	valueDecoder.UseNumber()
+	if err := valueDecoder.Decode(&value); err != nil {
 		return nil, fmt.Errorf("parse Dev Container configuration: %w", err)
 	}
 	value, err = substituteVariables(value, substitutionContext{
@@ -94,13 +96,6 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 		return nil, err
 	}
 	if object, ok := value.(map[string]any); ok {
-		if remote, ok := object["remoteEnv"].(map[string]any); ok {
-			for name, item := range remote {
-				if item == nil {
-					delete(remote, name)
-				}
-			}
-		}
 		if err := validateExtensionProperties(object); err != nil {
 			return nil, err
 		}
@@ -113,6 +108,9 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	var config Configuration
 	if err := decoder.Decode(&config); err != nil {
 		return nil, fmt.Errorf("decode Dev Container configuration: %w", err)
+	}
+	if err := normalizeDockerfileBuild(&config); err != nil {
+		return nil, err
 	}
 	if err := config.Validate(); err != nil {
 		return nil, err
@@ -130,13 +128,34 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	}, nil
 }
 
-// Validate checks the supported Dev Container configuration semantics.
+func normalizeDockerfileBuild(configuration *Configuration) error {
+	dockerfile := strings.TrimSpace(configuration.DockerFile)
+	if dockerfile == "" {
+		return nil
+	}
+	if configuration.Build == nil {
+		configuration.Build = &Build{}
+	}
+	if configured := strings.TrimSpace(configuration.Build.Dockerfile); configured != "" && configured != dockerfile {
+		return fmt.Errorf("Dev Container dockerFile conflicts with build.dockerfile")
+	}
+	configuration.Build.Dockerfile = dockerfile
+	if configuration.Build.Context == "" {
+		configuration.Build.Context = configuration.Context
+	}
+	configuration.DockerFile = ""
+	configuration.Context = ""
+	return nil
+}
+
+// Validate checks the supported Dev Container configuration without adding
+// defaults that could hide whether a source declared a property.
 func (c *Configuration) Validate() error {
 	sources := 0
 	if strings.TrimSpace(c.Image) != "" {
 		sources++
 	}
-	if c.Build != nil || strings.TrimSpace(c.DockerFile) != "" {
+	if c.Build != nil {
 		sources++
 	}
 	if len(c.DockerComposeFile) > 0 {
@@ -152,13 +171,7 @@ func (c *Configuration) Validate() error {
 		return fmt.Errorf("Docker Compose Dev Container uses service volumes instead of workspaceMount")
 	}
 	if c.Build != nil && strings.TrimSpace(c.Build.Dockerfile) == "" {
-		if strings.TrimSpace(c.DockerFile) == "" {
-			return fmt.Errorf("Dev Container build.dockerfile is required")
-		}
-		c.Build.Dockerfile = c.DockerFile
-		if c.Build.Context == "" {
-			c.Build.Context = c.Context
-		}
+		return fmt.Errorf("Dev Container build.dockerfile is required")
 	}
 	if c.Build != nil && len(c.Build.Options) > 0 {
 		return fmt.Errorf("Dev Container build.options is not available in the native Docker API; use typed build properties")
@@ -174,41 +187,59 @@ func (c *Configuration) Validate() error {
 			return fmt.Errorf("Dev Container portsAttributes %q: %w", key, err)
 		}
 	}
-	if err := validatePortAttributes(c.OtherPortsAttributes); err != nil {
-		return fmt.Errorf("Dev Container otherPortsAttributes: %w", err)
+	if c.OtherPortsAttributes != nil {
+		if err := validatePortAttributes(*c.OtherPortsAttributes); err != nil {
+			return fmt.Errorf("Dev Container otherPortsAttributes: %w", err)
+		}
 	}
-	if c.WaitFor == "" {
-		c.WaitFor = LifecycleStageUpdateContent
+	for _, port := range c.AppPort {
+		if _, err := port.ContainerPort(); err != nil {
+			return fmt.Errorf("Dev Container appPort: %w", err)
+		}
 	}
 	switch c.WaitFor {
-	case LifecycleStageInitialize, LifecycleStageOnCreate, LifecycleStageUpdateContent, LifecycleStagePostCreate, LifecycleStagePostStart:
+	case "", LifecycleStageInitialize, LifecycleStageOnCreate, LifecycleStageUpdateContent, LifecycleStagePostCreate, LifecycleStagePostStart:
 	default:
 		return fmt.Errorf("Dev Container waitFor value %q is invalid", c.WaitFor)
 	}
-	if c.UserEnvProbe == "" {
-		c.UserEnvProbe = "loginInteractiveShell"
-	}
 	switch c.UserEnvProbe {
-	case "none", "loginShell", "loginInteractiveShell", "interactiveShell":
+	case "", "none", "loginShell", "loginInteractiveShell", "interactiveShell":
 	default:
 		return fmt.Errorf("Dev Container userEnvProbe value %q is invalid", c.UserEnvProbe)
 	}
 	if len(c.DockerComposeFile) > 0 {
-		if c.ShutdownAction == "" {
-			c.ShutdownAction = "stopCompose"
-		}
-		if c.ShutdownAction != "none" && c.ShutdownAction != "stopCompose" {
+		switch c.ShutdownAction {
+		case "", "none", "stopCompose":
+		default:
 			return fmt.Errorf("Docker Compose shutdownAction value %q is invalid", c.ShutdownAction)
 		}
 	} else {
-		if c.ShutdownAction == "" {
-			c.ShutdownAction = "stopContainer"
-		}
-		if c.ShutdownAction != "none" && c.ShutdownAction != "stopContainer" {
+		switch c.ShutdownAction {
+		case "", "none", "stopContainer":
+		default:
 			return fmt.Errorf("Dev Container shutdownAction value %q is invalid", c.ShutdownAction)
 		}
 	}
 	return nil
+}
+
+// Finalize applies specification defaults after all metadata sources have been
+// merged and validates the effective configuration.
+func (c *Configuration) Finalize() error {
+	if c.WaitFor == "" {
+		c.WaitFor = LifecycleStageUpdateContent
+	}
+	if c.UserEnvProbe == "" {
+		c.UserEnvProbe = "loginInteractiveShell"
+	}
+	if c.ShutdownAction == "" {
+		if len(c.DockerComposeFile) > 0 {
+			c.ShutdownAction = "stopCompose"
+		} else {
+			c.ShutdownAction = "stopContainer"
+		}
+	}
+	return c.Validate()
 }
 
 func validatePortAttributeKey(value string) error {
@@ -394,7 +425,9 @@ func resolveConfigurationVariables(configuration Configuration, substitute func(
 		return Configuration{}, err
 	}
 	var value any
-	if err := json.Unmarshal(encoded, &value); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
 		return Configuration{}, err
 	}
 	value, err = substitute(value)
@@ -439,5 +472,8 @@ func PortAttributesFor(configuration Configuration, port uint16) PortAttributes 
 	if selectedSpan != 0 {
 		return selected
 	}
-	return configuration.OtherPortsAttributes
+	if configuration.OtherPortsAttributes != nil {
+		return *configuration.OtherPortsAttributes
+	}
+	return PortAttributes{}
 }

@@ -50,7 +50,7 @@ func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 	t.Parallel()
 
 	options, err := resolveFeatureOptions(map[string]featureOption{
-		"port":    {Type: "string", Default: json.RawMessage(`"8080"`)},
+		"port":    {Type: "string", Default: json.RawMessage(`"8080"`), Enum: []string{"8080", "13337"}},
 		"enabled": {Type: "boolean", Default: json.RawMessage(`false`)},
 	}, json.RawMessage(`{"port":"13337","enabled":true}`))
 	if err != nil {
@@ -62,12 +62,16 @@ func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 
 	configuration := devcontainer.Merge(devcontainer.Configuration{}, featureConfigurationFromMetadata(featureMetadata{
 		ID:             "editor",
-		RemoteUser:     "developer",
 		ContainerEnv:   map[string]string{"PATH_PREFIX": "/tools"},
 		Customizations: map[string]json.RawMessage{"vscode": json.RawMessage(`{"extensions":["example.tool"]}`)},
 	}))
-	if configuration.RemoteUser != "developer" || configuration.ContainerEnv["PATH_PREFIX"] != "/tools" || len(configuration.Customizations["vscode"]) == 0 {
+	if configuration.ContainerEnv["PATH_PREFIX"] != "/tools" || len(configuration.Customizations["vscode"]) == 0 {
 		t.Fatalf("merged Feature metadata = %#v", configuration)
+	}
+	if _, err := resolveFeatureOptions(map[string]featureOption{
+		"channel": {Type: "string", Enum: []string{"stable"}},
+	}, json.RawMessage(`{"channel":"nightly"}`)); err == nil {
+		t.Fatal("Feature option outside enum was accepted")
 	}
 }
 

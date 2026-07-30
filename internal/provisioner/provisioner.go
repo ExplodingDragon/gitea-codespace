@@ -156,6 +156,11 @@ type LifecycleLogSink interface {
 	WriteLifecycleLog(ctx context.Context, message string) error
 }
 
+// LifecycleLogFlusher flushes buffered lifecycle output before a command returns.
+type LifecycleLogFlusher interface {
+	FlushLifecycleLog(ctx context.Context) error
+}
+
 // CredentialStatus stores the current runtime credential file state.
 type CredentialStatus struct {
 	GiteaTokenPresent bool

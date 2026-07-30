@@ -48,6 +48,9 @@ func TestLoadRepositoryConfiguration(t *testing.T) {
 	if len(resolved.DockerComposeFile) != 2 || resolved.Service != "workspace" {
 		t.Fatalf("compose selection = %#v/%q", resolved.DockerComposeFile, resolved.Service)
 	}
+	if err := resolved.Configuration.Finalize(); err != nil {
+		t.Fatalf("finalize repository configuration: %v", err)
+	}
 	if resolved.ShutdownAction != "stopCompose" {
 		t.Fatalf("Compose shutdown action = %q", resolved.ShutdownAction)
 	}
@@ -97,7 +100,55 @@ func TestLoadAllowsConfigurationOutsideWorkspaceWithoutPathPolicy(t *testing.T) 
 	if resolved.ConfigurationPath != configPath {
 		t.Fatalf("configuration path = %q", resolved.ConfigurationPath)
 	}
+	if err := resolved.Configuration.Finalize(); err != nil {
+		t.Fatalf("finalize external configuration: %v", err)
+	}
 	if resolved.ShutdownAction != "stopContainer" {
 		t.Fatalf("container shutdown action = %q", resolved.ShutdownAction)
+	}
+}
+
+func TestLoadImageConfigurationDoesNotSelectCompose(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	configPath := filepath.Join(workspace, "devcontainer.json")
+	content := []byte(`{
+		"image": "mcr.microsoft.com/devcontainers/typescript-node",
+		"customizations": {"vscode": {"extensions": ["streetsidesoftware.code-spell-checker"]}},
+		"forwardPorts": [3000]
+	}`)
+	if err := os.WriteFile(configPath, content, 0o600); err != nil {
+		t.Fatalf("write configuration: %v", err)
+	}
+	resolved, err := Load(LoadOptions{Workspace: workspace, Source: Source{Path: configPath}, ID: "environment-id"})
+	if err != nil {
+		t.Fatalf("load image configuration: %v", err)
+	}
+	if resolved.Image == "" || len(resolved.DockerComposeFile) != 0 {
+		t.Fatalf("source selection = image %q, Compose %#v", resolved.Image, resolved.DockerComposeFile)
+	}
+	if err := resolved.Configuration.Finalize(); err != nil {
+		t.Fatalf("finalize image configuration: %v", err)
+	}
+	if resolved.WaitFor != LifecycleStageUpdateContent || resolved.UserEnvProbe != "loginInteractiveShell" || resolved.ShutdownAction != "stopContainer" {
+		t.Fatalf("image defaults = waitFor %q, userEnvProbe %q, shutdownAction %q", resolved.WaitFor, resolved.UserEnvProbe, resolved.ShutdownAction)
+	}
+}
+
+func TestLoadBuildConfigurationDoesNotSelectCompose(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	configPath := filepath.Join(workspace, "devcontainer.json")
+	if err := os.WriteFile(configPath, []byte(`{"build":{"dockerfile":"Dockerfile"}}`), 0o600); err != nil {
+		t.Fatalf("write configuration: %v", err)
+	}
+	resolved, err := Load(LoadOptions{Workspace: workspace, Source: Source{Path: configPath}, ID: "environment-id"})
+	if err != nil {
+		t.Fatalf("load build configuration: %v", err)
+	}
+	if resolved.Build == nil || resolved.Build.Dockerfile != "Dockerfile" || resolved.Image != "" || len(resolved.DockerComposeFile) != 0 {
+		t.Fatalf("source selection = %#v", resolved.Configuration)
 	}
 }

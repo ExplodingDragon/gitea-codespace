@@ -97,6 +97,66 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 	assertOfficialInteropEnvironment(t, ctx, engine, state, os.Getuid(), os.Getgid(), 2, 2)
 }
 
+func TestDockerE2EImageSource(t *testing.T) {
+	if os.Getenv("DEVCONTAINER_E2E") != "1" {
+		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	workspace := t.TempDir()
+	if err := os.CopyFS(workspace, os.DirFS("testdata/image-source")); err != nil {
+		t.Fatalf("copy image-source fixture: %v", err)
+	}
+
+	var output bytes.Buffer
+	engine, err := New(ctx, &output, &output)
+	if err != nil {
+		t.Fatalf("create Docker engine: %v", err)
+	}
+	defer engine.Close()
+	state, err := engine.Create(ctx, CreateOptions{
+		OwnerID:         "devcontainer-image-e2e-" + uuid.NewString(),
+		Workspace:       workspace,
+		AllowedPathRoot: workspace,
+		Source:          devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
+		HostUser: devcontainer.HostUser{
+			Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME"),
+		},
+	})
+	if err != nil {
+		t.Fatalf("create image-source environment: %v\n%s", err, output.String())
+	}
+	defer func() {
+		if state == nil {
+			return
+		}
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		if err := engine.Delete(cleanupCtx, state); err != nil {
+			t.Errorf("delete image-source environment: %v", err)
+		}
+	}()
+
+	if state.ComposeProject != "" || state.Configuration.Image == "" {
+		t.Fatalf("image-source state = %#v", state)
+	}
+	if _, inherited := state.RemoteEnvironment["REMOVE_FROM_REMOTE"]; inherited {
+		t.Fatalf("remoteEnv null did not remove inherited variable: %#v", state.RemoteEnvironment)
+	}
+	if _, stderr, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir,
+		[]string{"/bin/sh", "-c", `test "$IMAGE_SOURCE" = ready && test "$(cat .image-source-created)" = created`}, state.RemoteEnvironment, nil); err != nil {
+		t.Fatalf("verify image-source environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
+	}
+	if err := engine.Delete(ctx, state); err != nil {
+		t.Fatalf("delete image-source environment: %v", err)
+	}
+	state = nil
+	if strings.Contains(output.String(), "No resource found to remove for project") {
+		t.Fatalf("image-source cleanup invoked Docker Compose:\n%s", output.String())
+	}
+}
+
 func assertOfficialInteropEnvironment(t *testing.T, ctx context.Context, engine *Engine, state *devcontainer.State, uid, gid, startCount, attachCount int) {
 	t.Helper()
 	command := fmt.Sprintf(`set -eu

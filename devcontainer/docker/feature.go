@@ -45,35 +45,39 @@ type resolvedFeature struct {
 }
 
 type featureMetadata struct {
-	ID                   string                        `json:"id"`
-	Version              string                        `json:"version"`
-	Options              map[string]featureOption      `json:"options"`
-	DependsOn            map[string]json.RawMessage    `json:"dependsOn"`
-	InstallsAfter        []string                      `json:"installsAfter"`
-	LegacyIDs            []string                      `json:"legacyIds"`
-	Entrypoint           string                        `json:"entrypoint"`
-	ContainerEnv         map[string]string             `json:"containerEnv"`
-	RemoteEnv            map[string]string             `json:"remoteEnv"`
-	ContainerUser        string                        `json:"containerUser"`
-	RemoteUser           string                        `json:"remoteUser"`
-	Mounts               []devcontainer.Mount          `json:"mounts"`
-	Init                 bool                          `json:"init"`
-	Privileged           bool                          `json:"privileged"`
-	CapAdd               []string                      `json:"capAdd"`
-	SecurityOpt          []string                      `json:"securityOpt"`
-	OnCreateCommand      devcontainer.Command          `json:"onCreateCommand"`
-	UpdateContentCommand devcontainer.Command          `json:"updateContentCommand"`
-	PostCreateCommand    devcontainer.Command          `json:"postCreateCommand"`
-	PostStartCommand     devcontainer.Command          `json:"postStartCommand"`
-	PostAttachCommand    devcontainer.Command          `json:"postAttachCommand"`
-	Customizations       map[string]json.RawMessage    `json:"customizations"`
-	HostRequirements     devcontainer.HostRequirements `json:"hostRequirements"`
+	ID                   string                     `json:"id"`
+	Version              string                     `json:"version"`
+	Name                 string                     `json:"name"`
+	Description          string                     `json:"description"`
+	DocumentationURL     string                     `json:"documentationURL"`
+	LicenseURL           string                     `json:"licenseURL"`
+	Keywords             []string                   `json:"keywords"`
+	Deprecated           bool                       `json:"deprecated"`
+	Options              map[string]featureOption   `json:"options"`
+	DependsOn            map[string]json.RawMessage `json:"dependsOn"`
+	InstallsAfter        []string                   `json:"installsAfter"`
+	LegacyIDs            []string                   `json:"legacyIds"`
+	Entrypoint           string                     `json:"entrypoint"`
+	ContainerEnv         map[string]string          `json:"containerEnv"`
+	Mounts               []devcontainer.Mount       `json:"mounts"`
+	Init                 bool                       `json:"init"`
+	Privileged           bool                       `json:"privileged"`
+	CapAdd               []string                   `json:"capAdd"`
+	SecurityOpt          []string                   `json:"securityOpt"`
+	OnCreateCommand      devcontainer.Command       `json:"onCreateCommand"`
+	UpdateContentCommand devcontainer.Command       `json:"updateContentCommand"`
+	PostCreateCommand    devcontainer.Command       `json:"postCreateCommand"`
+	PostStartCommand     devcontainer.Command       `json:"postStartCommand"`
+	PostAttachCommand    devcontainer.Command       `json:"postAttachCommand"`
+	Customizations       map[string]json.RawMessage `json:"customizations"`
 }
 
 type featureOption struct {
-	Type      string            `json:"type"`
-	Default   json.RawMessage   `json:"default"`
-	Proposals []json.RawMessage `json:"proposals"`
+	Type        string          `json:"type"`
+	Description string          `json:"description"`
+	Default     json.RawMessage `json:"default"`
+	Proposals   []string        `json:"proposals"`
+	Enum        []string        `json:"enum"`
 }
 
 func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration, repositoryConfiguration devcontainer.Configuration) (string, map[string]string, error) {
@@ -175,7 +179,10 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
-	if err := resolved.Configuration.Validate(); err != nil {
+	if err := resolved.Configuration.Finalize(); err != nil {
+		return "", nil, devcontainer.InvalidConfiguration(err)
+	}
+	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
 	if !resolved.Synthetic {
@@ -225,7 +232,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
 	defer response.Body.Close()
-	if err := streamDockerProgress(response.Body, e.stderr); err != nil {
+	if err := streamDockerBuildOutput(response.Body, e.stderr); err != nil {
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
 	digests := make(map[string]string, len(ordered))
@@ -298,13 +305,17 @@ func fetchFeature(ctx context.Context, reference string, rawOptions json.RawMess
 		return nil, fmt.Errorf("open Feature metadata: %w", err)
 	}
 	decoder := json.NewDecoder(metadataFile)
+	decoder.DisallowUnknownFields()
 	var metadata featureMetadata
 	decodeErr = decoder.Decode(&metadata)
 	if err := errors.Join(decodeErr, metadataFile.Close()); err != nil {
-		return nil, fmt.Errorf("decode Feature metadata: %w", err)
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("decode Feature metadata: %w", err))
 	}
 	if strings.TrimSpace(metadata.ID) == "" {
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s id is empty", reference))
+	}
+	if strings.TrimSpace(metadata.Version) == "" {
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s version is empty", reference))
 	}
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", reference))
@@ -412,6 +423,11 @@ func resolveFeatureOptions(declared map[string]featureOption, raw json.RawMessag
 			setting, ok := scalar.(string)
 			if !ok {
 				return nil, fmt.Errorf("option %q must be a string", name)
+			}
+			if len(option.Enum) > 0 {
+				if !slices.Contains(option.Enum, setting) {
+					return nil, fmt.Errorf("option %q value %q is not allowed", name, setting)
+				}
 			}
 			result[environmentName] = setting
 		case "boolean":
@@ -623,13 +639,11 @@ func copyDirectory(source, target string) error {
 
 func featureConfigurationFromMetadata(metadata featureMetadata) devcontainer.Configuration {
 	return devcontainer.Configuration{
-		ContainerUser: metadata.ContainerUser, RemoteUser: metadata.RemoteUser,
-		ContainerEnv: metadata.ContainerEnv, RemoteEnv: metadata.RemoteEnv, Mounts: metadata.Mounts,
+		ContainerEnv: metadata.ContainerEnv, Mounts: metadata.Mounts,
 		Init: metadata.Init, Privileged: metadata.Privileged, CapAdd: metadata.CapAdd, SecurityOpt: metadata.SecurityOpt,
 		OnCreateCommand: metadata.OnCreateCommand, UpdateContentCommand: metadata.UpdateContentCommand,
 		PostCreateCommand: metadata.PostCreateCommand, PostStartCommand: metadata.PostStartCommand,
 		PostAttachCommand: metadata.PostAttachCommand, Customizations: metadata.Customizations,
-		HostRequirements: metadata.HostRequirements,
 	}
 }
 

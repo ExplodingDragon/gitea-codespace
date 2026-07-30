@@ -32,7 +32,7 @@ func TestMergeAndContainerVariables(t *testing.T) {
 	}
 	override := Configuration{
 		ContainerEnv: map[string]string{"PATH": "${containerEnv:PATH}:/tools"},
-		RemoteEnv:    map[string]string{"WORKSPACE": "${containerWorkspaceFolderBasename}"},
+		RemoteEnv:    RemoteEnvironment{"WORKSPACE": stringPointer("${containerWorkspaceFolderBasename}")},
 		Mounts:       []Mount{{Type: "volume", Source: "override", Target: "/data"}},
 		Customizations: map[string]json.RawMessage{
 			"vscode": json.RawMessage(`{"extensions":["one","two"],"settings":{"editor.wordWrap":"on"}}`),
@@ -43,7 +43,7 @@ func TestMergeAndContainerVariables(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve container variables: %v", err)
 	}
-	if resolved.ContainerEnv["PATH"] != "/usr/bin:/tools" || resolved.RemoteEnv["WORKSPACE"] != "project" {
+	if resolved.ContainerEnv["PATH"] != "/usr/bin:/tools" || resolved.RemoteEnv["WORKSPACE"] == nil || *resolved.RemoteEnv["WORKSPACE"] != "project" {
 		t.Fatalf("resolved environment = %#v / %#v", resolved.ContainerEnv, resolved.RemoteEnv)
 	}
 	if len(resolved.Mounts) != 1 || resolved.Mounts[0].Source != "override" {
@@ -58,6 +58,21 @@ func TestMergeAndContainerVariables(t *testing.T) {
 	}
 	if len(vscode.Extensions) != 2 || vscode.Settings["editor.wordWrap"] != "on" {
 		t.Fatalf("merged customizations = %#v", vscode)
+	}
+	merged = Merge(Configuration{Customizations: map[string]json.RawMessage{
+		"tool": json.RawMessage(`{"large":9007199254740993}`),
+	}}, Configuration{Customizations: map[string]json.RawMessage{
+		"tool": json.RawMessage(`{"enabled":true}`),
+	}})
+	if !json.Valid(merged.Customizations["tool"]) || string(merged.Customizations["tool"]) != `{"enabled":true,"large":9007199254740993}` {
+		t.Fatalf("numeric customization = %s", merged.Customizations["tool"])
+	}
+
+	merged = Merge(Configuration{RemoteEnv: RemoteEnvironment{"INHERITED": stringPointer("value")}}, Configuration{
+		RemoteEnv: RemoteEnvironment{"INHERITED": nil},
+	})
+	if value, exists := merged.RemoteEnv["INHERITED"]; !exists || value != nil {
+		t.Fatalf("remoteEnv null was not preserved: %#v", merged.RemoteEnv)
 	}
 }
 
@@ -77,7 +92,7 @@ func TestMountAndPortAttributes(t *testing.T) {
 			"3100-3199": {Label: "narrow"},
 			"3150":      {Label: "exact"},
 		},
-		OtherPortsAttributes: PortAttributes{Label: "other"},
+		OtherPortsAttributes: &PortAttributes{Label: "other"},
 	}
 	if got := PortAttributesFor(configuration, 3150).Label; got != "exact" {
 		t.Fatalf("exact port attributes = %q", got)
@@ -88,6 +103,10 @@ func TestMountAndPortAttributes(t *testing.T) {
 	if got := PortAttributesFor(configuration, 8080).Label; got != "other" {
 		t.Fatalf("fallback port attributes = %q", got)
 	}
+}
+
+func stringPointer(value string) *string {
+	return &value
 }
 
 func TestLockfileRoundTripAndFrozenMode(t *testing.T) {

@@ -13,7 +13,7 @@ test-scripts:
 
 .PHONY: test-devcontainer-e2e-required
 test-devcontainer-e2e-required:
-	DEVCONTAINER_E2E=1 $(GO) test -p 1 -count=1 -timeout 30m -run 'TestDockerE2EOfficialInterop' ./devcontainer/docker
+	DEVCONTAINER_E2E=1 $(GO) test -p 1 -count=1 -timeout 30m -run 'TestDockerE2E' ./devcontainer/docker
 
 .PHONY: test-e2e
 test-e2e:

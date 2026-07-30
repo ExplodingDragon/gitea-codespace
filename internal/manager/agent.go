@@ -59,10 +59,7 @@ const (
 )
 
 var (
-	logAuthorizationHeaderPattern = regexp.MustCompile(`(?i)(authorization:\s*(?:bearer|basic)\s+)[^\s]+`)
-	logBearerBasicPattern         = regexp.MustCompile(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+`)
-	logURLUserinfoPattern         = regexp.MustCompile(`([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
-	runtimeSecretNamePattern      = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+	runtimeSecretNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
 )
 
 var runtimeBootStageRanks = map[string]int{
@@ -2476,7 +2473,10 @@ func (a *Agent) runStartupOperation(
 	codespaceUUID := operation.GetCodespaceUuid()
 	a.applyRuntimeSettings(codespaceUUID, settings, time.Now())
 	startedUnix := time.Now().Unix()
-	logSink := &operationLogSink{agent: a, operation: operation}
+	logSink := newOperationLogSink(a, operation)
+	defer func() {
+		_ = logSink.FlushLifecycleLog(context.WithoutCancel(ctx))
+	}()
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
 		return err
 	}
@@ -2920,11 +2920,15 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 	if err := a.deactivateRuntimeMetadata(operation.GetCodespaceUuid()); err != nil {
 		return err
 	}
+	logSink := newOperationLogSink(a, operation)
+	defer func() {
+		_ = logSink.FlushLifecycleLog(context.WithoutCancel(ctx))
+	}()
 	stopRequest := provisioner.LifecycleRequest{
 		CodespaceUUID: operation.GetCodespaceUuid(),
 		CodespaceName: runtimeInstanceName(operation.GetCodespaceUuid()),
 		Operation:     provisioner.LifecycleOperationStop,
-		LogSink:       &operationLogSink{agent: a, operation: operation},
+		LogSink:       logSink,
 	}
 	if environment, err := a.loadRuntimeEnvironment(operation.GetCodespaceUuid()); err == nil {
 		stopRequest.Workdir = environment.Environment.Workspace
@@ -3150,93 +3154,6 @@ func (a *Agent) nextRuntimeMetadataGeneration() int64 {
 	generation := a.metadataGeneration
 	a.metadataGeneration++
 	return generation
-}
-
-func (a *Agent) updateLog(ctx context.Context, operation *codespacev1.OperationPayload, message string) error {
-	return a.updateLogLines(ctx, operation, []*codespacev1.LogLine{{
-		TimestampUnixNano: time.Now().UnixNano(),
-		Message:           a.redactLogMessage(message),
-	}})
-}
-
-type operationLogSink struct {
-	agent           *Agent
-	operation       *codespacev1.OperationPayload
-	redactionValues []string
-	mu              sync.Mutex
-}
-
-func (s *operationLogSink) WriteLifecycleLog(ctx context.Context, message string) error {
-	if s == nil || s.agent == nil || s.operation == nil || message == "" {
-		return nil
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.agent.updateLog(ctx, s.operation, s.agent.redactLogMessage(message, s.redactionValues...))
-}
-
-func (a *Agent) redactLogMessage(message string, redactionValues ...string) string {
-	if secret := strings.TrimSpace(a.config.ManagerSecret); secret != "" {
-		message = strings.ReplaceAll(message, secret, "[redacted]")
-	}
-	for _, secret := range redactionValues {
-		secret = strings.TrimSpace(secret)
-		if secret != "" {
-			message = strings.ReplaceAll(message, secret, "[redacted]")
-		}
-	}
-	message = logAuthorizationHeaderPattern.ReplaceAllString(message, "${1}[redacted]")
-	message = logBearerBasicPattern.ReplaceAllString(message, "${1}[redacted]")
-	message = logURLUserinfoPattern.ReplaceAllString(message, "${1}[redacted]@")
-	return message
-}
-
-func (a *Agent) updateLogLines(ctx context.Context, operation *codespacev1.OperationPayload, lines []*codespacev1.LogLine) error {
-	offset := operation.GetLogOffset()
-	for len(lines) > 0 {
-		count, err := a.updateLogBatchSize(operation, offset, lines)
-		if err != nil {
-			return err
-		}
-		request := connect.NewRequest(&codespacev1.UpdateLogRequest{
-			ProtocolVersion:   controlplane.ProtocolVersion,
-			CodespaceUuid:     operation.GetCodespaceUuid(),
-			OperationRversion: operation.GetOperationRversion(),
-			Offset:            offset,
-			Lines:             lines[:count],
-		})
-		response, err := a.managerClient().UpdateLog(ctx, request)
-		if err != nil {
-			return fmt.Errorf("update log rpc: %w", err)
-		}
-		offset = response.Msg.GetNextOffset()
-		operation.LogOffset = offset
-		lines = lines[count:]
-	}
-	return nil
-}
-
-func (a *Agent) updateLogBatchSize(operation *codespacev1.OperationPayload, offset int64, lines []*codespacev1.LogLine) (int, error) {
-	if len(lines) == 0 {
-		return 0, nil
-	}
-	request := connect.NewRequest(&codespacev1.UpdateLogRequest{
-		ProtocolVersion:   controlplane.ProtocolVersion,
-		CodespaceUuid:     operation.GetCodespaceUuid(),
-		OperationRversion: operation.GetOperationRversion(),
-		Offset:            offset,
-		Lines:             lines[:1],
-	})
-	if err := a.checkControlPlaneMessageSize(request.Msg); err != nil {
-		return 0, err
-	}
-	for count := 2; count <= len(lines); count++ {
-		request.Msg.Lines = lines[:count]
-		if err := a.checkControlPlaneMessageSize(request.Msg); err != nil {
-			return count - 1, nil
-		}
-	}
-	return len(lines), nil
 }
 
 func (a *Agent) finalize(

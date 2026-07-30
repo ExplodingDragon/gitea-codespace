@@ -1,0 +1,16 @@
+{
+  "name": "Image source interoperability",
+  "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
+  "workspaceFolder": "/workspaces/image-source",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": false,
+  "containerEnv": {
+    "IMAGE_SOURCE": "ready",
+    "REMOVE_FROM_REMOTE": "container-value"
+  },
+  "remoteEnv": {
+    "REMOVE_FROM_REMOTE": null
+  },
+  "appPort": "127.0.0.1:3000",
+  "onCreateCommand": "printf created > .image-source-created"
+}

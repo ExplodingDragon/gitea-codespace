@@ -9,25 +9,21 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
-func TestCollectConfiguredPorts(t *testing.T) {
+func TestResolveConfiguredPorts(t *testing.T) {
 	t.Parallel()
 
-	ports := map[uint16]struct{}{}
-	if err := collectAppPorts([]any{float64(3000), "127.0.0.1:8080"}, ports); err != nil {
-		t.Fatalf("collect app ports: %v", err)
+	appPorts := devcontainer.AppPortList{{Number: 3000}, {Address: "127.0.0.1:8080"}}
+	for index, expected := range []uint16{3000, 8080} {
+		resolved, err := appPorts[index].ContainerPort()
+		if err != nil || resolved != expected {
+			t.Fatalf("resolve appPort %d = %d, %v", index, resolved, err)
+		}
 	}
 	forwarded, err := devContainerPort(devcontainer.Port{Address: "[::1]:9090"})
 	if err != nil {
 		t.Fatalf("resolve forwarded port: %v", err)
 	}
-	ports[forwarded] = struct{}{}
-	if _, ok := ports[3000]; !ok {
-		t.Fatalf("appPort 3000 was not collected: %#v", ports)
-	}
-	if _, ok := ports[8080]; !ok {
-		t.Fatalf("appPort 8080 was not collected: %#v", ports)
-	}
-	if _, ok := ports[9090]; !ok {
-		t.Fatalf("forwardPorts 9090 was not collected: %#v", ports)
+	if forwarded != 9090 {
+		t.Fatalf("forwardPorts = %d", forwarded)
 	}
 }

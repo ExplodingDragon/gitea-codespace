@@ -1883,8 +1883,13 @@ func (p *IncusProvisioner) execInstanceCommand(
 		stderrLog = newLifecycleLogWriter(ctx, sink)
 		stdoutWriter = io.MultiWriter(stdout, stdoutLog)
 		stderrWriter = io.MultiWriter(stderr, stderrLog)
-		defer stdoutLog.Flush()
-		defer stderrLog.Flush()
+		defer func() {
+			stdoutLog.Flush()
+			stderrLog.Flush()
+			if flusher, ok := sink.(LifecycleLogFlusher); ok {
+				_ = flusher.FlushLifecycleLog(context.WithoutCancel(ctx))
+			}
+		}()
 	}
 
 	operation, err := p.client.ExecInstance(instanceName, api.InstanceExecPost{

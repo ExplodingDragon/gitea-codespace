@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -32,48 +33,52 @@ const (
 
 // Configuration contains the Dev Container properties used to create an environment.
 type Configuration struct {
-	Schema                      string                     `json:"$schema"`
-	Name                        string                     `json:"name"`
-	Image                       string                     `json:"image"`
-	Build                       *Build                     `json:"build"`
-	DockerFile                  string                     `json:"dockerFile"`
-	Context                     string                     `json:"context"`
-	DockerComposeFile           StringList                 `json:"dockerComposeFile"`
-	Service                     string                     `json:"service"`
-	RunServices                 []string                   `json:"runServices"`
-	WorkspaceFolder             string                     `json:"workspaceFolder"`
-	WorkspaceMount              string                     `json:"workspaceMount"`
-	Mounts                      []Mount                    `json:"mounts"`
-	ContainerEnv                map[string]string          `json:"containerEnv"`
-	RemoteEnv                   map[string]string          `json:"remoteEnv"`
-	ContainerUser               string                     `json:"containerUser"`
-	RemoteUser                  string                     `json:"remoteUser"`
-	UpdateRemoteUserUID         *bool                      `json:"updateRemoteUserUID"`
-	UserEnvProbe                string                     `json:"userEnvProbe"`
-	InitializeCommand           Command                    `json:"initializeCommand"`
-	OnCreateCommand             Command                    `json:"onCreateCommand"`
-	UpdateContentCommand        Command                    `json:"updateContentCommand"`
-	PostCreateCommand           Command                    `json:"postCreateCommand"`
-	PostStartCommand            Command                    `json:"postStartCommand"`
-	PostAttachCommand           Command                    `json:"postAttachCommand"`
-	WaitFor                     LifecycleStage             `json:"waitFor"`
-	ShutdownAction              string                     `json:"shutdownAction"`
-	Features                    map[string]json.RawMessage `json:"features"`
-	OverrideFeatureInstallOrder []string                   `json:"overrideFeatureInstallOrder"`
-	Customizations              map[string]json.RawMessage `json:"customizations"`
-	ForwardPorts                []Port                     `json:"forwardPorts"`
-	PortsAttributes             map[string]PortAttributes  `json:"portsAttributes"`
-	OtherPortsAttributes        PortAttributes             `json:"otherPortsAttributes"`
-	AppPort                     json.RawMessage            `json:"appPort"`
-	RunArgs                     []string                   `json:"runArgs"`
-	Init                        bool                       `json:"init"`
-	Privileged                  bool                       `json:"privileged"`
-	CapAdd                      []string                   `json:"capAdd"`
-	SecurityOpt                 []string                   `json:"securityOpt"`
-	OverrideCommand             *bool                      `json:"overrideCommand"`
-	HostRequirements            HostRequirements           `json:"hostRequirements"`
-	Secrets                     map[string]Secret          `json:"secrets"`
+	Schema                      string                     `json:"$schema,omitempty"`
+	Name                        string                     `json:"name,omitempty"`
+	Image                       string                     `json:"image,omitempty"`
+	Build                       *Build                     `json:"build,omitempty"`
+	DockerFile                  string                     `json:"dockerFile,omitempty"`
+	Context                     string                     `json:"context,omitempty"`
+	DockerComposeFile           StringList                 `json:"dockerComposeFile,omitempty"`
+	Service                     string                     `json:"service,omitempty"`
+	RunServices                 []string                   `json:"runServices,omitempty"`
+	WorkspaceFolder             string                     `json:"workspaceFolder,omitempty"`
+	WorkspaceMount              string                     `json:"workspaceMount,omitempty"`
+	Mounts                      []Mount                    `json:"mounts,omitempty"`
+	ContainerEnv                map[string]string          `json:"containerEnv,omitempty"`
+	RemoteEnv                   RemoteEnvironment          `json:"remoteEnv,omitempty"`
+	ContainerUser               string                     `json:"containerUser,omitempty"`
+	RemoteUser                  string                     `json:"remoteUser,omitempty"`
+	UpdateRemoteUserUID         *bool                      `json:"updateRemoteUserUID,omitempty"`
+	UserEnvProbe                string                     `json:"userEnvProbe,omitempty"`
+	InitializeCommand           Command                    `json:"initializeCommand,omitempty"`
+	OnCreateCommand             Command                    `json:"onCreateCommand,omitempty"`
+	UpdateContentCommand        Command                    `json:"updateContentCommand,omitempty"`
+	PostCreateCommand           Command                    `json:"postCreateCommand,omitempty"`
+	PostStartCommand            Command                    `json:"postStartCommand,omitempty"`
+	PostAttachCommand           Command                    `json:"postAttachCommand,omitempty"`
+	WaitFor                     LifecycleStage             `json:"waitFor,omitempty"`
+	ShutdownAction              string                     `json:"shutdownAction,omitempty"`
+	Features                    map[string]json.RawMessage `json:"features,omitempty"`
+	OverrideFeatureInstallOrder []string                   `json:"overrideFeatureInstallOrder,omitempty"`
+	Customizations              map[string]json.RawMessage `json:"customizations,omitempty"`
+	ForwardPorts                []Port                     `json:"forwardPorts,omitempty"`
+	PortsAttributes             map[string]PortAttributes  `json:"portsAttributes,omitempty"`
+	OtherPortsAttributes        *PortAttributes            `json:"otherPortsAttributes,omitempty"`
+	AppPort                     AppPortList                `json:"appPort,omitempty"`
+	RunArgs                     []string                   `json:"runArgs,omitempty"`
+	Init                        bool                       `json:"init,omitempty"`
+	Privileged                  bool                       `json:"privileged,omitempty"`
+	CapAdd                      []string                   `json:"capAdd,omitempty"`
+	SecurityOpt                 []string                   `json:"securityOpt,omitempty"`
+	OverrideCommand             *bool                      `json:"overrideCommand,omitempty"`
+	HostRequirements            HostRequirements           `json:"hostRequirements,omitempty"`
+	Secrets                     map[string]Secret          `json:"secrets,omitempty"`
 }
+
+// RemoteEnvironment preserves explicit null values until inherited process
+// variables can be removed from the final remote environment.
+type RemoteEnvironment map[string]*string
 
 // Mount is one bind, volume, or tmpfs mount accepted by the Dev Container specification.
 type Mount struct {
@@ -88,6 +93,7 @@ type Mount struct {
 
 // UnmarshalJSON accepts the string and object mount forms defined by the specification.
 func (m *Mount) UnmarshalJSON(data []byte) error {
+	*m = Mount{}
 	var value string
 	if err := json.Unmarshal(data, &value); err == nil {
 		for _, item := range strings.Split(value, ",") {
@@ -171,12 +177,12 @@ func (m Mount) Validate() error {
 
 // Build describes a Dockerfile build declared by a Dev Container configuration.
 type Build struct {
-	Dockerfile string            `json:"dockerfile"`
-	Context    string            `json:"context"`
-	Args       map[string]string `json:"args"`
-	Target     string            `json:"target"`
-	CacheFrom  StringList        `json:"cacheFrom"`
-	Options    []string          `json:"options"`
+	Dockerfile string            `json:"dockerfile,omitempty"`
+	Context    string            `json:"context,omitempty"`
+	Args       map[string]string `json:"args,omitempty"`
+	Target     string            `json:"target,omitempty"`
+	CacheFrom  StringList        `json:"cacheFrom,omitempty"`
+	Options    []string          `json:"options,omitempty"`
 }
 
 // PortAttributes describes how a forwarded port is presented to a caller.
@@ -246,8 +252,14 @@ type StringList []string
 
 // UnmarshalJSON accepts one string or an array of strings.
 func (s *StringList) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("must be a string or string array")
+	}
 	var one string
 	if err := json.Unmarshal(data, &one); err == nil {
+		if strings.TrimSpace(one) == "" {
+			return fmt.Errorf("must not contain an empty string")
+		}
 		*s = []string{one}
 		return nil
 	}
@@ -255,7 +267,33 @@ func (s *StringList) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &many); err != nil {
 		return fmt.Errorf("must be a string or string array")
 	}
+	for _, value := range many {
+		if strings.TrimSpace(value) == "" {
+			return fmt.Errorf("must not contain an empty string")
+		}
+	}
 	*s = many
+	return nil
+}
+
+// AppPortList accepts the scalar and array forms of appPort.
+type AppPortList []Port
+
+// UnmarshalJSON decodes one application port or an array of application ports.
+func (p *AppPortList) UnmarshalJSON(data []byte) error {
+	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		return fmt.Errorf("appPort must be a port or array of ports")
+	}
+	var values []Port
+	if err := json.Unmarshal(data, &values); err == nil {
+		*p = values
+		return nil
+	}
+	var value Port
+	if err := json.Unmarshal(data, &value); err != nil {
+		return fmt.Errorf("appPort must be a port or array of ports: %w", err)
+	}
+	*p = []Port{value}
 	return nil
 }
 
@@ -267,6 +305,7 @@ type Port struct {
 
 // UnmarshalJSON accepts a numeric port or a host-and-port string.
 func (p *Port) UnmarshalJSON(data []byte) error {
+	*p = Port{}
 	var number uint16
 	if err := json.Unmarshal(data, &number); err == nil && number > 0 {
 		p.Number = number
@@ -288,6 +327,21 @@ func (p Port) MarshalJSON() ([]byte, error) {
 	return json.Marshal(p.Address)
 }
 
+// ContainerPort returns the container-side port from a numeric value or a
+// Docker-style address mapping.
+func (p Port) ContainerPort() (uint16, error) {
+	if p.Number != 0 {
+		return p.Number, nil
+	}
+	parts := strings.Split(strings.TrimSpace(p.Address), ":")
+	raw := strings.TrimSpace(parts[len(parts)-1])
+	value, err := strconv.ParseUint(raw, 10, 16)
+	if err != nil || value == 0 {
+		return 0, fmt.Errorf("port %q is invalid", p.Address)
+	}
+	return uint16(value), nil
+}
+
 // Command stores one lifecycle command in string, argv, or named-command form.
 type Command struct {
 	Value json.RawMessage
@@ -296,6 +350,7 @@ type Command struct {
 // UnmarshalJSON validates and stores a lifecycle command in any supported form.
 func (c *Command) UnmarshalJSON(data []byte) error {
 	if bytes.Equal(bytes.TrimSpace(data), []byte("null")) {
+		c.Value = nil
 		return nil
 	}
 	var value any

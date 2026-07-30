@@ -27,14 +27,12 @@ func WriteConfiguredEndpoints(configuration devcontainer.Configuration) error {
 		}
 		ports[value] = struct{}{}
 	}
-	if len(configuration.AppPort) > 0 && string(configuration.AppPort) != "null" {
-		var values any
-		if err := json.Unmarshal(configuration.AppPort, &values); err != nil {
+	for _, port := range configuration.AppPort {
+		value, err := port.ContainerPort()
+		if err != nil {
 			return fmt.Errorf("appPort: %w", err)
 		}
-		if err := collectAppPorts(values, ports); err != nil {
-			return err
-		}
+		ports[value] = struct{}{}
 	}
 	manifest := runtimeendpoint.EndpointManifest{Version: runtimeendpoint.EndpointManifestVersion, Endpoints: make([]runtimeendpoint.Endpoint, 0, len(ports))}
 	ordered := make([]int, 0, len(ports))
@@ -108,31 +106,4 @@ func devContainerPort(port devcontainer.Port) (uint16, error) {
 		return 0, fmt.Errorf("port %q is invalid", port.Address)
 	}
 	return uint16(value), nil
-}
-
-func collectAppPorts(value any, ports map[uint16]struct{}) error {
-	switch value := value.(type) {
-	case float64:
-		if value < 1 || value > 65535 || value != float64(uint16(value)) {
-			return fmt.Errorf("appPort number is invalid")
-		}
-		ports[uint16(value)] = struct{}{}
-	case string:
-		parts := strings.Split(value, ":")
-		raw := parts[len(parts)-1]
-		port, err := strconv.ParseUint(raw, 10, 16)
-		if err != nil || port == 0 {
-			return fmt.Errorf("appPort %q is invalid", value)
-		}
-		ports[uint16(port)] = struct{}{}
-	case []any:
-		for _, item := range value {
-			if err := collectAppPorts(item, ports); err != nil {
-				return err
-			}
-		}
-	default:
-		return fmt.Errorf("appPort must be a port or array of ports")
-	}
-	return nil
 }

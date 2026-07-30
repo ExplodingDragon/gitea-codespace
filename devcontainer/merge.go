@@ -4,6 +4,7 @@
 package devcontainer
 
 import (
+	"bytes"
 	"encoding/json"
 	"maps"
 	"slices"
@@ -50,7 +51,7 @@ func Merge(base, override Configuration) Configuration {
 	}
 	result.Mounts = mergeMounts(result.Mounts, override.Mounts)
 	result.ContainerEnv = mergeMap(result.ContainerEnv, override.ContainerEnv)
-	result.RemoteEnv = mergeMap(result.RemoteEnv, override.RemoteEnv)
+	result.RemoteEnv = mergeRemoteEnvironment(result.RemoteEnv, override.RemoteEnv)
 	if override.ContainerUser != "" {
 		result.ContainerUser = override.ContainerUser
 	}
@@ -82,8 +83,9 @@ func Merge(base, override Configuration) Configuration {
 	result.Customizations = mergeCustomizations(result.Customizations, override.Customizations)
 	result.ForwardPorts = appendUniqueComparable(result.ForwardPorts, override.ForwardPorts)
 	result.PortsAttributes = mergeStructMap(result.PortsAttributes, override.PortsAttributes)
-	if override.OtherPortsAttributes != (PortAttributes{}) {
-		result.OtherPortsAttributes = override.OtherPortsAttributes
+	if override.OtherPortsAttributes != nil {
+		attributes := *override.OtherPortsAttributes
+		result.OtherPortsAttributes = &attributes
 	}
 	if len(override.AppPort) > 0 {
 		result.AppPort = slices.Clone(override.AppPort)
@@ -157,6 +159,17 @@ func mergeMap(base, override map[string]string) map[string]string {
 	return result
 }
 
+func mergeRemoteEnvironment(base, override RemoteEnvironment) RemoteEnvironment {
+	result := maps.Clone(base)
+	if result == nil && len(override) > 0 {
+		result = RemoteEnvironment{}
+	}
+	for key, value := range override {
+		result[key] = value
+	}
+	return result
+}
+
 func mergeRawMap(base, override map[string]json.RawMessage) map[string]json.RawMessage {
 	result := maps.Clone(base)
 	if result == nil && len(override) > 0 {
@@ -215,7 +228,11 @@ func mergeCustomizations(base, override map[string]json.RawMessage) map[string]j
 	}
 	for key, raw := range override {
 		var left, right any
-		if json.Unmarshal(result[key], &left) == nil && json.Unmarshal(raw, &right) == nil {
+		leftDecoder := json.NewDecoder(bytes.NewReader(result[key]))
+		leftDecoder.UseNumber()
+		rightDecoder := json.NewDecoder(bytes.NewReader(raw))
+		rightDecoder.UseNumber()
+		if leftDecoder.Decode(&left) == nil && rightDecoder.Decode(&right) == nil {
 			if merged, ok := mergeJSON(left, right).(map[string]any); ok {
 				if encoded, err := json.Marshal(merged); err == nil {
 					result[key] = encoded

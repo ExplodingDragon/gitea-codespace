@@ -3184,6 +3184,98 @@ func TestAgentUpdateLogRejectsOversizedLine(t *testing.T) {
 	}
 }
 
+func TestOperationLogSinkBatchesAndStopsAtLogLimit(t *testing.T) {
+	t.Parallel()
+
+	service := &managerService{}
+	path, handler := codespacev1connect.NewManagerServiceHandler(service)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+
+	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
+	operation := &codespacev1.OperationPayload{
+		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		OperationRversion: 9,
+	}
+	sink := newOperationLogSink(agent, operation)
+	if err := sink.WriteLifecycleLog(t.Context(), "first"); err != nil {
+		t.Fatalf("write first line: %v", err)
+	}
+	if err := sink.WriteLifecycleLog(t.Context(), "second"); err != nil {
+		t.Fatalf("write second line: %v", err)
+	}
+	if requests := service.logRequestsCopy(); len(requests) != 0 {
+		t.Fatalf("request count before flush = %d", len(requests))
+	}
+	if err := sink.FlushLifecycleLog(t.Context()); err != nil {
+		t.Fatalf("flush log: %v", err)
+	}
+	requests := service.logRequestsCopy()
+	if len(requests) != 1 || len(requests[0].GetLines()) != 2 {
+		t.Fatalf("batched requests = %#v", requests)
+	}
+
+	service.setLogErrors(testFailureError(connect.CodeResourceExhausted, failureLogSizeExceeded))
+	if err := sink.WriteLifecycleLog(t.Context(), "third"); err != nil {
+		t.Fatalf("write limited line: %v", err)
+	}
+	if err := sink.FlushLifecycleLog(t.Context()); err != nil {
+		t.Fatalf("flush limited log: %v", err)
+	}
+	requestCount := len(service.logRequestsCopy())
+	if err := sink.WriteLifecycleLog(t.Context(), "ignored"); err != nil {
+		t.Fatalf("write after limit: %v", err)
+	}
+	if err := sink.FlushLifecycleLog(t.Context()); err != nil {
+		t.Fatalf("flush after limit: %v", err)
+	}
+	if requests := service.logRequestsCopy(); len(requests) != requestCount {
+		t.Fatalf("request count after limit = %d, want %d", len(requests), requestCount)
+	}
+}
+
+func TestAgentUpdateLogRecoversServerOffset(t *testing.T) {
+	t.Parallel()
+
+	service := &managerService{}
+	detail, err := connect.NewErrorDetail(&codespacev1.FailureDetail{Category: failureLogOffsetConflict})
+	if err != nil {
+		t.Fatalf("create failure detail: %v", err)
+	}
+	offsetDetail, err := connect.NewErrorDetail(&codespacev1.LogOffsetDetail{CurrentOffset: 12})
+	if err != nil {
+		t.Fatalf("create offset detail: %v", err)
+	}
+	connectErr := connect.NewError(connect.CodeAborted, errors.New("offset conflict"))
+	connectErr.AddDetail(detail)
+	connectErr.AddDetail(offsetDetail)
+	service.setLogErrors(connectErr)
+
+	path, handler := codespacev1connect.NewManagerServiceHandler(service)
+	mux := http.NewServeMux()
+	mux.Handle(path, handler)
+	server := httptest.NewServer(mux)
+	defer server.Close()
+	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
+	operation := &codespacev1.OperationPayload{
+		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		OperationRversion: 9,
+		LogOffset:         5,
+	}
+	if err := agent.updateLogLines(t.Context(), operation, []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "line"}}); err != nil {
+		t.Fatalf("update log: %v", err)
+	}
+	requests := service.logRequestsCopy()
+	if len(requests) != 2 || requests[0].GetOffset() != 5 || requests[1].GetOffset() != 12 {
+		t.Fatalf("request offsets = %#v", requests)
+	}
+	if operation.GetLogOffset() != 13 {
+		t.Fatalf("operation offset = %d", operation.GetLogOffset())
+	}
+}
+
 func TestValidateDeclareResponseGiteaWebURL(t *testing.T) {
 	t.Parallel()
 
@@ -3367,6 +3459,7 @@ type managerService struct {
 	idleStopResponse              *codespacev1.RequestIdleStopResponse
 	idleStop                      []*codespacev1.RequestIdleStopRequest
 	logRequests                   []*codespacev1.UpdateLogRequest
+	logErrors                     []error
 	onlineDeclared                chan struct{}
 	onlineBeforeInv               bool
 	sawOnline                     bool
@@ -3614,6 +3707,11 @@ func (s *managerService) UpdateLog(
 
 	s.captureAuth(req.Header())
 	s.logRequests = append(s.logRequests, cloneProtoForTest(req.Msg))
+	if len(s.logErrors) > 0 {
+		err := s.logErrors[0]
+		s.logErrors = s.logErrors[1:]
+		return nil, err
+	}
 	return connect.NewResponse(&codespacev1.UpdateLogResponse{
 		NextOffset: req.Msg.GetOffset() + int64(len(req.Msg.GetLines())),
 	}), nil
@@ -3824,6 +3922,12 @@ func (s *managerService) logRequestsCopy() []*codespacev1.UpdateLogRequest {
 	defer s.mu.Unlock()
 
 	return append([]*codespacev1.UpdateLogRequest(nil), s.logRequests...)
+}
+
+func (s *managerService) setLogErrors(errs ...error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logErrors = append([]error(nil), errs...)
 }
 
 func (s *managerService) onlineBeforeInventory() bool {
