@@ -20,9 +20,10 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/controlplane"
-	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -176,11 +177,11 @@ func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 		t.Fatalf("applied codespace uuid = %q", applier.codespaceUUID)
 	}
 	if len(applier.routes) != 1 ||
-		applier.routes[0].EndpointID != devcontainer.WorkspaceEndpointID ||
-		applier.routes[0].Label != devcontainer.WorkspaceEndpointLabel ||
+		applier.routes[0].EndpointID != runtimeendpoint.WorkspaceEndpointID ||
+		applier.routes[0].Label != runtimeendpoint.WorkspaceEndpointLabel ||
 		applier.routes[0].UpstreamScheme != "http" ||
 		applier.routes[0].InstanceName != "cs-11111111111141118111" ||
-		applier.routes[0].UpstreamPort != provisioner.WorkspaceIDEPort ||
+		applier.routes[0].UpstreamPort != runtimeendpoint.WorkspaceEndpointPort ||
 		applier.routes[0].Public {
 		t.Fatalf("applied routes = %#v", applier.routes)
 	}
@@ -3324,7 +3325,7 @@ func TestValidateRuntimeReadyChecksDevelopmentEnvironmentWithoutGitChecker(t *te
 	if err := agent.validateRuntimeReady(t.Context(), codespaceUUID, instance); err != nil {
 		t.Fatalf("validate runtime ready: %v", err)
 	}
-	if !backend.containerChecked || backend.idePort != provisioner.WorkspaceIDEPort {
+	if !backend.containerChecked || backend.idePort != runtimeendpoint.WorkspaceEndpointPort {
 		t.Fatalf("development environment check = container %v, IDE port %d", backend.containerChecked, backend.idePort)
 	}
 }
@@ -4338,16 +4339,15 @@ func runtimeEnvironmentForAgentTest(codespaceUUID string) provisioner.RuntimeEnv
 	return provisioner.RuntimeEnvironment{
 		User:  1000,
 		Group: 1000,
-		Environment: devcontainer.Environment{
-			Version:            devcontainer.RuntimeFormatVersion,
+		Environment: devcontainer.State{
+			Version:            devcontainer.StateFormatVersion,
 			ID:                 "environment-id",
-			CodespaceUUID:      codespaceUUID,
+			OwnerID:            codespaceUUID,
 			Workspace:          "/workspaces/repo",
 			WorkspaceFolder:    "/workspaces/repo",
 			PrimaryContainerID: "container-id",
 			RemoteUser:         "developer",
 			RemoteWorkdir:      "/workspaces/repo",
-			WebIDEPort:         provisioner.WorkspaceIDEPort,
 		},
 	}
 }

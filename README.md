@@ -5,7 +5,7 @@ Gitea Codespace 的 Manager 与 Gateway 实现目录。
 该模块负责：
 
 - Manager 注册、声明、批量领取 operation 和生命周期 worker。
-- Runtime Instance 映射、本地状态恢复与 Runtime HTTP API。
+- Runtime Instance 映射、本地状态恢复与 Endpoint manifest 路由。
 - Gateway 的 Endpoint、WebSocket 和 SSH 接入。
 - ManagerService 客户端、Gateway session、日志脱敏和本地诊断。
 

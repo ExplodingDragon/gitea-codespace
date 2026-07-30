@@ -18,9 +18,10 @@ import (
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 func completeEndpointRoutesForTest(codespaceUUID string, routes ...manager.RuntimeEndpointRoute) []manager.RuntimeEndpointRoute {
@@ -30,11 +31,11 @@ func completeEndpointRoutesForTest(codespaceUUID string, routes ...manager.Runti
 	}
 	return append([]manager.RuntimeEndpointRoute{{
 		CodespaceUUID:  codespaceUUID,
-		EndpointID:     devcontainer.WorkspaceEndpointID,
-		Label:          devcontainer.WorkspaceEndpointLabel,
+		EndpointID:     runtimeendpoint.WorkspaceEndpointID,
+		Label:          runtimeendpoint.WorkspaceEndpointLabel,
 		UpstreamScheme: "http",
 		InstanceName:   instanceName,
-		UpstreamPort:   provisioner.WorkspaceIDEPort,
+		UpstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 	}}, routes...)
 }
 
@@ -171,10 +172,10 @@ func runtimeEnvironmentForTest(codespaceUUID string) provisioner.RuntimeEnvironm
 	return provisioner.RuntimeEnvironment{
 		User:  1000,
 		Group: 1000,
-		Environment: devcontainer.Environment{
-			Version:             devcontainer.RuntimeFormatVersion,
+		Environment: devcontainer.State{
+			Version:             devcontainer.StateFormatVersion,
 			ID:                  "environment-id",
-			CodespaceUUID:       codespaceUUID,
+			OwnerID:             codespaceUUID,
 			ConfigurationPath:   "/workspaces/repo/.devcontainer/devcontainer.json",
 			ConfigurationSHA256: strings.Repeat("a", 64),
 			Workspace:           "/workspaces/repo",
@@ -182,7 +183,6 @@ func runtimeEnvironmentForTest(codespaceUUID string) provisioner.RuntimeEnvironm
 			PrimaryContainerID:  "container-id",
 			RemoteUser:          "developer",
 			RemoteWorkdir:       "/workspaces/repo",
-			WebIDEPort:          provisioner.WorkspaceIDEPort,
 		},
 	}
 }
@@ -646,7 +646,7 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 		endpoints[0].GetEndpointId() != "app-3000" ||
 		endpoints[0].GetLabel() != "App 3000" ||
 		!endpoints[0].GetPublic() ||
-		endpoints[1].GetEndpointId() != devcontainer.WorkspaceEndpointID ||
+		endpoints[1].GetEndpointId() != runtimeendpoint.WorkspaceEndpointID ||
 		metadata.GetBoot().GetStage() != codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY {
 		t.Fatalf("metadata = %#v", metadata)
 	}
@@ -1059,7 +1059,7 @@ func TestCodespaceStateStoreRuntimeEndpointRoutesReplaceSnapshot(t *testing.T) {
 	if len(state.Endpoints) != 3 ||
 		state.Endpoints[0].EndpointID != "api" ||
 		state.Endpoints[1].EndpointID != "web" ||
-		state.Endpoints[2].EndpointID != devcontainer.WorkspaceEndpointID ||
+		state.Endpoints[2].EndpointID != runtimeendpoint.WorkspaceEndpointID ||
 		state.RuntimeMetadata.MetadataGeneration != 2 {
 		t.Fatalf("state after endpoint routes = %#v", state)
 	}

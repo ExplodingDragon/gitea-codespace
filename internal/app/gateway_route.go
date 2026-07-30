@@ -11,9 +11,8 @@ import (
 	"strings"
 	"sync"
 
-	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/manager"
-	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 type gatewayTCPBackend interface {
@@ -295,7 +294,7 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	if route.codespaceUUID == "" {
 		return gatewayEndpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}
-	if route.endpointID != devcontainer.WorkspaceEndpointID && !isGatewayEndpointID(route.endpointID) {
+	if route.endpointID != runtimeendpoint.WorkspaceEndpointID && !isGatewayEndpointID(route.endpointID) {
 		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id is invalid")
 	}
 	switch route.upstreamScheme {
@@ -309,8 +308,8 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	if route.upstreamPort == 0 || route.upstreamPort > 65535 {
 		return gatewayEndpointRoute{}, fmt.Errorf("upstream port is invalid")
 	}
-	if route.endpointID == devcontainer.WorkspaceEndpointID &&
-		(route.label != devcontainer.WorkspaceEndpointLabel || route.upstreamScheme != "http" || route.upstreamPort != provisioner.WorkspaceIDEPort || route.public) {
+	if route.endpointID == runtimeendpoint.WorkspaceEndpointID &&
+		(route.label != runtimeendpoint.WorkspaceEndpointLabel || route.upstreamScheme != "http" || route.upstreamPort != runtimeendpoint.WorkspaceEndpointPort || route.public) {
 		return gatewayEndpointRoute{}, fmt.Errorf("workspace endpoint route is invalid")
 	}
 	return route, nil

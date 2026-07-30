@@ -65,42 +65,7 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	}
 }
 
-func TestRunWithConfigMissingRootStateFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
-	stateDir := filepath.Join(t.TempDir(), "state")
-	service := &lockTestManagerService{}
-	server := newGiteaManagerServiceServer(t, service)
-	defer server.Close()
-	if err := SaveManagerIdentity(stateDir, ManagerIdentity{
-		GiteaURL:       server.URL,
-		ManagerID:      42,
-		RegisteredUnix: 1,
-	}); err != nil {
-		t.Fatalf("save identity: %v", err)
-	}
-	if err := SaveManagerCredentials(stateDir, ManagerCredentials{ManagerSecret: "manager-secret"}); err != nil {
-		t.Fatalf("save credentials: %v", err)
-	}
-
-	var output bytes.Buffer
-	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
-	err := RunWithConfig(&output, config)
-	if err == nil {
-		t.Fatalf("expected missing root state error")
-	}
-	if !strings.Contains(err.Error(), "root-state.json") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if service.calls.Load() != 0 {
-		t.Fatalf("manager service calls = %d", service.calls.Load())
-	}
-}
-
-func TestRunWithConfigMissingIdentityFailsBeforeRPC(t *testing.T) {
+func TestRunWithConfigMissingManagerStateFailsBeforeRPC(t *testing.T) {
 	t.Parallel()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
@@ -115,41 +80,9 @@ func TestRunWithConfigMissingIdentityFailsBeforeRPC(t *testing.T) {
 	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
 	err := RunWithConfig(&output, config)
 	if err == nil {
-		t.Fatalf("expected missing identity error")
+		t.Fatalf("expected missing manager state error")
 	}
-	if !strings.Contains(err.Error(), "identity.json") {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if service.calls.Load() != 0 {
-		t.Fatalf("manager service calls = %d", service.calls.Load())
-	}
-}
-
-func TestRunWithConfigMissingCredentialsFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
-	stateDir := filepath.Join(t.TempDir(), "state")
-	service := &lockTestManagerService{}
-	server := newLockTestManagerServer(t, service)
-	defer server.Close()
-	if err := SaveManagerIdentity(stateDir, ManagerIdentity{
-		GiteaURL:       server.URL,
-		ManagerID:      42,
-		RegisteredUnix: 1,
-	}); err != nil {
-		t.Fatalf("save identity: %v", err)
-	}
-
-	var output bytes.Buffer
-	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
-	err := RunWithConfig(&output, config)
-	if err == nil {
-		t.Fatalf("expected missing credentials error")
-	}
-	if !strings.Contains(err.Error(), "credentials.json") {
+	if !strings.Contains(err.Error(), managerStateFileName) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if service.calls.Load() != 0 {

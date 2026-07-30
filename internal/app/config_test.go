@@ -125,9 +125,22 @@ runtime:
 		config.Incus.StoragePool != "default" || config.Incus.NetworkName != "csnet" || !config.Incus.NetworkManage {
 		t.Fatalf("incus config = %#v", config.Incus)
 	}
+	if config.Provisioner.CodeServerVersion != "4.121.0" {
+		t.Fatalf("code-server version = %q", config.Provisioner.CodeServerVersion)
+	}
 	environment := config.RuntimeEnvironments["default"]
 	if environment.InstanceType != "virtual-machine" || environment.Image != "images:debian/12" || environment.CPU != 2 {
 		t.Fatalf("environment = %#v", environment)
+	}
+}
+
+func TestConfigRejectsMovingCodeServerVersion(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.Runtime.DevContainer.CodeServerVersion = "latest"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "explicit semantic version") {
+		t.Fatalf("code-server version error = %v", err)
 	}
 }
 

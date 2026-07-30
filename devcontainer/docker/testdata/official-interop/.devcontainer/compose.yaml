@@ -1,0 +1,11 @@
+services:
+  workspace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    command: sleep infinity
+    volumes:
+      - ..:/workspace
+  sidecar:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
+    command: sleep infinity

@@ -491,7 +491,7 @@ func buildAppE2ERuntimeExecutable(t *testing.T) string {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
 	executable := filepath.Join(t.TempDir(), "gitea-codespace")
-	command := exec.Command("go", "build", "-o", executable, "./cmd/gitea-codespace")
+	command := exec.Command("go", "build", "-o", executable, ".")
 	command.Dir = root
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build app E2E runtime executable: %v\n%s", err, output)

@@ -13,22 +13,20 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"unicode"
-	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 const (
 	codespaceStateFormatVersion = 3
 	codespaceStateDirName       = "codespaces"
-	maxCodespaceEndpoints       = devcontainer.MaxEndpointCount
+	maxCodespaceEndpoints       = runtimeendpoint.MaxEndpointCount
 )
 
 var errEndpointLimitExceeded = errors.New("endpoint limit exceeded")
@@ -485,7 +483,7 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 			return false, fmt.Errorf("duplicate endpoint_id %s", localRoute.endpointID)
 		}
 		seen[localRoute.endpointID] = struct{}{}
-		if localRoute.endpointID == devcontainer.WorkspaceEndpointID {
+		if localRoute.endpointID == runtimeendpoint.WorkspaceEndpointID {
 			workspaceFound = true
 		}
 		endpoints = append(endpoints, codespaceEndpointSnapshot{
@@ -687,10 +685,7 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 	if target.containerID == "" || target.containerUser == "" || !filepath.IsAbs(target.containerWorkdir) {
 		return gatewayWorkspaceTarget{}, false, fmt.Errorf("Dev Container runtime target is missing")
 	}
-	editorPort := state.RuntimeEnvironment.Environment.WebIDEPort
-	if editorPort != provisioner.WorkspaceIDEPort {
-		return gatewayWorkspaceTarget{}, false, fmt.Errorf("Web IDE runtime target is missing")
-	}
+	editorPort := uint16(runtimeendpoint.WorkspaceEndpointPort)
 	target.editorPort = uint32(editorPort)
 	return target, true, nil
 }
@@ -1256,7 +1251,7 @@ func validateStoredEndpointRoutes(path string, codespaceUUID string, endpoints [
 			return fmt.Errorf("validate codespace state %s: duplicate endpoint_id %s", path, route.endpointID)
 		}
 		seenEndpoints[route.endpointID] = struct{}{}
-		if route.endpointID == devcontainer.WorkspaceEndpointID {
+		if route.endpointID == runtimeendpoint.WorkspaceEndpointID {
 			workspaceFound = true
 		}
 		if err := validateEndpointLabel(route.label); err != nil {
@@ -1495,22 +1490,7 @@ func validateRuntimeResourceUsage(usage codespaceRuntimeResourceUsage) error {
 }
 
 func validateEndpointLabel(label string) error {
-	label = strings.TrimSpace(label)
-	if label == "" {
-		return fmt.Errorf("endpoint label is required")
-	}
-	if !utf8.ValidString(label) {
-		return fmt.Errorf("endpoint label must be valid UTF-8")
-	}
-	if utf8.RuneCountInString(label) > 64 {
-		return fmt.Errorf("endpoint label is too long")
-	}
-	for _, r := range label {
-		if unicode.IsControl(r) || r == '<' || r == '>' {
-			return fmt.Errorf("endpoint label contains an invalid character")
-		}
-	}
-	return nil
+	return runtimeendpoint.ValidateLabel(label)
 }
 
 func runtimeTransitionTargetState(state codespacev1.RuntimeState) (string, error) {

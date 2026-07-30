@@ -13,7 +13,8 @@ import (
 	"strconv"
 	"strings"
 
-	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 // RuntimeState stores the locally observed runtime state.
@@ -63,10 +64,6 @@ type StartupAdmissionChecker interface {
 const (
 	DevContainerSourcePlatformDefault = "platform_default"
 	DevContainerSourceRepository      = "repository"
-	// WorkspaceIDEPort is reserved for the platform-managed code-server process.
-	WorkspaceIDEPort = 13337
-	// WorkspaceIDEPortEnv persists the ready code-server port in runtime state.
-	WorkspaceIDEPortEnv = "CODESPACE_WEB_IDE_PORT"
 )
 
 // DevContainerConfiguration identifies the selected internal development environment.
@@ -133,7 +130,8 @@ type LifecycleRequest struct {
 	EnvironmentTag   string
 	GitProtocol      string
 	DevContainer     DevContainerConfiguration
-	Environment      *devcontainer.Environment
+	InjectedFeatures []devcontainer.InjectedFeature
+	Environment      *devcontainer.State
 	OperationVersion int64
 	Operation        LifecycleOperation
 	LogSink          LifecycleLogSink
@@ -141,9 +139,9 @@ type LifecycleRequest struct {
 
 // RuntimeEnvironment is the complete outer identity and inner Dev Container target.
 type RuntimeEnvironment struct {
-	User        uint32                   `json:"user"`
-	Group       uint32                   `json:"group"`
-	Environment devcontainer.Environment `json:"environment"`
+	User        uint32             `json:"user"`
+	Group       uint32             `json:"group"`
+	Environment devcontainer.State `json:"environment"`
 }
 
 func (environment RuntimeEnvironment) Validate() error {
@@ -188,7 +186,7 @@ type RuntimeGitSSHKeySeedRequest struct {
 }
 
 // RuntimeEndpointDeclaration stores one ordinary endpoint declared inside the runtime.
-type RuntimeEndpointDeclaration = devcontainer.Endpoint
+type RuntimeEndpointDeclaration = runtimeendpoint.Endpoint
 
 // RuntimeResourceUsage stores externally observed runtime resource usage.
 type RuntimeResourceUsage struct {
@@ -224,7 +222,7 @@ type SystemIdentity struct {
 
 // LifecycleResult stores the complete Dev Container environment after a transition.
 type LifecycleResult struct {
-	Environment devcontainer.Environment
+	Environment devcontainer.State
 }
 
 // WorkspaceCommandRequest stores one user command or shell opened through the Gateway.

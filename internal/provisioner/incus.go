@@ -23,7 +23,9 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/lxc/incus/v6/shared/units"
 
-	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 const defaultCodespaceRoot = "/codespace"
@@ -46,7 +48,7 @@ const (
 	runtimeManifestDir          = "/var/lib/gitea-codespace/runtime"
 	runtimeStateDir             = "/var/lib/gitea-codespace/state"
 	runtimeGiteaTokenFilePath   = "/var/lib/gitea-codespace/gitea-token"
-	runtimeEndpointManifest     = devcontainer.EndpointManifestPath
+	runtimeEndpointManifest     = runtimeendpoint.EndpointManifestPath
 	runtimeGitSSHPrivateKey     = "/var/lib/gitea-codespace/git/id_ed25519"
 	runtimeGitSSHPublicKey      = "/var/lib/gitea-codespace/git/id_ed25519.pub"
 	runtimeGitSSHKnownHosts     = "/var/lib/gitea-codespace/git/known_hosts"
@@ -95,6 +97,7 @@ type IncusConfig struct {
 	CodespaceRoot       string
 	Bootstrap           BootstrapConfig
 	RuntimeExecutable   string
+	CodeServerVersion   string
 }
 
 // IncusEnvironmentConfig stores one deployment-defined Incus runtime environment.
@@ -113,17 +116,18 @@ type IncusEnvironmentConfig struct {
 
 // IncusProvisioner provisions codespace as Incus instances.
 type IncusProvisioner struct {
-	client        incus.InstanceServer
-	managerID     string
-	project       string
-	networkName   string
-	environments  map[string]incusEnvironment
-	extraConfig   map[string]string
-	codespaceRoot string
-	bootstrap     BootstrapConfig
-	runtimeBinary string
-	mu            sync.Mutex
-	cpuSamples    map[string]incusCPUSample
+	client            incus.InstanceServer
+	managerID         string
+	project           string
+	networkName       string
+	environments      map[string]incusEnvironment
+	extraConfig       map[string]string
+	codespaceRoot     string
+	bootstrap         BootstrapConfig
+	runtimeBinary     string
+	codeServerVersion string
+	mu                sync.Mutex
+	cpuSamples        map[string]incusCPUSample
 }
 
 type incusEnvironment struct {
@@ -191,16 +195,17 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	bootstrap := normalizedBootstrapConfig(config.Bootstrap)
 
 	return &IncusProvisioner{
-		client:        client,
-		managerID:     fmt.Sprintf("%d", config.ManagerID),
-		project:       project,
-		networkName:   networkName,
-		environments:  environments,
-		extraConfig:   copyStringMap(config.ExtraConfig),
-		codespaceRoot: codespaceRoot,
-		bootstrap:     bootstrap,
-		runtimeBinary: strings.TrimSpace(config.RuntimeExecutable),
-		cpuSamples:    make(map[string]incusCPUSample),
+		client:            client,
+		managerID:         fmt.Sprintf("%d", config.ManagerID),
+		project:           project,
+		networkName:       networkName,
+		environments:      environments,
+		extraConfig:       copyStringMap(config.ExtraConfig),
+		codespaceRoot:     codespaceRoot,
+		bootstrap:         bootstrap,
+		runtimeBinary:     strings.TrimSpace(config.RuntimeExecutable),
+		codeServerVersion: strings.TrimSpace(config.CodeServerVersion),
+		cpuSamples:        make(map[string]incusCPUSample),
 	}, nil
 }
 
@@ -500,20 +505,21 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 			return LifecycleResult{}, fmt.Errorf("decode runtime secrets: %w", err)
 		}
 	}
-	runtimeRequest := devcontainer.RuntimeRequest{
-		Version:          devcontainer.RuntimeFormatVersion,
+	source := devcontainer.Source{
+		Path:          request.DevContainer.Path,
+		ContentSHA256: request.DevContainer.ContentSHA256,
+	}
+	if request.DevContainer.Source == "platform_default" {
+		source = devcontainer.Source{DefaultImage: request.DevContainer.DefaultImage}
+	}
+	runtimeRequest := devcontainerruntime.Request{
+		Version:          devcontainerruntime.FormatVersion,
 		Action:           action,
 		CodespaceUUID:    request.CodespaceUUID,
 		OperationVersion: request.OperationVersion,
 		Workspace:        request.Workdir,
-		Selection: devcontainer.Selection{
-			Source:        request.DevContainer.Source,
-			Path:          request.DevContainer.Path,
-			CommitSHA:     request.DevContainer.CommitSHA,
-			ContentSHA256: request.DevContainer.ContentSHA256,
-			DefaultImage:  request.DevContainer.DefaultImage,
-		},
-		RuntimeUser: devcontainer.RuntimeUser{
+		Source:           source,
+		HostUser: devcontainer.HostUser{
 			Name: request.RuntimeUserName,
 		},
 		GitUserName:  request.UserName,
@@ -523,20 +529,22 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 			"GITEA_REPOSITORY":     request.RepoFullName,
 			"GITEA_CODESPACE_UUID": request.CodespaceUUID,
 		},
-		Secrets:     secrets,
-		Environment: request.Environment,
+		Secrets:           secrets,
+		InjectedFeatures:  request.InjectedFeatures,
+		CodeServerVersion: p.codeServerVersion,
+		Environment:       request.Environment,
 	}
 	if request.Operation == LifecycleOperationCreate {
 		uid, gid, home, err := p.runtimeUserIdentity(ctx, instanceName, request.RuntimeUserName)
 		if err != nil {
 			return LifecycleResult{}, err
 		}
-		runtimeRequest.RuntimeUser.UID = uid
-		runtimeRequest.RuntimeUser.GID = gid
-		runtimeRequest.RuntimeUser.Home = home
+		runtimeRequest.HostUser.UID = uid
+		runtimeRequest.HostUser.GID = gid
+		runtimeRequest.HostUser.Home = home
 	} else if request.Environment != nil {
 		// Resume and stop use the target fixed at create time; the outer UID/GID are not consumed by the Docker engine.
-		runtimeRequest.RuntimeUser.Name = request.Environment.RemoteUser
+		runtimeRequest.HostUser.Name = request.Environment.RemoteUser
 	}
 	encoded, err := json.Marshal(runtimeRequest)
 	if err != nil {
@@ -561,11 +569,11 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 	}
 	decoder := json.NewDecoder(strings.NewReader(content))
 	decoder.DisallowUnknownFields()
-	var result devcontainer.RuntimeResult
+	var result devcontainerruntime.Result
 	if err := decoder.Decode(&result); err != nil {
 		return LifecycleResult{}, fmt.Errorf("decode native runtime result: %w", errors.Join(execErr, err))
 	}
-	if result.Version != devcontainer.RuntimeFormatVersion {
+	if result.Version != devcontainerruntime.FormatVersion {
 		return LifecycleResult{}, fmt.Errorf("native runtime result version is invalid")
 	}
 	if result.Error != "" {
@@ -979,14 +987,14 @@ func (p *IncusProvisioner) ReadEndpointManifest(ctx context.Context, instanceNam
 	}
 	decoder := json.NewDecoder(strings.NewReader(content))
 	decoder.DisallowUnknownFields()
-	var manifest devcontainer.EndpointManifest
+	var manifest runtimeendpoint.EndpointManifest
 	if err := decoder.Decode(&manifest); err != nil {
 		return nil, fmt.Errorf("decode endpoint manifest: %w", err)
 	}
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return nil, fmt.Errorf("decode endpoint manifest: trailing data")
 	}
-	if manifest.Version != devcontainer.EndpointManifestVersion {
+	if manifest.Version != runtimeendpoint.EndpointManifestVersion {
 		return nil, fmt.Errorf("endpoint manifest version %d is not supported", manifest.Version)
 	}
 	return append([]RuntimeEndpointDeclaration(nil), manifest.Endpoints...), nil

@@ -5,6 +5,8 @@ package provisioner
 
 import (
 	"context"
+	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,7 +23,8 @@ import (
 	"github.com/lxc/incus/v6/shared/api"
 	"github.com/pkg/sftp"
 
-	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 func TestIncusE2EConnectsToDefaultServer(t *testing.T) {
@@ -178,7 +181,7 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 		t.Skip("Incus native Dev Container lifecycle E2E is disabled; run make test-e2e-runtime-required to enable it")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
 	defer cancel()
 
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
@@ -216,9 +219,18 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 		skipOrFailIncusE2E(t, "Incus E2E server cannot create the lifecycle test instance", err)
 	}
 	assertIncusE2EInstanceRunID(t, ctx, provisioner, instanceName, codespaceUUID, runID)
+	repositoryURL, commitSHA, configurationSHA := seedIncusE2EOfficialInteropRepository(t, ctx, provisioner, instanceName)
 	request := incusE2ELifecycleRequest(codespaceUUID, instanceName, instance.Workdir, LifecycleOperationCreate)
+	request.RepoCloneHTTPURL = repositoryURL
+	request.CommitSHA = commitSHA
+	request.DevContainer.CommitSHA = commitSHA
+	request.DevContainer.ContentSHA256 = configurationSHA
 	environment := runIncusE2ELifecycleStart(t, ctx, provisioner, instance, request)
 	workspace := environment.Workspace
+	if environment.ComposeProject == "" || environment.PrimaryService != "workspace" || len(environment.RelatedContainerIDs) != 1 {
+		t.Fatalf("Incus E2E Compose environment = %#v", environment)
+	}
+	assertIncusE2EOfficialInterop(t, ctx, provisioner, instanceName, 1, 3)
 
 	stopRequest := incusE2ELifecycleRequest(codespaceUUID, instanceName, workspace, LifecycleOperationStop)
 	stopRequest.Environment = &environment
@@ -237,6 +249,10 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 	resumeRequest := incusE2ELifecycleRequest(codespaceUUID, instanceName, workspace, LifecycleOperationResume)
 	resumeRequest.Environment = &environment
 	environment = runIncusE2ELifecycleResume(t, ctx, provisioner, resumed, resumeRequest)
+	if environment.PrimaryContainerID != resumeRequest.Environment.PrimaryContainerID {
+		t.Fatalf("resumed primary container changed from %s to %s", resumeRequest.Environment.PrimaryContainerID, environment.PrimaryContainerID)
+	}
+	assertIncusE2EOfficialInterop(t, ctx, provisioner, instanceName, 2, 6)
 
 	stopRequest.Environment = &environment
 	if _, err := provisioner.StopEnvironment(ctx, instanceName, stopRequest); err != nil {
@@ -251,7 +267,7 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 	assertIncusE2EInstanceAbsent(t, ctx, provisioner, codespaceUUID)
 }
 
-func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) devcontainer.Environment {
+func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) devcontainer.State {
 	t.Helper()
 	logs := &recordingLifecycleLogSink{}
 	request.LogSink = logs
@@ -281,8 +297,11 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	if err != nil {
 		t.Fatalf("check e2e lifecycle workspace git: %v", err)
 	}
-	if gitStatus.OriginURL == "" || !gitStatus.CredentialConfigured {
+	if gitStatus.OriginURL != request.RepoCloneHTTPURL {
 		t.Fatalf("workspace git status = %#v", gitStatus)
+	}
+	if (strings.HasPrefix(gitStatus.OriginURL, "http://") || strings.HasPrefix(gitStatus.OriginURL, "https://")) && !gitStatus.CredentialConfigured {
+		t.Fatalf("workspace HTTP credential is not configured: %#v", gitStatus)
 	}
 	startRequest := request
 	startRequest.Workdir = workspace
@@ -294,7 +313,7 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	return result.Environment
 }
 
-func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) devcontainer.Environment {
+func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instance *Instance, request LifecycleRequest) devcontainer.State {
 	t.Helper()
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e resume credentials: %v", err)
@@ -319,10 +338,7 @@ func assertIncusE2EWorkspaceCommand(t *testing.T, ctx context.Context, provision
 	if err := provisioner.CheckDevContainer(ctx, instanceName); err != nil {
 		t.Fatalf("check e2e Dev Container: %v", err)
 	}
-	editorPort := uint32(result.Environment.WebIDEPort)
-	if editorPort != WorkspaceIDEPort {
-		t.Fatalf("Web IDE port = %d", editorPort)
-	}
+	editorPort := uint32(runtimeendpoint.WorkspaceEndpointPort)
 	if err := provisioner.CheckWorkspaceIDE(ctx, instanceName, uint32(editorPort)); err != nil {
 		t.Fatalf("check e2e Web IDE: %v", err)
 	}
@@ -346,6 +362,115 @@ func assertIncusE2EWorkspaceCommand(t *testing.T, ctx context.Context, provision
 	}
 }
 
+func seedIncusE2EOfficialInteropRepository(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName string) (string, string, string) {
+	t.Helper()
+	_, source, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("locate Incus E2E source")
+	}
+	fixtureRoot := filepath.Join(filepath.Dir(source), "..", "..", "devcontainer", "docker", "testdata", "official-interop")
+	repository := filepath.Join(t.TempDir(), "repository")
+	if err := os.CopyFS(repository, os.DirFS(fixtureRoot)); err != nil {
+		t.Fatalf("copy official interoperability fixture: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "README.md"), []byte("# Dev Container E2E\n"), 0o644); err != nil {
+		t.Fatalf("write E2E repository: %v", err)
+	}
+	runGit := func(arguments ...string) string {
+		command := exec.CommandContext(ctx, "git", arguments...)
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("run git %s: %v: %s", strings.Join(arguments, " "), err, strings.TrimSpace(string(output)))
+		}
+		return strings.TrimSpace(string(output))
+	}
+	runGit("init", "--initial-branch=main", repository)
+	runGit("-C", repository, "add", ".")
+	runGit("-C", repository, "-c", "user.name=Dev Container E2E", "-c", "user.email=devcontainer-e2e@example.com", "commit", "-m", "Create official interoperability fixture")
+	commitSHA := runGit("-C", repository, "rev-parse", "HEAD")
+	bareRepository := filepath.Join(t.TempDir(), "repository.git")
+	runGit("clone", "--bare", repository, bareRepository)
+
+	writeRepositoryFile := func(target, content string, mode int, kind string) error {
+		arguments := incus.InstanceFileArgs{
+			Content:   strings.NewReader(content),
+			UID:       1000,
+			GID:       1000,
+			Mode:      mode,
+			Type:      kind,
+			WriteMode: runtimeCredentialWriteMode,
+		}
+		if kind == "directory" {
+			arguments.Content = nil
+		}
+		return provisioner.createInstanceFile(ctx, instanceName, target, arguments)
+	}
+	instanceRoot := "/opt/gitea-codespace-e2e"
+	if err := writeRepositoryFile(instanceRoot, "", 0o755, "directory"); err != nil {
+		t.Fatalf("create E2E repository root in instance: %v", err)
+	}
+	instanceRepository := filepath.Join(instanceRoot, "repository.git")
+	if err := filepath.Walk(bareRepository, func(filePath string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		relative, err := filepath.Rel(bareRepository, filePath)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(instanceRepository, relative)
+		if info.IsDir() {
+			return writeRepositoryFile(target, "", 0o755, "directory")
+		}
+		if !info.Mode().IsRegular() {
+			return fmt.Errorf("E2E repository contains unsupported file %s", relative)
+		}
+		content, err := os.ReadFile(filePath)
+		if err != nil {
+			return err
+		}
+		return writeRepositoryFile(target, string(content), int(info.Mode().Perm()), "file")
+	}); err != nil {
+		t.Fatalf("seed E2E repository in instance: %v", err)
+	}
+	configuration, err := os.ReadFile(filepath.Join(repository, ".devcontainer", "devcontainer.json"))
+	if err != nil {
+		t.Fatalf("read E2E Dev Container configuration: %v", err)
+	}
+	digest := sha256.Sum256(configuration)
+	return "file://" + instanceRepository, commitSHA, fmt.Sprintf("%x", digest[:])
+}
+
+func assertIncusE2EOfficialInterop(t *testing.T, ctx context.Context, provisioner *IncusProvisioner, instanceName string, startCount, attachCount int) {
+	t.Helper()
+	command := fmt.Sprintf(`set -eu
+test "$(id -u)" = "$(stat -c %%u .)"
+test "$(id -g)" = "$(stat -c %%g .)"
+test "$IMAGE_VALUE" = image-metadata
+test "$REPOSITORY_VALUE" = repository
+test "$FROM_IMAGE" = image-metadata
+test "$REMOTE_VALUE" = repository
+test "$IMAGE_REMOTE" = image-metadata
+command -v zsh >/dev/null
+test "$(cat .image-on-create)" = image
+test "$(cat .on-create)" = repository
+test "$(cat .update-content)" = update
+test "$(cat .post-create-first)" = first
+test "$(cat .post-create-second)" = second
+test "$(wc -c < .post-start)" = %d
+test "$(wc -c < .post-attach)" = %d`, startCount, attachCount)
+	session, err := provisioner.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{InstanceName: instanceName, Command: command})
+	if err != nil {
+		t.Fatalf("open official interoperability assertion: %v", err)
+	}
+	stderr, readErr := io.ReadAll(session.Stderr())
+	waitErr := session.Wait()
+	closeErr := session.Close()
+	if err := errors.Join(readErr, waitErr, closeErr); err != nil {
+		t.Fatalf("verify official interoperability environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
+	}
+}
+
 func incusE2ERuntimeCredentialSeed(codespaceUUID, token string) RuntimeCredentialSeedRequest {
 	return RuntimeCredentialSeedRequest{
 		CodespaceUUID:    codespaceUUID,
@@ -362,6 +487,13 @@ func incusE2ERuntimeGitSSHKeySeed() RuntimeGitSSHKeySeedRequest {
 }
 
 func incusE2ELifecycleRequest(codespaceUUID, instanceName, workdir string, operation LifecycleOperation) LifecycleRequest {
+	operationVersion := int64(1)
+	switch operation {
+	case LifecycleOperationStop:
+		operationVersion = 2
+	case LifecycleOperationResume:
+		operationVersion = 3
+	}
 	return LifecycleRequest{
 		CodespaceUUID:    codespaceUUID,
 		CodespaceName:    instanceName,
@@ -377,9 +509,10 @@ func incusE2ELifecycleRequest(codespaceUUID, instanceName, workdir string, opera
 		Workdir:          workdir,
 		EnvironmentTag:   "e2e",
 		GitProtocol:      "http",
+		OperationVersion: operationVersion,
 		DevContainer: DevContainerConfiguration{
-			Source:       DevContainerSourcePlatformDefault,
-			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
+			Source: DevContainerSourceRepository,
+			Path:   ".devcontainer/devcontainer.json",
 		},
 		Operation: operation,
 	}
@@ -590,11 +723,12 @@ func incusE2EConfig(managerID int64, runID string) IncusConfig {
 		image = defaultIncusImage
 	}
 	return IncusConfig{
-		ManagerID:   managerID,
-		Remote:      strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
-		UnixSocket:  strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
-		Project:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
-		NetworkName: incusE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet"),
+		ManagerID:         managerID,
+		CodeServerVersion: "4.121.0",
+		Remote:            strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
+		UnixSocket:        strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
+		Project:           strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
+		NetworkName:       incusE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet"),
 		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
 			"e2e": {
 				Image:        image,
@@ -619,7 +753,7 @@ func buildIncusE2ERuntimeExecutable(t *testing.T) string {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(source), "..", ".."))
 	executable := filepath.Join(t.TempDir(), "gitea-codespace")
-	command := exec.Command("go", "build", "-o", executable, "./cmd/gitea-codespace")
+	command := exec.Command("go", "build", "-o", executable, ".")
 	command.Dir = root
 	if output, err := command.CombinedOutput(); err != nil {
 		t.Fatalf("build Incus E2E runtime executable: %v\n%s", err, output)

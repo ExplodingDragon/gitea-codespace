@@ -7,8 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"gitea.dev/codespace/internal/devcontainer"
-	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 func newTestWorkspaceEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL string) *gatewayRouteStore {
@@ -19,11 +18,11 @@ func newTestWorkspaceEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL str
 	routes.SetTCPBackend(backend)
 	if err := routes.Put(gatewayEndpointRoute{
 		codespaceUUID:  codespaceUUID,
-		endpointID:     devcontainer.WorkspaceEndpointID,
-		label:          devcontainer.WorkspaceEndpointLabel,
+		endpointID:     runtimeendpoint.WorkspaceEndpointID,
+		label:          runtimeendpoint.WorkspaceEndpointLabel,
 		upstreamScheme: "http",
 		instanceName:   "runtime-1",
-		upstreamPort:   provisioner.WorkspaceIDEPort,
+		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 	}); err != nil {
 		t.Fatalf("put workspace endpoint: %v", err)
 	}

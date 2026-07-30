@@ -9,8 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"gitea.dev/codespace/internal/devcontainer"
-	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 func TestGatewayRouteStoreKeepsLeasesForLabelOnlyUpdate(t *testing.T) {
@@ -149,15 +148,15 @@ func TestGatewayRouteStoreClosesWorkspaceEndpointLease(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	if err := store.Put(gatewayEndpointRoute{
 		codespaceUUID:  codespaceUUID,
-		endpointID:     devcontainer.WorkspaceEndpointID,
-		label:          devcontainer.WorkspaceEndpointLabel,
+		endpointID:     runtimeendpoint.WorkspaceEndpointID,
+		label:          runtimeendpoint.WorkspaceEndpointLabel,
 		upstreamScheme: "http",
 		instanceName:   "runtime-1",
-		upstreamPort:   provisioner.WorkspaceIDEPort,
+		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 	}); err != nil {
 		t.Fatalf("put workspace endpoint: %v", err)
 	}
-	_, request, release, ok := store.BeginProxy(httptest.NewRequest("GET", "/w/", nil), codespaceUUID, devcontainer.WorkspaceEndpointID)
+	_, request, release, ok := store.BeginProxy(httptest.NewRequest("GET", "/w/", nil), codespaceUUID, runtimeendpoint.WorkspaceEndpointID)
 	if !ok {
 		t.Fatalf("begin workspace endpoint failed")
 	}
@@ -165,18 +164,18 @@ func TestGatewayRouteStoreClosesWorkspaceEndpointLease(t *testing.T) {
 	sessionID, err := sessions.Create(gatewayOpenTokenBinding{
 		userID:        42,
 		codespaceUUID: codespaceUUID,
-		endpointID:    devcontainer.WorkspaceEndpointID,
+		endpointID:    runtimeendpoint.WorkspaceEndpointID,
 	}, time.Now())
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, devcontainer.WorkspaceEndpointID, time.Now()); !ok {
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, runtimeendpoint.WorkspaceEndpointID, time.Now()); !ok {
 		t.Fatalf("session did not authenticate before access close")
 	}
 
 	store.CloseCodespaceAccess(codespaceUUID)
 	assertGatewayRouteProxyCancelled(t, request)
-	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, devcontainer.WorkspaceEndpointID, time.Now()); ok {
+	if _, ok := sessions.Authenticate(sessionID, codespaceUUID, runtimeendpoint.WorkspaceEndpointID, time.Now()); ok {
 		t.Fatalf("session authenticated after access close")
 	}
 }
@@ -186,11 +185,11 @@ func TestGatewayRouteStoreRejectsInvalidWorkspaceEndpoint(t *testing.T) {
 
 	err := newGatewayRouteStore().Put(gatewayEndpointRoute{
 		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     devcontainer.WorkspaceEndpointID,
-		label:          devcontainer.WorkspaceEndpointLabel,
+		endpointID:     runtimeendpoint.WorkspaceEndpointID,
+		label:          runtimeendpoint.WorkspaceEndpointLabel,
 		upstreamScheme: "http",
 		instanceName:   "runtime-1",
-		upstreamPort:   provisioner.WorkspaceIDEPort,
+		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 		public:         true,
 	})
 	if err == nil {

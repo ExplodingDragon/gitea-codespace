@@ -1,0 +1,32 @@
+{
+  "name": "Official interoperability",
+  "dockerComposeFile": "compose.yaml",
+  "service": "workspace",
+  "runServices": ["workspace", "sidecar"],
+  "workspaceFolder": "/workspace",
+  "remoteUser": "vscode",
+  "containerEnv": {
+    "REPOSITORY_VALUE": "repository",
+    "FROM_IMAGE": "${containerEnv:IMAGE_VALUE}"
+  },
+  "remoteEnv": {
+    "REMOTE_VALUE": "${containerEnv:REPOSITORY_VALUE}",
+    "IMAGE_REMOTE": "${containerEnv:IMAGE_VALUE}"
+  },
+  "features": {
+    "ghcr.io/devcontainers/features/common-utils:2": {
+      "installZsh": true,
+      "username": "automatic"
+    }
+  },
+  "onCreateCommand": "printf repository > /workspace/.on-create",
+  "updateContentCommand": ["/bin/sh", "-c", "printf update > /workspace/.update-content"],
+  "postCreateCommand": {
+    "first": "printf first > /workspace/.post-create-first",
+    "second": ["/bin/sh", "-c", "printf second > /workspace/.post-create-second"]
+  },
+  "postStartCommand": "printf x >> /workspace/.post-start",
+  "postAttachCommand": "printf x >> /workspace/.post-attach",
+  "waitFor": "updateContentCommand",
+  "shutdownAction": "stopCompose"
+}

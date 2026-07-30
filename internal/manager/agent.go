@@ -22,15 +22,14 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode"
 	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/controlplane"
-	"gitea.dev/codespace/internal/devcontainer"
 	"gitea.dev/codespace/internal/provisioner"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 )
@@ -2413,6 +2412,10 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
+	userFeatures, err := userFeaturesFromCreatePayload(payload)
+	if err != nil {
+		return err
+	}
 	if err := a.saveStartupInput(startupInput); err != nil {
 		return err
 	}
@@ -2432,6 +2435,7 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	request.StartRef = payload.GetStartRef()
 	request.CommitSHA = payload.GetCommitSha()
 	request.GitProtocol = gitProtocolName(payload.GetGitProtocol())
+	request.InjectedFeatures = userFeatures
 	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, nil, request)
 }
 
@@ -2647,111 +2651,6 @@ func gitProtocolName(protocol codespacev1.GitProtocol) string {
 	}
 }
 
-func startupInputFromCreatePayload(operation *codespacev1.OperationPayload, payload *codespacev1.CreateOperationPayload) (StartupInput, error) {
-	if operation == nil {
-		return StartupInput{}, fmt.Errorf("operation is required")
-	}
-	if payload == nil {
-		return StartupInput{}, fmt.Errorf("create payload is required")
-	}
-	username := strings.TrimSpace(payload.GetUsername())
-	gitUserEmail := strings.TrimSpace(payload.GetGitUserEmail())
-	if username == "" {
-		return StartupInput{}, fmt.Errorf("create username is required")
-	}
-	if gitUserEmail == "" {
-		return StartupInput{}, fmt.Errorf("create git user email is required")
-	}
-	repoFullName := strings.Trim(strings.TrimSpace(payload.GetRepoFullName()), "/")
-	if repoFullName == "" || !strings.Contains(repoFullName, "/") {
-		return StartupInput{}, fmt.Errorf("create repository full name is invalid")
-	}
-	environmentTag := strings.TrimSpace(payload.GetEnvironmentTag())
-	if environmentTag == "" {
-		return StartupInput{}, fmt.Errorf("create environment tag is required")
-	}
-	runtimeUserName := deriveRuntimeUserName(username)
-	devContainer := payload.GetDevContainer()
-	if devContainer == nil {
-		return StartupInput{}, fmt.Errorf("create Dev Container configuration is required")
-	}
-	startupInput := StartupInput{
-		CodespaceUUID:   operation.GetCodespaceUuid(),
-		RepoFullName:    repoFullName,
-		Username:        username,
-		GitUserEmail:    gitUserEmail,
-		RuntimeUserName: runtimeUserName,
-		EnvironmentTag:  environmentTag,
-	}
-	startupInput.DevContainer.Path = strings.TrimSpace(devContainer.GetRepositoryPath())
-	startupInput.DevContainer.ContentSHA256 = strings.TrimSpace(devContainer.GetRepositoryContentSha256())
-	startupInput.DevContainer.DefaultImage = strings.TrimSpace(devContainer.GetDefaultImage())
-	switch {
-	case startupInput.DevContainer.DefaultImage != "":
-		startupInput.DevContainer.Source = provisioner.DevContainerSourcePlatformDefault
-	case startupInput.DevContainer.Path != "" || startupInput.DevContainer.ContentSHA256 != "":
-		startupInput.DevContainer.Source = provisioner.DevContainerSourceRepository
-		startupInput.DevContainer.CommitSHA = strings.TrimSpace(payload.GetCommitSha())
-	default:
-		return StartupInput{}, fmt.Errorf("create Dev Container configuration source is invalid")
-	}
-	if err := startupInput.DevContainer.Validate(); err != nil {
-		return StartupInput{}, fmt.Errorf("create Dev Container configuration is invalid: %w", err)
-	}
-	return startupInput, nil
-}
-
-func deriveRuntimeUserName(username string) string {
-	username = strings.ToLower(strings.TrimSpace(username))
-	var builder strings.Builder
-	lastSeparator := false
-	for _, r := range username {
-		switch {
-		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
-			builder.WriteRune(r)
-			lastSeparator = false
-		case r == '_' || r == '-':
-			if !lastSeparator {
-				builder.WriteByte('-')
-				lastSeparator = true
-			}
-		case unicode.IsLetter(r) || unicode.IsDigit(r):
-			continue
-		default:
-			if !lastSeparator {
-				builder.WriteByte('-')
-				lastSeparator = true
-			}
-		}
-	}
-	value := strings.Trim(builder.String(), "-_")
-	if value == "" {
-		value = "codespace"
-	}
-	if value[0] >= '0' && value[0] <= '9' {
-		value = "u-" + value
-	}
-	if isReservedRuntimeUserName(value) {
-		value = "u-" + value
-	}
-	if len(value) > 32 {
-		value = strings.Trim(value[:32], "-_")
-	}
-	if value == "" {
-		return "codespace"
-	}
-	return value
-}
-
-func isReservedRuntimeUserName(username string) bool {
-	switch username {
-	case "root", "daemon", "bin", "sys", "sync", "games", "man", "lp", "mail", "news", "uucp", "proxy", "www-data", "backup", "list", "irc", "gnats", "nobody":
-		return true
-	default:
-		return false
-	}
-}
-
 func (a *Agent) saveStartupInput(input StartupInput) error {
 	if a.startupInputStore == nil {
 		return nil
@@ -2895,20 +2794,20 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 	if err != nil {
 		return fmt.Errorf("read runtime endpoint manifest: %w", err)
 	}
-	if len(declarations) > devcontainer.MaxDeclaredEndpointCount {
-		return fmt.Errorf("runtime endpoint manifest exceeds limit %d", devcontainer.MaxDeclaredEndpointCount)
+	if len(declarations) > runtimeendpoint.MaxDeclaredEndpointCount {
+		return fmt.Errorf("runtime endpoint manifest exceeds limit %d", runtimeendpoint.MaxDeclaredEndpointCount)
 	}
 	routes := make([]RuntimeEndpointRoute, 0, len(declarations)+1)
 	routes = append(routes, RuntimeEndpointRoute{
 		CodespaceUUID:  codespaceUUID,
-		EndpointID:     devcontainer.WorkspaceEndpointID,
-		Label:          devcontainer.WorkspaceEndpointLabel,
+		EndpointID:     runtimeendpoint.WorkspaceEndpointID,
+		Label:          runtimeendpoint.WorkspaceEndpointLabel,
 		UpstreamScheme: "http",
 		InstanceName:   instance.Name,
-		UpstreamPort:   provisioner.WorkspaceIDEPort,
+		UpstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 	})
 	for _, declaration := range declarations {
-		if declaration.EndpointID == devcontainer.WorkspaceEndpointID {
+		if declaration.EndpointID == runtimeendpoint.WorkspaceEndpointID {
 			return fmt.Errorf("endpoint_id workspace is reserved for the platform Web IDE")
 		}
 		if declaration.UpstreamPort < 1 || declaration.UpstreamPort > 65535 {
@@ -2985,7 +2884,7 @@ func (a *Agent) checkRuntimeDevelopmentEnvironment(ctx context.Context, codespac
 	if !ok || a.runtimeEnvStateStore == nil {
 		return nil
 	}
-	environment, ok, err := a.runtimeEnvStateStore.LoadRuntimeEnvironment(codespaceUUID)
+	_, ok, err := a.runtimeEnvStateStore.LoadRuntimeEnvironment(codespaceUUID)
 	if err != nil {
 		return fmt.Errorf("load runtime environment %s: %w", codespaceUUID, err)
 	}
@@ -2995,10 +2894,7 @@ func (a *Agent) checkRuntimeDevelopmentEnvironment(ctx context.Context, codespac
 	if err := checker.CheckDevContainer(ctx, instanceName); err != nil {
 		return fmt.Errorf("check Dev Container %s: %w", codespaceUUID, err)
 	}
-	port := environment.Environment.WebIDEPort
-	if port != provisioner.WorkspaceIDEPort {
-		return fmt.Errorf("Web IDE port is missing or invalid")
-	}
+	port := uint16(runtimeendpoint.WorkspaceEndpointPort)
 	if err := checker.CheckWorkspaceIDE(ctx, instanceName, uint32(port)); err != nil {
 		return fmt.Errorf("check Web IDE %s: %w", codespaceUUID, err)
 	}

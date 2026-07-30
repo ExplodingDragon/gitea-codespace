@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"time"
 
@@ -29,9 +30,24 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 
 	config, err := LoadConfigForRegister(configPath)
 	if err != nil {
-		config = DefaultConfig()
-		config.applyDefaults()
-		config.resolveRelativePaths(configPath)
+		return fmt.Errorf("load register config: %w", err)
+	}
+	if strings.TrimSpace(config.Manager.GatewayURL) == "" {
+		config.Manager.GatewayURL = config.Server.PublicBaseURL
+	}
+	if err := config.Manager.Validate(); err != nil {
+		return fmt.Errorf("validate manager config: %w", err)
+	}
+
+	stateLock, err := acquireStateDirLock(config.Manager.StateDir)
+	if err != nil {
+		return fmt.Errorf("acquire manager state dir lock: %w", err)
+	}
+	defer func() {
+		_ = stateLock.Close()
+	}()
+	if err := preflightManagerStateDir(config.Manager.StateDir); err != nil {
+		return err
 	}
 
 	reader := bufio.NewReader(input)
@@ -39,17 +55,13 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if err != nil {
 		return err
 	}
-	registrationToken, err := promptRequired(output, reader, "Registration token", "")
+	giteaURL, err = normalizeGiteaURL(giteaURL)
 	if err != nil {
 		return err
 	}
-
-	giteaURL = strings.TrimRight(strings.TrimSpace(giteaURL), "/")
-	if strings.TrimSpace(config.Manager.GatewayURL) == "" {
-		config.Manager.GatewayURL = config.Server.PublicBaseURL
-	}
-	if err := config.Manager.Validate(); err != nil {
-		return fmt.Errorf("validate manager config: %w", err)
+	registrationToken, err := promptRequired(output, reader, "Registration token", "")
+	if err != nil {
+		return err
 	}
 
 	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerServiceBaseURL(giteaURL))
@@ -63,26 +75,62 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		return fmt.Errorf("register manager rpc: %w", err)
 	}
 
-	if err := SaveManagerIdentity(config.Manager.StateDir, ManagerIdentity{
+	managerState := ManagerState{
 		GiteaURL:       giteaURL,
 		ManagerID:      response.Msg.GetManagerId(),
+		ManagerSecret:  response.Msg.GetManagerSecret(),
 		RegisteredUnix: time.Now().Unix(),
-	}); err != nil {
-		return err
 	}
-	if err := SaveManagerCredentials(config.Manager.StateDir, ManagerCredentials{
-		ManagerSecret: response.Msg.GetManagerSecret(),
-	}); err != nil {
-		return err
-	}
-	if err := SaveManagerRootState(config.Manager.StateDir, ManagerRootState{
-		ManagerID:           response.Msg.GetManagerId(),
-		InventoryGeneration: 0,
-	}); err != nil {
-		return err
+	if err := SaveManagerState(config.Manager.StateDir, managerState); err != nil {
+		return fmt.Errorf("save registered manager %d state: %w; remove the unused Manager in Gitea before registering again", managerState.ManagerID, err)
 	}
 
 	fmt.Fprintf(output, "registered manager %d and wrote state %s\n", response.Msg.GetManagerId(), config.Manager.StateDir)
+	return nil
+}
+
+func preflightManagerStateDir(stateDir string) error {
+	path, err := managerStatePath(stateDir)
+	if err != nil {
+		return err
+	}
+	if _, err := os.Stat(path); err == nil {
+		state, loadErr := LoadManagerState(stateDir)
+		if loadErr != nil {
+			return fmt.Errorf("manager state already exists but is invalid: %w", loadErr)
+		}
+		return fmt.Errorf("manager state is already registered with %s as manager %d", state.GiteaURL, state.ManagerID)
+	} else if !os.IsNotExist(err) {
+		return fmt.Errorf("stat manager state %s: %w", path, err)
+	}
+
+	tempFile, err := os.CreateTemp(stateDir, ".manager-state.preflight.*")
+	if err != nil {
+		return fmt.Errorf("create manager state preflight file: %w", err)
+	}
+	tempPath := tempFile.Name()
+	defer os.Remove(tempPath)
+	if _, err := tempFile.WriteString("manager state preflight\n"); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("write manager state preflight file: %w", err)
+	}
+	if err := tempFile.Chmod(0o600); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("chmod manager state preflight file: %w", err)
+	}
+	if err := tempFile.Sync(); err != nil {
+		_ = tempFile.Close()
+		return fmt.Errorf("sync manager state preflight file: %w", err)
+	}
+	if err := tempFile.Close(); err != nil {
+		return fmt.Errorf("close manager state preflight file: %w", err)
+	}
+	if err := os.Remove(tempPath); err != nil {
+		return fmt.Errorf("remove manager state preflight file: %w", err)
+	}
+	if err := syncStateDir(stateDir); err != nil {
+		return fmt.Errorf("sync manager state directory: %w", err)
+	}
 	return nil
 }
 

@@ -5,6 +5,7 @@ package app
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -24,9 +25,14 @@ var defaultConfigNames = []string{
 	"codespace.yml",
 }
 
+var errConfigNotFound = errors.New("config file not found")
+
 const defaultRegisterConfigPath = "codespace.yaml"
 
-var gatewayDNSLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+var (
+	gatewayDNSLabelPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
+	codeServerVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
+)
 
 // Duration stores one configuration duration value.
 type Duration time.Duration
@@ -215,9 +221,10 @@ type RuntimeEnvironmentConfig struct {
 
 // ProvisionerConfig stores provisioner selection and runtime options.
 type ProvisionerConfig struct {
-	Kind          string
-	CodespaceRoot string
-	Bootstrap     BootstrapConfig
+	Kind              string
+	CodespaceRoot     string
+	CodeServerVersion string
+	Bootstrap         BootstrapConfig
 }
 
 // BootstrapConfig stores codespace bootstrap execution settings.
@@ -231,12 +238,18 @@ type BootstrapConfig struct {
 
 // RuntimeConfig stores backend driver and runtime environments.
 type RuntimeConfig struct {
-	Driver        string              `yaml:"driver"`
-	CodespaceRoot string              `yaml:"codespace_root"`
-	Bootstrap     BootstrapConfig     `yaml:"bootstrap"`
-	Git           RuntimeGitConfig    `yaml:"git"`
-	Incus         RuntimeIncusConfig  `yaml:"incus"`
-	Environments  []EnvironmentConfig `yaml:"environments"`
+	Driver        string                    `yaml:"driver"`
+	CodespaceRoot string                    `yaml:"codespace_root"`
+	Bootstrap     BootstrapConfig           `yaml:"bootstrap"`
+	Git           RuntimeGitConfig          `yaml:"git"`
+	DevContainer  RuntimeDevContainerConfig `yaml:"devcontainer"`
+	Incus         RuntimeIncusConfig        `yaml:"incus"`
+	Environments  []EnvironmentConfig       `yaml:"environments"`
+}
+
+// RuntimeDevContainerConfig stores platform additions to every new Dev Container.
+type RuntimeDevContainerConfig struct {
+	CodeServerVersion string `yaml:"code_server_version"`
 }
 
 // RuntimeGitConfig stores Manager-local Git credential generation settings.
@@ -389,6 +402,7 @@ func DefaultConfig() Config {
 			Git: RuntimeGitConfig{
 				SSHKeyType: "ed25519",
 			},
+			DevContainer: RuntimeDevContainerConfig{CodeServerVersion: "4.121.0"},
 			Incus: RuntimeIncusConfig{
 				Connect: RuntimeIncusConnectConfig{
 					UnixSocket: "/var/lib/incus/unix.socket",
@@ -437,10 +451,12 @@ func DiscoverConfigPath(path string) (string, error) {
 	for _, candidate := range defaultConfigNames {
 		if _, err := os.Stat(candidate); err == nil {
 			return candidate, nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("stat config %s: %w", candidate, err)
 		}
 	}
 
-	return "", fmt.Errorf("config file not found, tried %s", strings.Join(defaultConfigNames, ", "))
+	return "", fmt.Errorf("%w, tried %s", errConfigNotFound, strings.Join(defaultConfigNames, ", "))
 }
 
 // LoadConfig loads one YAML config file.
@@ -466,9 +482,12 @@ func LoadConfig(path string) (Config, error) {
 func LoadConfigForRegister(path string) (Config, error) {
 	configPath, err := DiscoverConfigPath(path)
 	if err != nil {
+		if strings.TrimSpace(path) != "" || !errors.Is(err, errConfigNotFound) {
+			return Config{}, err
+		}
 		config := DefaultConfig()
 		config.applyDefaults()
-		config.resolveRelativePaths(path)
+		config.resolveRelativePaths(defaultRegisterConfigPath)
 		return config, nil
 	}
 	config, err := decodeConfigFile(configPath)
@@ -506,6 +525,7 @@ func (c Config) Validate() error {
 		c.validateVersion,
 		c.validateEnvironments,
 		c.validateRuntimeGit,
+		c.validateRuntimeDevContainer,
 		c.validateRuntimeIncus,
 		c.Server.Validate,
 		c.Manager.Validate,
@@ -516,6 +536,14 @@ func (c Config) Validate() error {
 		if err := validate(); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c Config) validateRuntimeDevContainer() error {
+	version := strings.TrimSpace(c.Runtime.DevContainer.CodeServerVersion)
+	if !codeServerVersionPattern.MatchString(version) {
+		return fmt.Errorf("runtime.devcontainer.code_server_version must be an explicit semantic version")
 	}
 	return nil
 }
@@ -598,9 +626,10 @@ func (c *Config) syncRuntimeFields() {
 		HTTPTimeout:     c.Node.HTTPTimeout,
 	}
 	c.Provisioner = ProvisionerConfig{
-		Kind:          c.Runtime.Driver,
-		CodespaceRoot: c.Runtime.CodespaceRoot,
-		Bootstrap:     c.Runtime.Bootstrap,
+		Kind:              c.Runtime.Driver,
+		CodespaceRoot:     c.Runtime.CodespaceRoot,
+		CodeServerVersion: c.Runtime.DevContainer.CodeServerVersion,
+		Bootstrap:         c.Runtime.Bootstrap,
 	}
 	c.Incus = IncusConfig{
 		Endpoint:      c.Runtime.Incus.Connect.RemoteAddr,
@@ -1109,6 +1138,9 @@ func (c *RuntimeConfig) applyDefaults(defaults RuntimeConfig) {
 	}
 	if strings.TrimSpace(c.Git.SSHKeyType) == "" {
 		c.Git.SSHKeyType = defaults.Git.SSHKeyType
+	}
+	if strings.TrimSpace(c.DevContainer.CodeServerVersion) == "" {
+		c.DevContainer.CodeServerVersion = defaults.DevContainer.CodeServerVersion
 	}
 	if strings.TrimSpace(c.Incus.Connect.UnixSocket) == "" && strings.TrimSpace(c.Incus.Connect.RemoteAddr) == "" {
 		c.Incus.Connect.UnixSocket = defaults.Incus.Connect.UnixSocket

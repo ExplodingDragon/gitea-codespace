@@ -16,6 +16,7 @@ require (
 	github.com/moby/term v0.5.2
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pkg/sftp v1.13.10
+	github.com/spf13/cobra v1.10.1
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
 	golang.org/x/crypto v0.43.0
 	golang.org/x/sync v0.22.0
@@ -156,7 +157,6 @@ require (
 	github.com/shibumi/go-pathspec v1.3.0 // indirect
 	github.com/sirupsen/logrus v1.9.3 // indirect
 	github.com/skratchdot/open-golang v0.0.0-20200116055534-eef842397966 // indirect
-	github.com/spf13/cobra v1.10.1 // indirect
 	github.com/spf13/pflag v1.0.10 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/theupdateframework/notary v0.7.0 // indirect
@@ -215,6 +215,6 @@ require (
 	tags.cncf.io/container-device-interface v1.0.1 // indirect
 )
 
-replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260729185227-a2153916c3ff
+replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260730172852-160ed4265e6c
 
 exclude google.golang.org/genproto v0.0.0-20230223222841-637eb2293923

@@ -53,6 +53,9 @@ runtime:
     group: 0
   git:
     ssh_key_type: "ed25519"
+  devcontainer:
+    # An explicit code-server release used by newly created Codespaces. Recreate an existing Codespace to upgrade it.
+    code_server_version: "4.121.0"
   incus:
     connect:
       unix_socket: "/var/lib/incus/unix.socket"

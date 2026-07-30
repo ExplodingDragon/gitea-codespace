@@ -16,7 +16,8 @@ import (
 
 	"github.com/pkg/sftp"
 
-	"gitea.dev/codespace/internal/devcontainer"
+	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 // DummyProvisioner simulates backend operations for tests.
@@ -198,7 +199,7 @@ func (p *DummyProvisioner) CheckWorkspaceIDE(ctx context.Context, instanceName s
 	if strings.TrimSpace(instanceName) == "" {
 		return fmt.Errorf("instance name is empty")
 	}
-	if port != WorkspaceIDEPort {
+	if port != runtimeendpoint.WorkspaceEndpointPort {
 		return fmt.Errorf("workspace IDE port is invalid")
 	}
 	return nil
@@ -392,16 +393,15 @@ func (p *DummyProvisioner) StartEnvironment(ctx context.Context, instanceName st
 	if request.Environment != nil {
 		return LifecycleResult{Environment: *request.Environment}, nil
 	}
-	return LifecycleResult{Environment: devcontainer.Environment{
-		Version:            devcontainer.RuntimeFormatVersion,
+	return LifecycleResult{Environment: devcontainer.State{
+		Version:            devcontainer.StateFormatVersion,
 		ID:                 "dummy-environment",
-		CodespaceUUID:      request.CodespaceUUID,
+		OwnerID:            request.CodespaceUUID,
 		Workspace:          request.Workdir,
 		WorkspaceFolder:    request.Workdir,
 		PrimaryContainerID: "dummy-devcontainer",
 		RemoteUser:         "codespace",
 		RemoteWorkdir:      request.Workdir,
-		WebIDEPort:         WorkspaceIDEPort,
 	}}, nil
 }
 
