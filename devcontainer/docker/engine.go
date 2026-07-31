@@ -71,6 +71,7 @@ type CreateOptions struct {
 	AdditionalMounts []devcontainer.Mount
 	Labels           map[string]string
 	FrozenLockfile   bool
+	Cache            devcontainer.CacheOptions
 	PrepareLifecycle PrepareLifecycleFunc
 	Ready            ReadyFunc
 }
@@ -125,6 +126,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if err != nil {
 		return nil, devcontainer.InvalidConfiguration(err)
 	}
+	if err := validateCacheOptions(options.Cache); err != nil {
+		return nil, devcontainer.InvalidConfiguration(err)
+	}
 	composeProject := ""
 	if len(resolved.DockerComposeFile) > 0 {
 		composeProject = composeProjectName(options.OwnerID)
@@ -136,6 +140,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 		return nil, devcontainer.InvalidConfiguration(err)
 	}
 	resolved.FrozenLockfile = options.FrozenLockfile
+	resolved.Cache = options.Cache
 	resolved.Configuration = devcontainer.Merge(resolved.Configuration, devcontainer.Configuration{Mounts: options.AdditionalMounts})
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return nil, devcontainer.InvalidConfiguration(err)
@@ -204,6 +209,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 
 func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injected []devcontainer.InjectedFeature) error {
 	resolved.InjectedFeatureReferences = map[string]struct{}{}
+	resolved.InstallOnlyFeatures = map[string]struct{}{}
 	featureOrigins := make(map[string]string, len(resolved.Features)+len(injected))
 	featureIDs := make(map[string]string, len(resolved.Features)+len(injected))
 	for reference := range resolved.Features {
@@ -234,6 +240,9 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 			if !featureOptionsEqual(existing, featureOptions) {
 				return fmt.Errorf("Dev Container Feature %s conflicts between %s and %s", reference, featureOrigins[reference], origin)
 			}
+			if feature.InstallOnly {
+				resolved.InstallOnlyFeatures[reference] = struct{}{}
+			}
 			continue
 		}
 		featureID, err := featureReferenceID(reference)
@@ -245,6 +254,9 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 		}
 		resolved.Features[reference] = featureOptions
 		resolved.InjectedFeatureReferences[reference] = struct{}{}
+		if feature.InstallOnly {
+			resolved.InstallOnlyFeatures[reference] = struct{}{}
+		}
 		featureOrigins[reference] = origin
 		featureIDs[featureID] = reference
 	}
@@ -372,7 +384,8 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		return "", nil, nil, fmt.Errorf("Docker Compose service %q does not exist", resolved.Service)
 	}
 	if service.Build != nil {
-		if err := e.compose.Build(ctx, project, api.BuildOptions{Services: []string{resolved.Service}}); err != nil {
+		stage := "compose-" + resolved.Service
+		if err := e.buildService(ctx, project, resolved.Service, buildCacheReference(resolved.Cache, stage), stage); err != nil {
 			return "", nil, nil, fmt.Errorf("build Docker Compose Dev Container service: %w", err)
 		}
 	}
@@ -381,7 +394,8 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		return "", nil, nil, fmt.Errorf("Docker Compose service %q has no image or build", resolved.Service)
 	}
 	if service.Build == nil {
-		if err := e.pullImage(ctx, baseImage); err != nil {
+		baseImage, err = e.resolveAndPullImage(ctx, baseImage, resolved.Cache)
+		if err != nil {
 			return "", nil, nil, err
 		}
 	}
@@ -406,23 +420,6 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	service.Image = featureImage
 	service.Build = nil
-	for name, relatedService := range project.Services {
-		relatedService.CustomLabels = composetypes.Labels{
-			api.ProjectLabel:     project.Name,
-			api.ServiceLabel:     name,
-			api.VersionLabel:     api.ComposeVersion,
-			api.WorkingDirLabel:  project.WorkingDir,
-			api.ConfigFilesLabel: strings.Join(project.ComposeFiles, ","),
-			api.OneoffLabel:      "False",
-		}
-		if relatedService.Labels == nil {
-			relatedService.Labels = composetypes.Labels{}
-		}
-		for label, value := range labels {
-			relatedService.Labels[label] = value
-		}
-		project.Services[name] = relatedService
-	}
 	configuredMounts := slices.Clone(resolved.Mounts)
 	overriddenVolumeTargets := map[string]struct{}{}
 	for _, item := range configuredMounts {
@@ -453,7 +450,6 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		service.Environment = composetypes.MappingWithEquals{}
 	}
 	for name, value := range resolved.ContainerEnv {
-		value := value
 		service.Environment[name] = &value
 	}
 	if service.Labels == nil {
@@ -483,9 +479,54 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		service.Command = command
 	}
 	project.Services[resolved.Service] = service
+	for name, relatedService := range project.Services {
+		relatedService.CustomLabels = composetypes.Labels{
+			api.ProjectLabel:     project.Name,
+			api.ServiceLabel:     name,
+			api.VersionLabel:     api.ComposeVersion,
+			api.WorkingDirLabel:  project.WorkingDir,
+			api.ConfigFilesLabel: strings.Join(project.ComposeFiles, ","),
+			api.OneoffLabel:      "False",
+		}
+		if relatedService.Labels == nil {
+			relatedService.Labels = composetypes.Labels{}
+		}
+		for label, value := range labels {
+			relatedService.Labels[label] = value
+		}
+		project.Services[name] = relatedService
+	}
 	services := slices.Clone(resolved.RunServices)
 	if len(services) > 0 && !slices.Contains(services, resolved.Service) {
 		services = append(services, resolved.Service)
+	}
+	if len(services) == 0 {
+		services = project.ServiceNames()
+	}
+	for _, name := range services {
+		if name == resolved.Service {
+			continue
+		}
+		relatedService, ok := project.Services[name]
+		if !ok {
+			continue
+		}
+		if relatedService.Build != nil {
+			stage := "compose-" + name
+			if err := e.buildService(ctx, project, name, buildCacheReference(resolved.Cache, stage), stage); err != nil {
+				return "", nil, nil, fmt.Errorf("build Docker Compose service %s: %w", name, err)
+			}
+			continue
+		}
+		if strings.TrimSpace(relatedService.Image) == "" {
+			continue
+		}
+		localImage, err := e.resolveAndPullImage(ctx, relatedService.Image, resolved.Cache)
+		if err != nil {
+			return "", nil, nil, fmt.Errorf("pull Docker Compose service %s image: %w", name, err)
+		}
+		relatedService.Image = localImage
+		project.Services[name] = relatedService
 	}
 	if err := e.compose.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{Services: services, RemoveOrphans: true, AssumeYes: true},

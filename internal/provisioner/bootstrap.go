@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -78,6 +79,10 @@ func (p *IncusProvisioner) runBootstrap(ctx context.Context, instanceName string
 	if err := p.ensureBootstrapStateFiles(ctx, instanceName); err != nil {
 		return nil, err
 	}
+	dockerConfigurationChanged, err := p.configureDockerDaemon(ctx, instanceName)
+	if err != nil {
+		return nil, err
+	}
 	scriptPath := filepath.Join(bootstrapScriptDir, "bootstrap.sh")
 	if err := p.writeRuntimeFile(ctx, instanceName, scriptPath, builtinBootstrapScript, 0o700, "file"); err != nil {
 		return nil, err
@@ -91,6 +96,9 @@ func (p *IncusProvisioner) runBootstrap(ctx context.Context, instanceName string
 	}
 
 	environment := p.bootstrapEnvironment(request, resultPath)
+	if dockerConfigurationChanged {
+		environment["CODESPACE_DOCKER_DAEMON_CONFIGURED"] = "1"
+	}
 	p.writeLifecycleLog(ctx, request.LogSink, fmt.Sprintf("%s started", stage))
 	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{p.bootstrap.Shell, scriptPath}, environment, "/", request.LogSink)
 	resultContent, _, err := p.readRuntimeFile(ctx, instanceName, resultPath)
@@ -252,6 +260,98 @@ func (p *IncusProvisioner) bootstrapEnvironment(request LifecycleRequest, result
 		"CODESPACE_REPO_NAME":               repoName,
 	}
 	return values
+}
+
+func (p *IncusProvisioner) configureDockerDaemon(ctx context.Context, instanceName string) (bool, error) {
+	const daemonConfigPath = "/etc/docker/daemon.json"
+	content, exists, err := p.readRuntimeFile(ctx, instanceName, daemonConfigPath)
+	if err != nil {
+		return false, err
+	}
+	encoded, changed, err := p.dockerDaemonConfiguration(content)
+	if err != nil || !changed {
+		return false, err
+	}
+	if err := p.writeRuntimeFile(ctx, instanceName, "/etc/docker", "", 0o755, "directory"); err != nil {
+		return false, err
+	}
+	if err := p.writeRuntimeFile(ctx, instanceName, daemonConfigPath, encoded, 0o600, "file"); err != nil {
+		return false, err
+	}
+	return !exists || strings.TrimSpace(content) != encoded, nil
+}
+
+func (p *IncusProvisioner) dockerDaemonConfiguration(content string) (string, bool, error) {
+	var registryMirrors []string
+	if mirror := strings.TrimSpace(p.registryMirrors["docker.io"]); mirror != "" {
+		parsed, err := url.Parse(mirror)
+		if err == nil && strings.Trim(parsed.Path, "/") == "" {
+			registryMirrors = append(registryMirrors, mirror)
+		}
+	}
+	insecureRegistries := make([]string, 0, len(p.registryMirrors)+1)
+	values := []string{p.buildCacheRegistry}
+	for _, value := range p.registryMirrors {
+		values = append(values, value)
+	}
+	for _, value := range values {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err == nil && parsed.Scheme == "http" && parsed.Host != "" {
+			insecureRegistries = append(insecureRegistries, parsed.Host)
+		}
+	}
+	if len(registryMirrors) == 0 && len(insecureRegistries) == 0 {
+		return "", false, nil
+	}
+
+	configuration := map[string]json.RawMessage{}
+	if strings.TrimSpace(content) != "" {
+		if err := json.Unmarshal([]byte(content), &configuration); err != nil {
+			return "", false, fmt.Errorf("decode existing Docker daemon configuration: %w", err)
+		}
+		if configuration == nil {
+			return "", false, fmt.Errorf("existing Docker daemon configuration must be a JSON object")
+		}
+	}
+	mergeList := func(name string, additions []string) error {
+		if len(additions) == 0 {
+			return nil
+		}
+		values := []string{}
+		if raw := configuration[name]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &values); err != nil {
+				return fmt.Errorf("decode Docker daemon %s: %w", name, err)
+			}
+		}
+		seen := make(map[string]struct{}, len(values)+len(additions))
+		for _, value := range values {
+			seen[value] = struct{}{}
+		}
+		for _, value := range additions {
+			if _, ok := seen[value]; !ok {
+				values = append(values, value)
+				seen[value] = struct{}{}
+			}
+		}
+		sort.Strings(values)
+		encoded, err := json.Marshal(values)
+		if err != nil {
+			return err
+		}
+		configuration[name] = encoded
+		return nil
+	}
+	if err := mergeList("registry-mirrors", registryMirrors); err != nil {
+		return "", false, err
+	}
+	if err := mergeList("insecure-registries", insecureRegistries); err != nil {
+		return "", false, err
+	}
+	encoded, err := json.Marshal(configuration)
+	if err != nil {
+		return "", false, fmt.Errorf("encode Docker daemon configuration: %w", err)
+	}
+	return string(encoded), strings.TrimSpace(content) != string(encoded), nil
 }
 
 func bootstrapInputNames() map[string]struct{} {

@@ -51,15 +51,16 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 	stateDir := t.TempDir()
 	saveManagerRegistrationForTest(t, stateDir, controlPlane.URL, 7)
 	config := DefaultConfig()
-	config.Manager.StateDir = stateDir
-	config.Manager.PollInterval = Duration(10 * time.Millisecond)
-	config.Manager.DeclareInterval = Duration(50 * time.Millisecond)
-	config.Manager.HTTPTimeout = Duration(time.Second)
-	config.Server.GatewayListenAddr = "127.0.0.1:0"
-	config.Server.GatewaySSHListenAddr = "127.0.0.1:0"
-	config.Manager.GatewayURL = "http://127.0.0.1"
-	config.Manager.GatewaySSHAddr = "127.0.0.1:22"
-	config.Server.ShutdownTimeout = Duration(time.Second)
+	config.provisionerKind = "dummy"
+	config.Node.StateDir = stateDir
+	config.Node.PollInterval = Duration(10 * time.Millisecond)
+	config.Node.DeclareInterval = Duration(50 * time.Millisecond)
+	config.Node.HTTPTimeout = Duration(time.Second)
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Gateway.SSH.Listen = "127.0.0.1:0"
+	config.Gateway.HTTP.PublicURL = "http://127.0.0.1"
+	config.Gateway.SSH.PublicAddr = "127.0.0.1:22"
+	config.Node.ShutdownTimeout = Duration(time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
@@ -149,19 +150,23 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 		t.Fatalf("E2E inspection backend = %T, want Incus", testBackend)
 	}
 	var incusClient incus.InstanceServer
-	if config.Incus.Endpoint != "" {
-		incusClient, err = incus.ConnectIncus(config.Incus.Endpoint, nil)
+	remote, unixSocket, endpointErr := incusEndpoint(config.Runtime.Incus.Endpoint)
+	if endpointErr != nil {
+		t.Fatalf("parse Incus E2E endpoint: %v", endpointErr)
+	}
+	if remote != "" {
+		incusClient, err = incus.ConnectIncus(remote, nil)
 	} else {
-		incusClient, err = incus.ConnectIncusUnix(config.Incus.UnixSocket, nil)
+		incusClient, err = incus.ConnectIncusUnix(unixSocket, nil)
 	}
 	if err != nil {
 		t.Fatalf("connect Incus E2E inspection client: %v", err)
 	}
-	if config.Incus.Project != "" {
-		incusClient = incusClient.UseProject(config.Incus.Project)
+	if config.Runtime.Incus.Project.Name != "" {
+		incusClient = incusClient.UseProject(config.Runtime.Incus.Project.Name)
 	}
 	expectedInstanceType := api.InstanceTypeContainer
-	if config.RuntimeEnvironments["default"].InstanceType == "virtual-machine" {
+	if normalizeEnvironmentType(config.Runtime.Environments[0].Type) == "virtual-machine" {
 		expectedInstanceType = api.InstanceTypeVM
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -452,34 +457,41 @@ func assertAppE2EIncusRuntime(
 
 func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
 	config := DefaultConfig()
-	config.Manager.StateDir = stateDir
-	config.Manager.Name = "app-e2e-incus-manager"
-	config.Manager.PollInterval = Duration(100 * time.Millisecond)
-	config.Manager.DeclareInterval = Duration(200 * time.Millisecond)
-	config.Manager.HTTPTimeout = Duration(10 * time.Second)
-	config.Manager.CapacityTotal = 1
-	config.Manager.StartupWorkers = 1
-	config.Manager.CleanupWorkers = 1
-	config.Manager.GatewayURL = "http://127.0.0.1"
-	config.Manager.GatewaySSHAddr = "127.0.0.1:22"
-	config.Server.GatewayListenAddr = "127.0.0.1:0"
-	config.Server.GatewaySSHListenAddr = "127.0.0.1:0"
-	config.Server.ShutdownTimeout = Duration(5 * time.Second)
-	config.Provisioner.Kind = "incus"
-	config.Incus.Endpoint = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE"))
-	config.Incus.UnixSocket = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET"))
-	config.Incus.Project = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT"))
-	config.Incus.NetworkName = appE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet")
-	config.RuntimeEnvironments = map[string]RuntimeEnvironmentConfig{
-		"default": {
-			Image:        appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
-			InstanceType: appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
-			CPU:          1,
-			MemoryLimit:  "1GiB",
-			RootDiskSize: appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
-			Profiles:     appE2EIncusProfiles(),
-		},
+	config.Node.StateDir = stateDir
+	config.Node.Name = "app-e2e-incus-manager"
+	config.Node.PollInterval = Duration(100 * time.Millisecond)
+	config.Node.DeclareInterval = Duration(200 * time.Millisecond)
+	config.Node.HTTPTimeout = Duration(10 * time.Second)
+	config.Node.CapacityTotal = 1
+	config.Node.StartupWorkers = 1
+	config.Node.CleanupWorkers = 1
+	config.Gateway.HTTP.PublicURL = "http://127.0.0.1"
+	config.Gateway.SSH.PublicAddr = "127.0.0.1:22"
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Gateway.SSH.Listen = "127.0.0.1:0"
+	config.Node.ShutdownTimeout = Duration(5 * time.Second)
+	config.provisionerKind = "incus"
+	if remote := strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")); remote != "" {
+		config.Runtime.Incus.Endpoint = remote
+	} else {
+		unixSocket := appE2EEnvDefault("CODESPACE_E2E_INCUS_UNIX_SOCKET", "/var/lib/incus/unix.socket")
+		config.Runtime.Incus.Endpoint = "unix://" + unixSocket
 	}
+	config.Runtime.Incus.Project.Name = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT"))
+	config.Runtime.Incus.Network.Name = appE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet")
+	config.Runtime.Environments = []EnvironmentConfig{{
+		Tag:  "default",
+		Type: appE2EEnvDefault("CODESPACE_E2E_INCUS_INSTANCE_TYPE", "container"),
+		Source: EnvironmentSourceConfig{
+			Image: appE2EEnvDefault("CODESPACE_E2E_INCUS_IMAGE", "images:debian/12"),
+		},
+		Resources: EnvironmentResourcesConfig{
+			CPU:      1,
+			Memory:   "1GiB",
+			RootDisk: appE2EEnvDefault("CODESPACE_E2E_INCUS_ROOT_DISK_SIZE", "10GiB"),
+		},
+		Profiles: appE2EIncusProfiles(),
+	}}
 	return config
 }
 

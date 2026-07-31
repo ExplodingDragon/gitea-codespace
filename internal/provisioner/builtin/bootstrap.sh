@@ -120,6 +120,16 @@ install_missing() {
 
 install_missing
 
+if [ "${CODESPACE_DOCKER_DAEMON_CONFIGURED:-}" = "1" ]; then
+  if docker info >/dev/null 2>&1; then
+    if command -v systemctl >/dev/null 2>&1; then
+      systemctl restart docker || printf '%s\n' 'Warning: Docker daemon could not apply cache configuration; direct registry access remains available.' >&2
+    else
+      printf '%s\n' 'Warning: running Docker daemon could not apply cache configuration; direct registry access remains available.' >&2
+    fi
+  fi
+fi
+
 codespace_user="${CODESPACE_USER:-codespace}"
 case "$codespace_user" in
   ""|[0-9]*|-*|*[!abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-]*)
@@ -223,14 +233,48 @@ configure_workspace_credentials() {
   fi
 }
 
+checkout_workspace_ref() {
+  checkout_workspace="$1"
+  if [ -z "${GITEA_COMMIT_SHA:-}" ]; then
+    git_user -C "$checkout_workspace" checkout --force || { log_error "checkout repository default branch failed"; return 1; }
+    return 0
+  fi
+  case "${GITEA_START_REF:-}" in
+    refs/heads/*)
+      checkout_branch="${GITEA_START_REF#refs/heads/}"
+      git check-ref-format --branch "$checkout_branch" >/dev/null || { log_error "invalid start branch: $checkout_branch"; return 1; }
+      git_user -C "$checkout_workspace" fetch origin "+${GITEA_START_REF}:refs/remotes/origin/${checkout_branch}" --prune || { log_error "fetch start branch failed: $GITEA_START_REF"; return 1; }
+      git_user -C "$checkout_workspace" checkout -B "$checkout_branch" "$GITEA_COMMIT_SHA" || { log_error "checkout start branch failed: $checkout_branch"; return 1; }
+      git_user -C "$checkout_workspace" branch --set-upstream-to="origin/$checkout_branch" "$checkout_branch" || { log_error "set start branch upstream failed: origin/$checkout_branch"; return 1; }
+      ;;
+    refs/tags/*)
+      git check-ref-format "$GITEA_START_REF" >/dev/null || { log_error "invalid start tag: $GITEA_START_REF"; return 1; }
+      git_user -C "$checkout_workspace" fetch origin "$GITEA_START_REF" --prune || { log_error "fetch start tag failed: $GITEA_START_REF"; return 1; }
+      git_user -C "$checkout_workspace" checkout --detach "$GITEA_COMMIT_SHA" || { log_error "checkout tag commit failed: $GITEA_COMMIT_SHA"; return 1; }
+      ;;
+    refs/pull/*/head)
+      git check-ref-format "$GITEA_START_REF" >/dev/null || { log_error "invalid pull request ref: $GITEA_START_REF"; return 1; }
+      git_user -C "$checkout_workspace" fetch origin "$GITEA_START_REF" --prune || { log_error "fetch pull request ref failed: $GITEA_START_REF"; return 1; }
+      git_user -C "$checkout_workspace" checkout --detach "$GITEA_COMMIT_SHA" || { log_error "checkout pull request commit failed: $GITEA_COMMIT_SHA"; return 1; }
+      ;;
+    "")
+      git_user -C "$checkout_workspace" fetch --all --tags --prune || { log_error "fetch repository refs failed"; return 1; }
+      git_user -C "$checkout_workspace" checkout --detach "$GITEA_COMMIT_SHA" || { log_error "checkout commit failed: $GITEA_COMMIT_SHA"; return 1; }
+      ;;
+    *)
+      log_error "unsupported start ref: $GITEA_START_REF"
+      return 1
+      ;;
+  esac
+  checkout_head="$(git_user -C "$checkout_workspace" rev-parse HEAD)" || { log_error "read workspace HEAD failed"; return 1; }
+  [ "$checkout_head" = "$GITEA_COMMIT_SHA" ] || { log_error "workspace commit mismatch: expected $GITEA_COMMIT_SHA got $checkout_head"; return 1; }
+}
+
 restore_existing_workspace() {
   existing_workspace="$1"
   [ -d "$existing_workspace/.git" ] || { log_error "workspace is not a git repository: $existing_workspace"; return 1; }
   configure_workspace_credentials "$existing_workspace" || { log_error "configure existing workspace credentials failed: $existing_workspace"; return 1; }
-  if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
-    existing_head="$(git_user -C "$existing_workspace" rev-parse HEAD)" || { log_error "read existing workspace HEAD failed: $existing_workspace"; return 1; }
-    [ "$existing_head" = "$GITEA_COMMIT_SHA" ] || { log_error "existing workspace commit mismatch: expected $GITEA_COMMIT_SHA got $existing_head"; return 1; }
-  fi
+  checkout_workspace_ref "$existing_workspace"
 }
 
 prepare_workspace_target() {
@@ -262,19 +306,10 @@ prepare_workspace_from_repo() {
   prepare_workspace_target "$target_workspace" || return 1
   rm -rf "$clone_temp_workspace" || { log_error "remove temporary workspace failed: $clone_temp_workspace"; return 1; }
   configure_git_credentials "$clone_repo_url" || { log_error "configure git credentials failed for repository URL: $clone_repo_url"; return 1; }
-  git_user clone "$clone_repo_url" "$clone_temp_workspace" || { log_error "clone repository failed: $clone_repo_url"; return 1; }
+  git_user clone --no-checkout "$clone_repo_url" "$clone_temp_workspace" || { log_error "clone repository failed: $clone_repo_url"; return 1; }
   git_user -C "$clone_temp_workspace" remote set-url origin "$clone_repo_url" || { log_error "set workspace origin failed: $clone_repo_url"; return 1; }
   configure_workspace_credentials "$clone_temp_workspace" || { log_error "configure cloned workspace credentials failed: $clone_temp_workspace"; return 1; }
-  if [ -n "${GITEA_COMMIT_SHA:-}" ]; then
-    if [ -n "${GITEA_START_REF:-}" ]; then
-      git_user -C "$clone_temp_workspace" fetch origin "$GITEA_START_REF" --tags --prune || { log_error "fetch start ref failed: $GITEA_START_REF"; return 1; }
-    else
-      git_user -C "$clone_temp_workspace" fetch --all --tags --prune || { log_error "fetch repository refs failed"; return 1; }
-    fi
-    git_user -C "$clone_temp_workspace" checkout --detach "$GITEA_COMMIT_SHA" || { log_error "checkout commit failed: $GITEA_COMMIT_SHA"; return 1; }
-    cloned_head="$(git_user -C "$clone_temp_workspace" rev-parse HEAD)" || { log_error "read cloned workspace HEAD failed"; return 1; }
-    [ "$cloned_head" = "$GITEA_COMMIT_SHA" ] || { log_error "cloned workspace commit mismatch: expected $GITEA_COMMIT_SHA got $cloned_head"; return 1; }
-  fi
+  checkout_workspace_ref "$clone_temp_workspace" || return 1
   prepare_workspace_target "$target_workspace" || return 1
   mv "$clone_temp_workspace" "$target_workspace" || { log_error "move prepared workspace into place failed: $clone_temp_workspace -> $target_workspace"; return 1; }
 }
@@ -301,13 +336,6 @@ install -m 0600 "$seed_dir/known_hosts" "$key_dir/known_hosts"
 exec ssh -i "$key_dir/id_ed25519" -o IdentitiesOnly=yes -o UserKnownHostsFile="$key_dir/known_hosts" -o StrictHostKeyChecking=yes "$@"
 EOF
 chmod 0755 "$runtime_bin_dir/gitea-codespace-git-ssh"
-
-cat >"$runtime_bin_dir/gitea-codespace-endpoint" <<'EOF'
-#!/bin/bash
-set -eu
-exec /usr/local/libexec/gitea-codespace-runtime runtime endpoint "$@"
-EOF
-chmod 0755 "$runtime_bin_dir/gitea-codespace-endpoint"
 
 printf '%s ALL=(ALL) NOPASSWD:ALL\n' "$codespace_user" > /etc/sudoers.d/gitea-codespace
 chmod 0440 /etc/sudoers.d/gitea-codespace

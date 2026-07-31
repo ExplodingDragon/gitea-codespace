@@ -79,21 +79,21 @@ func newGatewaySSHServer(
 	if hostKey == nil {
 		return nil, fmt.Errorf("gateway ssh host key is required")
 	}
-	idleTimeout := gatewayConfig.SessionIdleTimeout.ToStdlib()
+	idleTimeout := gatewayConfig.Sessions.IdleTimeout.ToStdlib()
 	if idleTimeout <= 0 {
-		idleTimeout = DefaultConfig().Gateway.SessionIdleTimeout.ToStdlib()
+		idleTimeout = DefaultConfig().Gateway.Sessions.IdleTimeout.ToStdlib()
 	}
-	revalidateInterval := gatewayConfig.SessionRevalidateInterval.ToStdlib()
+	revalidateInterval := gatewayConfig.Sessions.RevalidateInterval.ToStdlib()
 	if revalidateInterval <= 0 {
 		revalidateInterval = defaultGatewaySessionRevalidateInterval
 	}
-	maxChannels := gatewayConfig.SSHMaxChannelsPerConnection
+	maxChannels := gatewayConfig.SSH.MaxChannelsPerConnection
 	if maxChannels <= 0 {
-		maxChannels = DefaultConfig().Gateway.SSHMaxChannelsPerConnection
+		maxChannels = DefaultConfig().Gateway.SSH.MaxChannelsPerConnection
 	}
-	handshakeTimeout := gatewayConfig.SSHHandshakeTimeout.ToStdlib()
+	handshakeTimeout := gatewayConfig.SSH.HandshakeTimeout.ToStdlib()
 	if handshakeTimeout <= 0 {
-		handshakeTimeout = DefaultConfig().Gateway.SSHHandshakeTimeout.ToStdlib()
+		handshakeTimeout = DefaultConfig().Gateway.SSH.HandshakeTimeout.ToStdlib()
 	}
 	server := &gatewaySSHServer{
 		state:              state,
@@ -213,7 +213,6 @@ func (s *gatewaySSHServer) serveConn(ctx context.Context, conn net.Conn) {
 	channelSlots := make(chan struct{}, s.maxChannels)
 
 	for channel := range channels {
-		channel := channel
 		select {
 		case channelSlots <- struct{}{}:
 		default:

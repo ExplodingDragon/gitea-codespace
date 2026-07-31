@@ -6,30 +6,29 @@ package runtimecmd
 import (
 	"fmt"
 	"os"
-	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-var endpointIDPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$`)
-
 // SetEndpoint adds or replaces a runtime endpoint declaration.
-func SetEndpoint(id, label, scheme string, port uint16, public bool) error {
-	if err := validateEndpointID(id); err != nil {
-		return err
+func SetEndpoint(port uint16, label, scheme string, public bool) error {
+	if port == 0 {
+		return fmt.Errorf("endpoint port is invalid")
 	}
 	if scheme != "http" && scheme != "https" {
 		return fmt.Errorf("endpoint scheme must be http or https")
 	}
 	label = strings.TrimSpace(label)
+	if label == "" {
+		label = "Port " + strconv.Itoa(int(port))
+	}
 	if err := runtimeendpoint.ValidateLabel(label); err != nil {
 		return fmt.Errorf("endpoint label is invalid")
 	}
-	if port == 0 {
-		return fmt.Errorf("endpoint port is invalid")
-	}
+	id := endpointID(port)
 	manifest, err := readEndpointManifest()
 	if err != nil {
 		return err
@@ -44,10 +43,11 @@ func SetEndpoint(id, label, scheme string, port uint16, public bool) error {
 }
 
 // DeleteEndpoint removes a runtime endpoint declaration.
-func DeleteEndpoint(id string) error {
-	if err := validateEndpointID(id); err != nil {
-		return err
+func DeleteEndpoint(port uint16) error {
+	if port == 0 {
+		return fmt.Errorf("endpoint port is invalid")
 	}
+	id := endpointID(port)
 	manifest, err := readEndpointManifest()
 	if err != nil {
 		return err
@@ -58,11 +58,18 @@ func DeleteEndpoint(id string) error {
 	return writeEndpointManifest(manifest)
 }
 
-func validateEndpointID(id string) error {
-	if id == runtimeendpoint.WorkspaceEndpointID || !endpointIDPattern.MatchString(id) {
-		return fmt.Errorf("endpoint id %q is invalid", id)
+// ListEndpoints returns the current runtime declarations ordered by port.
+func ListEndpoints() ([]runtimeendpoint.Endpoint, error) {
+	manifest, err := readEndpointManifest()
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	sortEndpoints(manifest.Endpoints)
+	return manifest.Endpoints, nil
+}
+
+func endpointID(port uint16) string {
+	return "port-" + strconv.Itoa(int(port))
 }
 
 func readEndpointManifest() (runtimeendpoint.EndpointManifest, error) {
@@ -80,14 +87,18 @@ func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest) error {
 	if len(manifest.Endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
 		return fmt.Errorf("endpoint manifest exceeds limit %d", runtimeendpoint.MaxDeclaredEndpointCount)
 	}
-	slices.SortFunc(manifest.Endpoints, func(a, b runtimeendpoint.Endpoint) int {
-		if a.EndpointID < b.EndpointID {
+	sortEndpoints(manifest.Endpoints)
+	return writeJSONAtomic(runtimeendpoint.EndpointManifestPath, manifest)
+}
+
+func sortEndpoints(endpoints []runtimeendpoint.Endpoint) {
+	slices.SortFunc(endpoints, func(a, b runtimeendpoint.Endpoint) int {
+		if a.UpstreamPort < b.UpstreamPort {
 			return -1
 		}
-		if a.EndpointID > b.EndpointID {
+		if a.UpstreamPort > b.UpstreamPort {
 			return 1
 		}
-		return 0
+		return strings.Compare(a.EndpointID, b.EndpointID)
 	})
-	return writeJSONAtomic(runtimeendpoint.EndpointManifestPath, manifest)
 }

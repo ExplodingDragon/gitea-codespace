@@ -6,6 +6,7 @@ package provisioner
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -98,6 +99,8 @@ type IncusConfig struct {
 	Bootstrap           BootstrapConfig
 	RuntimeExecutable   string
 	CodeServerVersion   string
+	BuildCacheRegistry  string
+	RegistryMirrors     map[string]string
 }
 
 // IncusEnvironmentConfig stores one deployment-defined Incus runtime environment.
@@ -109,25 +112,26 @@ type IncusEnvironmentConfig struct {
 	RootDiskSize  string
 	Profiles      []string
 	SourceType    string
-	SourceRemote  string
 	SourceProject string
 	SourceName    string
 }
 
 // IncusProvisioner provisions codespace as Incus instances.
 type IncusProvisioner struct {
-	client            incus.InstanceServer
-	managerID         string
-	project           string
-	networkName       string
-	environments      map[string]incusEnvironment
-	extraConfig       map[string]string
-	codespaceRoot     string
-	bootstrap         BootstrapConfig
-	runtimeBinary     string
-	codeServerVersion string
-	mu                sync.Mutex
-	cpuSamples        map[string]incusCPUSample
+	client             incus.InstanceServer
+	managerID          string
+	project            string
+	networkName        string
+	environments       map[string]incusEnvironment
+	extraConfig        map[string]string
+	codespaceRoot      string
+	bootstrap          BootstrapConfig
+	runtimeBinary      string
+	codeServerVersion  string
+	buildCacheRegistry string
+	registryMirrors    map[string]string
+	mu                 sync.Mutex
+	cpuSamples         map[string]incusCPUSample
 }
 
 type incusEnvironment struct {
@@ -138,7 +142,6 @@ type incusEnvironment struct {
 	rootDiskSize  string
 	profiles      []string
 	sourceType    string
-	sourceRemote  string
 	sourceProject string
 	sourceName    string
 }
@@ -195,17 +198,19 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 	bootstrap := normalizedBootstrapConfig(config.Bootstrap)
 
 	return &IncusProvisioner{
-		client:            client,
-		managerID:         fmt.Sprintf("%d", config.ManagerID),
-		project:           project,
-		networkName:       networkName,
-		environments:      environments,
-		extraConfig:       copyStringMap(config.ExtraConfig),
-		codespaceRoot:     codespaceRoot,
-		bootstrap:         bootstrap,
-		runtimeBinary:     strings.TrimSpace(config.RuntimeExecutable),
-		codeServerVersion: strings.TrimSpace(config.CodeServerVersion),
-		cpuSamples:        make(map[string]incusCPUSample),
+		client:             client,
+		managerID:          fmt.Sprintf("%d", config.ManagerID),
+		project:            project,
+		networkName:        networkName,
+		environments:       environments,
+		extraConfig:        copyStringMap(config.ExtraConfig),
+		codespaceRoot:      codespaceRoot,
+		bootstrap:          bootstrap,
+		runtimeBinary:      strings.TrimSpace(config.RuntimeExecutable),
+		codeServerVersion:  strings.TrimSpace(config.CodeServerVersion),
+		buildCacheRegistry: strings.TrimRight(strings.TrimSpace(config.BuildCacheRegistry), "/"),
+		registryMirrors:    copyStringMap(config.RegistryMirrors),
+		cpuSamples:         make(map[string]incusCPUSample),
 	}, nil
 }
 
@@ -317,10 +322,6 @@ func normalizeIncusEnvironments(config IncusConfig) (map[string]incusEnvironment
 			if sourceName == "" {
 				return nil, fmt.Errorf("incus environment %s source instance name is required", tag)
 			}
-			sourceRemote := strings.TrimSpace(environment.SourceRemote)
-			if sourceRemote != "" && sourceRemote != "local" {
-				return nil, fmt.Errorf("incus environment %s source remote %q is not supported; configure the manager to connect to that Incus server and clone by project/name", tag, sourceRemote)
-			}
 		default:
 			return nil, fmt.Errorf("incus environment %s source type must be image or instance", tag)
 		}
@@ -348,7 +349,6 @@ func normalizeIncusEnvironments(config IncusConfig) (map[string]incusEnvironment
 			rootDiskSize:  strings.TrimSpace(environment.RootDiskSize),
 			profiles:      normalizedIncusProfiles(environment.Profiles),
 			sourceType:    sourceType,
-			sourceRemote:  strings.TrimSpace(environment.SourceRemote),
 			sourceProject: strings.TrimSpace(environment.SourceProject),
 			sourceName:    sourceName,
 		}
@@ -534,6 +534,16 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 		Environment:       request.Environment,
 	}
 	if request.Operation == LifecycleOperationCreate {
+		cacheIdentity := strings.Join([]string{
+			"1", request.RepoFullName, request.CommitSHA, request.DevContainer.ContentSHA256,
+			p.codeServerVersion, runtime.GOOS, runtime.GOARCH,
+		}, "\x00")
+		cacheDigest := sha256.Sum256([]byte(cacheIdentity))
+		runtimeRequest.Cache = devcontainer.CacheOptions{
+			BuildRegistry: p.buildCacheRegistry,
+			Mirrors:       copyStringMap(p.registryMirrors),
+			BuildScope:    fmt.Sprintf("%x", cacheDigest[:]),
+		}
 		uid, gid, home, err := p.runtimeUserIdentity(ctx, instanceName, request.RuntimeUserName)
 		if err != nil {
 			return LifecycleResult{}, err
@@ -556,7 +566,10 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 		return LifecycleResult{}, err
 	}
 	p.writeLifecycleLog(ctx, request.LogSink, action+" Dev Container environment started")
-	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{runtimeExecutable, "runtime", "apply", "--request", runtimeRequestFile, "--result", runtimeResultFile}, nil, "/", request.LogSink)
+	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{runtimeExecutable, "runtime", "apply", "--request", runtimeRequestFile, "--result", runtimeResultFile}, map[string]string{
+		"DOCKER_BUILDKIT":   "1",
+		"BUILDKIT_PROGRESS": "plain",
+	}, "/", request.LogSink)
 	requestCleanupErr := p.deleteRuntimeControlFile(instanceName, runtimeRequestFile)
 	content, exists, readErr := p.readRuntimeFile(ctx, instanceName, runtimeResultFile)
 	resultCleanupErr := p.deleteRuntimeControlFile(instanceName, runtimeResultFile)

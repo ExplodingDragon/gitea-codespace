@@ -2258,7 +2258,6 @@ func (a *Agent) resetLeaseTimerLocked(codespaceUUID string, operation *operation
 	}
 	operation.leaseTimer.Stop()
 	operation.leaseTimer.Reset(leaseDuration)
-	log.Printf("operation %s version %d local lease renewed", codespaceUUID, operation.operationRVersion)
 }
 
 func (a *Agent) stopLeaseLocked(operation *operationContext) {
@@ -2292,7 +2291,7 @@ func operationLeaseDurationFromRequestStart(requestStarted time.Time, operation 
 }
 
 func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.OperationPayload) error {
-	if err := a.updateLog(ctx, operation, "operation started"); err != nil {
+	if err := a.updateLog(ctx, operation, logGroupStartPrefix+operationLogGroupName(operation)); err != nil {
 		return err
 	}
 
@@ -2328,7 +2327,10 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 		if isStartupOperation(operation) && isRuntimeMetadataHardFailure(err) {
 			return a.handleRuntimeMetadataHardFailure(ctx, operation, err)
 		}
-		if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
+		if logErr := a.updateLog(ctx, operation, logErrorPrefix+err.Error()); isManagerCriticalError(logErr) {
+			return logErr
+		}
+		if logErr := a.updateLog(ctx, operation, logGroupEnd); logErr != nil {
 			return logErr
 		}
 		a.closeCodespaceAccess(operation.GetCodespaceUuid())
@@ -2336,6 +2338,8 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 			return err
 		}
 		finalStatus = codespacev1.FinalStatus_FINAL_STATUS_FAILED
+	} else if logErr := a.updateLog(ctx, operation, logGroupEnd); logErr != nil {
+		return logErr
 	}
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -2367,7 +2371,10 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 
 func (a *Agent) handleRuntimeMetadataHardFailure(ctx context.Context, operation *codespacev1.OperationPayload, err error) error {
 	codespaceUUID := operation.GetCodespaceUuid()
-	if logErr := a.updateLog(ctx, operation, err.Error()); isManagerCriticalError(logErr) {
+	if logErr := a.updateLog(ctx, operation, logErrorPrefix+err.Error()); isManagerCriticalError(logErr) {
+		return logErr
+	}
+	if logErr := a.updateLog(ctx, operation, logGroupEnd); logErr != nil {
 		return logErr
 	}
 	a.closeCodespaceAccess(codespaceUUID)
@@ -2385,6 +2392,15 @@ func (a *Agent) handleRuntimeMetadataHardFailure(ctx context.Context, operation 
 		return err
 	}
 	return nil
+}
+
+func operationLogGroupName(operation *codespacev1.OperationPayload) string {
+	name := strings.ToLower(operationType(operation).String())
+	name = strings.TrimPrefix(name, "operation_type_")
+	if name != "" {
+		name = strings.ToUpper(name[:1]) + name[1:]
+	}
+	return fmt.Sprintf("%s #%d", name, operation.GetOperationRversion())
 }
 
 func isRuntimeMetadataHardFailure(err error) bool {
@@ -2470,9 +2486,14 @@ func (a *Agent) runStartupOperation(
 	startedUnix := time.Now().Unix()
 	logSink := newOperationLogSink(a, operation)
 	defer func() {
-		_ = logSink.FlushLifecycleLog(context.WithoutCancel(ctx))
+		flushCtx := context.WithoutCancel(ctx)
+		logSink.closeGroups(flushCtx)
+		_ = logSink.FlushLifecycleLog(flushCtx)
 	}()
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
+		return err
+	}
+	if err := logSink.startGroup(ctx, "Prepare runtime access"); err != nil {
 		return err
 	}
 	key, err := a.runtimeGitSSHKeySeed(ctx, instance.Name)
@@ -2504,10 +2525,19 @@ func (a *Agent) runStartupOperation(
 	request.GiteaToken = access.GetToken()
 	request.ServerURL = access.GetServerUrl()
 	request.LogSink = logSink
+	if err := logSink.endGroup(ctx); err != nil {
+		return err
+	}
 	identity := provisioner.SystemIdentity{}
 	if request.Operation == provisioner.LifecycleOperationCreate {
+		if err := logSink.startGroup(ctx, "Initialize system and workspace"); err != nil {
+			return err
+		}
 		identity, err = a.provisioner.BootstrapSystem(ctx, instance.Name, request)
 		if err != nil {
+			return err
+		}
+		if err := logSink.endGroup(ctx); err != nil {
 			return err
 		}
 		if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageBootstrapSystem, startedUnix); err != nil {
@@ -2543,12 +2573,21 @@ func (a *Agent) runStartupOperation(
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
 		return err
 	}
+	if err := logSink.startGroup(ctx, "Start Dev Container"); err != nil {
+		return err
+	}
 	result, err := a.provisioner.StartEnvironment(ctx, instance.Name, request)
 	if err != nil {
 		return err
 	}
+	if err := logSink.endGroup(ctx); err != nil {
+		return err
+	}
 	instance.Workdir = result.Environment.Workspace
 	if err := a.saveRuntimeEnvironment(codespaceUUID, provisioner.RuntimeEnvironment{User: identity.UID, Group: identity.GID, Environment: result.Environment}); err != nil {
+		return err
+	}
+	if err := logSink.startGroup(ctx, "Publish access endpoints"); err != nil {
 		return err
 	}
 	if err := a.validateRuntimeReady(ctx, codespaceUUID, instance); err != nil {
@@ -2561,6 +2600,9 @@ func (a *Agent) runStartupOperation(
 		return err
 	}
 	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
+		return err
+	}
+	if err := logSink.endGroup(ctx); err != nil {
 		return err
 	}
 	a.markRuntimeReady(codespaceUUID)
@@ -2802,11 +2844,12 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 		UpstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
 	})
 	for _, declaration := range declarations {
-		if declaration.EndpointID == runtimeendpoint.WorkspaceEndpointID {
-			return fmt.Errorf("endpoint_id workspace is reserved for the platform Web IDE")
-		}
 		if declaration.UpstreamPort < 1 || declaration.UpstreamPort > 65535 {
 			return fmt.Errorf("endpoint %s upstream_port is invalid", declaration.EndpointID)
+		}
+		expectedID := fmt.Sprintf("port-%d", declaration.UpstreamPort)
+		if declaration.EndpointID != expectedID {
+			return fmt.Errorf("endpoint %s must use id %s", declaration.EndpointID, expectedID)
 		}
 		routes = append(routes, RuntimeEndpointRoute{
 			CodespaceUUID:  codespaceUUID,
@@ -2917,7 +2960,9 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 	}
 	logSink := newOperationLogSink(a, operation)
 	defer func() {
-		_ = logSink.FlushLifecycleLog(context.WithoutCancel(ctx))
+		flushCtx := context.WithoutCancel(ctx)
+		logSink.closeGroups(flushCtx)
+		_ = logSink.FlushLifecycleLog(flushCtx)
 	}()
 	stopRequest := provisioner.LifecycleRequest{
 		CodespaceUUID: operation.GetCodespaceUuid(),

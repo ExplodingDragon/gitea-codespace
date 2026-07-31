@@ -29,37 +29,37 @@ func TestExecCommandPreservesTargetArguments(t *testing.T) {
 }
 
 func TestEndpointCommandsMapArguments(t *testing.T) {
-	var gotID, gotLabel, gotScheme string
+	var gotLabel, gotScheme string
 	var gotPort uint16
 	var gotPublic bool
-	command := newEndpointCommandWithRun(func(id, label, scheme string, port uint16, public bool) error {
-		gotID, gotLabel, gotScheme, gotPort, gotPublic = id, label, scheme, port, public
+	command := newEndpointCommandWithRun(func(port uint16, label, scheme string, public bool) error {
+		gotLabel, gotScheme, gotPort, gotPublic = label, scheme, port, public
 		return nil
-	}, func(string) error {
+	}, func(uint16) error {
 		t.Fatal("delete called while testing set")
 		return nil
 	})
-	command.SetArgs([]string{"set", "preview", "Web preview", "https", "8443", "--public"})
+	command.SetArgs([]string{"set", "8443", "--label", "Web preview", "--protocol", "https", "--public"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("set Execute() error = %v", err)
 	}
-	if gotID != "preview" || gotLabel != "Web preview" || gotScheme != "https" || gotPort != 8443 || !gotPublic {
-		t.Fatalf("set arguments = (%q, %q, %q, %d, %t)", gotID, gotLabel, gotScheme, gotPort, gotPublic)
+	if gotLabel != "Web preview" || gotScheme != "https" || gotPort != 8443 || !gotPublic {
+		t.Fatalf("set arguments = (%q, %q, %d, %t)", gotLabel, gotScheme, gotPort, gotPublic)
 	}
 
-	var deletedID string
-	command = newEndpointCommandWithRun(func(string, string, string, uint16, bool) error {
+	var deletedPort uint16
+	command = newEndpointCommandWithRun(func(uint16, string, string, bool) error {
 		t.Fatal("set called while testing delete")
 		return nil
-	}, func(id string) error {
-		deletedID = id
+	}, func(port uint16) error {
+		deletedPort = port
 		return nil
 	})
-	command.SetArgs([]string{"delete", "preview"})
+	command.SetArgs([]string{"delete", "8443"})
 	if err := command.Execute(); err != nil {
 		t.Fatalf("delete Execute() error = %v", err)
 	}
-	if deletedID != "preview" {
-		t.Fatalf("deleted endpoint ID = %q", deletedID)
+	if deletedPort != 8443 {
+		t.Fatalf("deleted endpoint port = %d", deletedPort)
 	}
 }

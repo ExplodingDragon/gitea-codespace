@@ -3027,7 +3027,6 @@ func TestManagerCriticalDeclareConfigurationFailures(t *testing.T) {
 		failureGatewayURLConflict,
 		failureGatewaySSHAddrConflict,
 	} {
-		category := category
 		t.Run(category, func(t *testing.T) {
 			t.Parallel()
 

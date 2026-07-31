@@ -16,6 +16,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"os/signal"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -59,7 +60,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 		return fmt.Errorf("output is nil")
 	}
 
-	stateLock, err := acquireStateDirLock(config.Manager.StateDir)
+	stateLock, err := acquireStateDirLock(config.Node.StateDir)
 	if err != nil {
 		return fmt.Errorf("acquire manager state dir lock: %w", err)
 	}
@@ -93,7 +94,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	go serveSSH(ctx, errorChannel, listeners.GatewaySSH, runtime.gatewaySSHServer)
 	fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
 	fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
-	fmt.Fprintf(output, "codespace code-server version %s for new environments\n", config.Provisioner.CodeServerVersion)
+	fmt.Fprintf(output, "codespace code-server version %s for new environments\n", config.Runtime.WebIDE.CodeServerVersion)
 
 	go func() {
 		if err := runtime.agent.Run(ctx); err != nil {
@@ -110,7 +111,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	}
 	runtime.processHealth.Fail()
 
-	shutdownContext, cancel := context.WithTimeout(context.Background(), config.Server.ShutdownTimeout.ToStdlib())
+	shutdownContext, cancel := context.WithTimeout(context.Background(), config.Node.ShutdownTimeout.ToStdlib())
 	defer cancel()
 	if err := runtime.gatewayServer.Shutdown(shutdownContext); err != nil {
 		return fmt.Errorf("shutdown gateway server: %w", err)
@@ -132,14 +133,14 @@ type processStateSnapshot struct {
 }
 
 func loadProcessState(config Config) (processStateSnapshot, error) {
-	managerState, err := LoadManagerState(config.Manager.StateDir)
+	managerState, err := LoadManagerState(config.Node.StateDir)
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load manager state: %w", err)
 	}
-	if err := ValidateCodespaceStateFiles(config.Manager.StateDir); err != nil {
+	if err := ValidateCodespaceStateFiles(config.Node.StateDir); err != nil {
 		return processStateSnapshot{}, fmt.Errorf("validate codespace state files: %w", err)
 	}
-	codespaceStateStore := NewCodespaceStateStore(config.Manager.StateDir)
+	codespaceStateStore := NewCodespaceStateStore(config.Node.StateDir)
 	initialOperations, err := codespaceStateStore.LoadActiveOperations()
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load codespace active operations: %w", err)
@@ -164,7 +165,7 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load codespace gateway routes: %w", err)
 	}
-	gatewaySSHHostKey, err := loadOrCreateGatewaySSHHostKey(config.Manager.StateDir)
+	gatewaySSHHostKey, err := loadOrCreateGatewaySSHHostKey(config.Node.StateDir)
 	if err != nil {
 		return processStateSnapshot{}, fmt.Errorf("load gateway ssh host key: %w", err)
 	}
@@ -210,7 +211,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 	}
 	gatewayAccess := newGatewayAccessControllerFromConfig(config.Gateway)
 	gatewayBrowserAuth := newGatewayBrowserAuth()
-	gatewayOrigin, err := newGatewayOriginPolicy(config.Manager.GatewayURL)
+	gatewayOrigin, err := newGatewayOriginPolicy(config.Gateway.HTTP.PublicURL)
 	if err != nil {
 		return nil, fmt.Errorf("configure gateway origin: %w", err)
 	}
@@ -218,7 +219,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		managerServiceBaseURL(state.managerState.GiteaURL),
 		state.managerState.ManagerID,
 		state.managerState.ManagerSecret,
-		&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()},
+		&http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()},
 	)
 	runtimeMetadataPublisher := newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
 	runtimeMetadataPublisher.Run(ctx)
@@ -233,20 +234,20 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		BaseURL:                      managerServiceBaseURL(state.managerState.GiteaURL),
 		ManagerID:                    state.managerState.ManagerID,
 		ManagerSecret:                state.managerState.ManagerSecret,
-		Name:                         config.Manager.Name,
-		GatewayURL:                   config.Manager.GatewayURL,
-		GatewaySSHAddr:               config.Manager.GatewaySSHAddr,
+		Name:                         config.Node.Name,
+		GatewayURL:                   config.Gateway.HTTP.PublicURL,
+		GatewaySSHAddr:               config.Gateway.SSH.PublicAddr,
 		GatewaySSHHostKeyAlgo:        state.gatewaySSHHostKey.algorithm,
 		GatewaySSHHostKeySHA256:      state.gatewaySSHHostKey.fingerprintSHA256,
 		GatewaySSHHostKeyUnix:        state.gatewaySSHHostKey.updatedUnix,
-		Version:                      config.Manager.Version,
+		Version:                      managerBuildVersion(),
 		Tags:                         config.environmentTags(),
-		PollInterval:                 config.Manager.PollInterval.ToStdlib(),
-		DeclareInterval:              config.Manager.DeclareInterval.ToStdlib(),
-		CapacityTotal:                config.Manager.CapacityTotal,
-		StartupWorkers:               config.Manager.StartupWorkers,
-		CleanupWorkers:               config.Manager.CleanupWorkers,
-		HTTPTimeout:                  config.Manager.HTTPTimeout.ToStdlib(),
+		PollInterval:                 config.Node.PollInterval.ToStdlib(),
+		DeclareInterval:              config.Node.DeclareInterval.ToStdlib(),
+		CapacityTotal:                config.Node.CapacityTotal,
+		StartupWorkers:               config.Node.StartupWorkers,
+		CleanupWorkers:               config.Node.CleanupWorkers,
+		HTTPTimeout:                  config.Node.HTTPTimeout.ToStdlib(),
 		RuntimeMetadataGeneration:    1,
 		InventoryGeneration:          state.managerState.InventoryGeneration,
 		InitialRuntimeGenerations:    state.initialRuntimeGenerations,
@@ -255,7 +256,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		InitialHealthStopPendings:    state.initialHealthStopPendings,
 		InitialOperations:            state.initialOperations,
 		OperationStateStore:          state.codespaceStateStore,
-		InventoryStateStore:          NewManagerStateStore(config.Manager.StateDir),
+		InventoryStateStore:          NewManagerStateStore(config.Node.StateDir),
 		RuntimeStateStore:            state.codespaceStateStore,
 		CleanupStateStore:            state.codespaceStateStore,
 		HealthStopStateStore:         state.codespaceStateStore,
@@ -269,7 +270,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		AccessController:             gatewayRoutes,
 		ManagerServiceSettings:       managerServiceSettings,
 		GitSSHKeyType:                config.runtimeGitSSHKeyType(),
-	}, &http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerProvisioner)
+	}, &http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()}, managerProvisioner)
 
 	processHealth := newProcessHealth()
 	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
@@ -307,13 +308,13 @@ func openProcessListeners(config Config) (*processListeners, error) {
 		}
 	}()
 
-	listeners.GatewayHTTP, err = net.Listen("tcp", config.Server.GatewayListenAddr)
+	listeners.GatewayHTTP, err = net.Listen("tcp", config.Gateway.HTTP.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("listen gateway http %s: %w", config.Server.GatewayListenAddr, err)
+		return nil, fmt.Errorf("listen gateway http %s: %w", config.Gateway.HTTP.Listen, err)
 	}
-	listeners.GatewaySSH, err = net.Listen("tcp", config.Server.GatewaySSHListenAddr)
+	listeners.GatewaySSH, err = net.Listen("tcp", config.Gateway.SSH.Listen)
 	if err != nil {
-		return nil, fmt.Errorf("listen gateway ssh %s: %w", config.Server.GatewaySSHListenAddr, err)
+		return nil, fmt.Errorf("listen gateway ssh %s: %w", config.Gateway.SSH.Listen, err)
 	}
 	return listeners, nil
 }
@@ -341,53 +342,76 @@ func serveHTTP(ctx context.Context, errorChannel chan<- error, name string, serv
 }
 
 func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, error) {
-	switch strings.ToLower(strings.TrimSpace(config.Provisioner.Kind)) {
+	switch config.provisionerKind {
 	case "dummy":
 		return provisioner.NewDummy(), nil
-	case "incus":
+	case "", "incus":
+		remote, unixSocket, err := incusEndpoint(config.Runtime.Incus.Endpoint)
+		if err != nil {
+			return nil, err
+		}
 		return provisioner.NewIncus(provisioner.IncusConfig{
 			ManagerID:           managerID,
-			Project:             config.Incus.Project,
-			ProjectManage:       config.Incus.ProjectManage,
-			Remote:              config.Incus.Endpoint,
-			UnixSocket:          config.Incus.UnixSocket,
-			StoragePool:         config.Incus.StoragePool,
-			NetworkName:         config.Incus.NetworkName,
-			NetworkManage:       config.Incus.NetworkManage,
-			RuntimeEnvironments: provisionerEnvironments(config.RuntimeEnvironments),
-			CodespaceRoot:       config.Provisioner.CodespaceRoot,
+			Project:             config.Runtime.Incus.Project.Name,
+			ProjectManage:       config.Runtime.Incus.Project.Manage,
+			Remote:              remote,
+			UnixSocket:          unixSocket,
+			StoragePool:         config.Runtime.Incus.Storage.Pool,
+			NetworkName:         config.Runtime.Incus.Network.Name,
+			NetworkManage:       config.Runtime.Incus.Network.Manage,
+			RuntimeEnvironments: provisionerEnvironments(config.Runtime.Environments),
 			RuntimeExecutable:   config.runtimeExecutable,
-			CodeServerVersion:   config.Provisioner.CodeServerVersion,
-			Bootstrap: provisioner.BootstrapConfig{
-				Shell:    config.Provisioner.Bootstrap.Shell,
-				HomeDir:  config.Provisioner.Bootstrap.HomeDir,
-				UserName: config.Provisioner.Bootstrap.UserName,
-				User:     config.Provisioner.Bootstrap.User,
-				Group:    config.Provisioner.Bootstrap.Group,
-			},
+			CodeServerVersion:   config.Runtime.WebIDE.CodeServerVersion,
+			BuildCacheRegistry:  config.Runtime.Cache.BuildRegistry,
+			RegistryMirrors:     config.Runtime.Cache.Mirrors,
 		})
 	default:
-		return nil, fmt.Errorf("unknown provisioner kind %q", config.Provisioner.Kind)
+		return nil, fmt.Errorf("unknown internal provisioner kind %q", config.provisionerKind)
 	}
 }
 
-func provisionerEnvironments(environments map[string]RuntimeEnvironmentConfig) map[string]provisioner.IncusEnvironmentConfig {
+func provisionerEnvironments(environments []EnvironmentConfig) map[string]provisioner.IncusEnvironmentConfig {
 	result := make(map[string]provisioner.IncusEnvironmentConfig, len(environments))
-	for tag, environment := range environments {
+	for _, environment := range environments {
+		sourceType := "image"
+		var sourceProject, sourceName string
+		if environment.Source.Instance != nil {
+			sourceType = "instance"
+			sourceProject = strings.TrimSpace(environment.Source.Instance.Project)
+			sourceName = strings.TrimSpace(environment.Source.Instance.Name)
+		}
+		tag := strings.TrimSpace(environment.Tag)
 		result[tag] = provisioner.IncusEnvironmentConfig{
-			Image:         environment.Image,
-			InstanceType:  environment.InstanceType,
-			CPU:           environment.CPU,
-			MemoryLimit:   environment.MemoryLimit,
-			RootDiskSize:  environment.RootDiskSize,
+			Image:         strings.TrimSpace(environment.Source.Image),
+			InstanceType:  normalizeEnvironmentType(environment.Type),
+			CPU:           environment.Resources.CPU,
+			MemoryLimit:   strings.TrimSpace(environment.Resources.Memory),
+			RootDiskSize:  strings.TrimSpace(environment.Resources.RootDisk),
 			Profiles:      append([]string(nil), environment.Profiles...),
-			SourceType:    environment.SourceType,
-			SourceRemote:  environment.SourceRemote,
-			SourceProject: environment.SourceProject,
-			SourceName:    environment.SourceName,
+			SourceType:    sourceType,
+			SourceProject: sourceProject,
+			SourceName:    sourceName,
 		}
 	}
 	return result
+}
+
+func incusEndpoint(endpoint string) (remote, unixSocket string, err error) {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return "", "", fmt.Errorf("parse Incus endpoint: %w", err)
+	}
+	if parsed.Scheme == "unix" {
+		return "", parsed.Path, nil
+	}
+	return parsed.String(), "", nil
+}
+
+func managerBuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "development"
 }
 
 type healthStatus int32

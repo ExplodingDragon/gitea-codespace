@@ -222,6 +222,7 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 	repositoryURL, commitSHA, configurationSHA := seedIncusE2EOfficialInteropRepository(t, ctx, provisioner, instanceName)
 	request := incusE2ELifecycleRequest(codespaceUUID, instanceName, instance.Workdir, LifecycleOperationCreate)
 	request.RepoCloneHTTPURL = repositoryURL
+	request.StartRef = "refs/heads/main"
 	request.CommitSHA = commitSHA
 	request.DevContainer.CommitSHA = commitSHA
 	request.DevContainer.ContentSHA256 = configurationSHA
@@ -305,6 +306,9 @@ func runIncusE2ELifecycleStart(t *testing.T, ctx context.Context, provisioner *I
 	}
 	startRequest := request
 	startRequest.Workdir = workspace
+	if err := provisioner.WriteRuntimeSecrets(ctx, instance.Name, identity.UID, identity.GID, RuntimeSecretEnvironment{"E2E_SECRET": "runtime-secret"}); err != nil {
+		t.Fatalf("write e2e create runtime secrets: %v", err)
+	}
 	result, err := provisioner.StartEnvironment(ctx, instance.Name, startRequest)
 	if err != nil {
 		t.Fatalf("start e2e lifecycle runtime: %v\nlifecycle log:\n%s", err, strings.Join(logs.lines, "\n"))
@@ -317,6 +321,16 @@ func runIncusE2ELifecycleResume(t *testing.T, ctx context.Context, provisioner *
 	t.Helper()
 	if err := provisioner.SeedRuntimeCredentials(ctx, instance.Name, incusE2ERuntimeCredentialSeed(request.CodespaceUUID, request.GiteaToken)); err != nil {
 		t.Fatalf("seed e2e resume credentials: %v", err)
+	}
+	if request.Environment == nil {
+		t.Fatal("e2e resume environment is missing")
+	}
+	uid, gid, _, err := provisioner.runtimeUserIdentity(ctx, instance.Name, request.RuntimeUserName)
+	if err != nil {
+		t.Fatalf("resolve e2e resume runtime user: %v", err)
+	}
+	if err := provisioner.WriteRuntimeSecrets(ctx, instance.Name, uid, gid, RuntimeSecretEnvironment{"E2E_SECRET": "runtime-secret"}); err != nil {
+		t.Fatalf("write e2e resume runtime secrets: %v", err)
 	}
 	assertIncusE2EWorkspaceAccess(t, ctx, provisioner, instance.Name, request.Workdir)
 	result, err := provisioner.StartEnvironment(ctx, instance.Name, request)
@@ -344,21 +358,47 @@ func assertIncusE2EWorkspaceCommand(t *testing.T, ctx context.Context, provision
 	}
 	session, err := provisioner.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{
 		InstanceName: instanceName,
-		Command:      "pwd",
+		Command: `set -eu
+pid="$(cat /var/lib/gitea-codespace/runtime/code-server.pid)"
+tr '\0' '\n' < "/proc/$pid/environ" | grep -qx 'E2E_SECRET=runtime-secret'
+printf '%s\n' "$PWD" "$(git symbolic-ref --short HEAD)" "$(git rev-parse --abbrev-ref '@{upstream}')" "$REMOTE_VALUE" "$E2E_SECRET"`,
 	})
 	if err != nil {
 		t.Fatalf("open e2e Dev Container command: %v", err)
 	}
 	defer session.Close()
+	if err := session.Stdin().Close(); err != nil {
+		t.Fatalf("close e2e Dev Container command stdin: %v", err)
+	}
+	type streamResult struct {
+		content []byte
+		err     error
+	}
+	stderrDone := make(chan streamResult, 1)
+	go func() {
+		content, err := io.ReadAll(session.Stderr())
+		stderrDone <- streamResult{content: content, err: err}
+	}()
 	output, err := io.ReadAll(session.Stdout())
 	if err != nil {
 		t.Fatalf("read e2e Dev Container command: %v", err)
 	}
-	if err := session.Wait(); err != nil {
-		t.Fatalf("wait e2e Dev Container command: %v", err)
+	stderr := <-stderrDone
+	if stderr.err != nil {
+		t.Fatalf("read e2e Dev Container command stderr: %v", stderr.err)
 	}
-	if strings.TrimSpace(string(output)) != containerWorkdir {
-		t.Fatalf("Dev Container pwd = %q, want %q", strings.TrimSpace(string(output)), containerWorkdir)
+	if err := session.Wait(); err != nil {
+		t.Fatalf("wait e2e Dev Container command: %v\n%s", err, strings.TrimSpace(string(stderr.content)))
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	values := lines[:0]
+	for _, line := range lines {
+		if !strings.HasPrefix(line, "##[") {
+			values = append(values, line)
+		}
+	}
+	if strings.Join(values, "\n") != containerWorkdir+"\nmain\norigin/main\nrepository\nruntime-secret" {
+		t.Fatalf("Dev Container workspace identity = %q", strings.TrimSpace(string(output)))
 	}
 }
 
@@ -463,10 +503,20 @@ test "$(wc -c < .post-attach)" = %d`, startCount, attachCount)
 	if err != nil {
 		t.Fatalf("open official interoperability assertion: %v", err)
 	}
+	if err := session.Stdin().Close(); err != nil {
+		_ = session.Close()
+		t.Fatalf("close official interoperability assertion stdin: %v", err)
+	}
+	stdoutDone := make(chan error, 1)
+	go func() {
+		_, err := io.Copy(io.Discard, session.Stdout())
+		stdoutDone <- err
+	}()
 	stderr, readErr := io.ReadAll(session.Stderr())
+	stdoutErr := <-stdoutDone
 	waitErr := session.Wait()
 	closeErr := session.Close()
-	if err := errors.Join(readErr, waitErr, closeErr); err != nil {
+	if err := errors.Join(readErr, stdoutErr, waitErr, closeErr); err != nil {
 		t.Fatalf("verify official interoperability environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 }

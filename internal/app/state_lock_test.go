@@ -50,9 +50,9 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 
 	var output bytes.Buffer
 	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Node.StateDir = stateDir
+	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)
 	if err == nil {
 		t.Fatalf("expected locked state dir error")
@@ -75,9 +75,9 @@ func TestRunWithConfigMissingManagerStateFailsBeforeRPC(t *testing.T) {
 
 	var output bytes.Buffer
 	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Node.StateDir = stateDir
+	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
 	err := RunWithConfig(&output, config)
 	if err == nil {
 		t.Fatalf("expected missing manager state error")
@@ -107,11 +107,11 @@ func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
 
 	var output bytes.Buffer
 	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Server.GatewayListenAddr = occupied.Addr().String()
-	config.Server.GatewaySSHListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Gateway.HTTP.Listen = occupied.Addr().String()
+	config.Gateway.SSH.Listen = "127.0.0.1:0"
+	config.Node.StateDir = stateDir
+	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)
 	if err == nil {
 		t.Fatalf("expected listener bind error")

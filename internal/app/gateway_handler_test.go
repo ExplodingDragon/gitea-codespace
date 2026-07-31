@@ -594,11 +594,7 @@ func TestGatewayOpenReturnsTooManyRequestsWhenSessionLimitReached(t *testing.T) 
 	}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	sessions := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 1, 1))
 	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
 
 	openGatewaySession(t, handler)
@@ -737,11 +733,7 @@ func TestGatewayOpenReplacesExistingSessionForSameBinding(t *testing.T) {
 	}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	sessions := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 1, 1))
 	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
 
 	oldCookie := openGatewaySession(t, handler)
@@ -795,11 +787,7 @@ func TestGatewayOpenRejectsMultipleCurrentBindingSessionCookies(t *testing.T) {
 	}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      10,
-	})
+	sessions := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 10))
 	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
 
 	firstCookie := openGatewaySession(t, handler)
@@ -834,11 +822,7 @@ func TestGatewayWorkspaceIgnoresUnknownAndOtherBindingSessionCookies(t *testing.
 	}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      10,
-	})
+	sessions := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 10))
 	otherID, err := sessions.Create(gatewayOpenTokenBinding{
 		userID:        42,
 		codespaceUUID: codespaceUUID,
@@ -885,11 +869,7 @@ func TestGatewayWorkspaceRejectsMultipleCurrentBindingSessionCookies(t *testing.
 	}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	sessions := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      10,
-	})
+	sessions := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 10))
 	handler := newGatewayHandler(newProcessHealth(), sessions, newTestGatewayAccess(), controlPlane)
 	firstCookie := openGatewaySession(t, handler)
 	secondCookie := openGatewaySession(t, handler)

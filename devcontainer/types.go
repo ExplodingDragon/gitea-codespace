@@ -224,6 +224,13 @@ type LoadOptions struct {
 	AllowedPathRoot string
 }
 
+// CacheOptions selects optional OCI mirrors and one BuildKit registry cache namespace.
+type CacheOptions struct {
+	BuildRegistry string            `json:"build_registry,omitempty"`
+	Mirrors       map[string]string `json:"mirrors,omitempty"`
+	BuildScope    string            `json:"build_scope,omitempty"`
+}
+
 // ResolvedConfiguration contains immutable paths and values used to create an environment.
 type ResolvedConfiguration struct {
 	Configuration
@@ -237,14 +244,17 @@ type ResolvedConfiguration struct {
 	Synthetic                 bool                `json:"-"`
 	FrozenLockfile            bool                `json:"-"`
 	InjectedFeatureReferences map[string]struct{} `json:"-"`
+	InstallOnlyFeatures       map[string]struct{} `json:"-"`
 	FeatureEntrypoints        []string            `json:"-"`
+	Cache                     CacheOptions        `json:"-"`
 }
 
 // InjectedFeature is a caller-owned Feature merged with repository configuration for one create.
 type InjectedFeature struct {
-	Reference string                     `json:"reference"`
-	Origin    string                     `json:"origin"`
-	Options   map[string]json.RawMessage `json:"options,omitempty"`
+	Reference   string                     `json:"reference"`
+	Origin      string                     `json:"origin"`
+	Options     map[string]json.RawMessage `json:"options,omitempty"`
+	InstallOnly bool                       `json:"install_only,omitempty"`
 }
 
 // StringList accepts either one string or an array of strings.

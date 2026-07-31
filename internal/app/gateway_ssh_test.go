@@ -418,8 +418,8 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	defer closeControlPlane()
 	registry := newGatewaySessionRegistry()
 	gatewayConfig := DefaultConfig().Gateway
-	gatewayConfig.SessionIdleTimeout = Duration(50 * time.Millisecond)
-	gatewayConfig.SessionRevalidateInterval = Duration(time.Hour)
+	gatewayConfig.Sessions.IdleTimeout = Duration(50 * time.Millisecond)
+	gatewayConfig.Sessions.RevalidateInterval = Duration(time.Hour)
 	backend := newTestWorkspaceCommandBackend("")
 	backend.block = true
 	gatewayServer, err := newGatewaySSHServer(
@@ -536,7 +536,7 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 	controlPlane, closeControlPlane := newTestGatewayControlPlane(t, service)
 	defer closeControlPlane()
 	gatewayConfig := DefaultConfig().Gateway
-	gatewayConfig.SSHMaxChannelsPerConnection = 1
+	gatewayConfig.SSH.MaxChannelsPerConnection = 1
 	backend := newTestWorkspaceCommandBackend("")
 	backend.block = true
 	gatewayServer, err := newGatewaySSHServer(
@@ -594,7 +594,7 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 
 	gatewayHostKey := newTestSSHSigner(t)
 	gatewayConfig := DefaultConfig().Gateway
-	gatewayConfig.MaxInflightTotal = 1
+	gatewayConfig.Limits.MaxInflightTotal = 1
 	access := newGatewayAccessControllerFromConfig(gatewayConfig)
 	reservation, status := access.reserveRequest()
 	if status != 0 {
@@ -643,7 +643,7 @@ func TestGatewaySSHClosesIncompleteHandshake(t *testing.T) {
 	t.Parallel()
 
 	gatewayConfig := DefaultConfig().Gateway
-	gatewayConfig.SSHHandshakeTimeout = Duration(50 * time.Millisecond)
+	gatewayConfig.SSH.HandshakeTimeout = Duration(50 * time.Millisecond)
 	gatewayServer, err := newGatewaySSHServer(
 		newTestSSHSigner(t),
 		nil,

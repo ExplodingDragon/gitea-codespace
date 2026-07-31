@@ -1,65 +1,36 @@
-version: 1
-
 node:
+  # A stable name shown in Gitea. It should describe this Manager deployment.
   name: "local-incus-manager"
   state_dir: "codespace-state"
-  version: "0.1.0"
-  poll_interval: "750ms"
-  declare_interval: "5s"
   capacity_total: 4
-  startup_workers: 4
-  cleanup_workers: 4
-  http_timeout: "15s"
-  shutdown_timeout: "10s"
 
 gateway:
   http:
     listen: ":18081"
+    # The externally reachable base URL. A reverse proxy may provide TLS.
     public_url: "https://codespace.example.com"
   ssh:
     listen: ":2222"
+    # The externally reachable DNS name and port used by SSH clients.
     public_addr: "codespace.example.com:2222"
-    handshake_timeout: "30s"
-    max_channels_per_connection: 32
-    auth:
-      max_attempts_per_ip_per_minute: 30
-      max_attempts_per_codespace_per_minute: 20
-      max_attempts_per_ip_codespace_per_minute: 10
-      max_attempts_per_public_key_per_minute: 30
-      backoff_base: "1s"
-      backoff_max: "30s"
-      failure_window: "10m"
-  sessions:
-    ttl: "8h"
-    idle_timeout: "30m"
-    revalidate_interval: "5m"
-    max_per_codespace: 32
-    max_per_user: 128
-  limits:
-    max_inflight_total: 4096
-    max_inflight_per_session: 32
-    public_max_connections_per_endpoint: 64
-    public_max_connections_per_ip: 16
-    validation_max_inflight: 128
 
 runtime:
-  driver: "incus"
-  codespace_root: "/codespace"
-  bootstrap:
-    shell: "/bin/bash"
-    home_dir: "/root"
-    user_name: "codespace"
-    user: 0
-    group: 0
   git:
     ssh_key_type: "ed25519"
-  devcontainer:
-    # An explicit code-server release used by newly created Codespaces. Recreate an existing Codespace to upgrade it.
+  web_ide:
+    # New Codespaces use this explicit code-server release. Recreate an environment to upgrade it.
     code_server_version: "4.121.0"
+  cache:
+    # Optional OCI registry namespace used for BuildKit cache manifests and layers.
+    registry: "https://registry.example.com/gitea-codespace-cache"
+    # Each key is the original registry host; each value is its pull-through cache base URL.
+    mirrors:
+      docker.io: "https://docker-cache.example.com"
+      ghcr.io: "https://ghcr-cache.example.com"
+      mcr.microsoft.com: "https://mcr-cache.example.com"
   incus:
-    connect:
-      unix_socket: "/var/lib/incus/unix.socket"
-      # remote_addr: "https://incus.example.com:8443"
+    # Use unix:///absolute/path for local Incus or https://host:port for an already trusted remote Incus server.
+    endpoint: "unix:///var/lib/incus/unix.socket"
     project:
       name: "gitea-codespace"
       manage: true
@@ -70,45 +41,32 @@ runtime:
       manage: true
   environments:
     - tag: "debian-lxc"
-      display_name: "Debian 12 LXC"
       type: "lxc"
       source:
-        type: "image"
         image: "images:debian/12"
       resources:
         cpu: 1
         memory: "1GiB"
         root_disk: "10GiB"
-      profiles:
-        use:
-          - "default"
 
     - tag: "debian-vm"
-      display_name: "Debian 12 VM"
       type: "vm"
       source:
-        type: "image"
         image: "images:debian/12"
       resources:
         cpu: 2
         memory: "1GiB"
         root_disk: "20GiB"
-      profiles:
-        use:
-          - "default"
 
+    # An existing instance on the configured Incus server can be used as a base image.
     - tag: "company-base"
-      display_name: "Company Base VM"
       type: "vm"
       source:
-        type: "instance"
-        remote: "local"
-        project: "base-images"
-        name: "dev-vm-base"
+        instance:
+          project: "base-images"
+          name: "dev-vm-base"
       resources:
         cpu: 2
         memory: "1GiB"
         root_disk: "20GiB"
-      profiles:
-        use:
-          - "company-dev-vm"
+      profiles: ["company-dev-vm"]

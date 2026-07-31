@@ -18,7 +18,9 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-func WriteConfiguredEndpoints(configuration devcontainer.Configuration) error {
+// InitializeConfiguredEndpoints writes the repository defaults before the first
+// lifecycle command. Subsequent starts preserve changes made by the remote user.
+func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, owner devcontainer.HostUser) error {
 	ports := map[uint16]struct{}{}
 	for _, port := range configuration.ForwardPorts {
 		value, err := devContainerPort(port)
@@ -67,10 +69,10 @@ func WriteConfiguredEndpoints(configuration devcontainer.Configuration) error {
 	if len(manifest.Endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
 		return devcontainer.InvalidConfiguration(fmt.Errorf("configured endpoints exceed limit %d", runtimeendpoint.MaxDeclaredEndpointCount))
 	}
-	return writeEndpointManifest(manifest)
+	return writeEndpointManifest(manifest, owner)
 }
 
-func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest) error {
+func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest, owner devcontainer.HostUser) error {
 	directory := filepath.Dir(runtimeendpoint.EndpointManifestPath)
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return err
@@ -83,8 +85,10 @@ func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest) error {
 	defer os.Remove(temporary)
 	encodeErr := json.NewEncoder(file).Encode(manifest)
 	chmodErr := file.Chmod(0o600)
+	chownErr := file.Chown(int(owner.UID), int(owner.GID))
+	syncErr := file.Sync()
 	closeErr := file.Close()
-	if err := errors.Join(encodeErr, chmodErr, closeErr); err != nil {
+	if err := errors.Join(encodeErr, chmodErr, chownErr, syncErr, closeErr); err != nil {
 		return err
 	}
 	return os.Rename(temporary, runtimeendpoint.EndpointManifestPath)

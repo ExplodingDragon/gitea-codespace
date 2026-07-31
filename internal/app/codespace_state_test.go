@@ -503,7 +503,6 @@ func TestValidateEndpointLabel(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
@@ -1249,9 +1248,9 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 
 	var output bytes.Buffer
 	config := DefaultConfig()
-	config.Server.ListenAddr = "127.0.0.1:0"
-	config.Manager.StateDir = stateDir
-	config.Manager.HTTPTimeout = Duration(100 * time.Millisecond)
+	config.Gateway.HTTP.Listen = "127.0.0.1:0"
+	config.Node.StateDir = stateDir
+	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
 	err = RunWithConfig(&output, config)
 	if err == nil {
 		t.Fatalf("expected invalid codespace state error")

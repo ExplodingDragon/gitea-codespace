@@ -10,6 +10,15 @@ import (
 	"time"
 )
 
+func gatewaySessionTestConfig(ttl, idleTimeout Duration, maxPerCodespace, maxPerUser int) GatewayConfig {
+	return GatewayConfig{Sessions: GatewaySessionConfig{
+		TTL:             ttl,
+		IdleTimeout:     idleTimeout,
+		MaxPerCodespace: maxPerCodespace,
+		MaxPerUser:      maxPerUser,
+	}}
+}
+
 func TestGatewaySessionRegistryTracksLiveSessions(t *testing.T) {
 	t.Parallel()
 
@@ -112,11 +121,7 @@ func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      10,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 1, 10))
 	now := time.Unix(100, 0)
 	if _, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -134,11 +139,7 @@ func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T)
 func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -174,11 +175,7 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      10,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	validID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -208,11 +205,7 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      10,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -245,11 +238,7 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 1))
 	now := time.Unix(100, 0)
 	release, ok := registry.BeginSSHSession("codespace-1", 42, nil, now)
 	if !ok {
@@ -268,11 +257,7 @@ func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Minute),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Minute), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -304,12 +289,7 @@ func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		SessionIdleTimeout:      Duration(time.Minute),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -344,12 +324,7 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		SessionIdleTimeout:      Duration(time.Minute),
-		MaxSessionsPerCodespace: 1,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(gatewayOpenTokenBinding{
 		userID:        42,
@@ -376,11 +351,7 @@ func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 func TestGatewaySessionRegistryDeleteCodespaceReleasesSSHSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistryFromConfig(GatewayConfig{
-		SessionTTL:              Duration(time.Hour),
-		MaxSessionsPerCodespace: 10,
-		MaxSessionsPerUser:      1,
-	})
+	registry := newGatewaySessionRegistryFromConfig(gatewaySessionTestConfig(Duration(time.Hour), 0, 10, 1))
 	ctx, cancel := context.WithCancel(context.Background())
 	release, ok := registry.BeginSSHSession("codespace-1", 42, cancel, time.Unix(100, 0))
 	if !ok {

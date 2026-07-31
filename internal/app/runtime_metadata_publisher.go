@@ -19,6 +19,7 @@ import (
 )
 
 const defaultRuntimeMetadataRetryInterval = time.Second
+const runtimeMetadataRepeatedErrorInterval = 30 * time.Second
 
 type runtimeMetadataNotifier interface {
 	NotifyRuntimeMetadata(codespaceUUID string)
@@ -47,6 +48,8 @@ type runtimeMetadataWorker struct {
 	wake      chan struct{}
 	stop      chan struct{}
 	publishMu sync.Mutex
+	lastError string
+	lastLog   time.Time
 }
 
 func newRuntimeMetadataPublisher(state *CodespaceStateStore, controlPlane *gatewayControlPlane, sampler runtimeResourceUsageSampler, retryInterval time.Duration) *runtimeMetadataPublisher {
@@ -263,17 +266,18 @@ func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, code
 		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadata, generation); err != nil {
 			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
 				if handleErr != nil {
-					log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, handleErr)
+					worker.logPublishError(codespaceUUID, generation, handleErr)
 					return true
 				}
 				continue
 			}
-			log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, err)
+			worker.logPublishError(codespaceUUID, generation, err)
 			if !waitRuntimeMetadataWorkerRetry(ctx, worker, p.retryInterval) {
 				return true
 			}
 			continue
 		}
+		worker.logPublishRecovery(codespaceUUID)
 		if !worker.consumePendingWake() {
 			return true
 		}
@@ -391,6 +395,26 @@ func (w *runtimeMetadataWorker) consumePendingWake() bool {
 	default:
 		return false
 	}
+}
+
+func (w *runtimeMetadataWorker) logPublishError(codespaceUUID string, generation int64, err error) {
+	message := err.Error()
+	now := time.Now()
+	if message == w.lastError && now.Sub(w.lastLog) < runtimeMetadataRepeatedErrorInterval {
+		return
+	}
+	log.Printf("report runtime metadata %s generation %d: %v", codespaceUUID, generation, err)
+	w.lastError = message
+	w.lastLog = now
+}
+
+func (w *runtimeMetadataWorker) logPublishRecovery(codespaceUUID string) {
+	if w.lastError == "" {
+		return
+	}
+	log.Printf("runtime metadata reporting recovered for %s", codespaceUUID)
+	w.lastError = ""
+	w.lastLog = time.Time{}
 }
 
 func waitRuntimeMetadataRetry(ctx context.Context, delay time.Duration) bool {

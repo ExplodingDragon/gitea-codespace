@@ -17,6 +17,11 @@ import (
 
 const maxGatewaySSHAuthLimitKeys = 65536
 
+const (
+	gatewaySSHAuthBackoffBase = time.Second
+	gatewaySSHAuthBackoffMax  = 30 * time.Second
+)
+
 type gatewaySSHAuthLimitConfig struct {
 	maxPerIP          int
 	maxPerCodespace   int
@@ -50,38 +55,38 @@ type gatewaySSHAuthLimitRecord struct {
 
 func newGatewaySSHAuthLimiterFromConfig(config GatewayConfig) *gatewaySSHAuthLimiter {
 	return newGatewaySSHAuthLimiter(gatewaySSHAuthLimitConfig{
-		maxPerIP:          config.SSHAuthMaxAttemptsPerIP,
-		maxPerCodespace:   config.SSHAuthMaxAttemptsPerCodespace,
-		maxPerIPCodespace: config.SSHAuthMaxAttemptsPerIPCodespace,
-		maxPerPublicKey:   config.SSHAuthMaxAttemptsPerPublicKey,
-		backoffBase:       config.SSHAuthBackoffBase.ToStdlib(),
-		backoffMax:        config.SSHAuthBackoffMax.ToStdlib(),
-		failureWindow:     config.SSHAuthFailureWindow.ToStdlib(),
+		maxPerIP:          config.SSH.Auth.MaxAttemptsPerIP,
+		maxPerCodespace:   config.SSH.Auth.MaxAttemptsPerCodespace,
+		maxPerIPCodespace: config.SSH.Auth.MaxAttemptsPerIPCodespace,
+		maxPerPublicKey:   config.SSH.Auth.MaxAttemptsPerPublicKey,
+		backoffBase:       gatewaySSHAuthBackoffBase,
+		backoffMax:        gatewaySSHAuthBackoffMax,
+		failureWindow:     config.SSH.Auth.FailureWindow.ToStdlib(),
 		maxKeys:           maxGatewaySSHAuthLimitKeys,
 	})
 }
 
 func newGatewaySSHAuthLimiter(config gatewaySSHAuthLimitConfig) *gatewaySSHAuthLimiter {
 	if config.maxPerIP <= 0 {
-		config.maxPerIP = DefaultConfig().Gateway.SSHAuthMaxAttemptsPerIP
+		config.maxPerIP = DefaultConfig().Gateway.SSH.Auth.MaxAttemptsPerIP
 	}
 	if config.maxPerCodespace <= 0 {
-		config.maxPerCodespace = DefaultConfig().Gateway.SSHAuthMaxAttemptsPerCodespace
+		config.maxPerCodespace = DefaultConfig().Gateway.SSH.Auth.MaxAttemptsPerCodespace
 	}
 	if config.maxPerIPCodespace <= 0 {
-		config.maxPerIPCodespace = DefaultConfig().Gateway.SSHAuthMaxAttemptsPerIPCodespace
+		config.maxPerIPCodespace = DefaultConfig().Gateway.SSH.Auth.MaxAttemptsPerIPCodespace
 	}
 	if config.maxPerPublicKey <= 0 {
-		config.maxPerPublicKey = DefaultConfig().Gateway.SSHAuthMaxAttemptsPerPublicKey
+		config.maxPerPublicKey = DefaultConfig().Gateway.SSH.Auth.MaxAttemptsPerPublicKey
 	}
 	if config.backoffBase <= 0 {
-		config.backoffBase = DefaultConfig().Gateway.SSHAuthBackoffBase.ToStdlib()
+		config.backoffBase = gatewaySSHAuthBackoffBase
 	}
 	if config.backoffMax <= 0 {
-		config.backoffMax = DefaultConfig().Gateway.SSHAuthBackoffMax.ToStdlib()
+		config.backoffMax = gatewaySSHAuthBackoffMax
 	}
 	if config.failureWindow <= 0 {
-		config.failureWindow = DefaultConfig().Gateway.SSHAuthFailureWindow.ToStdlib()
+		config.failureWindow = DefaultConfig().Gateway.SSH.Auth.FailureWindow.ToStdlib()
 	}
 	if config.maxKeys <= 0 {
 		config.maxKeys = maxGatewaySSHAuthLimitKeys

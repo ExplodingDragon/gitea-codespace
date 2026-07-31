@@ -30,9 +30,10 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 	if err != nil || len(commands) == 0 {
 		return err
 	}
+	fmt.Fprintln(stdout, "##[group]initializeCommand")
+	defer fmt.Fprintln(stdout, "##[endgroup]")
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
-		arguments := arguments
 		group.Go(func() error {
 			process := exec.CommandContext(groupCtx, arguments[0], arguments[1:]...)
 			process.Dir = workdir
@@ -124,17 +125,12 @@ func (e *Engine) runLifecycleCommand(ctx context.Context, environment *devcontai
 	if len(commands) == 0 {
 		return nil
 	}
+	fmt.Fprintf(e.stdout, "##[group]%s\n", name)
+	defer fmt.Fprintln(e.stdout, "##[endgroup]")
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
-		arguments := arguments
 		group.Go(func() error {
-			environmentValues := make(map[string]string, len(environment.RemoteEnvironment)+len(secrets))
-			for key, value := range environment.RemoteEnvironment {
-				environmentValues[key] = value
-			}
-			for key, value := range secrets {
-				environmentValues[key] = value
-			}
+			environmentValues := devcontainer.ProcessEnvironment(environment.RemoteEnvironment, secrets)
 			if _, _, err := e.Exec(groupCtx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, arguments, environmentValues, nil); err != nil {
 				return fmt.Errorf("run %s: %w", name, err)
 			}
@@ -199,12 +195,21 @@ func (e *Engine) CopyFile(ctx context.Context, containerID, source, target strin
 	if err != nil {
 		return fmt.Errorf("stat runtime binary: %w", err)
 	}
+	return e.copyContent(ctx, containerID, target, mode, info.Size(), file)
+}
+
+// CopyContent copies in-memory content into a container with the requested mode.
+func (e *Engine) CopyContent(ctx context.Context, containerID, target string, mode int64, content []byte) error {
+	return e.copyContent(ctx, containerID, target, mode, int64(len(content)), bytes.NewReader(content))
+}
+
+func (e *Engine) copyContent(ctx context.Context, containerID, target string, mode, size int64, content io.Reader) error {
 	reader, writer := io.Pipe()
 	go func() {
 		archive := tar.NewWriter(writer)
-		err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: info.Size()})
+		err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: size})
 		if err == nil {
-			_, err = io.Copy(archive, file)
+			_, err = io.Copy(archive, content)
 		}
 		err = errors.Join(err, archive.Close())
 		_ = writer.CloseWithError(err)

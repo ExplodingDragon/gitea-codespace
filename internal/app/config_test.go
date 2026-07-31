@@ -17,8 +17,6 @@ func TestLoadConfigYAML(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "codespace.yaml")
 	content := `
-version: 1
-
 node:
   state_dir: "state"
   name: "yaml-manager"
@@ -41,8 +39,6 @@ gateway:
       max_attempts_per_codespace_per_minute: 12
       max_attempts_per_ip_codespace_per_minute: 13
       max_attempts_per_public_key_per_minute: 14
-      backoff_base: "2s"
-      backoff_max: "20s"
       failure_window: "5m"
   sessions:
     ttl: "4h"
@@ -52,10 +48,8 @@ gateway:
     max_per_user: 99
 
 runtime:
-  driver: "incus"
   incus:
-    connect:
-      unix_socket: "/var/lib/incus/unix.socket"
+    endpoint: "unix:///var/lib/incus/unix.socket"
     project:
       name: "gitea-codespace"
       manage: true
@@ -66,18 +60,14 @@ runtime:
       manage: true
   environments:
     - tag: "default"
-      display_name: "Debian VM"
       type: "vm"
       source:
-        type: "image"
         image: "images:debian/12"
       resources:
         cpu: 2
         memory: "1GiB"
         root_disk: "10GiB"
-      profiles:
-        use:
-          - default
+      profiles: ["default"]
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write yaml config: %v", err)
@@ -88,48 +78,43 @@ runtime:
 		t.Fatalf("load yaml config: %v", err)
 	}
 
-	if config.Version != 1 {
-		t.Fatalf("version = %d", config.Version)
+	if config.Node.StateDir != filepath.Join(dir, "state") {
+		t.Fatalf("manager state dir = %q", config.Node.StateDir)
 	}
-	if config.Manager.StateDir != filepath.Join(dir, "state") {
-		t.Fatalf("manager state dir = %q", config.Manager.StateDir)
+	if config.Node.Name != "yaml-manager" || config.Gateway.HTTP.PublicURL != "https://codespace.example.com" {
+		t.Fatalf("config = %#v", config)
 	}
-	if config.Manager.Name != "yaml-manager" || config.Manager.GatewayURL != "https://codespace.example.com" {
-		t.Fatalf("manager config = %#v", config.Manager)
+	if config.Gateway.SSH.PublicAddr != "codespace.example.com:2222" {
+		t.Fatalf("manager gateway ssh addr = %q", config.Gateway.SSH.PublicAddr)
 	}
-	if config.Manager.GatewaySSHAddr != "codespace.example.com:2222" {
-		t.Fatalf("manager gateway ssh addr = %q", config.Manager.GatewaySSHAddr)
+	if config.Gateway.HTTP.Listen != ":19091" || config.Gateway.SSH.Listen != ":19022" {
+		t.Fatalf("gateway listeners = %#v", config.Gateway)
 	}
-	if config.Server.GatewayListenAddr != ":19091" || config.Server.GatewaySSHListenAddr != ":19022" {
-		t.Fatalf("server listeners = %#v", config.Server)
-	}
-	if config.Gateway.SessionRevalidateInterval.ToStdlib().Seconds() != 45 ||
-		config.Gateway.SessionIdleTimeout.ToStdlib().Minutes() != 2 ||
-		config.Gateway.SessionTTL.ToStdlib().Hours() != 4 ||
-		config.Gateway.MaxSessionsPerCodespace != 9 ||
-		config.Gateway.MaxSessionsPerUser != 99 {
+	if config.Gateway.Sessions.RevalidateInterval.ToStdlib().Seconds() != 45 ||
+		config.Gateway.Sessions.IdleTimeout.ToStdlib().Minutes() != 2 ||
+		config.Gateway.Sessions.TTL.ToStdlib().Hours() != 4 ||
+		config.Gateway.Sessions.MaxPerCodespace != 9 ||
+		config.Gateway.Sessions.MaxPerUser != 99 {
 		t.Fatalf("gateway session config = %#v", config.Gateway)
 	}
-	if config.Gateway.SSHHandshakeTimeout.ToStdlib() != 20*time.Second ||
-		config.Gateway.SSHMaxChannelsPerConnection != 7 ||
-		config.Gateway.SSHAuthMaxAttemptsPerIP != 11 ||
-		config.Gateway.SSHAuthMaxAttemptsPerCodespace != 12 ||
-		config.Gateway.SSHAuthMaxAttemptsPerIPCodespace != 13 ||
-		config.Gateway.SSHAuthMaxAttemptsPerPublicKey != 14 ||
-		config.Gateway.SSHAuthBackoffBase.ToStdlib().Seconds() != 2 ||
-		config.Gateway.SSHAuthBackoffMax.ToStdlib().Seconds() != 20 ||
-		config.Gateway.SSHAuthFailureWindow.ToStdlib().Minutes() != 5 {
+	if config.Gateway.SSH.HandshakeTimeout.ToStdlib() != 20*time.Second ||
+		config.Gateway.SSH.MaxChannelsPerConnection != 7 ||
+		config.Gateway.SSH.Auth.MaxAttemptsPerIP != 11 ||
+		config.Gateway.SSH.Auth.MaxAttemptsPerCodespace != 12 ||
+		config.Gateway.SSH.Auth.MaxAttemptsPerIPCodespace != 13 ||
+		config.Gateway.SSH.Auth.MaxAttemptsPerPublicKey != 14 ||
+		config.Gateway.SSH.Auth.FailureWindow.ToStdlib().Minutes() != 5 {
 		t.Fatalf("gateway ssh config = %#v", config.Gateway)
 	}
-	if config.Incus.Project != "gitea-codespace" || !config.Incus.ProjectManage ||
-		config.Incus.StoragePool != "default" || config.Incus.NetworkName != "csnet" || !config.Incus.NetworkManage {
-		t.Fatalf("incus config = %#v", config.Incus)
+	if config.Runtime.Incus.Project.Name != "gitea-codespace" || !config.Runtime.Incus.Project.Manage ||
+		config.Runtime.Incus.Storage.Pool != "default" || config.Runtime.Incus.Network.Name != "csnet" || !config.Runtime.Incus.Network.Manage {
+		t.Fatalf("incus config = %#v", config.Runtime.Incus)
 	}
-	if config.Provisioner.CodeServerVersion != "4.121.0" {
-		t.Fatalf("code-server version = %q", config.Provisioner.CodeServerVersion)
+	if config.Runtime.WebIDE.CodeServerVersion != "4.121.0" {
+		t.Fatalf("code-server version = %q", config.Runtime.WebIDE.CodeServerVersion)
 	}
-	environment := config.RuntimeEnvironments["default"]
-	if environment.InstanceType != "virtual-machine" || environment.Image != "images:debian/12" || environment.CPU != 2 {
+	environment := config.Runtime.Environments[0]
+	if normalizeEnvironmentType(environment.Type) != "virtual-machine" || environment.Source.Image != "images:debian/12" || environment.Resources.CPU != 2 {
 		t.Fatalf("environment = %#v", environment)
 	}
 }
@@ -138,9 +123,30 @@ func TestConfigRejectsMovingCodeServerVersion(t *testing.T) {
 	t.Parallel()
 
 	config := DefaultConfig()
-	config.Runtime.DevContainer.CodeServerVersion = "latest"
+	config.Runtime.WebIDE.CodeServerVersion = "latest"
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "explicit semantic version") {
 		t.Fatalf("code-server version error = %v", err)
+	}
+}
+
+func TestConfigValidatesRuntimeCache(t *testing.T) {
+	t.Parallel()
+
+	config := DefaultConfig()
+	config.Runtime.Cache = RuntimeCacheConfig{
+		BuildRegistry: "https://registry.example.com/gitea-codespace",
+		Mirrors:       map[string]string{"ghcr.io": "http://cache.example.com/ghcr"},
+	}
+	if err := config.Validate(); err != nil {
+		t.Fatalf("valid runtime cache: %v", err)
+	}
+	config.Runtime.Cache.BuildRegistry = "https://registry.example.com"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "namespace path") {
+		t.Fatalf("registry namespace error = %v", err)
+	}
+	config.Runtime.Cache.BuildRegistry = "https://registry.example.com/Invalid"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "valid OCI") {
+		t.Fatalf("registry OCI namespace error = %v", err)
 	}
 }
 
@@ -151,7 +157,6 @@ func TestLoadCheckedInYAMLConfigs(t *testing.T) {
 		filepath.Join("..", "..", "codespace.yaml"),
 		filepath.Join("..", "..", "examples", "config.example.yaml"),
 	} {
-		path := path
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 
@@ -159,10 +164,10 @@ func TestLoadCheckedInYAMLConfigs(t *testing.T) {
 			if err != nil {
 				t.Fatalf("load checked-in config %s: %v", path, err)
 			}
-			if config.Provisioner.Kind != "incus" {
-				t.Fatalf("provisioner kind = %q", config.Provisioner.Kind)
+			if config.provisionerKind != "incus" {
+				t.Fatalf("provisioner kind = %q", config.provisionerKind)
 			}
-			if len(config.RuntimeEnvironments) == 0 {
+			if len(config.Runtime.Environments) == 0 {
 				t.Fatalf("config %s has no runtime environments", path)
 			}
 		})
@@ -213,22 +218,18 @@ func TestLoadConfigInstanceSource(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
 	content := `
 runtime:
-  driver: "incus"
   environments:
     - tag: "environment"
       type: "vm"
       source:
-        type: "instance"
-        remote: "local"
-        project: "environments"
-        name: "dev-environment"
+        instance:
+          project: "environments"
+          name: "dev-environment"
       resources:
         cpu: 2
         memory: "1GiB"
         root_disk: "10GiB"
-      profiles:
-        use:
-          - default
+      profiles: ["default"]
 `
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write yaml config: %v", err)
@@ -237,11 +238,10 @@ runtime:
 	if err != nil {
 		t.Fatalf("load yaml config: %v", err)
 	}
-	environment := config.RuntimeEnvironments["environment"]
-	if environment.SourceType != "instance" ||
-		environment.SourceRemote != "local" ||
-		environment.SourceProject != "environments" ||
-		environment.SourceName != "dev-environment" {
+	environment := config.Runtime.Environments[0]
+	if environment.Source.Instance == nil ||
+		environment.Source.Instance.Project != "environments" ||
+		environment.Source.Instance.Name != "dev-environment" {
 		t.Fatalf("environment source = %#v", environment)
 	}
 }
@@ -250,45 +250,45 @@ func TestGatewayConfigValidation(t *testing.T) {
 	t.Parallel()
 
 	config := DefaultConfig()
-	config.Gateway.PublicMaxConnectionsPerEndpoint = 4
-	config.Gateway.PublicMaxConnectionsPerIP = 5
+	config.Gateway.Limits.PublicMaxConnectionsPerEndpoint = 4
+	config.Gateway.Limits.PublicMaxConnectionsPerIP = 5
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected per-ip gateway limit validation error")
 	}
 
 	config = DefaultConfig()
-	config.Gateway.MaxInflightTotal = 4
-	config.Gateway.MaxInflightPerSession = 5
+	config.Gateway.Limits.MaxInflightTotal = 4
+	config.Gateway.Limits.MaxInflightPerSession = 5
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected per-session gateway limit validation error")
 	}
 
 	config = DefaultConfig()
-	config.Gateway.SSHMaxChannelsPerConnection = 1025
+	config.Gateway.SSH.MaxChannelsPerConnection = 1025
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected ssh max channels validation error")
 	}
 
 	config = DefaultConfig()
-	config.Gateway.SSHHandshakeTimeout = Duration(time.Millisecond)
+	config.Gateway.SSH.HandshakeTimeout = Duration(time.Millisecond)
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected ssh handshake timeout validation error")
 	}
 
 	config = DefaultConfig()
-	config.Gateway.SessionIdleTimeout = Duration(time.Millisecond)
+	config.Gateway.Sessions.IdleTimeout = Duration(time.Millisecond)
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected session idle timeout validation error")
 	}
 
 	config = DefaultConfig()
-	config.Manager.CapacityTotal = 10001
+	config.Node.CapacityTotal = 10001
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected capacity total validation error")
 	}
 
 	config = DefaultConfig()
-	config.Manager.GatewayURL = "http://127.0.0.1:18081"
+	config.Gateway.HTTP.PublicURL = "http://127.0.0.1:18081"
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected gateway public url validation error")
 	} else if !strings.Contains(err.Error(), "gateway.http.public_url") {
@@ -296,7 +296,7 @@ func TestGatewayConfigValidation(t *testing.T) {
 	}
 
 	config = DefaultConfig()
-	config.Manager.GatewaySSHAddr = "127.0.0.1:2222"
+	config.Gateway.SSH.PublicAddr = "127.0.0.1:2222"
 	if err := config.Validate(); err == nil {
 		t.Fatalf("expected gateway ssh public addr validation error")
 	} else if !strings.Contains(err.Error(), "gateway.ssh.public_addr") {

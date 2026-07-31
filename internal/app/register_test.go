@@ -90,8 +90,8 @@ func TestLoadConfigForRegisterUsesDefaultsWhenNoConfigExists(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load default register config: %v", err)
 	}
-	if config.Manager.StateDir != "codespace-state" {
-		t.Fatalf("state dir = %q", config.Manager.StateDir)
+	if config.Node.StateDir != "codespace-state" {
+		t.Fatalf("state dir = %q", config.Node.StateDir)
 	}
 }
 
@@ -207,7 +207,6 @@ func writeRegisterConfig(t *testing.T, stateDir string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "codespace.yaml")
 	content := fmt.Sprintf(`
-version: 1
 node:
   state_dir: %q
 gateway:

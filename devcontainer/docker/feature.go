@@ -19,8 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/docker/docker/api/types/build"
-	"github.com/docker/docker/pkg/archive"
+	"github.com/distribution/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
@@ -104,7 +103,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			return nil
 		}
 		directory := filepath.Join(temporary, strconv.Itoa(len(features)))
-		feature, err := fetchFeature(ctx, reference, rawOptions, directory, lockfile.Features[reference])
+		feature, err := e.fetchFeature(ctx, reference, rawOptions, directory, lockfile.Features[reference], resolved.Cache)
 		if err != nil {
 			return err
 		}
@@ -146,6 +145,9 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	for _, feature := range ordered {
 		featureConfiguration = devcontainer.Merge(featureConfiguration, featureConfigurationFromMetadata(feature.metadata))
 		if strings.TrimSpace(feature.metadata.Entrypoint) != "" {
+			if _, installOnly := resolved.InstallOnlyFeatures[feature.reference]; installOnly {
+				continue
+			}
 			resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, feature.metadata.Entrypoint)
 		}
 	}
@@ -222,17 +224,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, err
 	}
 	imageName := "devcontainer-feature:" + resolved.DevContainerID
-	reader, err := archive.TarWithOptions(temporary, &archive.TarOptions{})
-	if err != nil {
-		return "", nil, err
-	}
-	defer reader.Close()
-	response, err := e.client.ImageBuild(ctx, reader, build.ImageBuildOptions{Dockerfile: "Dockerfile.features", Tags: []string{imageName}, Remove: true})
-	if err != nil {
-		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
-	}
-	defer response.Body.Close()
-	if err := streamDockerBuildOutput(response.Body, e.stderr); err != nil {
+	if err := e.buildImage(ctx, temporary, "Dockerfile.features", imageName, "", nil, nil, resolved.Cache, "features"); err != nil {
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
 	digests := make(map[string]string, len(ordered))
@@ -242,20 +234,49 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	return imageName, digests, nil
 }
 
-func fetchFeature(ctx context.Context, reference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature) (*resolvedFeature, error) {
-	resolveReference := reference
+func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, cache devcontainer.CacheOptions) (*resolvedFeature, error) {
+	resolveReference := featureReference
 	if strings.TrimSpace(locked.Integrity) != "" {
 		if strings.TrimSpace(locked.Resolved) == "" {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile entry is incomplete", reference))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile entry is incomplete", featureReference))
 		}
 		resolveReference = locked.Resolved
 	}
+	fetchReference, mirrored, err := mirroredReference(resolveReference, cache.Mirrors)
+	if err != nil {
+		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
+	}
+	if mirrored {
+		plainHTTP := false
+		if named, parseErr := reference.ParseNormalizedNamed(resolveReference); parseErr == nil {
+			if mirrorURL, parseErr := parseOCIRepositoryBase(cache.Mirrors[reference.Domain(named)], false); parseErr == nil {
+				plainHTTP = mirrorURL.Scheme == "http"
+			}
+		}
+		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, plainHTTP)
+		if err == nil {
+			fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
+			return feature, nil
+		}
+		fmt.Fprintf(e.stderr, "Warning: OCI mirror for Dev Container Feature %s is unavailable, falling back to the original registry: %v\n", featureReference, err)
+		if err := os.RemoveAll(directory); err != nil {
+			return nil, err
+		}
+	}
+	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, false)
+}
+
+func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, plainHTTP bool) (*resolvedFeature, error) {
+	original, err := registry.ParseReference(featureReference)
+	if err != nil {
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err))
+	}
 	parsed, err := registry.ParseReference(resolveReference)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature %q: %w", reference, err))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature %q: %w", featureReference, err))
 	}
 	if parsed.Reference == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %q has no version or digest", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %q has no version or digest", featureReference))
 	}
 	repository, err := remote.NewRepository(parsed.Registry + "/" + parsed.Repository)
 	if err != nil {
@@ -266,36 +287,37 @@ func fetchFeature(ctx context.Context, reference string, rawOptions json.RawMess
 		return nil, fmt.Errorf("open Docker credential store: %w", err)
 	}
 	repository.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(credentialStore)}
+	repository.PlainHTTP = plainHTTP
 	descriptor, err := repository.Resolve(ctx, parsed.Reference)
 	if err != nil {
-		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", reference, err)
+		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", featureReference, err)
 	}
 	if locked.Integrity != "" && descriptor.Digest.String() != locked.Integrity {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile integrity does not match", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile integrity does not match", featureReference))
 	}
 	manifestReader, err := repository.Fetch(ctx, descriptor)
 	if err != nil {
-		return nil, fmt.Errorf("fetch Dev Container Feature manifest %s: %w", reference, err)
+		return nil, fmt.Errorf("fetch Dev Container Feature manifest %s: %w", featureReference, err)
 	}
 	var manifest ocispec.Manifest
 	decodeErr := json.NewDecoder(manifestReader).Decode(&manifest)
 	closeErr := manifestReader.Close()
 	if err := errors.Join(decodeErr, closeErr); err != nil {
-		return nil, fmt.Errorf("decode Dev Container Feature manifest %s: %w", reference, err)
+		return nil, fmt.Errorf("decode Dev Container Feature manifest %s: %w", featureReference, err)
 	}
 	if !strings.HasPrefix(manifest.Config.MediaType, devContainerFeatureMediaType) {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("OCI artifact %s is not a Dev Container Feature", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("OCI artifact %s is not a Dev Container Feature", featureReference))
 	}
 	if len(manifest.Layers) != 1 {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s must contain one layer", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s must contain one layer", featureReference))
 	}
 	layer, err := repository.Fetch(ctx, manifest.Layers[0])
 	if err != nil {
-		return nil, fmt.Errorf("fetch Dev Container Feature layer %s: %w", reference, err)
+		return nil, fmt.Errorf("fetch Dev Container Feature layer %s: %w", featureReference, err)
 	}
 	if err := extractFeatureLayer(layer, directory); err != nil {
 		_ = layer.Close()
-		return nil, fmt.Errorf("extract Dev Container Feature %s: %w", reference, err)
+		return nil, fmt.Errorf("extract Dev Container Feature %s: %w", featureReference, err)
 	}
 	if err := layer.Close(); err != nil {
 		return nil, err
@@ -312,21 +334,21 @@ func fetchFeature(ctx context.Context, reference string, rawOptions json.RawMess
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("decode Feature metadata: %w", err))
 	}
 	if strings.TrimSpace(metadata.ID) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s id is empty", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s id is empty", featureReference))
 	}
 	if strings.TrimSpace(metadata.Version) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s version is empty", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s version is empty", featureReference))
 	}
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", featureReference))
 	}
 	options, err := resolveFeatureOptions(metadata.Options, rawOptions)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s: %w", reference, err))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s: %w", featureReference, err))
 	}
 	return &resolvedFeature{
-		reference: reference,
-		resolved:  parsed.Registry + "/" + parsed.Repository + "@" + descriptor.Digest.String(),
+		reference: featureReference,
+		resolved:  original.Registry + "/" + original.Repository + "@" + descriptor.Digest.String(),
 		digest:    descriptor.Digest.String(), directory: directory, options: options, metadata: metadata,
 	}, nil
 }

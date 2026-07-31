@@ -106,12 +106,12 @@ func newGatewayAccessController(config gatewayAccessConfig) *gatewayAccessContro
 func newGatewayAccessControllerFromConfig(config GatewayConfig) *gatewayAccessController {
 	return newGatewayAccessController(gatewayAccessConfig{
 		allowedTTL:                      time.Second,
-		streamRevalidateInterval:        config.SessionRevalidateInterval.ToStdlib(),
-		maxInflightTotal:                config.MaxInflightTotal,
-		maxInflightPerSession:           config.MaxInflightPerSession,
-		publicMaxConnectionsPerEndpoint: config.PublicMaxConnectionsPerEndpoint,
-		publicMaxConnectionsPerIP:       config.PublicMaxConnectionsPerIP,
-		validationMaxInflight:           config.ValidationMaxInflight,
+		streamRevalidateInterval:        config.Sessions.RevalidateInterval.ToStdlib(),
+		maxInflightTotal:                config.Limits.MaxInflightTotal,
+		maxInflightPerSession:           config.Limits.MaxInflightPerSession,
+		publicMaxConnectionsPerEndpoint: config.Limits.PublicMaxConnectionsPerEndpoint,
+		publicMaxConnectionsPerIP:       config.Limits.PublicMaxConnectionsPerIP,
+		validationMaxInflight:           config.Limits.ValidationMaxInflight,
 	})
 }
 

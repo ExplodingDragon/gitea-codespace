@@ -24,9 +24,13 @@ var configureGitScript string
 //go:embed builtin/start-web-ide.sh
 var startWebIDEScript string
 
+//go:embed builtin/endpoint.sh
+var endpointScript []byte
+
 const (
 	// ContainerRuntimeBinary is the in-container path used by endpoint and TCP bridges.
 	ContainerRuntimeBinary     = "/usr/local/libexec/gitea-codespace-runtime"
+	containerEndpointBinary    = "/usr/local/bin/gitea-codespace-endpoint"
 	codeServerFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
 )
 
@@ -58,9 +62,11 @@ func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		HostUser:         request.HostUser,
 		LocalEnvironment: request.LocalEnvironment,
 		Secrets:          request.Secrets,
+		Cache:            request.Cache,
 		InjectedFeatures: []devcontainer.InjectedFeature{{
-			Reference: codeServerFeatureReference,
-			Origin:    "platform",
+			Reference:   codeServerFeatureReference,
+			Origin:      "platform",
+			InstallOnly: true,
 			Options: map[string]json.RawMessage{
 				"version":            json.RawMessage(strconv.Quote(request.CodeServerVersion)),
 				"auth":               json.RawMessage(`"none"`),
@@ -83,6 +89,12 @@ func ConfigureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 	}
 	if err := engine.CopyFile(ctx, state.PrimaryContainerID, executable, ContainerRuntimeBinary, 0o755); err != nil {
 		return err
+	}
+	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
+		return err
+	}
+	if err := InitializeConfiguredEndpoints(state.Configuration, request.HostUser); err != nil {
+		return fmt.Errorf("initialize runtime endpoints: %w", err)
 	}
 	values := map[string]string{
 		"GITEA_GIT_USER_NAME":  request.GitUserName,
@@ -116,10 +128,10 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 			return err
 		}
 	}
-	values := map[string]string{
+	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets, map[string]string{
 		"GITEA_WEB_IDE_PORT": fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
 		"GITEA_WORKSPACE":    state.RemoteWorkdir,
-	}
+	})
 	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, bytes.NewReader(settings)); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
@@ -128,9 +140,9 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		if extension == "" {
 			return fmt.Errorf("VS Code extension identifier is empty")
 		}
-		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, nil, nil); err != nil {
+		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
 			fmt.Fprintf(os.Stderr, "warning: install VS Code extension %s: %v\n", extension, err)
 		}
 	}
-	return WriteConfiguredEndpoints(state.Configuration)
+	return nil
 }

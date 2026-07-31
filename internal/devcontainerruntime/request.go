@@ -12,23 +12,24 @@ import (
 )
 
 // FormatVersion identifies the runtime request and result representation.
-const FormatVersion = 1
+const FormatVersion = 2
 
 // Request carries one lifecycle action from the provisioner into the instance runtime.
 type Request struct {
-	Version           int                   `json:"version"`
-	Action            string                `json:"action"`
-	CodespaceUUID     string                `json:"codespace_uuid"`
-	OperationVersion  int64                 `json:"operation_version"`
-	Workspace         string                `json:"workspace"`
-	Source            devcontainer.Source   `json:"source"`
-	HostUser          devcontainer.HostUser `json:"host_user"`
-	GitUserName       string                `json:"git_user_name,omitempty"`
-	GitUserEmail      string                `json:"git_user_email,omitempty"`
-	LocalEnvironment  map[string]string     `json:"local_environment,omitempty"`
-	Secrets           map[string]string     `json:"secrets,omitempty"`
-	CodeServerVersion string                `json:"code_server_version,omitempty"`
-	Environment       *devcontainer.State   `json:"environment,omitempty"`
+	Version           int                       `json:"version"`
+	Action            string                    `json:"action"`
+	CodespaceUUID     string                    `json:"codespace_uuid"`
+	OperationVersion  int64                     `json:"operation_version"`
+	Workspace         string                    `json:"workspace"`
+	Source            devcontainer.Source       `json:"source"`
+	HostUser          devcontainer.HostUser     `json:"host_user"`
+	GitUserName       string                    `json:"git_user_name,omitempty"`
+	GitUserEmail      string                    `json:"git_user_email,omitempty"`
+	LocalEnvironment  map[string]string         `json:"local_environment,omitempty"`
+	Secrets           map[string]string         `json:"secrets,omitempty"`
+	CodeServerVersion string                    `json:"code_server_version,omitempty"`
+	Cache             devcontainer.CacheOptions `json:"cache,omitempty"`
+	Environment       *devcontainer.State       `json:"environment,omitempty"`
 }
 
 // Result records either the resulting environment state or a classified failure.

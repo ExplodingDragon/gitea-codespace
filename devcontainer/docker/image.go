@@ -12,14 +12,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"slices"
 	"strings"
 	"time"
 
 	"github.com/docker/cli/cli/command"
-	"github.com/docker/docker/api/types/build"
 	"github.com/docker/docker/api/types/image"
-	"github.com/docker/docker/pkg/archive"
 	dockerunits "github.com/docker/go-units"
 
 	"gitea.dev/codespace/devcontainer"
@@ -31,10 +28,11 @@ var updateUserScript string
 func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.ResolvedConfiguration) (string, map[string]string, error) {
 	var baseImage string
 	if resolved.Image != "" {
-		if err := e.pullImage(ctx, resolved.Image); err != nil {
+		var err error
+		baseImage, err = e.resolveAndPullImage(ctx, resolved.Image, resolved.Cache)
+		if err != nil {
 			return "", nil, err
 		}
-		baseImage = resolved.Image
 	} else {
 		buildConfig := resolved.Build
 		if buildConfig == nil {
@@ -63,31 +61,13 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		if err != nil || relativeDockerfile == ".." || strings.HasPrefix(relativeDockerfile, ".."+string(filepath.Separator)) {
 			return "", nil, fmt.Errorf("Dev Container Dockerfile must be inside its build context")
 		}
-		reader, err := archive.TarWithOptions(contextPath, &archive.TarOptions{})
-		if err != nil {
-			return "", nil, fmt.Errorf("archive Dev Container build context: %w", err)
-		}
-		defer reader.Close()
 		imageName := "devcontainer-build:" + resolved.DevContainerID
 		args := make(map[string]*string, len(buildConfig.Args))
 		for name, value := range buildConfig.Args {
-			value := value
 			args[name] = &value
 		}
-		response, err := e.client.ImageBuild(ctx, reader, build.ImageBuildOptions{
-			Dockerfile: relativeDockerfile,
-			Tags:       []string{imageName},
-			BuildArgs:  args,
-			Target:     buildConfig.Target,
-			CacheFrom:  slices.Clone(buildConfig.CacheFrom),
-			Remove:     true,
-		})
-		if err != nil {
+		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, resolved.Cache, "repository"); err != nil {
 			return "", nil, fmt.Errorf("build Dev Container image: %w", err)
-		}
-		defer response.Body.Close()
-		if err := streamDockerBuildOutput(response.Body, e.stderr); err != nil {
-			return "", nil, fmt.Errorf("read image build progress: %w", err)
 		}
 		baseImage = imageName
 	}
@@ -102,7 +82,26 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, repositoryConfiguration)
 }
 
-func (e *Engine) pullImage(ctx context.Context, imageName string) error {
+func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cache devcontainer.CacheOptions) (string, error) {
+	fetchReference, mirrored, err := mirroredReference(imageName, cache.Mirrors)
+	if err != nil {
+		return "", fmt.Errorf("resolve OCI mirror for %s: %w", imageName, err)
+	}
+	if mirrored {
+		if err := e.pullImageReference(ctx, fetchReference); err == nil {
+			fmt.Fprintf(e.stderr, "Pulled image %s through mirror %s\n", imageName, fetchReference)
+			return fetchReference, nil
+		} else {
+			fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
+		}
+	}
+	if err := e.pullImageReference(ctx, imageName); err != nil {
+		return "", err
+	}
+	return imageName, nil
+}
+
+func (e *Engine) pullImageReference(ctx context.Context, imageName string) error {
 	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), imageName)
 	if err != nil {
 		return fmt.Errorf("resolve registry credentials for %s: %w", imageName, err)
@@ -120,7 +119,7 @@ func (e *Engine) pullImage(ctx context.Context, imageName string) error {
 	return nil
 }
 
-const dockerPullProgressInterval = 5 * time.Second
+const dockerPullProgressInterval = 10 * time.Second
 
 type dockerPullLayer struct {
 	current  int64
@@ -319,18 +318,8 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 	if err := os.WriteFile(filepath.Join(directory, "update-user.sh"), []byte(updateUserScript), 0o600); err != nil {
 		return "", err
 	}
-	reader, err := archive.TarWithOptions(directory, &archive.TarOptions{})
-	if err != nil {
-		return "", err
-	}
-	defer reader.Close()
 	imageName := "devcontainer-user:" + resolved.DevContainerID
-	response, err := e.client.ImageBuild(ctx, reader, build.ImageBuildOptions{Dockerfile: "Dockerfile", Tags: []string{imageName}, Remove: true})
-	if err != nil {
-		return "", fmt.Errorf("build Dev Container user image: %w", err)
-	}
-	defer response.Body.Close()
-	if err := streamDockerBuildOutput(response.Body, e.stderr); err != nil {
+	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, resolved.Cache, "remote-user"); err != nil {
 		return "", fmt.Errorf("build Dev Container user image: %w", err)
 	}
 	return imageName, nil

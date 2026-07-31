@@ -32,21 +32,18 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 	if err != nil {
 		return fmt.Errorf("load register config: %w", err)
 	}
-	if strings.TrimSpace(config.Manager.GatewayURL) == "" {
-		config.Manager.GatewayURL = config.Server.PublicBaseURL
-	}
-	if err := config.Manager.Validate(); err != nil {
+	if err := config.Validate(); err != nil {
 		return fmt.Errorf("validate manager config: %w", err)
 	}
 
-	stateLock, err := acquireStateDirLock(config.Manager.StateDir)
+	stateLock, err := acquireStateDirLock(config.Node.StateDir)
 	if err != nil {
 		return fmt.Errorf("acquire manager state dir lock: %w", err)
 	}
 	defer func() {
 		_ = stateLock.Close()
 	}()
-	if err := preflightManagerStateDir(config.Manager.StateDir); err != nil {
+	if err := preflightManagerStateDir(config.Node.StateDir); err != nil {
 		return err
 	}
 
@@ -64,8 +61,8 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		return err
 	}
 
-	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Manager.HTTPTimeout.ToStdlib()}, managerServiceBaseURL(giteaURL))
-	ctx, cancel := context.WithTimeout(context.Background(), config.Manager.HTTPTimeout.ToStdlib())
+	client := codespacev1connect.NewManagerServiceClient(&http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()}, managerServiceBaseURL(giteaURL))
+	ctx, cancel := context.WithTimeout(context.Background(), config.Node.HTTPTimeout.ToStdlib())
 	defer cancel()
 	response, err := client.RegisterManager(ctx, connect.NewRequest(&codespacev1.RegisterManagerRequest{
 		ProtocolVersion:   controlplane.ProtocolVersion,
@@ -81,11 +78,11 @@ func Register(output io.Writer, input io.Reader, configPath string) error {
 		ManagerSecret:  response.Msg.GetManagerSecret(),
 		RegisteredUnix: time.Now().Unix(),
 	}
-	if err := SaveManagerState(config.Manager.StateDir, managerState); err != nil {
+	if err := SaveManagerState(config.Node.StateDir, managerState); err != nil {
 		return fmt.Errorf("save registered manager %d state: %w; remove the unused Manager in Gitea before registering again", managerState.ManagerID, err)
 	}
 
-	fmt.Fprintf(output, "registered manager %d and wrote state %s\n", response.Msg.GetManagerId(), config.Manager.StateDir)
+	fmt.Fprintf(output, "registered manager %d and wrote state %s\n", response.Msg.GetManagerId(), config.Node.StateDir)
 	return nil
 }
 

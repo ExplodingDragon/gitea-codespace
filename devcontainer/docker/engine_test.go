@@ -5,6 +5,7 @@ package docker
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
@@ -28,6 +29,29 @@ func TestEngineConfigurationHelpers(t *testing.T) {
 	}
 	if err := checkHostRequirements(devcontainer.HostRequirements{GPU: json.RawMessage(`"optional"`)}, t.TempDir()); err != nil {
 		t.Fatalf("optional GPU requirement: %v", err)
+	}
+}
+
+func TestCacheReferences(t *testing.T) {
+	t.Parallel()
+
+	mirrors := map[string]string{
+		"docker.io": "https://cache.example.com/docker",
+		"ghcr.io":   "http://cache.example.com/ghcr",
+	}
+	image, mirrored, err := mirroredReference("ubuntu:24.04", mirrors)
+	if err != nil || !mirrored || image != "cache.example.com/docker/library/ubuntu:24.04" {
+		t.Fatalf("Docker Hub mirror = %q, %v, %v", image, mirrored, err)
+	}
+	digest := strings.Repeat("a", 64)
+	image, mirrored, err = mirroredReference("ghcr.io/example/tool@sha256:"+digest, mirrors)
+	if err != nil || !mirrored || image != "cache.example.com/ghcr/example/tool@sha256:"+digest {
+		t.Fatalf("GHCR mirror = %q, %v, %v", image, mirrored, err)
+	}
+	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
+	first := buildCacheReference(cache, "features")
+	if first == "" || first == buildCacheReference(cache, "remote-user") || first != buildCacheReference(cache, "features") {
+		t.Fatalf("BuildKit cache references are not stable and stage-specific: %q", first)
 	}
 }
 
@@ -67,5 +91,25 @@ func TestMergeInjectedFeaturesRejectsConflicts(t *testing.T) {
 		Origin:    "platform",
 	}}); err == nil {
 		t.Fatal("expected conflicting versions of the same Feature to fail")
+	}
+}
+
+func TestMergeInjectedFeaturesRecordsInstallOnlyPolicy(t *testing.T) {
+	t.Parallel()
+
+	const reference = "ghcr.io/example/features/editor:1"
+	resolved := &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
+		reference: json.RawMessage(`{"version":"1"}`),
+	}}}
+	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
+		Reference:   reference,
+		Origin:      "platform",
+		Options:     map[string]json.RawMessage{"version": json.RawMessage(`"1"`)},
+		InstallOnly: true,
+	}}); err != nil {
+		t.Fatalf("merge matching install-only Feature: %v", err)
+	}
+	if _, ok := resolved.InstallOnlyFeatures[reference]; !ok {
+		t.Fatalf("install-only Feature policy = %#v", resolved.InstallOnlyFeatures)
 	}
 }

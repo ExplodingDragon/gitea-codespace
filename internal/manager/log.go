@@ -19,6 +19,9 @@ import (
 const (
 	operationLogBatchLines    = 64
 	operationLogFlushInterval = 250 * time.Millisecond
+	logGroupStartPrefix       = "##[group]"
+	logGroupEnd               = "##[endgroup]"
+	logErrorPrefix            = "##[error]"
 )
 
 var (
@@ -35,6 +38,7 @@ type operationLogSink struct {
 	pending         []*codespacev1.LogLine
 	flushTimer      *time.Timer
 	limitReached    bool
+	groupDepth      int
 }
 
 func newOperationLogSink(agent *Agent, operation *codespacev1.OperationPayload) *operationLogSink {
@@ -64,6 +68,33 @@ func (s *operationLogSink) WriteLifecycleLog(ctx context.Context, message string
 		return nil
 	}
 	return s.flushPendingLocked(ctx)
+}
+
+func (s *operationLogSink) startGroup(ctx context.Context, name string) error {
+	if err := s.WriteLifecycleLog(ctx, logGroupStartPrefix+name); err != nil {
+		return err
+	}
+	s.groupDepth++
+	return nil
+}
+
+func (s *operationLogSink) endGroup(ctx context.Context) error {
+	if s.groupDepth == 0 {
+		return nil
+	}
+	if err := s.WriteLifecycleLog(ctx, logGroupEnd); err != nil {
+		return err
+	}
+	s.groupDepth--
+	return nil
+}
+
+func (s *operationLogSink) closeGroups(ctx context.Context) {
+	for s.groupDepth > 0 {
+		if s.endGroup(ctx) != nil {
+			return
+		}
+	}
 }
 
 func (s *operationLogSink) FlushLifecycleLog(ctx context.Context) error {

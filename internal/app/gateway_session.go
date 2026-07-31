@@ -57,21 +57,21 @@ func newGatewaySessionRegistry() *gatewaySessionRegistry {
 }
 
 func newGatewaySessionRegistryFromConfig(config GatewayConfig) *gatewaySessionRegistry {
-	ttl := config.SessionTTL.ToStdlib()
+	ttl := config.Sessions.TTL.ToStdlib()
 	if ttl <= 0 {
-		ttl = DefaultConfig().Gateway.SessionTTL.ToStdlib()
+		ttl = DefaultConfig().Gateway.Sessions.TTL.ToStdlib()
 	}
-	idleTimeout := config.SessionIdleTimeout.ToStdlib()
+	idleTimeout := config.Sessions.IdleTimeout.ToStdlib()
 	if idleTimeout <= 0 {
-		idleTimeout = DefaultConfig().Gateway.SessionIdleTimeout.ToStdlib()
+		idleTimeout = DefaultConfig().Gateway.Sessions.IdleTimeout.ToStdlib()
 	}
-	maxSessionsPerCodespace := config.MaxSessionsPerCodespace
+	maxSessionsPerCodespace := config.Sessions.MaxPerCodespace
 	if maxSessionsPerCodespace <= 0 {
-		maxSessionsPerCodespace = DefaultConfig().Gateway.MaxSessionsPerCodespace
+		maxSessionsPerCodespace = DefaultConfig().Gateway.Sessions.MaxPerCodespace
 	}
-	maxSessionsPerUser := config.MaxSessionsPerUser
+	maxSessionsPerUser := config.Sessions.MaxPerUser
 	if maxSessionsPerUser <= 0 {
-		maxSessionsPerUser = DefaultConfig().Gateway.MaxSessionsPerUser
+		maxSessionsPerUser = DefaultConfig().Gateway.Sessions.MaxPerUser
 	}
 	return &gatewaySessionRegistry{
 		ttl:                     ttl,

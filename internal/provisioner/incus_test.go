@@ -5,6 +5,7 @@ package provisioner
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -236,31 +237,6 @@ func TestNormalizeIncusEnvironmentsRequiresCompleteEnvironment(t *testing.T) {
 	}
 }
 
-func TestNormalizeIncusEnvironmentsRejectsRemoteInstanceSource(t *testing.T) {
-	t.Parallel()
-
-	_, err := normalizeIncusEnvironments(IncusConfig{
-		RuntimeEnvironments: map[string]IncusEnvironmentConfig{
-			"default": {
-				InstanceType: "container",
-				CPU:          1,
-				MemoryLimit:  "1GiB",
-				RootDiskSize: "10GiB",
-				Profiles:     []string{"default"},
-				SourceType:   "instance",
-				SourceRemote: "remote-a",
-				SourceName:   "environment-instance",
-			},
-		},
-	})
-	if err == nil {
-		t.Fatalf("expected remote instance source error")
-	}
-	if !strings.Contains(err.Error(), "not supported") {
-		t.Fatalf("remote instance source error = %v", err)
-	}
-}
-
 func TestIncusCreateRequestUsesEnvironmentResources(t *testing.T) {
 	t.Parallel()
 
@@ -342,6 +318,39 @@ func TestProjectFeatureEnabled(t *testing.T) {
 	}
 	if projectFeatureEnabled(map[string]string{"features.profiles": "false"}, "features.profiles") {
 		t.Fatalf("false project feature was accepted")
+	}
+}
+
+func TestConfigureDockerDaemonPreservesExistingSettings(t *testing.T) {
+	t.Parallel()
+
+	provisioner := &IncusProvisioner{
+		buildCacheRegistry: "http://registry.example.com/codespace",
+		registryMirrors: map[string]string{
+			"docker.io": "https://docker-cache.example.com",
+			"ghcr.io":   "http://registry.example.com/ghcr",
+		},
+	}
+	encoded, changed, err := provisioner.dockerDaemonConfiguration(`{"log-level":"warn","registry-mirrors":["https://existing.example.com"]}`)
+	if err != nil || !changed {
+		t.Fatalf("build Docker daemon configuration = %v, %v", changed, err)
+	}
+	var config struct {
+		LogLevel           string   `json:"log-level"`
+		RegistryMirrors    []string `json:"registry-mirrors"`
+		InsecureRegistries []string `json:"insecure-registries"`
+	}
+	if err := json.Unmarshal([]byte(encoded), &config); err != nil {
+		t.Fatalf("decode Docker daemon cache config: %v", err)
+	}
+	if config.LogLevel != "warn" {
+		t.Fatalf("Docker log level = %q", config.LogLevel)
+	}
+	if len(config.RegistryMirrors) != 2 || config.RegistryMirrors[0] != "https://docker-cache.example.com" || config.RegistryMirrors[1] != "https://existing.example.com" {
+		t.Fatalf("Docker registry mirrors = %#v", config.RegistryMirrors)
+	}
+	if len(config.InsecureRegistries) != 1 || config.InsecureRegistries[0] != "registry.example.com" {
+		t.Fatalf("Docker insecure registries = %#v", config.InsecureRegistries)
 	}
 }
 
@@ -931,7 +940,6 @@ func TestValidateIncusServerRejectsUnsupportedServer(t *testing.T) {
 		},
 	}
 	for _, test := range tests {
-		test := test
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 

@@ -128,20 +128,14 @@ func Exec(ctx context.Context, options ExecOptions, stdin io.Reader, stdout, std
 	if err != nil {
 		return err
 	}
-	values := make(map[string]string, len(state.RemoteEnvironment))
-	for name, value := range state.RemoteEnvironment {
-		values[name] = value
-	}
 	secrets := map[string]string{}
 	if strings.TrimSpace(options.SecretsPath) != "" {
 		secrets, err = readStringMap(options.SecretsPath)
 		if err != nil {
 			return fmt.Errorf("read runtime secrets: %w", err)
 		}
-		for name, value := range secrets {
-			values[name] = value
-		}
 	}
+	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
 	if options.Interactive {
 		values["TERM"] = "xterm-256color"
 		values["COLORTERM"] = "truecolor"
