@@ -227,66 +227,64 @@ func (p *IncusProvisioner) CheckStartupAdmission(ctx context.Context) (StartupAd
 }
 
 func (p *IncusProvisioner) incusStartupAdmission(state *api.ProjectState) (StartupAdmission, error) {
-	admission := StartupAdmission{ResumeAvailable: true, CreateAvailable: true}
+	admission := StartupAdmission{ResumeAvailable: true, CreateTags: make([]string, 0, len(p.environments))}
 	for tag, environment := range p.environments {
-		environmentAdmission, err := incusEnvironmentStartupAdmission(state, environment)
+		available, err := incusEnvironmentCreateAvailable(state, environment)
 		if err != nil {
 			return StartupAdmission{}, fmt.Errorf("check environment %s startup admission: %w", tag, err)
 		}
-		if !environmentAdmission.CreateAvailable {
-			admission.CreateAvailable = false
+		if available {
+			admission.CreateTags = append(admission.CreateTags, tag)
 		}
 	}
+	slices.Sort(admission.CreateTags)
 	return admission, nil
 }
 
-func incusEnvironmentStartupAdmission(state *api.ProjectState, environment incusEnvironment) (StartupAdmission, error) {
-	admission := StartupAdmission{ResumeAvailable: true, CreateAvailable: true}
+func incusEnvironmentCreateAvailable(state *api.ProjectState, environment incusEnvironment) (bool, error) {
 	if state == nil || len(state.Resources) == 0 {
-		return admission, nil
+		return true, nil
 	}
 	if !projectResourceAvailable(state.Resources, "instances", 1) {
-		admission.CreateAvailable = false
+		return false, nil
 	}
 	switch environment.instanceType {
 	case api.InstanceTypeContainer:
 		if !projectResourceAvailable(state.Resources, "containers", 1) {
-			admission.CreateAvailable = false
+			return false, nil
 		}
 	case api.InstanceTypeVM:
 		if !projectResourceAvailable(state.Resources, "virtual-machines", 1) {
-			admission.CreateAvailable = false
+			return false, nil
 		}
 	}
 	if memory, ok := state.Resources["memory"]; ok && memory.Limit >= 0 {
 		memoryLimit := strings.TrimSpace(environment.memoryLimit)
 		if memoryLimit == "" {
-			admission.CreateAvailable = false
-			return admission, nil
+			return false, nil
 		}
 		required, err := units.ParseByteSizeString(memoryLimit)
 		if err != nil {
-			return StartupAdmission{}, fmt.Errorf("parse incus environment memory %q: %w", memoryLimit, err)
+			return false, fmt.Errorf("parse incus environment memory %q: %w", memoryLimit, err)
 		}
 		if memory.Usage+required > memory.Limit {
-			admission.CreateAvailable = false
+			return false, nil
 		}
 	}
 	if disk, ok := state.Resources["disk"]; ok && disk.Limit >= 0 {
 		rootDiskSize := strings.TrimSpace(environment.rootDiskSize)
 		if rootDiskSize == "" {
-			admission.CreateAvailable = false
-			return admission, nil
+			return false, nil
 		}
 		required, err := units.ParseByteSizeString(rootDiskSize)
 		if err != nil {
-			return StartupAdmission{}, fmt.Errorf("parse incus environment root disk size %q: %w", rootDiskSize, err)
+			return false, fmt.Errorf("parse incus environment root disk size %q: %w", rootDiskSize, err)
 		}
 		if disk.Usage+required > disk.Limit {
-			admission.CreateAvailable = false
+			return false, nil
 		}
 	}
-	return admission, nil
+	return true, nil
 }
 
 func projectResourceAvailable(resources map[string]api.ProjectStateResource, name string, required int64) bool {
@@ -416,6 +414,12 @@ func (p *IncusProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec)
 	}
 
 	return p.startExistingInstance(ctx, spec, *instance)
+}
+
+// ValidateEnvironmentTag checks that a create tag maps to one configured Incus environment.
+func (p *IncusProvisioner) ValidateEnvironmentTag(tag string) error {
+	_, err := p.environmentForTag(tag)
+	return err
 }
 
 // StartExisting starts one existing instance.
@@ -1330,10 +1334,7 @@ func (p *IncusProvisioner) startExistingInstance(ctx context.Context, spec Insta
 }
 
 func (p *IncusProvisioner) environmentForTag(tag string) (incusEnvironment, error) {
-	tag = strings.TrimSpace(tag)
-	if tag == "" {
-		tag = "default"
-	}
+	tag = strings.ToLower(strings.TrimSpace(tag))
 	environment, ok := p.environments[tag]
 	if !ok {
 		return incusEnvironment{}, fmt.Errorf("incus environment %s is not configured", tag)

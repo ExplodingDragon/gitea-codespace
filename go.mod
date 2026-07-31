@@ -215,6 +215,6 @@ require (
 	tags.cncf.io/container-device-interface v1.0.1 // indirect
 )
 
-replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260731093909-a2ae63b951db
+replace gitea.dev/codespace-proto-go => github.com/ExplodingDragon/codespace-proto-go v0.0.0-20260731162935-a0d955d1e594
 
 exclude google.golang.org/genproto v0.0.0-20230223222841-637eb2293923

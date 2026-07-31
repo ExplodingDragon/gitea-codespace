@@ -148,7 +148,7 @@ type AgentConfig struct {
 	GatewaySSHHostKeySHA256      string
 	GatewaySSHHostKeyUnix        int64
 	Version                      string
-	Tags                         []string
+	Environments                 []*codespacev1.EnvironmentTag
 	PollInterval                 time.Duration
 	DeclareInterval              time.Duration
 	CapacityTotal                int32
@@ -722,7 +722,7 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 		ProtocolVersion:                    controlplane.ProtocolVersion,
 		GatewayUrl:                         a.config.GatewayURL,
 		GatewaySshAddr:                     a.config.GatewaySSHAddr,
-		Tags:                               append([]string(nil), a.config.Tags...),
+		Environments:                       a.config.Environments,
 		Version:                            a.config.Version,
 		Name:                               a.config.Name,
 		ManagerRuntimeState:                state,
@@ -757,6 +757,7 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 		AcceptedOperationTypes:   capacity.acceptedOperationTypes(),
 		ObservedOperations:       a.observedOperations(),
 		CleanupCapacityAvailable: capacity.cleanup,
+		AcceptedCreateTags:       append([]string(nil), capacity.acceptedCreateTags...),
 	})
 	response, err := a.managerClient().FetchOperations(ctx, request)
 	if err != nil {
@@ -808,11 +809,11 @@ func (a *Agent) applyStartupAdmission(ctx context.Context, capacity fetchCapacit
 	admission, err := checker.CheckStartupAdmission(ctx)
 	if err != nil {
 		log.Printf("check startup admission: %v", err)
-		capacity.acceptCreate = false
+		capacity.acceptedCreateTags = nil
 		capacity.acceptResume = true
 		return capacity
 	}
-	capacity.acceptCreate = admission.CreateAvailable
+	capacity.acceptedCreateTags = append([]string(nil), admission.CreateTags...)
 	capacity.acceptResume = admission.ResumeAvailable
 	return capacity
 }
@@ -1874,10 +1875,10 @@ func (a *Agent) currentOperationVersion(codespaceUUID string) int64 {
 }
 
 type fetchCapacity struct {
-	startup      int32
-	cleanup      int32
-	acceptCreate bool
-	acceptResume bool
+	startup            int32
+	cleanup            int32
+	acceptedCreateTags []string
+	acceptResume       bool
 }
 
 func (c fetchCapacity) acceptedOperationTypes() []codespacev1.AcceptedOperationType {
@@ -1885,7 +1886,7 @@ func (c fetchCapacity) acceptedOperationTypes() []codespacev1.AcceptedOperationT
 		return nil
 	}
 	types := make([]codespacev1.AcceptedOperationType, 0, 2)
-	if c.acceptCreate {
+	if len(c.acceptedCreateTags) > 0 {
 		types = append(types, codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_CREATE)
 	}
 	if c.acceptResume {
@@ -1929,11 +1930,15 @@ func (a *Agent) fetchCapacityLocked(instances []*provisioner.Instance) fetchCapa
 	runtimeSlots := positiveInt32(a.runtimeSlotsAvailable(instances, snapshot.startup) - a.fetchReservedStartup)
 	startupSlots := positiveInt32(a.startupWorkers() - int32(len(snapshot.startup)) - a.fetchReservedStartup)
 	cleanupSlots := positiveInt32(a.cleanupWorkers() - int32(len(snapshot.cleanup)) - int32(len(snapshot.cleanupPendings)) - a.fetchReservedCleanup)
+	acceptedCreateTags := make([]string, 0, len(a.config.Environments))
+	for _, environment := range a.config.Environments {
+		acceptedCreateTags = append(acceptedCreateTags, environment.GetTag())
+	}
 	return fetchCapacity{
-		startup:      minInt32(runtimeSlots, startupSlots),
-		cleanup:      cleanupSlots,
-		acceptCreate: true,
-		acceptResume: true,
+		startup:            minInt32(runtimeSlots, startupSlots),
+		cleanup:            cleanupSlots,
+		acceptedCreateTags: acceptedCreateTags,
+		acceptResume:       true,
 	}
 }
 
@@ -2424,6 +2429,11 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	startupInput, err := startupInputFromCreatePayload(operation, payload)
 	if err != nil {
 		return err
+	}
+	if validator, ok := a.provisioner.(provisioner.EnvironmentValidator); ok {
+		if err := validator.ValidateEnvironmentTag(startupInput.EnvironmentTag); err != nil {
+			return err
+		}
 	}
 	if err := a.saveStartupInput(startupInput); err != nil {
 		return err

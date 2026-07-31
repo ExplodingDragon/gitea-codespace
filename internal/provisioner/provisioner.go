@@ -52,13 +52,18 @@ type InstanceSpec struct {
 
 // StartupAdmission reports which startup operation types may be fetched now.
 type StartupAdmission struct {
-	CreateAvailable bool
+	CreateTags      []string
 	ResumeAvailable bool
 }
 
 // StartupAdmissionChecker reports backend-specific startup admission.
 type StartupAdmissionChecker interface {
 	CheckStartupAdmission(ctx context.Context) (StartupAdmission, error)
+}
+
+// EnvironmentValidator checks a create environment before operation state is persisted.
+type EnvironmentValidator interface {
+	ValidateEnvironmentTag(tag string) error
 }
 
 const (

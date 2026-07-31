@@ -26,6 +26,7 @@ runtime:
       manage: true
   environments:
     - tag: "default"
+      description: "General-purpose development environment"
       type: "lxc"
       source:
         image: "images:debian/12"

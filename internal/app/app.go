@@ -17,12 +17,14 @@ import (
 	"net/url"
 	"os/signal"
 	"runtime/debug"
+	"sort"
 	"strconv"
 	"strings"
 	"sync/atomic"
 	"syscall"
 	"time"
 
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
 	"gitea.dev/codespace/internal/provisioner"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -229,6 +231,19 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		runtimeMetadataPublisher,
 	}
 	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
+	environments := make([]*codespacev1.EnvironmentTag, 0, len(config.Runtime.Environments))
+	for _, environment := range config.Runtime.Environments {
+		tag := strings.ToLower(strings.TrimSpace(environment.Tag))
+		if tag != "" {
+			environments = append(environments, &codespacev1.EnvironmentTag{
+				Tag:         tag,
+				Description: strings.TrimSpace(environment.Description),
+			})
+		}
+	}
+	sort.Slice(environments, func(i, j int) bool {
+		return environments[i].GetTag() < environments[j].GetTag()
+	})
 
 	agent := manager.New(manager.AgentConfig{
 		BaseURL:                      managerServiceBaseURL(state.managerState.GiteaURL),
@@ -241,7 +256,7 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		GatewaySSHHostKeySHA256:      state.gatewaySSHHostKey.fingerprintSHA256,
 		GatewaySSHHostKeyUnix:        state.gatewaySSHHostKey.updatedUnix,
 		Version:                      managerBuildVersion(),
-		Tags:                         config.environmentTags(),
+		Environments:                 environments,
 		PollInterval:                 config.Node.PollInterval.ToStdlib(),
 		DeclareInterval:              config.Node.DeclareInterval.ToStdlib(),
 		CapacityTotal:                config.Node.CapacityTotal,

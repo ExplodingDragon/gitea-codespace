@@ -41,6 +41,7 @@ runtime:
       manage: true
   environments:
     - tag: "debian-lxc"
+      description: "General-purpose Linux container"
       type: "lxc"
       source:
         image: "images:debian/12"
@@ -50,6 +51,7 @@ runtime:
         root_disk: "10GiB"
 
     - tag: "debian-vm"
+      description: "Isolated Linux virtual machine"
       type: "vm"
       source:
         image: "images:debian/12"
@@ -60,6 +62,7 @@ runtime:
 
     # An existing instance on the configured Incus server can be used as a base image.
     - tag: "company-base"
+      description: "Company-managed virtual machine base"
       type: "vm"
       source:
         instance:

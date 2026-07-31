@@ -401,7 +401,7 @@ func TestProfileHasManagedDevices(t *testing.T) {
 func TestIncusStartupAdmissionUsesProjectInstanceQuota(t *testing.T) {
 	t.Parallel()
 
-	admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{
+	available, err := incusEnvironmentCreateAvailable(&api.ProjectState{
 		Resources: map[string]api.ProjectStateResource{
 			"instances": {Limit: 1, Usage: 1},
 		},
@@ -409,11 +409,8 @@ func TestIncusStartupAdmissionUsesProjectInstanceQuota(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startup admission: %v", err)
 	}
-	if admission.CreateAvailable {
+	if available {
 		t.Fatalf("create should be unavailable when project instance quota is full")
-	}
-	if !admission.ResumeAvailable {
-		t.Fatalf("resume should remain available when project instance quota is full")
 	}
 }
 
@@ -472,18 +469,15 @@ func TestIncusStartupAdmissionUsesTypeAndMemoryQuota(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{Resources: tt.resources}, incusEnvironment{
+			available, err := incusEnvironmentCreateAvailable(&api.ProjectState{Resources: tt.resources}, incusEnvironment{
 				instanceType: tt.instance,
 				memoryLimit:  tt.memoryLimit,
 			})
 			if err != nil {
 				t.Fatalf("startup admission: %v", err)
 			}
-			if admission.CreateAvailable != tt.wantCreate {
-				t.Fatalf("create available = %v, want %v", admission.CreateAvailable, tt.wantCreate)
-			}
-			if !admission.ResumeAvailable {
-				t.Fatalf("resume should remain available")
+			if available != tt.wantCreate {
+				t.Fatalf("create available = %v, want %v", available, tt.wantCreate)
 			}
 		})
 	}
@@ -517,7 +511,7 @@ func TestIncusStartupAdmissionUsesDiskQuota(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			admission, err := incusEnvironmentStartupAdmission(&api.ProjectState{
+			available, err := incusEnvironmentCreateAvailable(&api.ProjectState{
 				Resources: map[string]api.ProjectStateResource{
 					"disk": tt.resource,
 				},
@@ -529,17 +523,14 @@ func TestIncusStartupAdmissionUsesDiskQuota(t *testing.T) {
 			if err != nil {
 				t.Fatalf("startup admission: %v", err)
 			}
-			if admission.CreateAvailable != tt.wantCreate {
-				t.Fatalf("create available = %v, want %v", admission.CreateAvailable, tt.wantCreate)
-			}
-			if !admission.ResumeAvailable {
-				t.Fatalf("resume should remain available")
+			if available != tt.wantCreate {
+				t.Fatalf("create available = %v, want %v", available, tt.wantCreate)
 			}
 		})
 	}
 }
 
-func TestIncusStartupAdmissionRequiresEveryEnvironmentToFit(t *testing.T) {
+func TestIncusStartupAdmissionReturnsEnvironmentsThatFit(t *testing.T) {
 	t.Parallel()
 
 	provisioner := &IncusProvisioner{
@@ -556,8 +547,8 @@ func TestIncusStartupAdmissionRequiresEveryEnvironmentToFit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("startup admission: %v", err)
 	}
-	if admission.CreateAvailable {
-		t.Fatalf("create should be unavailable when one declared environment exceeds project quota")
+	if !reflect.DeepEqual(admission.CreateTags, []string{"small"}) {
+		t.Fatalf("create tags = %v, want [small]", admission.CreateTags)
 	}
 	if !admission.ResumeAvailable {
 		t.Fatalf("resume should remain available")

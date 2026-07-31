@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -33,6 +32,7 @@ const defaultRegisterConfigPath = "codespace.yaml"
 var (
 	gatewayDNSLabelPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	codeServerVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
+	environmentTagPattern    = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 )
 
 // Duration stores one configuration duration value.
@@ -193,11 +193,12 @@ type RuntimeIncusNetworkConfig struct {
 
 // EnvironmentConfig stores one Gitea tag to a backend runtime environment.
 type EnvironmentConfig struct {
-	Tag       string                     `yaml:"tag"`
-	Type      string                     `yaml:"type"`
-	Source    EnvironmentSourceConfig    `yaml:"source"`
-	Resources EnvironmentResourcesConfig `yaml:"resources"`
-	Profiles  []string                   `yaml:"profiles"`
+	Tag         string                     `yaml:"tag"`
+	Description string                     `yaml:"description"`
+	Type        string                     `yaml:"type"`
+	Source      EnvironmentSourceConfig    `yaml:"source"`
+	Resources   EnvironmentResourcesConfig `yaml:"resources"`
+	Profiles    []string                   `yaml:"profiles"`
 }
 
 // EnvironmentSourceConfig stores the base used to create one runtime.
@@ -483,16 +484,22 @@ func (c Config) validateEnvironments() error {
 	if len(c.Runtime.Environments) == 0 {
 		return fmt.Errorf("runtime.environments must define at least one environment")
 	}
+	if len(c.Runtime.Environments) > 64 {
+		return fmt.Errorf("runtime.environments must not exceed 64 environments")
+	}
 	seen := map[string]struct{}{}
 	for _, environment := range c.Runtime.Environments {
-		tag := strings.TrimSpace(environment.Tag)
-		if tag == "" {
-			return fmt.Errorf("runtime.environments tag must not be empty")
+		tag := strings.ToLower(strings.TrimSpace(environment.Tag))
+		if !environmentTagPattern.MatchString(tag) {
+			return fmt.Errorf("runtime.environments tag %q must contain only lowercase letters, digits, underscores, or hyphens", tag)
 		}
 		if _, ok := seen[tag]; ok {
 			return fmt.Errorf("runtime.environments tag %q is duplicated", tag)
 		}
 		seen[tag] = struct{}{}
+		if len(environment.Description) > 255 {
+			return fmt.Errorf("runtime.environments.%s.description must not exceed 255 bytes", tag)
+		}
 		if err := environment.validate(tag); err != nil {
 			return err
 		}
@@ -851,6 +858,8 @@ func (c *RuntimeConfig) applyDefaults(defaults RuntimeConfig) {
 		c.Environments = cloneEnvironments(defaults.Environments)
 	}
 	for i := range c.Environments {
+		c.Environments[i].Tag = strings.ToLower(strings.TrimSpace(c.Environments[i].Tag))
+		c.Environments[i].Description = strings.TrimSpace(c.Environments[i].Description)
 		c.Environments[i].applyDefaults(defaults.Environments[0])
 	}
 }
@@ -877,18 +886,6 @@ func (c *EnvironmentConfig) applyDefaults(defaults EnvironmentConfig) {
 	if len(c.Profiles) == 0 {
 		c.Profiles = append([]string(nil), defaults.Profiles...)
 	}
-}
-
-func (c Config) environmentTags() []string {
-	tags := make([]string, 0, len(c.Runtime.Environments))
-	for _, environment := range c.Runtime.Environments {
-		tag := strings.TrimSpace(environment.Tag)
-		if tag != "" {
-			tags = append(tags, tag)
-		}
-	}
-	sort.Strings(tags)
-	return tags
 }
 
 func normalizeEnvironmentType(value string) string {

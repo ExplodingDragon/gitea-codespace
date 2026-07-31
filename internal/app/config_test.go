@@ -59,7 +59,8 @@ runtime:
       name: "csnet"
       manage: true
   environments:
-    - tag: "default"
+    - tag: "Default"
+      description: " General development "
       type: "vm"
       source:
         image: "images:debian/12"
@@ -114,7 +115,7 @@ runtime:
 		t.Fatalf("code-server version = %q", config.Runtime.WebIDE.CodeServerVersion)
 	}
 	environment := config.Runtime.Environments[0]
-	if normalizeEnvironmentType(environment.Type) != "virtual-machine" || environment.Source.Image != "images:debian/12" || environment.Resources.CPU != 2 {
+	if environment.Tag != "default" || environment.Description != "General development" || normalizeEnvironmentType(environment.Type) != "virtual-machine" || environment.Source.Image != "images:debian/12" || environment.Resources.CPU != 2 {
 		t.Fatalf("environment = %#v", environment)
 	}
 }

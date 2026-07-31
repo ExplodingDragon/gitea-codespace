@@ -68,7 +68,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -287,6 +287,7 @@ func TestAgentFetchCapacityUsesRuntimeLimit(t *testing.T) {
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
+		Environments:   []*codespacev1.EnvironmentTag{{Tag: "default"}, {Tag: "gpu"}},
 		CapacityTotal:  1,
 		StartupWorkers: 4,
 		CleanupWorkers: 4,
@@ -510,7 +511,7 @@ func TestAgentFetchCapacityUsesStartupAdmission(t *testing.T) {
 	}, server.Client(), &startupAdmissionProvisioner{
 		DummyProvisioner: provisioner.NewDummy(),
 		admission: provisioner.StartupAdmission{
-			CreateAvailable: false,
+			CreateTags:      []string{"gpu"},
 			ResumeAvailable: true,
 		},
 	})
@@ -523,10 +524,14 @@ func TestAgentFetchCapacityUsesStartupAdmission(t *testing.T) {
 		t.Fatalf("capacity available = %d", service.fetchCapacityAvailable)
 	}
 	wantTypes := []codespacev1.AcceptedOperationType{
+		codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_CREATE,
 		codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_RESUME,
 	}
 	if !slices.Equal(service.fetchAcceptedOperationTypes, wantTypes) {
 		t.Fatalf("accepted operation types = %#v", service.fetchAcceptedOperationTypes)
+	}
+	if !slices.Equal(service.fetchAcceptedCreateTags, []string{"gpu"}) {
+		t.Fatalf("accepted create tags = %#v", service.fetchAcceptedCreateTags)
 	}
 }
 
@@ -1030,7 +1035,7 @@ func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1228,7 +1233,7 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1346,7 +1351,7 @@ func TestAgentReportsObservedOperationWhileRunning(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1412,7 +1417,7 @@ func TestAgentResumesLoadedOperationAfterRenewal(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1484,7 +1489,7 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1555,7 +1560,7 @@ func TestAgentTriggersInventoryAfterResourceAbsentFinal(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:             1,
 		StartupWorkers:            1,
 		CleanupWorkers:            1,
@@ -1678,7 +1683,7 @@ func TestAgentRunReportsInventoryBeforeOnline(t *testing.T) {
 		GatewayURL:          "https://workspace.example.net",
 		GatewaySSHAddr:      "workspace.example.net:22",
 		Version:             "test",
-		Tags:                []string{"default"},
+		Environments:        []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		PollInterval:        time.Hour,
 		DeclareInterval:     time.Millisecond,
 		CapacityTotal:       1,
@@ -2099,7 +2104,7 @@ func TestAgentRunStopsOnInventoryStateHistoryConflict(t *testing.T) {
 		GatewayURL:      "https://workspace.example.net",
 		GatewaySSHAddr:  "workspace.example.net:22",
 		Version:         "test",
-		Tags:            []string{"default"},
+		Environments:    []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		PollInterval:    time.Hour,
 		DeclareInterval: time.Millisecond,
 		CapacityTotal:   1,
@@ -2955,7 +2960,7 @@ func TestAgentRunRetriesTransientFetchError(t *testing.T) {
 		GatewayURL:      "https://workspace.example.net",
 		GatewaySSHAddr:  "workspace.example.net:22",
 		Version:         "test",
-		Tags:            []string{"default"},
+		Environments:    []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		PollInterval:    time.Millisecond,
 		DeclareInterval: time.Hour,
 		CapacityTotal:   1,
@@ -3002,7 +3007,7 @@ func TestAgentRunStopsOnProtocolMismatch(t *testing.T) {
 		GatewayURL:      "https://workspace.example.net",
 		GatewaySSHAddr:  "workspace.example.net:22",
 		Version:         "test",
-		Tags:            []string{"default"},
+		Environments:    []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		PollInterval:    time.Millisecond,
 		DeclareInterval: time.Millisecond,
 		CapacityTotal:   1,
@@ -3056,7 +3061,7 @@ func TestAgentDeclareSavesManagerServiceSettings(t *testing.T) {
 		GatewayURL:             "https://workspace.example.net",
 		GatewaySSHAddr:         "workspace.example.net:22",
 		Version:                "test",
-		Tags:                   []string{"default"},
+		Environments:           []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		CapacityTotal:          1,
 		StartupWorkers:         1,
 		ManagerServiceSettings: store,
@@ -3349,7 +3354,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 		GatewayURL:                "https://workspace.example.net",
 		GatewaySSHAddr:            "workspace.example.net:22",
 		Version:                   "test",
-		Tags:                      []string{"default"},
+		Environments:              []*codespacev1.EnvironmentTag{{Tag: "default"}},
 		PollInterval:              time.Millisecond,
 		DeclareInterval:           time.Hour,
 		CapacityTotal:             1,
@@ -3444,6 +3449,7 @@ type managerService struct {
 	fetchCapacityAvailable        int32
 	fetchCleanupCapacityAvailable int32
 	fetchAcceptedOperationTypes   []codespacev1.AcceptedOperationType
+	fetchAcceptedCreateTags       []string
 	finalized                     chan struct{}
 	inventoryReported             chan struct{}
 	finalResourceAbsent           bool
@@ -3589,6 +3595,7 @@ func (s *managerService) FetchOperations(
 	s.fetchCapacityAvailable = req.Msg.GetStartupCapacityAvailable()
 	s.fetchCleanupCapacityAvailable = req.Msg.GetCleanupCapacityAvailable()
 	s.fetchAcceptedOperationTypes = append([]codespacev1.AcceptedOperationType(nil), req.Msg.GetAcceptedOperationTypes()...)
+	s.fetchAcceptedCreateTags = append([]string(nil), req.Msg.GetAcceptedCreateTags()...)
 	if req.Msg.GetProtocolVersion() != 1 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
