@@ -61,11 +61,6 @@ type StartupAdmissionChecker interface {
 	CheckStartupAdmission(ctx context.Context) (StartupAdmission, error)
 }
 
-// EnvironmentValidator checks a create environment before operation state is persisted.
-type EnvironmentValidator interface {
-	ValidateEnvironmentTag(tag string) error
-}
-
 const (
 	DevContainerSourcePlatformDefault = "platform_default"
 	DevContainerSourceRepository      = "repository"

@@ -416,12 +416,6 @@ func (p *IncusProvisioner) CreateOrStart(ctx context.Context, spec InstanceSpec)
 	return p.startExistingInstance(ctx, spec, *instance)
 }
 
-// ValidateEnvironmentTag checks that a create tag maps to one configured Incus environment.
-func (p *IncusProvisioner) ValidateEnvironmentTag(tag string) error {
-	_, err := p.environmentForTag(tag)
-	return err
-}
-
 // StartExisting starts one existing instance.
 func (p *IncusProvisioner) StartExisting(ctx context.Context, spec InstanceSpec) (*Instance, error) {
 	if err := ctx.Err(); err != nil {

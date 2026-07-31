@@ -233,13 +233,10 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
 	environments := make([]*codespacev1.EnvironmentTag, 0, len(config.Runtime.Environments))
 	for _, environment := range config.Runtime.Environments {
-		tag := strings.ToLower(strings.TrimSpace(environment.Tag))
-		if tag != "" {
-			environments = append(environments, &codespacev1.EnvironmentTag{
-				Tag:         tag,
-				Description: strings.TrimSpace(environment.Description),
-			})
-		}
+		environments = append(environments, &codespacev1.EnvironmentTag{
+			Tag:         environment.Tag,
+			Description: environment.Description,
+		})
 	}
 	sort.Slice(environments, func(i, j int) bool {
 		return environments[i].GetTag() < environments[j].GetTag()

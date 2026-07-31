@@ -757,7 +757,7 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 		AcceptedOperationTypes:   capacity.acceptedOperationTypes(),
 		ObservedOperations:       a.observedOperations(),
 		CleanupCapacityAvailable: capacity.cleanup,
-		AcceptedCreateTags:       append([]string(nil), capacity.acceptedCreateTags...),
+		AcceptedCreateTags:       capacity.acceptedCreateTags,
 	})
 	response, err := a.managerClient().FetchOperations(ctx, request)
 	if err != nil {
@@ -2430,10 +2430,15 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	if validator, ok := a.provisioner.(provisioner.EnvironmentValidator); ok {
-		if err := validator.ValidateEnvironmentTag(startupInput.EnvironmentTag); err != nil {
-			return err
+	environmentConfigured := false
+	for _, environment := range a.config.Environments {
+		if environment.GetTag() == startupInput.EnvironmentTag {
+			environmentConfigured = true
+			break
 		}
+	}
+	if !environmentConfigured {
+		return fmt.Errorf("environment tag %q is not configured", startupInput.EnvironmentTag)
 	}
 	if err := a.saveStartupInput(startupInput); err != nil {
 		return err
