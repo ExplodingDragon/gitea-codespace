@@ -130,7 +130,6 @@ type LifecycleRequest struct {
 	EnvironmentTag   string
 	GitProtocol      string
 	DevContainer     DevContainerConfiguration
-	InjectedFeatures []devcontainer.InjectedFeature
 	Environment      *devcontainer.State
 	OperationVersion int64
 	Operation        LifecycleOperation

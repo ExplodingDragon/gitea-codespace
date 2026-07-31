@@ -10,7 +10,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 
@@ -51,19 +50,6 @@ func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.path, err)
 		}
 	}
-	injectedFeatures := slices.Clone(request.InjectedFeatures)
-	injectedFeatures = append(injectedFeatures, devcontainer.InjectedFeature{
-		Reference: codeServerFeatureReference,
-		Origin:    "platform",
-		Options: map[string]json.RawMessage{
-			"version":            json.RawMessage(strconv.Quote(request.CodeServerVersion)),
-			"auth":               json.RawMessage(`"none"`),
-			"host":               json.RawMessage(`"0.0.0.0"`),
-			"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
-			"disableTelemetry":   json.RawMessage("true"),
-			"disableUpdateCheck": json.RawMessage("true"),
-		},
-	})
 	return containerdocker.CreateOptions{
 		OwnerID:          request.CodespaceUUID,
 		Workspace:        request.Workspace,
@@ -72,7 +58,18 @@ func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		HostUser:         request.HostUser,
 		LocalEnvironment: request.LocalEnvironment,
 		Secrets:          request.Secrets,
-		InjectedFeatures: injectedFeatures,
+		InjectedFeatures: []devcontainer.InjectedFeature{{
+			Reference: codeServerFeatureReference,
+			Origin:    "platform",
+			Options: map[string]json.RawMessage{
+				"version":            json.RawMessage(strconv.Quote(request.CodeServerVersion)),
+				"auth":               json.RawMessage(`"none"`),
+				"host":               json.RawMessage(`"0.0.0.0"`),
+				"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
+				"disableTelemetry":   json.RawMessage("true"),
+				"disableUpdateCheck": json.RawMessage("true"),
+			},
+		}},
 		AdditionalMounts: mounts,
 		Labels:           map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
 	}, nil

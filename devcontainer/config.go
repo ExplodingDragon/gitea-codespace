@@ -60,7 +60,7 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 			return nil, fmt.Errorf("resolve Dev Container configuration links: %w", resolveErr)
 		}
 		configPath = resolvedPath
-		if allowedPathRoot != "" && !pathWithin(allowedPathRoot, configPath) {
+		if allowedPathRoot != "" && !pathIsInsideRoot(allowedPathRoot, configPath) {
 			return nil, fmt.Errorf("Dev Container configuration leaves the allowed path root")
 		}
 		content, err = os.ReadFile(configPath)
@@ -362,7 +362,7 @@ func substituteVariables(value any, resolve func(name, match string) (string, er
 	return value, nil
 }
 
-func pathWithin(root, target string) bool {
+func pathIsInsideRoot(root, target string) bool {
 	relative, err := filepath.Rel(root, target)
 	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
 }

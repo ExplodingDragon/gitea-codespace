@@ -47,7 +47,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		if !filepath.IsAbs(contextPath) {
 			contextPath = filepath.Join(resolved.ConfigurationDir, contextPath)
 		}
-		contextPath, err := resolvePath(resolved.AllowedPathRoot, contextPath)
+		contextPath, err := resolvePathInsideRoot(resolved.AllowedPathRoot, contextPath)
 		if err != nil {
 			return "", nil, fmt.Errorf("resolve Dev Container build context: %w", err)
 		}
@@ -55,7 +55,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		if !filepath.IsAbs(dockerfile) {
 			dockerfile = filepath.Join(resolved.ConfigurationDir, dockerfile)
 		}
-		dockerfile, err = resolvePath(resolved.AllowedPathRoot, dockerfile)
+		dockerfile, err = resolvePathInsideRoot(resolved.AllowedPathRoot, dockerfile)
 		if err != nil {
 			return "", nil, fmt.Errorf("resolve Dev Container Dockerfile: %w", err)
 		}
@@ -213,7 +213,6 @@ type imageMetadata struct {
 }
 
 type imageMetadataEntry struct {
-	ID                   string                                 `json:"id"`
 	Entrypoint           string                                 `json:"entrypoint"`
 	Mounts               []devcontainer.Mount                   `json:"mounts"`
 	ContainerEnv         map[string]string                      `json:"containerEnv"`
@@ -243,16 +242,30 @@ type imageMetadataEntry struct {
 
 func (m imageMetadataEntry) configuration() devcontainer.Configuration {
 	return devcontainer.Configuration{
-		Mounts: m.Mounts, ContainerEnv: m.ContainerEnv, RemoteEnv: m.RemoteEnv,
-		ContainerUser: m.ContainerUser, RemoteUser: m.RemoteUser, UpdateRemoteUserUID: m.UpdateRemoteUserUID,
-		UserEnvProbe: m.UserEnvProbe, OnCreateCommand: m.OnCreateCommand,
-		UpdateContentCommand: m.UpdateContentCommand, PostCreateCommand: m.PostCreateCommand,
-		PostStartCommand: m.PostStartCommand, PostAttachCommand: m.PostAttachCommand,
-		WaitFor: m.WaitFor, ShutdownAction: m.ShutdownAction,
-		Customizations: m.Customizations, ForwardPorts: m.ForwardPorts, PortsAttributes: m.PortsAttributes,
-		OtherPortsAttributes: m.OtherPortsAttributes, Init: m.Init, Privileged: m.Privileged,
-		CapAdd: m.CapAdd, SecurityOpt: m.SecurityOpt, OverrideCommand: m.OverrideCommand,
-		HostRequirements: m.HostRequirements,
+		Mounts:               m.Mounts,
+		ContainerEnv:         m.ContainerEnv,
+		RemoteEnv:            m.RemoteEnv,
+		ContainerUser:        m.ContainerUser,
+		RemoteUser:           m.RemoteUser,
+		UpdateRemoteUserUID:  m.UpdateRemoteUserUID,
+		UserEnvProbe:         m.UserEnvProbe,
+		OnCreateCommand:      m.OnCreateCommand,
+		UpdateContentCommand: m.UpdateContentCommand,
+		PostCreateCommand:    m.PostCreateCommand,
+		PostStartCommand:     m.PostStartCommand,
+		PostAttachCommand:    m.PostAttachCommand,
+		WaitFor:              m.WaitFor,
+		ShutdownAction:       m.ShutdownAction,
+		Customizations:       m.Customizations,
+		ForwardPorts:         m.ForwardPorts,
+		PortsAttributes:      m.PortsAttributes,
+		OtherPortsAttributes: m.OtherPortsAttributes,
+		Init:                 m.Init,
+		Privileged:           m.Privileged,
+		CapAdd:               m.CapAdd,
+		SecurityOpt:          m.SecurityOpt,
+		OverrideCommand:      m.OverrideCommand,
+		HostRequirements:     m.HostRequirements,
 	}
 }
 

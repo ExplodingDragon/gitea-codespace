@@ -44,7 +44,7 @@ func TestImageMetadataContainsOnlyRuntimeProperties(t *testing.T) {
 	t.Parallel()
 
 	entry := imageMetadataEntry{
-		ID: "base", Entrypoint: "/usr/local/share/entrypoint.sh",
+		Entrypoint:      "/usr/local/share/entrypoint.sh",
 		ContainerEnv:    map[string]string{"FROM_IMAGE": "true"},
 		OnCreateCommand: devcontainer.Command{Value: json.RawMessage(`"echo image"`)},
 	}

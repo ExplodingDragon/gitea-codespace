@@ -4,13 +4,11 @@
 package manager
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/provisioner"
 )
 
@@ -65,50 +63,6 @@ func startupInputFromCreatePayload(operation *codespacev1.OperationPayload, payl
 		return StartupInput{}, fmt.Errorf("create Dev Container configuration is invalid: %w", err)
 	}
 	return startupInput, nil
-}
-
-func userFeaturesFromCreatePayload(payload *codespacev1.CreateOperationPayload) ([]devcontainer.InjectedFeature, error) {
-	features := payload.GetDevContainer().GetUserFeatures()
-	result := make([]devcontainer.InjectedFeature, 0, len(features))
-	seenReferences := make(map[string]struct{}, len(features))
-	for _, feature := range features {
-		reference := strings.TrimSpace(feature.GetReference())
-		if reference == "" {
-			return nil, fmt.Errorf("create user Dev Container Feature reference is empty")
-		}
-		if _, ok := seenReferences[reference]; ok {
-			return nil, fmt.Errorf("create user Dev Container Feature %s is duplicated", reference)
-		}
-		seenReferences[reference] = struct{}{}
-		options := make(map[string]json.RawMessage, len(feature.GetOptions()))
-		for _, option := range feature.GetOptions() {
-			name := strings.TrimSpace(option.GetName())
-			if name == "" {
-				return nil, fmt.Errorf("create user Dev Container Feature %s option name is empty", reference)
-			}
-			if _, ok := options[name]; ok {
-				return nil, fmt.Errorf("create user Dev Container Feature %s option %s is duplicated", reference, name)
-			}
-			switch value := option.GetValue().(type) {
-			case *codespacev1.DevContainerFeatureOption_StringValue:
-				encoded, err := json.Marshal(value.StringValue)
-				if err != nil {
-					return nil, err
-				}
-				options[name] = encoded
-			case *codespacev1.DevContainerFeatureOption_BoolValue:
-				encoded, err := json.Marshal(value.BoolValue)
-				if err != nil {
-					return nil, err
-				}
-				options[name] = encoded
-			default:
-				return nil, fmt.Errorf("create user Dev Container Feature %s option %s has no value", reference, name)
-			}
-		}
-		result = append(result, devcontainer.InjectedFeature{Reference: reference, Origin: "user", Options: options})
-	}
-	return result, nil
 }
 
 func deriveRuntimeUserName(username string) string {

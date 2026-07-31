@@ -331,7 +331,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		} else {
 			file = filepath.Join(resolved.ConfigurationDir, value)
 		}
-		file, err := resolvePath(resolved.AllowedPathRoot, file)
+		file, err := resolvePathInsideRoot(resolved.AllowedPathRoot, file)
 		if err != nil {
 			return "", nil, nil, fmt.Errorf("resolve Docker Compose file %s: %w", value, err)
 		}
@@ -363,7 +363,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		if candidate.Build == nil {
 			continue
 		}
-		if _, err := resolvePath(resolved.AllowedPathRoot, candidate.Build.Context); err != nil {
+		if _, err := resolvePathInsideRoot(resolved.AllowedPathRoot, candidate.Build.Context); err != nil {
 			return "", nil, nil, fmt.Errorf("Docker Compose service %s build context: %w", name, err)
 		}
 	}
@@ -516,7 +516,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	return primary, related, featureDigests, nil
 }
 
-func resolvePath(allowedRoot, value string) (string, error) {
+func resolvePathInsideRoot(allowedRoot, value string) (string, error) {
 	resolved, err := filepath.EvalSymlinks(value)
 	if err != nil {
 		return "", err
@@ -613,7 +613,7 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, sec
 			}
 		}
 	}
-	if err := e.runLifecycleCommand(ctx, environment, "postStartCommand", environment.Configuration.PostStartCommand, secrets); err != nil {
+	if err := e.runLifecycleCommand(ctx, environment, string(devcontainer.LifecycleStagePostStart), environment.Configuration.PostStartCommand, secrets); err != nil {
 		return nil, err
 	}
 	return e.Inspect(ctx, environment)

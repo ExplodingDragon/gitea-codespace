@@ -530,7 +530,6 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 			"GITEA_CODESPACE_UUID": request.CodespaceUUID,
 		},
 		Secrets:           secrets,
-		InjectedFeatures:  request.InjectedFeatures,
 		CodeServerVersion: p.codeServerVersion,
 		Environment:       request.Environment,
 	}

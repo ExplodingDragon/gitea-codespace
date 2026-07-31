@@ -2409,10 +2409,6 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	userFeatures, err := userFeaturesFromCreatePayload(payload)
-	if err != nil {
-		return err
-	}
 	if err := a.saveStartupInput(startupInput); err != nil {
 		return err
 	}
@@ -2432,7 +2428,6 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	request.StartRef = payload.GetStartRef()
 	request.CommitSHA = payload.GetCommitSha()
 	request.GitProtocol = gitProtocolName(payload.GetGitProtocol())
-	request.InjectedFeatures = userFeatures
 	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, nil, request)
 }
 
