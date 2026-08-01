@@ -35,9 +35,6 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		}
 	} else {
 		buildConfig := resolved.Build
-		if buildConfig == nil {
-			buildConfig = &devcontainer.Build{Dockerfile: resolved.DockerFile, Context: resolved.Context}
-		}
 		contextPath := buildConfig.Context
 		if contextPath == "" {
 			contextPath = "."
@@ -66,7 +63,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		for name, value := range buildConfig.Args {
 			args[name] = &value
 		}
-		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, resolved.Cache, "repository"); err != nil {
+		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, buildConfig.Options, resolved.Cache, "repository"); err != nil {
 			return "", nil, fmt.Errorf("build Dev Container image: %w", err)
 		}
 		baseImage = imageName
@@ -319,7 +316,7 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 		return "", err
 	}
 	imageName := "devcontainer-user:" + resolved.DevContainerID
-	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, resolved.Cache, "remote-user"); err != nil {
+	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "remote-user"); err != nil {
 		return "", fmt.Errorf("build Dev Container user image: %w", err)
 	}
 	return imageName, nil

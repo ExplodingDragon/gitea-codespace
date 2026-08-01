@@ -64,7 +64,7 @@ func TestMergeAndContainerVariables(t *testing.T) {
 	}}, Configuration{Customizations: map[string]json.RawMessage{
 		"tool": json.RawMessage(`{"enabled":true}`),
 	}})
-	if !json.Valid(merged.Customizations["tool"]) || string(merged.Customizations["tool"]) != `{"enabled":true,"large":9007199254740993}` {
+	if !json.Valid(merged.Customizations["tool"]) || string(merged.Customizations["tool"]) != `{"enabled":true}` {
 		t.Fatalf("numeric customization = %s", merged.Customizations["tool"])
 	}
 
@@ -73,6 +73,37 @@ func TestMergeAndContainerVariables(t *testing.T) {
 	})
 	if value, exists := merged.RemoteEnv["INHERITED"]; !exists || value != nil {
 		t.Fatalf("remoteEnv null was not preserved: %#v", merged.RemoteEnv)
+	}
+}
+
+func TestVariableSubstitutionPreservesShellVariables(t *testing.T) {
+	t.Parallel()
+
+	configuration, err := ResolveLocalVariables(Configuration{ContainerEnv: map[string]string{
+		"PATH":  "/feature/bin:${PATH}",
+		"CACHE": "${env:CACHE_DIR:/cache}",
+	}}, "/workspaces/project", nil, "environment-id")
+	if err != nil {
+		t.Fatalf("resolve local variables: %v", err)
+	}
+	if configuration.ContainerEnv["PATH"] != "/feature/bin:${PATH}" || configuration.ContainerEnv["CACHE"] != "/cache" {
+		t.Fatalf("resolved environment = %#v", configuration.ContainerEnv)
+	}
+	configuration, err = ResolveContainerVariables(configuration, "/workspaces/project", map[string]string{"PATH": "/usr/bin"})
+	if err != nil {
+		t.Fatalf("resolve container variables: %v", err)
+	}
+	if configuration.ContainerEnv["PATH"] != "/feature/bin:${PATH}" {
+		t.Fatalf("shell PATH expression = %q", configuration.ContainerEnv["PATH"])
+	}
+}
+
+func TestHostRequirementsAcceptFractionalCPU(t *testing.T) {
+	t.Parallel()
+
+	configuration := Configuration{Image: "ubuntu", HostRequirements: HostRequirements{CPUs: 1.5, Memory: "2gb", Storage: "8gb"}}
+	if err := configuration.Validate(); err != nil {
+		t.Fatalf("validate host requirements: %v", err)
 	}
 }
 
@@ -88,9 +119,10 @@ func TestMountAndPortAttributes(t *testing.T) {
 	}
 	configuration := Configuration{
 		PortsAttributes: map[string]PortAttributes{
-			"3000-3999": {Label: "wide"},
-			"3100-3199": {Label: "narrow"},
-			"3150":      {Label: "exact"},
+			"3000-3999":          {Label: "wide"},
+			"3100-3199":          {Label: "narrow"},
+			"3150":               {Label: "exact"},
+			`node .+/server\.js`: {Label: "process"},
 		},
 		OtherPortsAttributes: &PortAttributes{Label: "other"},
 	}
@@ -102,6 +134,16 @@ func TestMountAndPortAttributes(t *testing.T) {
 	}
 	if got := PortAttributesFor(configuration, 8080).Label; got != "other" {
 		t.Fatalf("fallback port attributes = %q", got)
+	}
+	if got := PortAttributesForProcess(configuration, 8080, "node /workspace/server.js").Label; got != "process" {
+		t.Fatalf("process port attributes = %q", got)
+	}
+	var zero Port
+	if err := json.Unmarshal([]byte(`0`), &zero); err != nil {
+		t.Fatalf("decode zero forward port: %v", err)
+	}
+	if value, err := zero.ContainerPort(); err != nil || value != 0 {
+		t.Fatalf("zero forward port = %d, %v", value, err)
 	}
 }
 

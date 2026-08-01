@@ -1,0 +1,11 @@
+{
+  "name": "Dockerfile source interoperability",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "options": ["--network=default"]
+  },
+  "workspaceFolder": "/workspaces/build-source",
+  "remoteUser": "vscode",
+  "updateRemoteUserUID": false,
+  "onCreateCommand": "printf created > .build-source-created"
+}

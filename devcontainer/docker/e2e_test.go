@@ -145,7 +145,7 @@ func TestDockerE2EImageSource(t *testing.T) {
 		t.Fatalf("remoteEnv null did not remove inherited variable: %#v", state.RemoteEnvironment)
 	}
 	if _, stderr, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir,
-		[]string{"/bin/sh", "-c", `test "$IMAGE_SOURCE" = ready && test "$(cat .image-source-created)" = created`}, state.RemoteEnvironment, nil); err != nil {
+		[]string{"/bin/sh", "-c", `test "$IMAGE_SOURCE" = ready && test "$(cat .image-source-created)" = created && test "$(hostname)" = devcontainer-image-source && test "$(local-feature)" = local-feature`}, state.RemoteEnvironment, nil); err != nil {
 		t.Fatalf("verify image-source environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 	if err := engine.Delete(ctx, state); err != nil {
@@ -154,6 +154,44 @@ func TestDockerE2EImageSource(t *testing.T) {
 	state = nil
 	if strings.Contains(output.String(), "No resource found to remove for project") {
 		t.Fatalf("image-source cleanup invoked Docker Compose:\n%s", output.String())
+	}
+}
+
+func TestDockerE2EBuildSource(t *testing.T) {
+	if os.Getenv("DEVCONTAINER_E2E") != "1" {
+		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	workspace := t.TempDir()
+	if err := os.CopyFS(workspace, os.DirFS("testdata/build-source")); err != nil {
+		t.Fatalf("copy build-source fixture: %v", err)
+	}
+	var output bytes.Buffer
+	engine, err := New(ctx, &output, &output)
+	if err != nil {
+		t.Fatalf("create Docker engine: %v", err)
+	}
+	defer engine.Close()
+	state, err := engine.Create(ctx, CreateOptions{
+		OwnerID: "devcontainer-build-e2e-" + uuid.NewString(), Workspace: workspace, AllowedPathRoot: workspace,
+		Source:   devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
+		HostUser: devcontainer.HostUser{Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME")},
+	})
+	if err != nil {
+		t.Fatalf("create build-source environment: %v\n%s", err, output.String())
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		if err := engine.Delete(cleanupCtx, state); err != nil {
+			t.Errorf("delete build-source environment: %v", err)
+		}
+	}()
+	if _, stderr, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir,
+		[]string{"/bin/sh", "-c", `test "$BUILD_SOURCE" = ready && test "$(cat .build-source-created)" = created`}, state.RemoteEnvironment, nil); err != nil {
+		t.Fatalf("verify build-source environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 }
 

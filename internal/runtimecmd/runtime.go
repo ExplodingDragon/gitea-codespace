@@ -93,7 +93,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 		}
 		state, err = engine.Create(ctx, options)
 		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets)
+			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, stdout, stderr)
 			if err != nil {
 				_ = engine.Delete(context.WithoutCancel(ctx), state)
 			}
@@ -101,7 +101,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 	case "resume":
 		state, err = engine.Start(ctx, request.Environment, request.Secrets)
 		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets)
+			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, stdout, stderr)
 		}
 	case "stop":
 		state, err = engine.Stop(ctx, request.Environment)
@@ -140,7 +140,7 @@ func Exec(ctx context.Context, options ExecOptions, stdin io.Reader, stdout, std
 		values["TERM"] = "xterm-256color"
 		values["COLORTERM"] = "truecolor"
 	}
-	attachEngine, err := containerdocker.New(ctx, stdout, stderr)
+	attachEngine, err := containerdocker.New(ctx, io.Discard, stderr)
 	if err != nil {
 		return err
 	}

@@ -8,10 +8,12 @@ import (
 	"bufio"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -41,6 +43,7 @@ type resolvedFeature struct {
 	directory string
 	options   map[string]string
 	metadata  featureMetadata
+	lockable  bool
 }
 
 type featureMetadata struct {
@@ -87,23 +90,23 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if resolved.FrozenLockfile && !resolved.Synthetic && !lockfileExists {
 		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container lockfile does not exist"))
 	}
-	requested := make(map[string]json.RawMessage, len(resolved.Features))
+	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
 	for reference, options := range resolved.Features {
-		requested[reference] = options
+		requestedFeatures[reference] = options
 	}
-	temporary, err := os.MkdirTemp("", "devcontainer-features-*")
+	buildContext, err := os.MkdirTemp("", "devcontainer-features-*")
 	if err != nil {
 		return "", nil, err
 	}
-	defer os.RemoveAll(temporary)
+	defer os.RemoveAll(buildContext)
 	features := map[string]*resolvedFeature{}
-	var fetch func(string, json.RawMessage) error
-	fetch = func(reference string, rawOptions json.RawMessage) error {
+	var resolveFeature func(string, json.RawMessage) error
+	resolveFeature = func(reference string, rawOptions json.RawMessage) error {
 		if _, ok := features[reference]; ok {
 			return nil
 		}
-		directory := filepath.Join(temporary, strconv.Itoa(len(features)))
-		feature, err := e.fetchFeature(ctx, reference, rawOptions, directory, lockfile.Features[reference], resolved.Cache)
+		directory := filepath.Join(buildContext, strconv.Itoa(len(features)))
+		feature, err := e.fetchFeature(ctx, reference, rawOptions, directory, lockfile.Features[reference], resolved.Cache, resolved.ConfigurationDir, resolved.AllowedPathRoot)
 		if err != nil {
 			return err
 		}
@@ -115,51 +118,36 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		sort.Strings(dependencies)
 		for _, dependency := range dependencies {
 			options := feature.metadata.DependsOn[dependency]
-			if requestedOptions, explicitlyRequested := requested[dependency]; explicitlyRequested {
+			if requestedOptions, explicitlyRequested := requestedFeatures[dependency]; explicitlyRequested {
 				options = requestedOptions
 			}
-			if err := fetch(dependency, options); err != nil {
+			if err := resolveFeature(dependency, options); err != nil {
 				return fmt.Errorf("resolve dependency of Feature %s: %w", reference, err)
 			}
 		}
 		return nil
 	}
-	references := make([]string, 0, len(requested))
-	for reference := range requested {
+	references := make([]string, 0, len(requestedFeatures))
+	for reference := range requestedFeatures {
 		references = append(references, reference)
 	}
 	sort.Strings(references)
 	for _, reference := range references {
-		if err := fetch(reference, requested[reference]); err != nil {
+		if err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
 			return "", nil, err
 		}
 	}
-	ordered, err := orderFeatures(features, resolved.OverrideFeatureInstallOrder)
+	orderedFeatures, err := orderFeatures(features, resolved.OverrideFeatureInstallOrder)
 	if err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
-	for _, feature := range ordered {
+	for _, feature := range orderedFeatures {
 		fmt.Fprintf(e.stdout, "Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
-	}
-	var featureConfiguration devcontainer.Configuration
-	for _, feature := range ordered {
-		featureConfiguration = devcontainer.Merge(featureConfiguration, featureConfigurationFromMetadata(feature.metadata))
-		if strings.TrimSpace(feature.metadata.Entrypoint) != "" {
-			if _, installOnly := resolved.InstallOnlyFeatures[feature.reference]; installOnly {
-				continue
-			}
-			resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, feature.metadata.Entrypoint)
-		}
 	}
 	imageConfiguration, err = devcontainer.ResolveLocalVariables(imageConfiguration, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 	if err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
-	featureConfiguration, err = devcontainer.ResolveLocalVariables(featureConfiguration, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
-	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
-	}
-	resolved.Configuration = devcontainer.Merge(devcontainer.Merge(imageConfiguration, featureConfiguration), repositoryConfiguration)
 	inspect, err := e.client.ImageInspect(ctx, baseImage)
 	if err != nil {
 		return "", nil, fmt.Errorf("inspect Dev Container base image: %w", err)
@@ -172,15 +160,49 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			}
 		}
 	}
-	for name, value := range resolved.ContainerEnv {
-		if !strings.Contains(value, "${containerEnv:") {
-			containerEnvironment[name] = value
-		}
-	}
-	resolved.Configuration, err = devcontainer.ResolveContainerVariables(resolved.Configuration, resolved.WorkspaceFolder, containerEnvironment)
+	imageConfiguration, err = devcontainer.ResolveContainerVariables(imageConfiguration, resolved.WorkspaceFolder, containerEnvironment)
 	if err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
+	for name, value := range imageConfiguration.ContainerEnv {
+		containerEnvironment[name] = value
+	}
+	effectiveConfiguration := imageConfiguration
+	for _, feature := range orderedFeatures {
+		featureConfiguration, err := devcontainer.ResolveLocalVariables(featureConfigurationFromMetadata(feature.metadata), resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
+		if err != nil {
+			return "", nil, devcontainer.InvalidConfiguration(err)
+		}
+		featureConfiguration, err = devcontainer.ResolveContainerVariables(featureConfiguration, resolved.WorkspaceFolder, containerEnvironment)
+		if err != nil {
+			return "", nil, devcontainer.InvalidConfiguration(err)
+		}
+		for name, value := range featureConfiguration.ContainerEnv {
+			value = os.Expand(value, func(name string) string { return containerEnvironment[name] })
+			featureConfiguration.ContainerEnv[name] = value
+			containerEnvironment[name] = value
+		}
+		effectiveConfiguration = devcontainer.Merge(effectiveConfiguration, featureConfiguration)
+		if strings.TrimSpace(feature.metadata.Entrypoint) != "" {
+			if _, installOnly := resolved.InstallOnlyFeatures[feature.reference]; !installOnly {
+				resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, feature.metadata.Entrypoint)
+			}
+		}
+	}
+	repositoryEnvironment := make(map[string]string, len(containerEnvironment)+len(repositoryConfiguration.ContainerEnv))
+	for name, value := range containerEnvironment {
+		repositoryEnvironment[name] = value
+	}
+	for name, value := range repositoryConfiguration.ContainerEnv {
+		if !strings.Contains(value, "${containerEnv:") {
+			repositoryEnvironment[name] = value
+		}
+	}
+	repositoryConfiguration, err = devcontainer.ResolveContainerVariables(repositoryConfiguration, resolved.WorkspaceFolder, repositoryEnvironment)
+	if err != nil {
+		return "", nil, devcontainer.InvalidConfiguration(err)
+	}
+	resolved.Configuration = devcontainer.Merge(effectiveConfiguration, repositoryConfiguration)
 	if err := resolved.Configuration.Finalize(); err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
@@ -189,8 +211,8 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	if !resolved.Synthetic {
 		generated := devcontainer.Lockfile{Features: map[string]devcontainer.LockedFeature{}}
-		for _, feature := range ordered {
-			if _, excluded := resolved.InjectedFeatureReferences[feature.reference]; excluded {
+		for _, feature := range orderedFeatures {
+			if _, excluded := resolved.InjectedFeatureReferences[feature.reference]; excluded || !feature.lockable {
 				continue
 			}
 			dependencies := make([]string, 0, len(feature.metadata.DependsOn))
@@ -215,26 +237,67 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	resolved.ContainerUser = containerUser
 	if strings.TrimSpace(resolved.RemoteUser) == "" {
-		resolved.RemoteUser = containerUser
+		resolved.RemoteUser = findRunArgsUser(resolved.RunArgs)
+		if resolved.RemoteUser == "" {
+			resolved.RemoteUser = containerUser
+		}
 	}
-	if len(ordered) == 0 {
+	if len(orderedFeatures) == 0 {
 		return baseImage, map[string]string{}, nil
 	}
-	if err := writeFeatureBuildContext(temporary, baseImage, ordered, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv); err != nil {
+	if err := writeFeatureBuildContext(buildContext, baseImage, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv); err != nil {
 		return "", nil, err
 	}
 	imageName := "devcontainer-feature:" + resolved.DevContainerID
-	if err := e.buildImage(ctx, temporary, "Dockerfile.features", imageName, "", nil, nil, resolved.Cache, "features"); err != nil {
+	if err := e.buildImage(ctx, buildContext, "Dockerfile.features", imageName, "", nil, nil, nil, resolved.Cache, "features"); err != nil {
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
-	digests := make(map[string]string, len(ordered))
-	for _, feature := range ordered {
+	digests := make(map[string]string, len(orderedFeatures))
+	for _, feature := range orderedFeatures {
 		digests[feature.reference] = feature.digest
 	}
 	return imageName, digests, nil
 }
 
-func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, cache devcontainer.CacheOptions) (*resolvedFeature, error) {
+func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, cache devcontainer.CacheOptions, configurationDir, allowedRoot string) (*resolvedFeature, error) {
+	if strings.HasPrefix(featureReference, "./") || strings.HasPrefix(featureReference, "../") {
+		path := filepath.Join(configurationDir, filepath.FromSlash(featureReference))
+		path, err := resolvePathInsideRoot(allowedRoot, path)
+		if err != nil {
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("resolve local Dev Container Feature %s: %w", featureReference, err))
+		}
+		if err := copyDirectory(path, directory); err != nil {
+			return nil, fmt.Errorf("copy local Dev Container Feature %s: %w", featureReference, err)
+		}
+		return loadFeatureDirectory(featureReference, featureReference, "", rawOptions, directory, false)
+	}
+	if strings.HasPrefix(featureReference, "https://") || strings.HasPrefix(featureReference, "http://") {
+		resolveReference := featureReference
+		if locked.Resolved != "" {
+			resolveReference = locked.Resolved
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resolveReference, nil)
+		if err != nil {
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature URL: %w", err))
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return nil, fmt.Errorf("download Dev Container Feature %s: %w", featureReference, err)
+		}
+		defer response.Body.Close()
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			return nil, fmt.Errorf("download Dev Container Feature %s: %s", featureReference, response.Status)
+		}
+		hash := sha256.New()
+		if err := extractFeatureLayer(io.TeeReader(response.Body, hash), directory); err != nil {
+			return nil, fmt.Errorf("extract Dev Container Feature %s: %w", featureReference, err)
+		}
+		digest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
+		if locked.Integrity != "" && locked.Integrity != digest {
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile integrity does not match", featureReference))
+		}
+		return loadFeatureDirectory(featureReference, resolveReference, digest, rawOptions, directory, true)
+	}
 	resolveReference := featureReference
 	if strings.TrimSpace(locked.Integrity) != "" {
 		if strings.TrimSpace(locked.Resolved) == "" {
@@ -276,7 +339,7 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature %q: %w", featureReference, err))
 	}
 	if parsed.Reference == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %q has no version or digest", featureReference))
+		parsed.Reference = "latest"
 	}
 	repository, err := remote.NewRepository(parsed.Registry + "/" + parsed.Repository)
 	if err != nil {
@@ -322,35 +385,32 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if err := layer.Close(); err != nil {
 		return nil, err
 	}
+	return loadFeatureDirectory(featureReference, original.Registry+"/"+original.Repository+"@"+descriptor.Digest.String(), descriptor.Digest.String(), rawOptions, directory, true)
+}
+
+func loadFeatureDirectory(reference, resolved, digest string, rawOptions json.RawMessage, directory string, lockable bool) (*resolvedFeature, error) {
 	metadataFile, err := os.Open(filepath.Join(directory, "devcontainer-feature.json"))
 	if err != nil {
-		return nil, fmt.Errorf("open Feature metadata: %w", err)
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("open Feature metadata: %w", err))
 	}
 	decoder := json.NewDecoder(metadataFile)
 	decoder.DisallowUnknownFields()
 	var metadata featureMetadata
-	decodeErr = decoder.Decode(&metadata)
+	decodeErr := decoder.Decode(&metadata)
 	if err := errors.Join(decodeErr, metadataFile.Close()); err != nil {
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("decode Feature metadata: %w", err))
 	}
-	if strings.TrimSpace(metadata.ID) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s id is empty", featureReference))
-	}
-	if strings.TrimSpace(metadata.Version) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s version is empty", featureReference))
+	if strings.TrimSpace(metadata.ID) == "" || strings.TrimSpace(metadata.Version) == "" {
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s identity is incomplete", reference))
 	}
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", featureReference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", reference))
 	}
 	options, err := resolveFeatureOptions(metadata.Options, rawOptions)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s: %w", featureReference, err))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s: %w", reference, err))
 	}
-	return &resolvedFeature{
-		reference: featureReference,
-		resolved:  original.Registry + "/" + original.Repository + "@" + descriptor.Digest.String(),
-		digest:    descriptor.Digest.String(), directory: directory, options: options, metadata: metadata,
-	}, nil
+	return &resolvedFeature{reference: reference, resolved: resolved, digest: digest, directory: directory, options: options, metadata: metadata, lockable: lockable}, nil
 }
 
 func extractFeatureLayer(reader io.Reader, directory string) error {
@@ -403,6 +463,29 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 			}
 			_, copyErr := io.Copy(file, io.LimitReader(tarReader, header.Size))
 			if err := errors.Join(copyErr, file.Close()); err != nil {
+				return err
+			}
+		case tar.TypeSymlink:
+			link := filepath.Clean(filepath.FromSlash(header.Linkname))
+			resolved := filepath.Clean(filepath.Join(filepath.Dir(name), link))
+			if filepath.IsAbs(link) || resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("Feature archive link %q leaves the Feature root", header.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := os.Symlink(link, target); err != nil {
+				return err
+			}
+		case tar.TypeLink:
+			link := filepath.Clean(filepath.FromSlash(header.Linkname))
+			if filepath.IsAbs(link) || link == ".." || strings.HasPrefix(link, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("Feature archive link %q leaves the Feature root", header.Name)
+			}
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return err
+			}
+			if err := os.Link(filepath.Join(directory, link), target); err != nil {
 				return err
 			}
 		default:
@@ -580,6 +663,12 @@ func findFeatureReference(features map[string]*resolvedFeature, requested string
 }
 
 func featureReferenceID(reference string) (string, error) {
+	if strings.HasPrefix(reference, "./") || strings.HasPrefix(reference, "../") {
+		return "local:" + strings.ToLower(filepath.ToSlash(filepath.Clean(reference))), nil
+	}
+	if strings.HasPrefix(reference, "https://") || strings.HasPrefix(reference, "http://") {
+		return strings.ToLower(reference), nil
+	}
 	parsed, err := registry.ParseReference(reference)
 	if err != nil {
 		return "", fmt.Errorf("parse Feature %q: %w", reference, err)
@@ -640,6 +729,23 @@ func copyDirectory(source, target string) error {
 		destination := filepath.Join(target, relative)
 		if info.IsDir() {
 			return os.MkdirAll(destination, info.Mode().Perm())
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			link, err := os.Readlink(path)
+			if err != nil {
+				return err
+			}
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return err
+			}
+			if relative, err := filepath.Rel(source, resolved); err != nil || relative == ".." || strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
+				return fmt.Errorf("local Feature link %s leaves the Feature root", relative)
+			}
+			if err := os.MkdirAll(filepath.Dir(destination), 0o755); err != nil {
+				return err
+			}
+			return os.Symlink(link, destination)
 		}
 		input, err := os.Open(path)
 		if err != nil {

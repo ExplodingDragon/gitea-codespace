@@ -227,6 +227,10 @@ func mergeCustomizations(base, override map[string]json.RawMessage) map[string]j
 		result = map[string]json.RawMessage{}
 	}
 	for key, raw := range override {
+		if key != "vscode" {
+			result[key] = slices.Clone(raw)
+			continue
+		}
 		var left, right any
 		leftDecoder := json.NewDecoder(bytes.NewReader(result[key]))
 		leftDecoder.UseNumber()

@@ -25,16 +25,20 @@ func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, own
 	for _, port := range configuration.ForwardPorts {
 		value, err := devContainerPort(port)
 		if err != nil {
-			return fmt.Errorf("forwardPorts: %w", err)
+			return devcontainer.InvalidConfiguration(fmt.Errorf("forwardPorts: %w", err))
 		}
-		ports[value] = struct{}{}
+		if value != 0 {
+			ports[value] = struct{}{}
+		}
 	}
 	for _, port := range configuration.AppPort {
 		value, err := port.ContainerPort()
 		if err != nil {
-			return fmt.Errorf("appPort: %w", err)
+			return devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
 		}
-		ports[value] = struct{}{}
+		if value != 0 {
+			ports[value] = struct{}{}
+		}
 	}
 	manifest := runtimeendpoint.EndpointManifest{Version: runtimeendpoint.EndpointManifestVersion, Endpoints: make([]runtimeendpoint.Endpoint, 0, len(ports))}
 	ordered := make([]int, 0, len(ports))
@@ -95,7 +99,7 @@ func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest, owner devc
 }
 
 func devContainerPort(port devcontainer.Port) (uint16, error) {
-	if port.Number != 0 {
+	if port.Numeric || port.Number != 0 {
 		return port.Number, nil
 	}
 	host, rawPort, err := net.SplitHostPort(port.Address)

@@ -1,0 +1,7 @@
+{
+  "id": "local-path",
+  "version": "1.0.0",
+  "containerEnv": {
+    "PATH": "/opt/local-feature/bin:${PATH}"
+  }
+}

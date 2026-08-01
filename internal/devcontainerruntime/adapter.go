@@ -9,6 +9,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"strconv"
 	"strings"
@@ -107,7 +108,13 @@ func ConfigureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 }
 
 // StartWorkspaceServices runs attach lifecycle commands and makes the Web IDE and declared endpoints available.
-func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string) error {
+func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, stdout, stderr io.Writer) error {
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
+	}
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
 		return err
 	}
@@ -135,13 +142,18 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, bytes.NewReader(settings)); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
+	if len(customizations.Extensions) == 0 {
+		return nil
+	}
+	fmt.Fprintln(stdout, "##[group]Install VS Code extensions")
+	defer fmt.Fprintln(stdout, "##[endgroup]")
 	for _, extension := range customizations.Extensions {
 		extension = strings.TrimSpace(extension)
 		if extension == "" {
 			return fmt.Errorf("VS Code extension identifier is empty")
 		}
 		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
-			fmt.Fprintf(os.Stderr, "warning: install VS Code extension %s: %v\n", extension, err)
+			fmt.Fprintf(stderr, "##[warning]Install VS Code extension %s: %v\n", extension, err)
 		}
 	}
 	return nil

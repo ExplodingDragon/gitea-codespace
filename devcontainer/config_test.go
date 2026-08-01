@@ -152,3 +152,23 @@ func TestLoadBuildConfigurationDoesNotSelectCompose(t *testing.T) {
 		t.Fatalf("source selection = %#v", resolved.Configuration)
 	}
 }
+
+func TestLoadAcceptsDockerCommandOptions(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	content := []byte(`{
+		"build": {"dockerfile": "Dockerfile", "options": ["--network=host"]},
+		"runArgs": ["--hostname", "development"]
+	}`)
+	if err := os.WriteFile(filepath.Join(workspace, "devcontainer.json"), content, 0o600); err != nil {
+		t.Fatalf("write configuration: %v", err)
+	}
+	resolved, err := Load(LoadOptions{Workspace: workspace, Source: Source{Path: "devcontainer.json"}})
+	if err != nil {
+		t.Fatalf("load Docker command options: %v", err)
+	}
+	if len(resolved.Build.Options) != 1 || len(resolved.RunArgs) != 2 {
+		t.Fatalf("Docker command options = %#v / %#v", resolved.Build.Options, resolved.RunArgs)
+	}
+}

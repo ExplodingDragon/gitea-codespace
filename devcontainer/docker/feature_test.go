@@ -6,7 +6,10 @@ package docker
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,6 +49,61 @@ func TestExtractFeatureLayerAcceptsArchiveRoot(t *testing.T) {
 	}
 }
 
+func TestLoadLocalFeature(t *testing.T) {
+	t.Parallel()
+
+	configurationDirectory := t.TempDir()
+	featureDirectory := filepath.Join(configurationDirectory, "feature")
+	if err := os.Mkdir(featureDirectory, 0o755); err != nil {
+		t.Fatalf("create local Feature: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(featureDirectory, "devcontainer-feature.json"), []byte(`{"id":"local","version":"1.0.0"}`), 0o600); err != nil {
+		t.Fatalf("write local Feature metadata: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(featureDirectory, "install.sh"), []byte("#!/bin/sh\n"), 0o700); err != nil {
+		t.Fatalf("write local Feature installer: %v", err)
+	}
+	resolved, err := (&Engine{}).fetchFeature(context.Background(), "./feature", nil, filepath.Join(t.TempDir(), "resolved"), devcontainer.LockedFeature{}, devcontainer.CacheOptions{}, configurationDirectory, configurationDirectory)
+	if err != nil {
+		t.Fatalf("load local Feature: %v", err)
+	}
+	if resolved.metadata.ID != "local" || resolved.lockable {
+		t.Fatalf("local Feature = %#v", resolved)
+	}
+}
+
+func TestLoadFeatureTarball(t *testing.T) {
+	t.Parallel()
+
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for name, content := range map[string]string{
+		"devcontainer-feature.json": `{"id":"tarball","version":"1.0.0"}`,
+		"install.sh":                "#!/bin/sh\n",
+	} {
+		if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(content))}); err != nil {
+			t.Fatalf("write tarball header: %v", err)
+		}
+		if _, err := writer.Write([]byte(content)); err != nil {
+			t.Fatalf("write tarball content: %v", err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close tarball: %v", err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		_, _ = response.Write(archive.Bytes())
+	}))
+	defer server.Close()
+	resolved, err := (&Engine{}).fetchFeature(context.Background(), server.URL+"/feature.tgz", nil, filepath.Join(t.TempDir(), "resolved"), devcontainer.LockedFeature{}, devcontainer.CacheOptions{}, t.TempDir(), "")
+	if err != nil {
+		t.Fatalf("load tarball Feature: %v", err)
+	}
+	if resolved.metadata.ID != "tarball" || !resolved.lockable || resolved.digest == "" {
+		t.Fatalf("tarball Feature = %#v", resolved)
+	}
+}
+
 func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -72,6 +130,14 @@ func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 		"channel": {Type: "string", Enum: []string{"stable"}},
 	}, json.RawMessage(`{"channel":"nightly"}`)); err == nil {
 		t.Fatal("Feature option outside enum was accepted")
+	}
+}
+
+func TestFindRunArgsUserUsesLastValue(t *testing.T) {
+	t.Parallel()
+
+	if user := findRunArgsUser([]string{"--user", "first", "-u=second"}); user != "second" {
+		t.Fatalf("runArgs user = %q", user)
 	}
 }
 

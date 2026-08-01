@@ -147,6 +147,10 @@ func (e *Engine) RunPostAttach(ctx context.Context, environment *devcontainer.St
 
 // Exec runs a non-interactive command in one environment container.
 func (e *Engine) Exec(ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string, stdin io.Reader) ([]byte, []byte, error) {
+	return e.exec(ctx, containerID, user, workdir, command, environment, stdin, e.stdout, e.stderr)
+}
+
+func (e *Engine) exec(ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string, stdin io.Reader, streamStdout, streamStderr io.Writer) ([]byte, []byte, error) {
 	created, err := e.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
 		User:         user,
 		WorkingDir:   workdir,
@@ -171,8 +175,18 @@ func (e *Engine) Exec(ctx context.Context, containerID, user, workdir string, co
 		}()
 	}
 	var stdout, stderr bytes.Buffer
-	if _, err := stdcopy.StdCopy(io.MultiWriter(e.stdout, &stdout), io.MultiWriter(e.stderr, &stderr), attached.Reader); err != nil {
+	if _, err := stdcopy.StdCopy(io.MultiWriter(streamStdout, &stdout), io.MultiWriter(streamStderr, &stderr), attached.Reader); err != nil {
 		return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("read container exec output: %w", err)
+	}
+	if stdout.Len() > 0 && stdout.Bytes()[stdout.Len()-1] != '\n' {
+		if _, err := fmt.Fprintln(streamStdout); err != nil {
+			return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("terminate container stdout log line: %w", err)
+		}
+	}
+	if stderr.Len() > 0 && stderr.Bytes()[stderr.Len()-1] != '\n' {
+		if _, err := fmt.Fprintln(streamStderr); err != nil {
+			return stdout.Bytes(), stderr.Bytes(), fmt.Errorf("terminate container stderr log line: %w", err)
+		}
 	}
 	result, err := e.client.ContainerExecInspect(ctx, created.ID)
 	if err != nil {
@@ -235,12 +249,12 @@ func (e *Engine) probeRemoteEnvironment(ctx context.Context, environment *devcon
 	case "interactiveShell":
 		flag = "-ic"
 	}
-	shellOutput, _, _ := e.Exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{"/bin/sh", "-c", `user="${1%%:*}"; getent passwd "$user" 2>/dev/null | cut -d: -f7`, "sh", environment.RemoteUser}, nil, nil)
+	shellOutput, _, _ := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{"/bin/sh", "-c", `user="${1%%:*}"; getent passwd "$user" 2>/dev/null | cut -d: -f7`, "sh", environment.RemoteUser}, nil, nil, io.Discard, io.Discard)
 	shell := strings.TrimSpace(string(shellOutput))
 	if shell == "" {
 		shell = "/bin/sh"
 	}
-	stdout, _, err := e.Exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{shell, flag, "env -0"}, nil, nil)
+	stdout, _, err := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{shell, flag, "env -0"}, nil, nil, io.Discard, io.Discard)
 	if err != nil {
 		return nil, fmt.Errorf("probe Dev Container user environment: %w", err)
 	}

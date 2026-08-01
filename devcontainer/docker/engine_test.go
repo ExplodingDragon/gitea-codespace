@@ -27,9 +27,6 @@ func TestEngineConfigurationHelpers(t *testing.T) {
 	if composeProjectName("owner-a") == composeProjectName("ownera") {
 		t.Fatal("distinct owner IDs produced the same Compose project name")
 	}
-	if err := checkHostRequirements(devcontainer.HostRequirements{GPU: json.RawMessage(`"optional"`)}, t.TempDir()); err != nil {
-		t.Fatalf("optional GPU requirement: %v", err)
-	}
 }
 
 func TestCacheReferences(t *testing.T) {

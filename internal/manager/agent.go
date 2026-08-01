@@ -2299,6 +2299,11 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	if err := a.updateLog(ctx, operation, logGroupStartPrefix+operationLogGroupName(operation)); err != nil {
 		return err
 	}
+	if isAbortOperation(operation) {
+		if err := a.updateLog(ctx, operation, "##[warning]Gitea requested cancellation of this startup operation."); err != nil {
+			return err
+		}
+	}
 
 	var err error
 	switch command := operation.GetCommand().(type) {

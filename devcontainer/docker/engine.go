@@ -4,6 +4,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -22,6 +23,7 @@ import (
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
+	containercommand "github.com/docker/cli/cli/command/container"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	compose "github.com/docker/compose/v2/pkg/compose"
@@ -151,11 +153,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 
 	workspaceFolder := strings.TrimSpace(resolved.WorkspaceFolder)
 	if workspaceFolder == "" {
-		if len(resolved.DockerComposeFile) > 0 {
-			workspaceFolder = "/"
-		} else {
-			workspaceFolder = filepath.Join(devcontainer.DefaultWorkspaceFolder, filepath.Base(resolved.Workspace))
-		}
+		workspaceFolder = filepath.Join(devcontainer.DefaultWorkspaceFolder, filepath.Base(resolved.Workspace))
 	}
 	resolved.WorkspaceFolder = workspaceFolder
 	labels := maps.Clone(options.Labels)
@@ -290,6 +288,10 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	if err != nil {
 		return "", nil, err
 	}
+	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
+	if err != nil {
+		return "", nil, devcontainer.InvalidConfiguration(err)
+	}
 	override := resolved.OverrideCommand == nil || *resolved.OverrideCommand
 	config := &container.Config{
 		Image:      imageName,
@@ -323,6 +325,13 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		SecurityOpt: slices.Clone(resolved.SecurityOpt),
 		Init:        &resolved.Init,
 	}
+	if useGPU {
+		hostConfig.Resources.DeviceRequests = []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}}
+	}
+	if len(resolved.RunArgs) > 0 {
+		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig)
+		return containerID, featureDigests, err
+	}
 	response, err := e.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, "devcontainer-"+resolved.DevContainerID)
 	if err != nil {
 		return "", nil, fmt.Errorf("create Dev Container: %w", err)
@@ -332,6 +341,100 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		return "", nil, fmt.Errorf("start Dev Container: %w", err)
 	}
 	return response.ID, featureDigests, nil
+}
+
+func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig) (string, error) {
+	arguments := []string{"--tty", "--interactive"}
+	if config.WorkingDir != "" {
+		arguments = append(arguments, "--workdir", config.WorkingDir)
+	}
+	if config.User != "" {
+		arguments = append(arguments, "--user", config.User)
+	}
+	for _, value := range config.Env {
+		arguments = append(arguments, "--env", value)
+	}
+	for _, item := range hostConfig.Mounts {
+		value := "type=" + string(item.Type) + ",target=" + item.Target
+		if item.Source != "" {
+			value += ",source=" + item.Source
+		}
+		if item.ReadOnly {
+			value += ",readonly"
+		}
+		if item.Consistency != "" {
+			value += ",consistency=" + string(item.Consistency)
+		}
+		if item.BindOptions != nil && item.BindOptions.Propagation != "" {
+			value += ",bind-propagation=" + string(item.BindOptions.Propagation)
+		}
+		if item.VolumeOptions != nil && item.VolumeOptions.NoCopy {
+			value += ",volume-nocopy"
+		}
+		arguments = append(arguments, "--mount", value)
+	}
+	if hostConfig.Privileged {
+		arguments = append(arguments, "--privileged")
+	}
+	if hostConfig.Init != nil && *hostConfig.Init {
+		arguments = append(arguments, "--init")
+	}
+	for _, value := range hostConfig.CapAdd {
+		arguments = append(arguments, "--cap-add", value)
+	}
+	for _, value := range hostConfig.SecurityOpt {
+		arguments = append(arguments, "--security-opt", value)
+	}
+	if len(hostConfig.Resources.DeviceRequests) > 0 {
+		arguments = append(arguments, "--gpus", "all")
+	}
+	arguments = append(arguments, resolved.RunArgs...)
+	arguments = append(arguments, "--name", "devcontainer-"+resolved.DevContainerID)
+	labelNames := make([]string, 0, len(config.Labels))
+	for name := range config.Labels {
+		labelNames = append(labelNames, name)
+	}
+	sort.Strings(labelNames)
+	for _, name := range labelNames {
+		arguments = append(arguments, "--label", name+"="+config.Labels[name])
+	}
+	if len(config.Entrypoint) > 0 {
+		arguments = append(arguments, "--entrypoint", config.Entrypoint[0])
+	}
+	arguments = append(arguments, config.Image)
+	arguments = append(arguments, config.Cmd...)
+
+	var output bytes.Buffer
+	cli, err := command.NewDockerCli(
+		command.WithBaseContext(ctx),
+		command.WithInputStream(io.NopCloser(strings.NewReader(""))),
+		command.WithOutputStream(&output),
+		command.WithErrorStream(e.stderr),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create Docker command client: %w", err)
+	}
+	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
+		return "", fmt.Errorf("initialize Docker command client: %w", err)
+	}
+	defer cli.Client().Close()
+	createCommand := containercommand.NewCreateCommand(cli)
+	createCommand.SetArgs(arguments)
+	createCommand.SetContext(ctx)
+	createCommand.SilenceUsage = true
+	createCommand.SilenceErrors = true
+	if err := createCommand.Execute(); err != nil {
+		return "", fmt.Errorf("create Dev Container with runArgs: %w", err)
+	}
+	containerID := strings.TrimSpace(output.String())
+	if containerID == "" {
+		return "", errors.New("create Dev Container with runArgs returned no container ID")
+	}
+	if err := e.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		_ = e.client.ContainerRemove(context.WithoutCancel(ctx), containerID, container.RemoveOptions{Force: true})
+		return "", fmt.Errorf("start Dev Container: %w", err)
+	}
+	return containerID, nil
 }
 
 func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
@@ -418,6 +521,10 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, err
 	}
+	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
+	if err != nil {
+		return "", nil, nil, devcontainer.InvalidConfiguration(err)
+	}
 	service.Image = featureImage
 	service.Build = nil
 	configuredMounts := slices.Clone(resolved.Mounts)
@@ -460,6 +567,9 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	if resolved.Privileged {
 		service.Privileged = true
+	}
+	if useGPU {
+		service.Gpus = []composetypes.DeviceRequest{{Count: -1, Capabilities: []string{"gpu"}}}
 	}
 	service.User = resolved.ContainerUser
 	if resolved.Init {
@@ -509,7 +619,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		relatedService, ok := project.Services[name]
 		if !ok {
-			continue
+			return "", nil, nil, devcontainer.InvalidConfiguration(fmt.Errorf("Docker Compose runServices service %q does not exist", name))
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name
@@ -555,6 +665,19 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	sort.Strings(related)
 	return primary, related, featureDigests, nil
+}
+
+func findRunArgsUser(arguments []string) string {
+	for i := len(arguments) - 1; i >= 0; i-- {
+		argument := arguments[i]
+		if (argument == "-u" || argument == "--user") && i+1 < len(arguments) {
+			return arguments[i+1]
+		}
+		if strings.HasPrefix(argument, "-u=") || strings.HasPrefix(argument, "--user=") {
+			return argument[strings.IndexByte(argument, '=')+1:]
+		}
+	}
+	return ""
 }
 
 func resolvePathInsideRoot(allowedRoot, value string) (string, error) {

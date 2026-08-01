@@ -4,6 +4,10 @@
   "workspaceFolder": "/workspaces/image-source",
   "remoteUser": "vscode",
   "updateRemoteUserUID": false,
+  "runArgs": ["--hostname", "devcontainer-image-source"],
+  "features": {
+    "./feature": true
+  },
   "containerEnv": {
     "IMAGE_SOURCE": "ready",
     "REMOVE_FROM_REMOTE": "container-value"

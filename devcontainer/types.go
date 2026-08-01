@@ -311,19 +311,21 @@ func (p *AppPortList) UnmarshalJSON(data []byte) error {
 type Port struct {
 	Number  uint16
 	Address string
+	Numeric bool
 }
 
 // UnmarshalJSON accepts a numeric port or a host-and-port string.
 func (p *Port) UnmarshalJSON(data []byte) error {
 	*p = Port{}
 	var number uint16
-	if err := json.Unmarshal(data, &number); err == nil && number > 0 {
+	if err := json.Unmarshal(data, &number); err == nil {
 		p.Number = number
+		p.Numeric = true
 		return nil
 	}
 	var address string
 	if err := json.Unmarshal(data, &address); err != nil || strings.TrimSpace(address) == "" {
-		return fmt.Errorf("port must be a positive number or non-empty string")
+		return fmt.Errorf("port must be a number or non-empty string")
 	}
 	p.Address = strings.TrimSpace(address)
 	return nil
@@ -331,7 +333,7 @@ func (p *Port) UnmarshalJSON(data []byte) error {
 
 // MarshalJSON preserves the numeric or host-and-port representation.
 func (p Port) MarshalJSON() ([]byte, error) {
-	if p.Number != 0 {
+	if p.Numeric || p.Number != 0 {
 		return json.Marshal(p.Number)
 	}
 	return json.Marshal(p.Address)
@@ -340,7 +342,7 @@ func (p Port) MarshalJSON() ([]byte, error) {
 // ContainerPort returns the container-side port from a numeric value or a
 // Docker-style address mapping.
 func (p Port) ContainerPort() (uint16, error) {
-	if p.Number != 0 {
+	if p.Numeric || p.Number != 0 {
 		return p.Number, nil
 	}
 	parts := strings.Split(strings.TrimSpace(p.Address), ":")

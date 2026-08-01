@@ -4,6 +4,7 @@
 package docker
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"runtime"
@@ -17,11 +18,8 @@ import (
 )
 
 func checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
-	if requirements.CPUs < 0 {
-		return fmt.Errorf("Dev Container hostRequirements.cpus must not be negative")
-	}
 	if requirements.CPUs > float64(runtime.NumCPU()) {
-		return fmt.Errorf("Dev Container requires %.2f CPUs but the runtime provides %d", requirements.CPUs, runtime.NumCPU())
+		return fmt.Errorf("Dev Container requires %g CPUs but the runtime provides %d", requirements.CPUs, runtime.NumCPU())
 	}
 	if strings.TrimSpace(requirements.Memory) != "" {
 		required, err := dockerunits.RAMInBytes(requirements.Memory)
@@ -57,9 +55,21 @@ func checkHostRequirements(requirements devcontainer.HostRequirements, workspace
 			return fmt.Errorf("Dev Container requires %s storage but the runtime provides %s", requirements.Storage, dockerunits.BytesSize(float64(available)))
 		}
 	}
-	gpu := strings.TrimSpace(string(requirements.GPU))
-	if gpu != "" && gpu != "null" && gpu != "false" && gpu != `"optional"` {
-		return fmt.Errorf("Dev Container GPU host requirements are not supported by this runtime")
-	}
 	return nil
+}
+
+func (e *Engine) resolveGPURequest(ctx context.Context, requirement []byte) (bool, error) {
+	value := strings.TrimSpace(string(requirement))
+	if value == "" || value == "null" || value == "false" {
+		return false, nil
+	}
+	info, err := e.client.Info(ctx)
+	if err != nil {
+		return false, fmt.Errorf("inspect Docker GPU runtime: %w", err)
+	}
+	_, available := info.Runtimes["nvidia"]
+	if !available && value != `"optional"` {
+		return false, fmt.Errorf("Dev Container requires a GPU but the Docker nvidia runtime is unavailable")
+	}
+	return available, nil
 }

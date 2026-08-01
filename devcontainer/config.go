@@ -13,13 +13,18 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 
 	"github.com/tailscale/hujson"
 )
 
-var variablePattern = regexp.MustCompile(`\$\{([^{}]+)\}`)
+var (
+	variablePattern          = regexp.MustCompile(`\$\{([^{}]+)\}`)
+	portNumberOrRangePattern = regexp.MustCompile(`^\d+(-\d+)?$`)
+	byteRequirementPattern   = regexp.MustCompile(`^\d+([tgmk]b)?$`)
+)
 
 // Load reads and resolves one repository configuration or a synthetic default-image configuration.
 func Load(options LoadOptions) (*ResolvedConfiguration, error) {
@@ -167,17 +172,25 @@ func (c *Configuration) Validate() error {
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.Service) == "" {
 		return fmt.Errorf("Docker Compose Dev Container service is required")
 	}
+	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceFolder) == "" {
+		return fmt.Errorf("Docker Compose Dev Container workspaceFolder is required")
+	}
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceMount) != "" {
 		return fmt.Errorf("Docker Compose Dev Container uses service volumes instead of workspaceMount")
 	}
 	if c.Build != nil && strings.TrimSpace(c.Build.Dockerfile) == "" {
 		return fmt.Errorf("Dev Container build.dockerfile is required")
 	}
-	if c.Build != nil && len(c.Build.Options) > 0 {
-		return fmt.Errorf("Dev Container build.options is not available in the native Docker API; use typed build properties")
+	if c.HostRequirements.CPUs < 0 {
+		return fmt.Errorf("Dev Container hostRequirements.cpus must be a positive number")
 	}
-	if len(c.RunArgs) > 0 {
-		return fmt.Errorf("Dev Container runArgs is not available in the native Docker API; use typed container properties")
+	for name, value := range map[string]string{"memory": c.HostRequirements.Memory, "storage": c.HostRequirements.Storage} {
+		if value != "" && !byteRequirementPattern.MatchString(value) {
+			return fmt.Errorf("Dev Container hostRequirements.%s %q is invalid", name, value)
+		}
+	}
+	if err := validateGPURequirement(c.HostRequirements.GPU); err != nil {
+		return err
 	}
 	for key, attributes := range c.PortsAttributes {
 		if err := validatePortAttributeKey(key); err != nil {
@@ -243,20 +256,47 @@ func (c *Configuration) Finalize() error {
 }
 
 func validatePortAttributeKey(value string) error {
-	parts := strings.Split(strings.TrimSpace(value), "-")
-	if len(parts) < 1 || len(parts) > 2 {
-		return fmt.Errorf("Dev Container portsAttributes key %q is invalid", value)
+	value = strings.TrimSpace(value)
+	if !portNumberOrRangePattern.MatchString(value) {
+		if _, err := regexp.Compile(value); err != nil {
+			return fmt.Errorf("Dev Container portsAttributes key %q is neither a port, range, nor valid process regular expression: %w", value, err)
+		}
+		return nil
 	}
+	parts := strings.Split(value, "-")
 	ports := make([]uint64, len(parts))
 	for i, part := range parts {
-		port, err := strconv.ParseUint(strings.TrimSpace(part), 10, 16)
+		port, err := strconv.ParseUint(part, 10, 16)
 		if err != nil || port == 0 {
-			return fmt.Errorf("Dev Container portsAttributes key %q is invalid", value)
+			return fmt.Errorf("Dev Container portsAttributes key %q contains an invalid port", value)
 		}
 		ports[i] = port
 	}
 	if len(ports) == 2 && ports[0] > ports[1] {
 		return fmt.Errorf("Dev Container portsAttributes range %q is reversed", value)
+	}
+	return nil
+}
+
+func validateGPURequirement(value json.RawMessage) error {
+	value = bytes.TrimSpace(value)
+	if len(value) == 0 || bytes.Equal(value, []byte("null")) || bytes.Equal(value, []byte("true")) || bytes.Equal(value, []byte("false")) || bytes.Equal(value, []byte(`"optional"`)) {
+		return nil
+	}
+	var requirement struct {
+		Cores  *float64 `json:"cores"`
+		Memory string   `json:"memory"`
+	}
+	decoder := json.NewDecoder(bytes.NewReader(value))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&requirement); err != nil {
+		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
+	}
+	if requirement.Cores != nil && *requirement.Cores < 1 {
+		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
+	}
+	if requirement.Memory != "" && !byteRequirementPattern.MatchString(requirement.Memory) {
+		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
 	}
 	return nil
 }
@@ -313,8 +353,12 @@ func (c substitutionContext) resolve(name, match string) (string, error) {
 	case "devcontainerId":
 		return c.devContainerID, nil
 	}
-	if strings.HasPrefix(name, "localEnv:") {
-		parts := strings.SplitN(strings.TrimPrefix(name, "localEnv:"), ":", 2)
+	if strings.HasPrefix(name, "localEnv:") || strings.HasPrefix(name, "env:") {
+		_, arguments, _ := strings.Cut(name, ":")
+		parts := strings.SplitN(arguments, ":", 2)
+		if parts[0] == "" {
+			return match, fmt.Errorf("Dev Container variable %q has no environment variable name", match)
+		}
 		if resolved, ok := c.localEnv[parts[0]]; ok {
 			return resolved, nil
 		}
@@ -326,7 +370,7 @@ func (c substitutionContext) resolve(name, match string) (string, error) {
 	if strings.HasPrefix(name, "containerEnv:") || strings.HasPrefix(name, "containerWorkspaceFolder") {
 		return match, nil
 	}
-	return match, fmt.Errorf("unsupported Dev Container variable %q", match)
+	return match, nil
 }
 
 func substituteVariables(value any, resolve func(name, match string) (string, error)) (any, error) {
@@ -406,6 +450,9 @@ func ResolveContainerVariables(configuration Configuration, workspaceFolder stri
 			}
 			if strings.HasPrefix(name, "containerEnv:") {
 				parts := strings.SplitN(strings.TrimPrefix(name, "containerEnv:"), ":", 2)
+				if parts[0] == "" {
+					return match, fmt.Errorf("Dev Container variable %q has no environment variable name", match)
+				}
 				if resolved, ok := environment[parts[0]]; ok {
 					return resolved, nil
 				}
@@ -414,7 +461,7 @@ func ResolveContainerVariables(configuration Configuration, workspaceFolder stri
 				}
 				return "", nil
 			}
-			return match, fmt.Errorf("unsupported container variable %q", match)
+			return match, nil
 		})
 	})
 }
@@ -447,6 +494,12 @@ func resolveConfigurationVariables(configuration Configuration, substitute func(
 
 // PortAttributesFor returns the most specific configured attributes for a port.
 func PortAttributesFor(configuration Configuration, port uint16) PortAttributes {
+	return PortAttributesForProcess(configuration, port, "")
+}
+
+// PortAttributesForProcess returns attributes selected by port, range, or the
+// command line of the process listening on the port.
+func PortAttributesForProcess(configuration Configuration, port uint16, commandLine string) PortAttributes {
 	if attributes, ok := configuration.PortsAttributes[strconv.Itoa(int(port))]; ok {
 		return attributes
 	}
@@ -471,6 +524,21 @@ func PortAttributesFor(configuration Configuration, port uint16) PortAttributes 
 	}
 	if selectedSpan != 0 {
 		return selected
+	}
+	if commandLine != "" {
+		keys := make([]string, 0, len(configuration.PortsAttributes))
+		for key := range configuration.PortsAttributes {
+			keys = append(keys, key)
+		}
+		slices.Sort(keys)
+		for _, key := range keys {
+			if portNumberOrRangePattern.MatchString(key) {
+				continue
+			}
+			if expression, err := regexp.Compile(key); err == nil && expression.MatchString(commandLine) {
+				return configuration.PortsAttributes[key]
+			}
+		}
 	}
 	if configuration.OtherPortsAttributes != nil {
 		return *configuration.OtherPortsAttributes

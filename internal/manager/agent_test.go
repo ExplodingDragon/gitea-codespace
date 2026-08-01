@@ -607,6 +607,17 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 	if service.finalOperationType != codespacev1.OperationType_OPERATION_TYPE_CREATE {
 		t.Fatalf("final operation type = %s", service.finalOperationType)
 	}
+	foundCancellation := false
+	for _, request := range service.logRequestsCopy() {
+		for _, line := range request.GetLines() {
+			if line.GetMessage() == "##[warning]Gitea requested cancellation of this startup operation." {
+				foundCancellation = true
+			}
+		}
+	}
+	if !foundCancellation {
+		t.Fatal("abort operation did not explain its cancellation in the operation log")
+	}
 	if stateStore.savedCommand() != "abort_create" {
 		t.Fatalf("saved operation command = %q", stateStore.savedCommand())
 	}

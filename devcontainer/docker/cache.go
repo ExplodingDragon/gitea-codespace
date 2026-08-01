@@ -9,10 +9,12 @@ import (
 	"fmt"
 	"net/url"
 	"path"
+	"sort"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/distribution/reference"
+	imagecommand "github.com/docker/cli/cli/command/image"
 	"github.com/docker/compose/v2/pkg/api"
 
 	"gitea.dev/codespace/devcontainer"
@@ -92,7 +94,36 @@ func buildCacheReference(cache devcontainer.CacheOptions, stage string) string {
 	return base.Host + "/" + path.Join(strings.Trim(base.Path, "/"), fmt.Sprintf("%x", digest[:])) + ":cache"
 }
 
-func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom []string, cache devcontainer.CacheOptions, stage string) error {
+func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string) error {
+	if len(options) > 0 {
+		arguments := []string{"--file", dockerfile, "--tag", imageName}
+		if target != "" {
+			arguments = append(arguments, "--target", target)
+		}
+		names := make([]string, 0, len(args))
+		for name := range args {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			value := name
+			if args[name] != nil {
+				value += "=" + *args[name]
+			}
+			arguments = append(arguments, "--build-arg", value)
+		}
+		for _, source := range cacheFrom {
+			arguments = append(arguments, "--cache-from", source)
+		}
+		arguments = append(arguments, options...)
+		arguments = append(arguments, contextPath)
+		command := imagecommand.NewBuildCommand(e.cli)
+		command.SetArgs(arguments)
+		command.SetContext(ctx)
+		command.SilenceUsage = true
+		command.SilenceErrors = true
+		return command.Execute()
+	}
 	buildArgs := make(types.MappingWithEquals, len(args))
 	for name, value := range args {
 		buildArgs[name] = value
