@@ -463,25 +463,6 @@ func (h *processHealth) writeHealthz(writer http.ResponseWriter) {
 	}
 }
 
-func newGatewayHandler(
-	health *processHealth,
-	sessions *gatewaySessionRegistry,
-	access *gatewayAccessController,
-	controlPlane *gatewayControlPlane,
-) http.Handler {
-	return newGatewayHandlerWithOrigin(health, sessions, access, controlPlane, gatewayOriginPolicy{})
-}
-
-func newGatewayHandlerWithOrigin(
-	health *processHealth,
-	sessions *gatewaySessionRegistry,
-	access *gatewayAccessController,
-	controlPlane *gatewayControlPlane,
-	originPolicy gatewayOriginPolicy,
-) http.Handler {
-	return newGatewayHandlerWithOriginAndBrowserAuth(health, sessions, access, controlPlane, originPolicy, nil)
-}
-
 func newGatewayHandlerWithOriginAndBrowserAuth(
 	health *processHealth,
 	sessions *gatewaySessionRegistry,

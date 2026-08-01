@@ -860,26 +860,3 @@ func (m dockerProgressMessage) err() error {
 	}
 	return nil
 }
-
-func streamDockerBuildOutput(reader io.Reader, output io.Writer) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var message dockerProgressMessage
-		if err := decoder.Decode(&message); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if err := message.err(); err != nil {
-			return err
-		}
-		line := strings.TrimSpace(message.Stream)
-		if line == "" {
-			line = strings.TrimSpace(strings.TrimSpace(message.Status) + " " + strings.TrimSpace(message.Progress))
-		}
-		if line != "" {
-			fmt.Fprintln(output, line)
-		}
-	}
-}

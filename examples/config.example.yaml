@@ -41,7 +41,6 @@ runtime:
       manage: true
   environments:
     - tag: "debian-lxc"
-      description: "General-purpose Linux container"
       type: "lxc"
       source:
         image: "images:debian/12"

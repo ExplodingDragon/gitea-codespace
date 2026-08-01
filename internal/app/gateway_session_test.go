@@ -10,6 +10,10 @@ import (
 	"time"
 )
 
+func newGatewaySessionRegistry() *gatewaySessionRegistry {
+	return newGatewaySessionRegistryFromConfig(DefaultConfig().Gateway)
+}
+
 func gatewaySessionTestConfig(ttl, idleTimeout Duration, maxPerCodespace, maxPerUser int) GatewayConfig {
 	return GatewayConfig{Sessions: GatewaySessionConfig{
 		TTL:             ttl,

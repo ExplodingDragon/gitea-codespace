@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+func newGatewayHandler(health *processHealth, sessions *gatewaySessionRegistry, access *gatewayAccessController, controlPlane *gatewayControlPlane) http.Handler {
+	return newGatewayHandlerWithOrigin(health, sessions, access, controlPlane, gatewayOriginPolicy{})
+}
+
+func newGatewayHandlerWithOrigin(health *processHealth, sessions *gatewaySessionRegistry, access *gatewayAccessController, controlPlane *gatewayControlPlane, originPolicy gatewayOriginPolicy) http.Handler {
+	return newGatewayHandlerWithOriginAndBrowserAuth(health, sessions, access, controlPlane, originPolicy, nil)
+}
+
 func TestProcessHealthzPass(t *testing.T) {
 	t.Parallel()
 

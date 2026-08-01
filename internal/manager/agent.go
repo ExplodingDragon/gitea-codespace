@@ -2430,14 +2430,9 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	if err != nil {
 		return err
 	}
-	environmentConfigured := false
-	for _, environment := range a.config.Environments {
-		if environment.GetTag() == startupInput.EnvironmentTag {
-			environmentConfigured = true
-			break
-		}
-	}
-	if !environmentConfigured {
+	if !slices.ContainsFunc(a.config.Environments, func(environment *codespacev1.EnvironmentTag) bool {
+		return environment.GetTag() == startupInput.EnvironmentTag
+	}) {
 		return fmt.Errorf("environment tag %q is not configured", startupInput.EnvironmentTag)
 	}
 	if err := a.saveStartupInput(startupInput); err != nil {

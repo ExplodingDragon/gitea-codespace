@@ -26,11 +26,10 @@ runtime:
       manage: true
   environments:
     - tag: "default"
-      description: "General-purpose development environment"
       type: "lxc"
       source:
         image: "images:debian/12"
       resources:
-        cpu: 1
-        memory: "1GiB"
+        cpu: 4
+        memory: "2GiB"
         root_disk: "10GiB"

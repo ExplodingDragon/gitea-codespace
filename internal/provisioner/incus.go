@@ -1548,14 +1548,6 @@ func connectIncusBase(config IncusConfig) (incus.InstanceServer, error) {
 	return client, nil
 }
 
-func connectIncus(config IncusConfig) (incus.InstanceServer, error) {
-	client, err := connectIncusBase(config)
-	if err != nil {
-		return nil, err
-	}
-	return withProject(client, config.Project), nil
-}
-
 func withProject(client incus.InstanceServer, project string) incus.InstanceServer {
 	if project == "" {
 		return client

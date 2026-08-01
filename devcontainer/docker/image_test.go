@@ -87,13 +87,6 @@ func TestDockerProgressStreams(t *testing.T) {
 		t.Fatalf("pull progress output = %q", output.String())
 	}
 
-	if err := streamDockerBuildOutput(strings.NewReader("{\"stream\":\"RUN echo ready\\n\"}\n"), &output); err != nil {
-		t.Fatalf("stream build output: %v", err)
-	}
-	if output.String() != "RUN echo ready\n" {
-		t.Fatalf("build output = %q", output.String())
-	}
-
 	if err := streamDockerPullProgress(strings.NewReader("{\"errorDetail\":{\"message\":\"pull denied\"}}\n"), &output); err == nil || err.Error() != "pull denied" {
 		t.Fatalf("pull error = %v", err)
 	}

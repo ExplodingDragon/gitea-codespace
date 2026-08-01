@@ -52,10 +52,6 @@ type gatewayLiveSession struct {
 	countsSession bool
 }
 
-func newGatewaySessionRegistry() *gatewaySessionRegistry {
-	return newGatewaySessionRegistryFromConfig(DefaultConfig().Gateway)
-}
-
 func newGatewaySessionRegistryFromConfig(config GatewayConfig) *gatewaySessionRegistry {
 	ttl := config.Sessions.TTL.ToStdlib()
 	if ttl <= 0 {
