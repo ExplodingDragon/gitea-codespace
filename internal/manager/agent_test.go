@@ -1079,41 +1079,6 @@ func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 	assertNotFinalized(t, service.finalized)
 }
 
-func TestAgentReadyMetadataUsesPublisher(t *testing.T) {
-	t.Parallel()
-
-	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	metadataStore := &memoryRuntimeMetadataStateStore{}
-	publisher := &memoryRuntimeMetadataPublisher{}
-	agent := New(AgentConfig{
-		BaseURL:                   "http://127.0.0.1",
-		RuntimeMetadataGeneration: 1,
-		RuntimeMetadataStateStore: metadataStore,
-		RuntimeMetadataPublisher:  publisher,
-	}, http.DefaultClient, nil)
-	err := agent.reportReadyMetadata(
-		context.Background(),
-		&codespacev1.OperationPayload{
-			CodespaceUuid:     codespaceUUID,
-			OperationRversion: 7,
-		},
-		&provisioner.Instance{
-			CommunicationHost: "10.0.0.12",
-		},
-	)
-	if err != nil {
-		t.Fatalf("report ready metadata: %v", err)
-	}
-
-	snapshots := metadataStore.savedSnapshots()
-	if len(snapshots) != 1 || snapshots[0].CodespaceUUID != codespaceUUID || snapshots[0].Boot.OperationRVersion != 7 {
-		t.Fatalf("saved snapshots = %#v", snapshots)
-	}
-	if calls := publisher.calls(); len(calls) != 1 || calls[0] != codespaceUUID {
-		t.Fatalf("publisher calls = %#v", calls)
-	}
-}
-
 func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	t.Parallel()
 

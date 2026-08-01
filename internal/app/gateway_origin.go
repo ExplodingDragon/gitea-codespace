@@ -79,17 +79,6 @@ func (p gatewayOriginPolicy) bindingForRequest(request *http.Request) (gatewayEn
 	return p.parseEndpointHost(request.Host)
 }
 
-func (p gatewayOriginPolicy) requestMatchesBinding(request *http.Request, codespaceUUID, endpointID string) bool {
-	if p.domain == "" {
-		return true
-	}
-	binding, ok := p.bindingForRequest(request)
-	if !ok {
-		return false
-	}
-	return binding.codespaceUUID == codespaceUUID && binding.endpointID == endpointID
-}
-
 func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 	if len(label) == 32 && isGatewayUUID32(label) {
 		return gatewayEndpointHost{

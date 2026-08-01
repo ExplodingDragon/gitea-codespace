@@ -2625,14 +2625,6 @@ func (a *Agent) runStartupOperation(
 	return nil
 }
 
-func (a *Agent) loadRuntimeWorkdir(codespaceUUID string) (string, error) {
-	environment, err := a.loadRuntimeEnvironment(codespaceUUID)
-	if err != nil {
-		return "", err
-	}
-	return environment.Environment.Workspace, nil
-}
-
 func (a *Agent) loadRuntimeEnvironment(codespaceUUID string) (provisioner.RuntimeEnvironment, error) {
 	if a.runtimeEnvStateStore == nil {
 		return provisioner.RuntimeEnvironment{}, fmt.Errorf("runtime environment store is missing")
@@ -3176,10 +3168,6 @@ func (a *Agent) reportBootMetadata(
 		return fmt.Errorf("publish runtime metadata stage %s: %w", stage, err)
 	}
 	return nil
-}
-
-func (a *Agent) reportReadyMetadata(ctx context.Context, operation *codespacev1.OperationPayload, instance *provisioner.Instance) error {
-	return a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, time.Now().Unix())
 }
 
 func (a *Agent) publishRuntimeMetadataDirect(ctx context.Context, snapshot RuntimeMetadataSnapshot) error {
