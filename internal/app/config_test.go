@@ -135,19 +135,30 @@ func TestConfigValidatesRuntimeCache(t *testing.T) {
 
 	config := DefaultConfig()
 	config.Runtime.Cache = RuntimeCacheConfig{
-		BuildRegistry: "https://registry.example.com/gitea-codespace",
-		Mirrors:       map[string]string{"ghcr.io": "http://cache.example.com/ghcr"},
+		Registry: RuntimeCacheRegistryConfig{
+			Enabled:     true,
+			Listen:      "127.0.0.1:15000",
+			PublicURL:   "http://cache.example.com",
+			StoragePath: "cache-registry",
+			MaxSize:     "10GiB",
+			Upstreams: map[string]RuntimeCacheUpstreamConfig{
+				"ghcr.io": {
+					Allow: []string{"devcontainers/*"},
+				},
+			},
+		},
 	}
 	if err := config.Validate(); err != nil {
 		t.Fatalf("valid runtime cache: %v", err)
 	}
-	config.Runtime.Cache.BuildRegistry = "https://registry.example.com"
-	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "namespace path") {
-		t.Fatalf("registry namespace error = %v", err)
+	config.Runtime.Cache.Registry.PublicURL = "https://registry.example.com?bad=1"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "query") {
+		t.Fatalf("registry public_url error = %v", err)
 	}
-	config.Runtime.Cache.BuildRegistry = "https://registry.example.com/Invalid"
-	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "valid OCI") {
-		t.Fatalf("registry OCI namespace error = %v", err)
+	config.Runtime.Cache.Registry.PublicURL = "http://cache.example.com"
+	config.Runtime.Cache.Registry.Upstreams["GHCR.IO"] = RuntimeCacheUpstreamConfig{}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "lowercase registry host") {
+		t.Fatalf("registry upstream host error = %v", err)
 	}
 }
 

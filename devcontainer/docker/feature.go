@@ -209,6 +209,10 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
+	digests := make(map[string]string, len(orderedFeatures))
+	for _, feature := range orderedFeatures {
+		digests[feature.reference] = feature.digest
+	}
 	if !resolved.Synthetic {
 		generated := devcontainer.Lockfile{Features: map[string]devcontainer.LockedFeature{}}
 		for _, feature := range orderedFeatures {
@@ -245,6 +249,10 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if len(orderedFeatures) == 0 {
 		return baseImage, map[string]string{}, nil
 	}
+	cacheReference := featureImageArtifactCacheReference(resolved.Cache, inspect.ID, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv)
+	if e.useCachedImage(ctx, cacheReference, "features") {
+		return cacheReference, digests, nil
+	}
 	if err := writeFeatureBuildContext(buildContext, baseImage, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv); err != nil {
 		return "", nil, err
 	}
@@ -252,11 +260,25 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err := e.buildImage(ctx, buildContext, "Dockerfile.features", imageName, "", nil, nil, nil, resolved.Cache, "features"); err != nil {
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
-	digests := make(map[string]string, len(orderedFeatures))
-	for _, feature := range orderedFeatures {
-		digests[feature.reference] = feature.digest
-	}
+	e.publishCachedImage(ctx, imageName, cacheReference, "features")
 	return imageName, digests, nil
+}
+
+func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseImageID string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) string {
+	parts := []string{
+		"base", strings.TrimSpace(baseImageID),
+		"container-user", strings.TrimSpace(containerUser),
+		"remote-user", strings.TrimSpace(remoteUser),
+		"container-env", stringMapCachePart(containerEnvironment),
+	}
+	for _, feature := range features {
+		parts = append(parts,
+			"feature", strings.TrimSpace(feature.reference),
+			"digest", strings.TrimSpace(feature.digest),
+			"options", stringMapCachePart(feature.options),
+		)
+	}
+	return imageArtifactCacheReference(cache, "features", parts...)
 }
 
 func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, cache devcontainer.CacheOptions, configurationDir, allowedRoot string) (*resolvedFeature, error) {

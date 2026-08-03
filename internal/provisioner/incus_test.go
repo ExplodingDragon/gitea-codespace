@@ -773,6 +773,30 @@ func TestIncusImageSourceFields(t *testing.T) {
 	}
 }
 
+func TestRuntimeBuildCacheScopeIgnoresRepositoryCommit(t *testing.T) {
+	t.Parallel()
+
+	request := LifecycleRequest{
+		RepoFullName:   "owner/repo",
+		EnvironmentTag: "debian-lxc",
+		CommitSHA:      strings.Repeat("a", 40),
+		DevContainer: DevContainerConfiguration{
+			Source:        DevContainerSourceRepository,
+			Path:          ".devcontainer/devcontainer.json",
+			ContentSHA256: strings.Repeat("b", 64),
+		},
+	}
+	first := RuntimeBuildCacheScope(request, "4.121.0")
+	request.CommitSHA = strings.Repeat("c", 40)
+	if got := RuntimeBuildCacheScope(request, "4.121.0"); got != first {
+		t.Fatalf("cache scope changed after commit-only change: %q / %q", first, got)
+	}
+	request.DevContainer.ContentSHA256 = strings.Repeat("d", 64)
+	if got := RuntimeBuildCacheScope(request, "4.121.0"); got == first {
+		t.Fatalf("cache scope did not change after configuration content change")
+	}
+}
+
 func TestInstanceNetworkDeviceUsesExpandedNICMAC(t *testing.T) {
 	t.Parallel()
 

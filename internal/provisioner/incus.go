@@ -101,6 +101,7 @@ type IncusConfig struct {
 	CodeServerVersion   string
 	BuildCacheRegistry  string
 	RegistryMirrors     map[string]string
+	RuntimeCacheOptions RuntimeCacheOptionsFunc
 }
 
 // IncusEnvironmentConfig stores one deployment-defined Incus runtime environment.
@@ -130,6 +131,7 @@ type IncusProvisioner struct {
 	codeServerVersion  string
 	buildCacheRegistry string
 	registryMirrors    map[string]string
+	cacheOptions       RuntimeCacheOptionsFunc
 	mu                 sync.Mutex
 	cpuSamples         map[string]incusCPUSample
 }
@@ -210,6 +212,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 		codeServerVersion:  strings.TrimSpace(config.CodeServerVersion),
 		buildCacheRegistry: strings.TrimRight(strings.TrimSpace(config.BuildCacheRegistry), "/"),
 		registryMirrors:    copyStringMap(config.RegistryMirrors),
+		cacheOptions:       config.RuntimeCacheOptions,
 		cpuSamples:         make(map[string]incusCPUSample),
 	}, nil
 }
@@ -532,15 +535,14 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 		Environment:       request.Environment,
 	}
 	if request.Operation == LifecycleOperationCreate {
-		cacheIdentity := strings.Join([]string{
-			"1", request.RepoFullName, request.CommitSHA, request.DevContainer.ContentSHA256,
-			p.codeServerVersion, runtime.GOOS, runtime.GOARCH,
-		}, "\x00")
-		cacheDigest := sha256.Sum256([]byte(cacheIdentity))
-		runtimeRequest.Cache = devcontainer.CacheOptions{
-			BuildRegistry: p.buildCacheRegistry,
-			Mirrors:       copyStringMap(p.registryMirrors),
-			BuildScope:    fmt.Sprintf("%x", cacheDigest[:]),
+		if p.cacheOptions != nil {
+			runtimeRequest.Cache = p.cacheOptions(request)
+		} else {
+			runtimeRequest.Cache = devcontainer.CacheOptions{
+				BuildRegistry: p.buildCacheRegistry,
+				Mirrors:       copyStringMap(p.registryMirrors),
+				BuildScope:    RuntimeBuildCacheScope(request, p.codeServerVersion),
+			}
 		}
 		uid, gid, home, err := p.runtimeUserIdentity(ctx, instanceName, request.RuntimeUserName)
 		if err != nil {
@@ -561,7 +563,7 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 		return LifecycleResult{}, err
 	}
 	if err := p.writeRuntimeFile(ctx, instanceName, runtimeResultFile, "", 0o600, "file"); err != nil {
-		return LifecycleResult{}, err
+		return LifecycleResult{}, errors.Join(err, p.deleteRuntimeControlFile(instanceName, runtimeRequestFile))
 	}
 	p.writeLifecycleLog(ctx, request.LogSink, action+" Dev Container environment started")
 	execErr := p.execCommandWithLogSink(ctx, instanceName, []string{runtimeExecutable, "runtime", "apply", "--request", runtimeRequestFile, "--result", runtimeResultFile}, map[string]string{
@@ -611,6 +613,24 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 	}
 	p.writeLifecycleLog(ctx, request.LogSink, action+" Dev Container environment completed")
 	return LifecycleResult{Environment: *result.Environment}, nil
+}
+
+// RuntimeBuildCacheScope returns the stable cross-instance cache scope for one create request.
+func RuntimeBuildCacheScope(request LifecycleRequest, codeServerVersion string) string {
+	cacheIdentity := strings.Join([]string{
+		"2",
+		request.RepoFullName,
+		request.EnvironmentTag,
+		request.DevContainer.Source,
+		request.DevContainer.Path,
+		request.DevContainer.ContentSHA256,
+		request.DevContainer.DefaultImage,
+		codeServerVersion,
+		runtime.GOOS,
+		runtime.GOARCH,
+	}, "\x00")
+	cacheDigest := sha256.Sum256([]byte(cacheIdentity))
+	return fmt.Sprintf("%x", cacheDigest[:])
 }
 
 func (p *IncusProvisioner) deleteRuntimeControlFile(instanceName, path string) error {

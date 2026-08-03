@@ -95,6 +95,9 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 	if err := e.pullImageReference(ctx, imageName); err != nil {
 		return "", err
 	}
+	if mirrored {
+		e.publishCachedImage(ctx, imageName, fetchReference, "mirror")
+	}
 	return imageName, nil
 }
 

@@ -136,6 +136,9 @@ type LifecycleRequest struct {
 	LogSink          LifecycleLogSink
 }
 
+// RuntimeCacheOptionsFunc returns create-scoped cache settings for one lifecycle request.
+type RuntimeCacheOptionsFunc func(LifecycleRequest) devcontainer.CacheOptions
+
 // RuntimeEnvironment is the complete outer identity and inner Dev Container target.
 type RuntimeEnvironment struct {
 	User        uint32             `json:"user"`

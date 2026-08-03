@@ -226,9 +226,16 @@ type LoadOptions struct {
 
 // CacheOptions selects optional OCI mirrors and one BuildKit registry cache namespace.
 type CacheOptions struct {
-	BuildRegistry string            `json:"build_registry,omitempty"`
-	Mirrors       map[string]string `json:"mirrors,omitempty"`
-	BuildScope    string            `json:"build_scope,omitempty"`
+	BuildRegistry string                        `json:"build_registry,omitempty"`
+	Mirrors       map[string]string             `json:"mirrors,omitempty"`
+	BuildScope    string                        `json:"build_scope,omitempty"`
+	Credentials   map[string]RegistryCredential `json:"credentials,omitempty"`
+}
+
+// RegistryCredential stores one short-lived credential for a cache registry host.
+type RegistryCredential struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
 }
 
 // ResolvedConfiguration contains immutable paths and values used to create an environment.

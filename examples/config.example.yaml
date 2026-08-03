@@ -21,13 +21,23 @@ runtime:
     # New Codespaces use this explicit code-server release. Recreate an environment to upgrade it.
     code_server_version: "4.121.0"
   cache:
-    # Optional OCI registry namespace used for BuildKit cache manifests and layers.
-    registry: "https://registry.example.com/gitea-codespace-cache"
-    # Each key is the original registry host; each value is its pull-through cache base URL.
-    mirrors:
-      docker.io: "https://docker-cache.example.com"
-      ghcr.io: "https://ghcr-cache.example.com"
-      mcr.microsoft.com: "https://mcr-cache.example.com"
+    registry:
+      enabled: true
+      # Listen on an address reachable from the Incus project network.
+      listen: "10.0.3.1:15000"
+      # Docker clients inside Codespaces use this URL for image and build caches.
+      public_url: "http://10.0.3.1:15000"
+      storage_path: "codespace-state/registry-cache"
+      max_size: "50GiB"
+      max_age: "168h"
+      gc_interval: "1h"
+      upstreams:
+        docker.io:
+          allow: ["library/*", "devcontainers/*"]
+        ghcr.io:
+          allow: ["devcontainers/*", "coder/*"]
+        mcr.microsoft.com:
+          allow: ["devcontainers/*"]
   incus:
     # Use unix:///absolute/path for local Incus or https://host:port for an already trusted remote Incus server.
     endpoint: "unix:///var/lib/incus/unix.socket"

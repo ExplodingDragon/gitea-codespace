@@ -141,7 +141,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 
 	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir)
 	config.runtimeExecutable = buildAppE2ERuntimeExecutable(t)
-	testBackend, err := newProvisioner(config, managerID)
+	testBackend, err := newProvisioner(config, managerID, nil)
 	if err != nil {
 		t.Fatalf("create Incus E2E inspection backend: %v", err)
 	}

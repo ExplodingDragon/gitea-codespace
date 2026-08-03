@@ -50,6 +50,26 @@ func TestCacheReferences(t *testing.T) {
 	if first == "" || first == buildCacheReference(cache, "remote-user") || first != buildCacheReference(cache, "features") {
 		t.Fatalf("BuildKit cache references are not stable and stage-specific: %q", first)
 	}
+	featureImage := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+		reference: "ghcr.io/devcontainers/features/git:1",
+		digest:    "sha256:feature",
+		options:   map[string]string{"version": "latest"},
+	}}, "root", "root", map[string]string{"PATH": "/usr/bin"})
+	if featureImage == "" || featureImage == first {
+		t.Fatalf("Feature image cache reference = %q", featureImage)
+	}
+	changedFeature := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+		reference: "ghcr.io/devcontainers/features/git:1",
+		digest:    "sha256:changed",
+		options:   map[string]string{"version": "latest"},
+	}}, "root", "root", map[string]string{"PATH": "/usr/bin"})
+	if featureImage == changedFeature || featureImage != featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+		reference: "ghcr.io/devcontainers/features/git:1",
+		digest:    "sha256:feature",
+		options:   map[string]string{"version": "latest"},
+	}}, "root", "root", map[string]string{"PATH": "/usr/bin"}) {
+		t.Fatalf("Feature image cache reference is not stable and content-specific: %q / %q", featureImage, changedFeature)
+	}
 }
 
 func TestMergeInjectedFeaturesRejectsConflicts(t *testing.T) {

@@ -6,7 +6,9 @@ package docker
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/url"
 	"path"
 	"sort"
@@ -14,8 +16,10 @@ import (
 
 	"github.com/compose-spec/compose-go/v2/types"
 	"github.com/distribution/reference"
+	"github.com/docker/cli/cli/command"
 	imagecommand "github.com/docker/cli/cli/command/image"
 	"github.com/docker/compose/v2/pkg/api"
+	"github.com/docker/docker/api/types/image"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -35,6 +39,14 @@ func validateCacheOptions(cache devcontainer.CacheOptions) error {
 		}
 		if _, err := parseOCIRepositoryBase(mirror, false); err != nil {
 			return fmt.Errorf("OCI mirror for %s: %w", registry, err)
+		}
+	}
+	for registry, credential := range cache.Credentials {
+		if strings.TrimSpace(registry) == "" {
+			return fmt.Errorf("OCI cache credential registry is empty")
+		}
+		if strings.TrimSpace(credential.Username) == "" || strings.TrimSpace(credential.Password) == "" {
+			return fmt.Errorf("OCI cache credential for %s is incomplete", registry)
 		}
 	}
 	return nil
@@ -83,6 +95,14 @@ func mirroredReference(value string, mirrors map[string]string) (string, bool, e
 }
 
 func buildCacheReference(cache devcontainer.CacheOptions, stage string) string {
+	return cacheReference(cache, "build", stage, "cache")
+}
+
+func imageArtifactCacheReference(cache devcontainer.CacheOptions, stage string, parts ...string) string {
+	return cacheReference(cache, append([]string{"image", stage}, parts...)...)
+}
+
+func cacheReference(cache devcontainer.CacheOptions, parts ...string) string {
 	if strings.TrimSpace(cache.BuildRegistry) == "" || strings.TrimSpace(cache.BuildScope) == "" {
 		return ""
 	}
@@ -90,8 +110,88 @@ func buildCacheReference(cache devcontainer.CacheOptions, stage string) string {
 	if err != nil {
 		return ""
 	}
-	digest := sha256.Sum256([]byte(cache.BuildScope + "\x00" + stage))
+	digestInput := strings.Builder{}
+	digestInput.WriteString(cache.BuildScope)
+	for _, part := range parts {
+		digestInput.WriteByte(0)
+		digestInput.WriteString(part)
+	}
+	digest := sha256.Sum256([]byte(digestInput.String()))
 	return base.Host + "/" + path.Join(strings.Trim(base.Path, "/"), fmt.Sprintf("%x", digest[:])) + ":cache"
+}
+
+func stringMapCachePart(values map[string]string) string {
+	if len(values) == 0 {
+		return "{}"
+	}
+	names := make([]string, 0, len(values))
+	for name := range values {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	ordered := make(map[string]string, len(values))
+	for _, name := range names {
+		ordered[name] = values[name]
+	}
+	content, err := json.Marshal(ordered)
+	if err != nil {
+		return "{}"
+	}
+	return string(content)
+}
+
+func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bool {
+	if strings.TrimSpace(imageName) == "" {
+		return false
+	}
+	if err := e.pullImageReference(ctx, imageName); err != nil {
+		fmt.Fprintf(e.stderr, "Dev Container %s image cache miss: %v\n", stage, err)
+		return false
+	}
+	fmt.Fprintf(e.stdout, "Dev Container %s image cache hit\n", stage)
+	return true
+}
+
+func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImage, stage string) {
+	if strings.TrimSpace(targetImage) == "" {
+		return
+	}
+	if err := e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
+		fmt.Fprintf(e.stderr, "Warning: tag %s image cache: %v\n", stage, err)
+		return
+	}
+	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), targetImage)
+	if err != nil {
+		fmt.Fprintf(e.stderr, "Warning: resolve %s image cache credentials: %v\n", stage, err)
+		return
+	}
+	reader, err := e.client.ImagePush(ctx, targetImage, image.PushOptions{RegistryAuth: registryAuth})
+	if err != nil {
+		fmt.Fprintf(e.stderr, "Warning: push %s image cache: %v\n", stage, err)
+		return
+	}
+	defer reader.Close()
+	if err := streamDockerProgress(reader); err != nil {
+		fmt.Fprintf(e.stderr, "Warning: publish %s image cache: %v\n", stage, err)
+		return
+	}
+	fmt.Fprintf(e.stdout, "Dev Container %s image cache published\n", stage)
+}
+
+func streamDockerProgress(reader io.Reader) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var message dockerProgressMessage
+		if err := decoder.Decode(&message); err != nil {
+			if err == io.EOF {
+				return nil
+			}
+			return err
+		}
+		if err := message.err(); err != nil {
+			return err
+		}
+	}
 }
 
 func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string) error {

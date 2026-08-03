@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/distribution/reference"
+	dockerunits "github.com/docker/go-units"
 	"gopkg.in/yaml.v3"
 )
 
@@ -150,10 +150,26 @@ type RuntimeConfig struct {
 	Environments []EnvironmentConfig `yaml:"environments"`
 }
 
-// RuntimeCacheConfig stores the optional OCI mirror and BuildKit registry cache settings.
+// RuntimeCacheConfig stores the optional embedded OCI cache registry settings.
 type RuntimeCacheConfig struct {
-	BuildRegistry string            `yaml:"registry"`
-	Mirrors       map[string]string `yaml:"mirrors"`
+	Registry RuntimeCacheRegistryConfig `yaml:"registry"`
+}
+
+// RuntimeCacheRegistryConfig stores Manager-owned OCI cache registry settings.
+type RuntimeCacheRegistryConfig struct {
+	Enabled     bool                                  `yaml:"enabled"`
+	Listen      string                                `yaml:"listen"`
+	PublicURL   string                                `yaml:"public_url"`
+	StoragePath string                                `yaml:"storage_path"`
+	MaxSize     string                                `yaml:"max_size"`
+	MaxAge      Duration                              `yaml:"max_age"`
+	GCInterval  Duration                              `yaml:"gc_interval"`
+	Upstreams   map[string]RuntimeCacheUpstreamConfig `yaml:"upstreams"`
+}
+
+// RuntimeCacheUpstreamConfig stores repository allow patterns for one upstream registry.
+type RuntimeCacheUpstreamConfig struct {
+	Allow []string `yaml:"allow"`
 }
 
 // RuntimeWebIDEConfig stores the platform Web IDE version for new environments.
@@ -404,43 +420,69 @@ func (c Config) Validate() error {
 }
 
 func (c Config) validateRuntimeCache() error {
-	if registry := strings.TrimSpace(c.Runtime.Cache.BuildRegistry); registry != "" {
-		if err := validateRegistryURL(registry, true); err != nil {
-			return fmt.Errorf("runtime.cache.registry: %w", err)
+	registry := c.Runtime.Cache.Registry
+	if !registry.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(registry.Listen) == "" {
+		return fmt.Errorf("runtime.cache.registry.listen is required")
+	}
+	if err := validateRegistryRootURL(strings.TrimRight(strings.TrimSpace(registry.PublicURL), "/")); err != nil {
+		return fmt.Errorf("runtime.cache.registry.public_url: %w", err)
+	}
+	if strings.TrimSpace(registry.StoragePath) == "" {
+		return fmt.Errorf("runtime.cache.registry.storage_path is required")
+	}
+	if strings.TrimSpace(registry.MaxSize) != "" {
+		if _, err := dockerunits.RAMInBytes(registry.MaxSize); err != nil {
+			return fmt.Errorf("runtime.cache.registry.max_size: %w", err)
 		}
 	}
-	for registry, mirror := range c.Runtime.Cache.Mirrors {
-		if registry != strings.ToLower(strings.TrimSpace(registry)) || strings.Contains(registry, "://") {
-			return fmt.Errorf("runtime.cache.mirrors registry %q must be a lowercase registry host", registry)
+	if registry.MaxAge.ToStdlib() < 0 {
+		return fmt.Errorf("runtime.cache.registry.max_age must not be negative")
+	}
+	if registry.GCInterval.ToStdlib() < 0 {
+		return fmt.Errorf("runtime.cache.registry.gc_interval must not be negative")
+	}
+	for host, upstream := range registry.Upstreams {
+		if host != strings.ToLower(strings.TrimSpace(host)) || strings.Contains(host, "://") {
+			return fmt.Errorf("runtime.cache.registry.upstreams registry %q must be a lowercase registry host", host)
 		}
-		parsedRegistry, err := url.Parse("https://" + registry)
-		if err != nil || parsedRegistry.Host != registry || parsedRegistry.Path != "" {
-			return fmt.Errorf("runtime.cache.mirrors registry %q is invalid", registry)
+		parsedRegistry, err := url.Parse("https://" + host)
+		if err != nil || parsedRegistry.Host != host || parsedRegistry.Path != "" {
+			return fmt.Errorf("runtime.cache.registry.upstreams registry %q is invalid", host)
 		}
-		if err := validateRegistryURL(strings.TrimSpace(mirror), false); err != nil {
-			return fmt.Errorf("runtime.cache.mirrors.%s: %w", registry, err)
+		for _, pattern := range upstream.Allow {
+			pattern = strings.TrimSpace(pattern)
+			if pattern == "" || strings.HasPrefix(pattern, "/") || strings.Contains(pattern, "..") {
+				return fmt.Errorf("runtime.cache.registry.upstreams.%s.allow contains invalid pattern %q", host, pattern)
+			}
+			if strings.Count(pattern, "*") > 1 || (strings.Contains(pattern, "*") && !strings.HasSuffix(pattern, "*")) {
+				return fmt.Errorf("runtime.cache.registry.upstreams.%s.allow pattern %q must only use a trailing wildcard", host, pattern)
+			}
 		}
 	}
 	return nil
 }
 
-func validateRegistryURL(value string, requirePath bool) error {
+func validateRegistryRootURL(value string) error {
+	if err := validateRegistryBaseURL(value); err != nil {
+		return err
+	}
+	parsed, _ := url.Parse(value)
+	if strings.Trim(parsed.Path, "/") != "" {
+		return fmt.Errorf("must not contain a path because the embedded registry listens at its root")
+	}
+	return nil
+}
+
+func validateRegistryBaseURL(value string) error {
 	parsed, err := url.Parse(value)
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
 		return fmt.Errorf("must be an absolute http or https URL")
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return fmt.Errorf("must not contain credentials, query, or fragment")
-	}
-	if requirePath && strings.Trim(parsed.Path, "/") == "" {
-		return fmt.Errorf("must include a cache namespace path")
-	}
-	repository := parsed.Host
-	if namespace := strings.Trim(parsed.Path, "/"); namespace != "" {
-		repository += "/" + namespace
-	}
-	if _, err := reference.WithName(repository); err != nil {
-		return fmt.Errorf("must contain a valid OCI registry host and namespace: %w", err)
 	}
 	return nil
 }
@@ -842,6 +884,28 @@ func (c *RuntimeConfig) applyDefaults(defaults RuntimeConfig) {
 	if strings.TrimSpace(c.WebIDE.CodeServerVersion) == "" {
 		c.WebIDE.CodeServerVersion = defaults.WebIDE.CodeServerVersion
 	}
+	if c.Cache.Registry.Enabled {
+		c.Cache.Registry.PublicURL = strings.TrimRight(strings.TrimSpace(c.Cache.Registry.PublicURL), "/")
+		if c.Cache.Registry.GCInterval == 0 {
+			c.Cache.Registry.GCInterval = Duration(time.Hour)
+		}
+		if c.Cache.Registry.MaxAge == 0 {
+			c.Cache.Registry.MaxAge = Duration(7 * 24 * time.Hour)
+		}
+		for host, upstream := range c.Cache.Registry.Upstreams {
+			delete(c.Cache.Registry.Upstreams, host)
+			host = strings.ToLower(strings.TrimSpace(host))
+			allow := make([]string, 0, len(upstream.Allow))
+			for _, pattern := range upstream.Allow {
+				pattern = strings.TrimSpace(pattern)
+				if pattern != "" {
+					allow = append(allow, pattern)
+				}
+			}
+			upstream.Allow = allow
+			c.Cache.Registry.Upstreams[host] = upstream
+		}
+	}
 	if strings.TrimSpace(c.Incus.Endpoint) == "" {
 		c.Incus.Endpoint = defaults.Incus.Endpoint
 	}
@@ -929,5 +993,8 @@ func (c *Config) resolveRelativePaths(configPath string) {
 	}
 	if !filepath.IsAbs(c.Node.StateDir) {
 		c.Node.StateDir = filepath.Clean(filepath.Join(configDir, c.Node.StateDir))
+	}
+	if c.Runtime.Cache.Registry.Enabled && !filepath.IsAbs(c.Runtime.Cache.Registry.StoragePath) {
+		c.Runtime.Cache.Registry.StoragePath = filepath.Clean(filepath.Join(configDir, c.Runtime.Cache.Registry.StoragePath))
 	}
 }

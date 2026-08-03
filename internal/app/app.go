@@ -77,7 +77,11 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 		return err
 	}
 
-	listeners, err := openProcessListeners(config)
+	registryCache, err := newRegistryCache(config, state.managerState.ManagerSecret)
+	if err != nil {
+		return fmt.Errorf("configure cache registry: %w", err)
+	}
+	listeners, err := openProcessListeners(config, registryCache)
 	if err != nil {
 		return err
 	}
@@ -86,7 +90,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	ctx, cancelProcess := context.WithCancel(ctx)
 	defer cancelProcess()
 
-	runtime, err := newProcessRuntime(ctx, config, state)
+	runtime, err := newProcessRuntime(ctx, config, state, registryCache)
 	if err != nil {
 		return err
 	}
@@ -94,6 +98,11 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	errorChannel := make(chan error, 3)
 	go serveHTTP(ctx, errorChannel, "gateway http", runtime.gatewayServer, listeners.GatewayHTTP)
 	go serveSSH(ctx, errorChannel, listeners.GatewaySSH, runtime.gatewaySSHServer)
+	if listeners.RegistryCache != nil {
+		go serveHTTP(ctx, errorChannel, "cache registry", runtime.registryCacheServer, listeners.RegistryCache)
+		go registryCache.RunGC(ctx)
+		fmt.Fprintf(output, "codespace cache registry listening on %s\n", listeners.RegistryCache.Addr())
+	}
 	fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
 	fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
 	fmt.Fprintf(output, "codespace code-server version %s for new environments\n", config.Runtime.WebIDE.CodeServerVersion)
@@ -117,6 +126,11 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	defer cancel()
 	if err := runtime.gatewayServer.Shutdown(shutdownContext); err != nil {
 		return fmt.Errorf("shutdown gateway server: %w", err)
+	}
+	if runtime.registryCacheServer != nil {
+		if err := runtime.registryCacheServer.Shutdown(shutdownContext); err != nil {
+			return fmt.Errorf("shutdown cache registry server: %w", err)
+		}
 	}
 	listeners.Close()
 	return runErr
@@ -185,14 +199,15 @@ func loadProcessState(config Config) (processStateSnapshot, error) {
 }
 
 type processRuntime struct {
-	agent            *manager.Agent
-	processHealth    *processHealth
-	gatewayServer    *http.Server
-	gatewaySSHServer *gatewaySSHServer
+	agent               *manager.Agent
+	processHealth       *processHealth
+	gatewayServer       *http.Server
+	gatewaySSHServer    *gatewaySSHServer
+	registryCacheServer *http.Server
 }
 
-func newProcessRuntime(ctx context.Context, config Config, state processStateSnapshot) (*processRuntime, error) {
-	managerProvisioner, err := newProvisioner(config, state.managerState.ManagerID)
+func newProcessRuntime(ctx context.Context, config Config, state processStateSnapshot, registryCache *registryCache) (*processRuntime, error) {
+	managerProvisioner, err := newProvisioner(config, state.managerState.ManagerID, registryCache)
 	if err != nil {
 		return nil, fmt.Errorf("create provisioner: %w", err)
 	}
@@ -299,19 +314,21 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		return nil, fmt.Errorf("create gateway ssh server: %w", err)
 	}
 	return &processRuntime{
-		agent:            agent,
-		processHealth:    processHealth,
-		gatewayServer:    gatewayServer,
-		gatewaySSHServer: gatewaySSHServer,
+		agent:               agent,
+		processHealth:       processHealth,
+		gatewayServer:       gatewayServer,
+		gatewaySSHServer:    gatewaySSHServer,
+		registryCacheServer: newRegistryCacheHTTPServer(registryCache),
 	}, nil
 }
 
 type processListeners struct {
-	GatewayHTTP net.Listener
-	GatewaySSH  net.Listener
+	GatewayHTTP   net.Listener
+	GatewaySSH    net.Listener
+	RegistryCache net.Listener
 }
 
-func openProcessListeners(config Config) (*processListeners, error) {
+func openProcessListeners(config Config, registryCache *registryCache) (*processListeners, error) {
 	listeners := &processListeners{}
 	var err error
 	defer func() {
@@ -328,6 +345,10 @@ func openProcessListeners(config Config) (*processListeners, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen gateway ssh %s: %w", config.Gateway.SSH.Listen, err)
 	}
+	listeners.RegistryCache, err = registryCache.OpenListener()
+	if err != nil {
+		return nil, err
+	}
 	return listeners, nil
 }
 
@@ -341,6 +362,9 @@ func (l *processListeners) Close() {
 	if l.GatewaySSH != nil {
 		_ = l.GatewaySSH.Close()
 	}
+	if l.RegistryCache != nil {
+		_ = l.RegistryCache.Close()
+	}
 }
 
 func serveHTTP(ctx context.Context, errorChannel chan<- error, name string, server *http.Server, listener net.Listener) {
@@ -353,7 +377,7 @@ func serveHTTP(ctx context.Context, errorChannel chan<- error, name string, serv
 	}
 }
 
-func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, error) {
+func newProvisioner(config Config, managerID int64, registryCache *registryCache) (provisioner.Provisioner, error) {
 	switch config.provisionerKind {
 	case "dummy":
 		return provisioner.NewDummy(), nil
@@ -361,6 +385,10 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 		remote, unixSocket, err := incusEndpoint(config.Runtime.Incus.Endpoint)
 		if err != nil {
 			return nil, err
+		}
+		var cacheOptions provisioner.RuntimeCacheOptionsFunc
+		if registryCache != nil && registryCache.enabled {
+			cacheOptions = registryCache.CacheOptions
 		}
 		return provisioner.NewIncus(provisioner.IncusConfig{
 			ManagerID:           managerID,
@@ -374,8 +402,9 @@ func newProvisioner(config Config, managerID int64) (provisioner.Provisioner, er
 			RuntimeEnvironments: provisionerEnvironments(config.Runtime.Environments),
 			RuntimeExecutable:   config.runtimeExecutable,
 			CodeServerVersion:   config.Runtime.WebIDE.CodeServerVersion,
-			BuildCacheRegistry:  config.Runtime.Cache.BuildRegistry,
-			RegistryMirrors:     config.Runtime.Cache.Mirrors,
+			BuildCacheRegistry:  registryCacheBuildRegistry(registryCache),
+			RegistryMirrors:     registryCacheMirrors(registryCache),
+			RuntimeCacheOptions: cacheOptions,
 		})
 	default:
 		return nil, fmt.Errorf("unknown internal provisioner kind %q", config.provisionerKind)

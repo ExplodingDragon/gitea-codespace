@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	"github.com/docker/cli/cli/command"
 	containercommand "github.com/docker/cli/cli/command/container"
+	configtypes "github.com/docker/cli/cli/config/types"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	compose "github.com/docker/compose/v2/pkg/compose"
@@ -112,6 +114,25 @@ func (e *Engine) Close() error {
 	return e.client.Close()
 }
 
+func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
+	if len(cache.Credentials) == 0 {
+		return
+	}
+	authConfigs := e.cli.ConfigFile().GetAuthConfigs()
+	for address, credential := range cache.Credentials {
+		address = strings.TrimRight(strings.TrimSpace(address), "/")
+		if address == "" || strings.TrimSpace(credential.Username) == "" || strings.TrimSpace(credential.Password) == "" {
+			continue
+		}
+		authConfigs[address] = configtypes.AuthConfig{
+			Username:      credential.Username,
+			Password:      credential.Password,
+			Auth:          base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password)),
+			ServerAddress: address,
+		}
+	}
+}
+
 // Create resolves configuration, creates resources, and completes the first lifecycle.
 func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
@@ -131,6 +152,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if err := validateCacheOptions(options.Cache); err != nil {
 		return nil, devcontainer.InvalidConfiguration(err)
 	}
+	e.applyCacheCredentials(options.Cache)
 	composeProject := ""
 	if len(resolved.DockerComposeFile) > 0 {
 		composeProject = composeProjectName(options.OwnerID)
