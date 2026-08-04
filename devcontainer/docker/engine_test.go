@@ -5,8 +5,12 @@ package docker
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/mount"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -27,6 +31,77 @@ func TestEngineConfigurationHelpers(t *testing.T) {
 	if composeProjectName("owner-a") == composeProjectName("ownera") {
 		t.Fatal("distinct owner IDs produced the same Compose project name")
 	}
+	publishSpecs, err := appPortPublishSpecs(devcontainer.AppPortList{
+		{Number: 8000, Numeric: true},
+		{Address: "127.0.0.1:9000:90"},
+	})
+	if err != nil {
+		t.Fatalf("resolve appPort publish specs: %v", err)
+	}
+	if !slices.Equal(publishSpecs, []string{"127.0.0.1:8000:8000", "127.0.0.1:9000:90"}) {
+		t.Fatalf("appPort publish specs = %#v", publishSpecs)
+	}
+}
+
+func TestDockerCreateArgumentsWithRunArgsPreserveFeatureStartup(t *testing.T) {
+	t.Parallel()
+
+	resolved := &devcontainer.ResolvedConfiguration{
+		DevContainerID: "environment-1",
+		Configuration:  devcontainer.Configuration{RunArgs: []string{"--hostname", "workspace"}},
+	}
+	config := &container.Config{
+		Image:        "example/image:latest",
+		WorkingDir:   "/workspace",
+		User:         "codespace",
+		Env:          []string{"A=B"},
+		Labels:       map[string]string{"z": "last", "a": "first"},
+		Entrypoint:   []string{"/bin/sh"},
+		Cmd:          []string{"-c", "feature-entrypoint\nexec \"$@\"", "-", "/start.sh"},
+		ExposedPorts: nil,
+	}
+	hostConfig := &container.HostConfig{
+		Mounts:     []mount.Mount{{Type: mount.TypeBind, Source: "/host/workspace", Target: "/workspace"}},
+		Privileged: true,
+	}
+	arguments, err := dockerCreateArguments(resolved, config, hostConfig, []string{"127.0.0.1:8000:8000"})
+	if err != nil {
+		t.Fatalf("create Docker arguments: %v", err)
+	}
+	for _, required := range [][]string{
+		{"--publish", "127.0.0.1:8000:8000"},
+		{"--hostname", "workspace"},
+		{"--entrypoint", "/bin/sh"},
+		{"example/image:latest", "-c"},
+	} {
+		if !containsAdjacent(arguments, required[0], required[1]) {
+			t.Fatalf("Docker arguments missing %q %q: %#v", required[0], required[1], arguments)
+		}
+	}
+	imageIndex := slices.Index(arguments, "example/image:latest")
+	if imageIndex < 0 || imageIndex+4 >= len(arguments) || arguments[imageIndex+1] != "-c" || arguments[imageIndex+3] != "-" || arguments[imageIndex+4] != "/start.sh" {
+		t.Fatalf("Docker command does not preserve startup wrapper after image: %#v", arguments)
+	}
+}
+
+func TestDockerCreateArgumentsRejectEntrypointRunArg(t *testing.T) {
+	t.Parallel()
+
+	_, err := dockerCreateArguments(&devcontainer.ResolvedConfiguration{
+		Configuration: devcontainer.Configuration{RunArgs: []string{"--entrypoint=/custom"}},
+	}, &container.Config{Image: "example/image"}, &container.HostConfig{}, nil)
+	if err == nil || !strings.Contains(err.Error(), "Feature startup entrypoints") {
+		t.Fatalf("entrypoint runArg error = %v", err)
+	}
+}
+
+func containsAdjacent(values []string, first, second string) bool {
+	for index := 0; index+1 < len(values); index++ {
+		if values[index] == first && values[index+1] == second {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCacheReferences(t *testing.T) {

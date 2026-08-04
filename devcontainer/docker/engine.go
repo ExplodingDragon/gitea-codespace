@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -35,6 +36,7 @@ import (
 	"github.com/docker/docker/api/types/network"
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
+	"github.com/docker/go-connections/nat"
 	"github.com/google/uuid"
 
 	"gitea.dev/codespace/devcontainer"
@@ -310,6 +312,14 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	if err != nil {
 		return "", nil, err
 	}
+	publishSpecs, err := appPortPublishSpecs(resolved.AppPort)
+	if err != nil {
+		return "", nil, devcontainer.InvalidConfiguration(err)
+	}
+	exposedPorts, portBindings, err := nat.ParsePortSpecs(publishSpecs)
+	if err != nil {
+		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
+	}
 	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
 	if err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
@@ -337,21 +347,23 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 				arguments = append(arguments, inspect.Config.Cmd...)
 			}
 		}
-		config.Entrypoint = []string{"/bin/sh", "-c"}
-		config.Cmd = append([]string{containerStartupScript(resolved.FeatureEntrypoints), "-"}, arguments...)
+		config.Entrypoint = []string{"/bin/sh"}
+		config.Cmd = append([]string{"-c", containerStartupScript(resolved.FeatureEntrypoints), "-"}, arguments...)
 	}
 	hostConfig := &container.HostConfig{
-		Mounts:      mounts,
-		Privileged:  resolved.Privileged,
-		CapAdd:      slices.Clone(resolved.CapAdd),
-		SecurityOpt: slices.Clone(resolved.SecurityOpt),
-		Init:        &resolved.Init,
+		Mounts:       mounts,
+		Privileged:   resolved.Privileged,
+		CapAdd:       slices.Clone(resolved.CapAdd),
+		SecurityOpt:  slices.Clone(resolved.SecurityOpt),
+		Init:         &resolved.Init,
+		PortBindings: portBindings,
 	}
+	config.ExposedPorts = exposedPorts
 	if useGPU {
 		hostConfig.Resources.DeviceRequests = []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}}
 	}
 	if len(resolved.RunArgs) > 0 {
-		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig)
+		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig, publishSpecs)
 		return containerID, featureDigests, err
 	}
 	response, err := e.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, "devcontainer-"+resolved.DevContainerID)
@@ -365,7 +377,49 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	return response.ID, featureDigests, nil
 }
 
-func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig) (string, error) {
+func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) (string, error) {
+	arguments, err := dockerCreateArguments(resolved, config, hostConfig, publishSpecs)
+	if err != nil {
+		return "", err
+	}
+
+	var output bytes.Buffer
+	cli, err := command.NewDockerCli(
+		command.WithBaseContext(ctx),
+		command.WithInputStream(io.NopCloser(strings.NewReader(""))),
+		command.WithOutputStream(&output),
+		command.WithErrorStream(e.stderr),
+	)
+	if err != nil {
+		return "", fmt.Errorf("create Docker command client: %w", err)
+	}
+	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
+		return "", fmt.Errorf("initialize Docker command client: %w", err)
+	}
+	defer cli.Client().Close()
+	createCommand := containercommand.NewCreateCommand(cli)
+	createCommand.SetArgs(arguments)
+	createCommand.SetContext(ctx)
+	createCommand.SilenceUsage = true
+	createCommand.SilenceErrors = true
+	if err := createCommand.Execute(); err != nil {
+		return "", fmt.Errorf("create Dev Container with runArgs: %w", err)
+	}
+	containerID := strings.TrimSpace(output.String())
+	if containerID == "" {
+		return "", errors.New("create Dev Container with runArgs returned no container ID")
+	}
+	if err := e.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
+		_ = e.client.ContainerRemove(context.WithoutCancel(ctx), containerID, container.RemoveOptions{Force: true})
+		return "", fmt.Errorf("start Dev Container: %w", err)
+	}
+	return containerID, nil
+}
+
+func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) ([]string, error) {
+	if hasRunArg(resolved.RunArgs, "--entrypoint") {
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("runArgs --entrypoint overrides Dev Container Feature startup entrypoints"))
+	}
 	arguments := []string{"--tty", "--interactive"}
 	if config.WorkingDir != "" {
 		arguments = append(arguments, "--workdir", config.WorkingDir)
@@ -410,6 +464,9 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 	if len(hostConfig.Resources.DeviceRequests) > 0 {
 		arguments = append(arguments, "--gpus", "all")
 	}
+	for _, spec := range publishSpecs {
+		arguments = append(arguments, "--publish", spec)
+	}
 	arguments = append(arguments, resolved.RunArgs...)
 	arguments = append(arguments, "--name", "devcontainer-"+resolved.DevContainerID)
 	labelNames := make([]string, 0, len(config.Labels))
@@ -425,38 +482,7 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 	}
 	arguments = append(arguments, config.Image)
 	arguments = append(arguments, config.Cmd...)
-
-	var output bytes.Buffer
-	cli, err := command.NewDockerCli(
-		command.WithBaseContext(ctx),
-		command.WithInputStream(io.NopCloser(strings.NewReader(""))),
-		command.WithOutputStream(&output),
-		command.WithErrorStream(e.stderr),
-	)
-	if err != nil {
-		return "", fmt.Errorf("create Docker command client: %w", err)
-	}
-	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
-		return "", fmt.Errorf("initialize Docker command client: %w", err)
-	}
-	defer cli.Client().Close()
-	createCommand := containercommand.NewCreateCommand(cli)
-	createCommand.SetArgs(arguments)
-	createCommand.SetContext(ctx)
-	createCommand.SilenceUsage = true
-	createCommand.SilenceErrors = true
-	if err := createCommand.Execute(); err != nil {
-		return "", fmt.Errorf("create Dev Container with runArgs: %w", err)
-	}
-	containerID := strings.TrimSpace(output.String())
-	if containerID == "" {
-		return "", errors.New("create Dev Container with runArgs returned no container ID")
-	}
-	if err := e.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		_ = e.client.ContainerRemove(context.WithoutCancel(ctx), containerID, container.RemoveOptions{Force: true})
-		return "", fmt.Errorf("start Dev Container: %w", err)
-	}
-	return containerID, nil
+	return arguments, nil
 }
 
 func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
@@ -908,6 +934,38 @@ func (e *Engine) downComposeProject(ctx context.Context, projectName string) err
 func composeProjectName(ownerID string) string {
 	digest := sha256.Sum256([]byte(ownerID))
 	return fmt.Sprintf("devcontainer-%x", digest[:12])
+}
+
+func appPortPublishSpecs(ports devcontainer.AppPortList) ([]string, error) {
+	result := make([]string, 0, len(ports))
+	for _, port := range ports {
+		if port.Numeric || port.Number != 0 {
+			if port.Number == 0 {
+				continue
+			}
+			value := strconv.Itoa(int(port.Number))
+			result = append(result, "127.0.0.1:"+value+":"+value)
+			continue
+		}
+		value := strings.TrimSpace(port.Address)
+		if value == "" {
+			continue
+		}
+		result = append(result, value)
+	}
+	if _, _, err := nat.ParsePortSpecs(result); err != nil {
+		return nil, fmt.Errorf("parse Docker port publish specs: %w", err)
+	}
+	return result, nil
+}
+
+func hasRunArg(arguments []string, name string) bool {
+	for _, argument := range arguments {
+		if argument == name || strings.HasPrefix(argument, name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func containerStartupScript(entrypoints []string) string {

@@ -195,6 +195,56 @@ func TestDockerE2EBuildSource(t *testing.T) {
 	}
 }
 
+func TestDockerE2EDockerInDockerFeature(t *testing.T) {
+	if os.Getenv("DEVCONTAINER_E2E") != "1" {
+		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	defer cancel()
+	workspace := t.TempDir()
+	var output bytes.Buffer
+	engine, err := New(ctx, &output, &output)
+	if err != nil {
+		t.Fatalf("create Docker engine: %v", err)
+	}
+	defer engine.Close()
+	state, err := engine.Create(ctx, CreateOptions{
+		OwnerID:         "devcontainer-dind-e2e-" + uuid.NewString(),
+		Workspace:       workspace,
+		AllowedPathRoot: workspace,
+		Source: devcontainer.Source{Content: `{
+			"image": "mcr.microsoft.com/devcontainers/base:debian",
+			"features": {
+				"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+			}
+		}`},
+		HostUser: devcontainer.HostUser{Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME")},
+	})
+	if err != nil {
+		t.Fatalf("create Docker-in-Docker environment: %v\n%s", err, output.String())
+	}
+	defer func() {
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		if err := engine.Delete(cleanupCtx, state); err != nil {
+			t.Errorf("delete Docker-in-Docker environment: %v", err)
+		}
+	}()
+	command := `set -eu
+for i in $(seq 1 60); do
+  if docker info >/dev/null 2>&1; then
+    break
+  fi
+  sleep 1
+done
+docker info >/dev/null
+docker run --rm hello-world >/dev/null`
+	if _, stderr, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment, nil); err != nil {
+		t.Fatalf("verify Docker-in-Docker environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
+	}
+}
+
 func assertOfficialInteropEnvironment(t *testing.T, ctx context.Context, engine *Engine, state *devcontainer.State, uid, gid, startCount, attachCount int) {
 	t.Helper()
 	command := fmt.Sprintf(`set -eu
