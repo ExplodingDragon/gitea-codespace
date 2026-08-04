@@ -26,7 +26,7 @@ var (
 	byteRequirementPattern   = regexp.MustCompile(`^\d+([tgmk]b)?$`)
 )
 
-// Load reads and resolves one repository configuration or a synthetic default-image configuration.
+// Load reads and resolves one repository configuration or caller-provided content.
 func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	workspace := options.Workspace
 	source := options.Source
@@ -47,14 +47,14 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	}
 	var content []byte
 	var configPath string
+	contentSource := strings.TrimSpace(source.Content) != ""
 	switch {
-	case strings.TrimSpace(source.DefaultImage) != "":
-		image := strings.TrimSpace(source.DefaultImage)
-		if source.Path != "" || source.ContentSHA256 != "" {
-			return nil, fmt.Errorf("platform default contains repository fields")
+	case contentSource:
+		if strings.TrimSpace(source.Path) != "" {
+			return nil, fmt.Errorf("Dev Container content source contains repository fields")
 		}
-		content, err = json.Marshal(Configuration{Name: "Dev Container", Image: image})
-		configPath = filepath.Join(workspace, ".devcontainer-default.json")
+		content = []byte(source.Content)
+		configPath = filepath.Join(workspace, ".gitea-devcontainer-template.json")
 	case strings.TrimSpace(source.Path) != "":
 		configPath = filepath.FromSlash(strings.TrimSpace(source.Path))
 		if !filepath.IsAbs(configPath) {
@@ -79,9 +79,6 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 		return nil, err
 	}
 	digest := sha256.Sum256(content)
-	if source.ContentSHA256 != "" && !strings.EqualFold(hex.EncodeToString(digest[:]), strings.TrimSpace(source.ContentSHA256)) {
-		return nil, fmt.Errorf("Dev Container configuration digest does not match create request")
-	}
 	standard, err := hujson.Standardize(content)
 	if err != nil {
 		return nil, fmt.Errorf("parse Dev Container configuration: %w", err)
@@ -120,6 +117,11 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	if err := config.Validate(); err != nil {
 		return nil, err
 	}
+	if contentSource {
+		if err := validateContentSourceConfiguration(config); err != nil {
+			return nil, err
+		}
+	}
 	return &ResolvedConfiguration{
 		Configuration:     config,
 		Workspace:         workspace,
@@ -129,8 +131,29 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 		DevContainerID:    options.ID,
 		LocalEnvironment:  maps.Clone(options.LocalEnv),
 		AllowedPathRoot:   allowedPathRoot,
-		Synthetic:         strings.TrimSpace(source.DefaultImage) != "",
+		Synthetic:         contentSource,
 	}, nil
+}
+
+func validateContentSourceConfiguration(config Configuration) error {
+	if strings.TrimSpace(config.Image) == "" {
+		return fmt.Errorf("non-repository Dev Container configuration must use an image")
+	}
+	for reference := range config.Features {
+		if strings.HasPrefix(reference, "./") || strings.HasPrefix(reference, "../") {
+			return fmt.Errorf("non-repository Dev Container configuration cannot use relative Features")
+		}
+	}
+	for _, mount := range config.Mounts {
+		source := strings.TrimSpace(mount.Source)
+		if source == "" || strings.Contains(source, "${") {
+			continue
+		}
+		if mount.Type == "bind" && !filepath.IsAbs(source) {
+			return fmt.Errorf("non-repository Dev Container configuration cannot use relative bind mounts")
+		}
+	}
+	return nil
 }
 
 func normalizeDockerfileBuild(configuration *Configuration) error {

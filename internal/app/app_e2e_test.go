@@ -272,13 +272,12 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	defer closeControlPlane()
 
 	route := manager.RuntimeEndpointRoute{
-		CodespaceUUID:  codespaceUUID,
-		EndpointID:     "web",
-		Label:          "Web",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   uint32(upstreamPort),
-		Public:         true,
+		CodespaceUUID: codespaceUUID,
+		EndpointID:    "web",
+		Label:         "Web",
+		InstanceName:  "runtime-1",
+		UpstreamPort:  uint32(upstreamPort),
+		Public:        true,
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, route)); err != nil {
 		t.Fatalf("save runtime endpoint routes: %v", err)
@@ -381,12 +380,15 @@ func appE2ECreateOperation(codespaceUUID string, version int64, repoCloneURL, re
 		LeaseValidForMilliseconds: 300000,
 		Command: &codespacev1.OperationPayload_Create{
 			Create: &codespacev1.CreateOperationPayload{
-				RepoFullName:     "owner/repo",
-				RepoCloneHttpUrl: repoCloneURL,
-				EnvironmentTag:   "default",
-				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-				CommitSha:        repoCommitSHA,
+				Repository: &codespacev1.RepositoryCheckout{
+					FullName:          "owner/repo",
+					CloneHttpUrl:      repoCloneURL,
+					PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
+					StartRef:          "refs/heads/main",
+					CommitSha:         repoCommitSHA,
+				},
+				EnvironmentTag:  "default",
+				RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{},
 			},
 		},
 	}
@@ -651,15 +653,17 @@ func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codes
 	if payload == nil {
 		return operation
 	}
-	if payload.Username == "" {
-		payload.Username = "e2e-user"
-	}
-	if payload.GitUserEmail == "" {
-		payload.GitUserEmail = "e2e-user@example.com"
+	if payload.GitIdentity == nil {
+		payload.GitIdentity = &codespacev1.GitIdentity{
+			GiteaUsername: "e2e-user",
+			GitUserEmail:  "e2e-user@example.com",
+		}
 	}
 	if payload.DevContainer == nil {
 		payload.DevContainer = &codespacev1.DevContainerConfiguration{
-			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
+			Source: &codespacev1.DevContainerConfiguration_TemplateContent{
+				TemplateContent: `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`,
+			},
 		}
 	}
 	return operation
@@ -697,13 +701,15 @@ func (s *appE2EManagerService) RequestRuntimeAccess(
 	_ context.Context,
 	req *connect.Request[codespacev1.RequestRuntimeAccessRequest],
 ) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
-	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshPublicKey()) == 0 {
+	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshKey().GetPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{
-		Token:                 "gcs_test",
-		ServerUrl:             "https://gitea.example.com/",
-		GitSshKnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"},
+		Access: &codespacev1.RuntimeAccessBundle{
+			GiteaToken:     "gcs_test",
+			GiteaServerUrl: "https://gitea.example.com/",
+			GitSshTrust:    &codespacev1.GitSSHTrust{KnownHostsLines: []string{"gitea.example.com ssh-ed25519 AAAA"}},
+		},
 	}), nil
 }
 

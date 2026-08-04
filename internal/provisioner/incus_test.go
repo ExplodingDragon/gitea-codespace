@@ -781,9 +781,8 @@ func TestRuntimeBuildCacheScopeIgnoresRepositoryCommit(t *testing.T) {
 		EnvironmentTag: "debian-lxc",
 		CommitSHA:      strings.Repeat("a", 40),
 		DevContainer: DevContainerConfiguration{
-			Source:        DevContainerSourceRepository,
-			Path:          ".devcontainer/devcontainer.json",
-			ContentSHA256: strings.Repeat("b", 64),
+			Source:  DevContainerSourceTemplate,
+			Content: `{"image":"debian:12"}`,
 		},
 	}
 	first := RuntimeBuildCacheScope(request, "4.121.0")
@@ -791,7 +790,7 @@ func TestRuntimeBuildCacheScopeIgnoresRepositoryCommit(t *testing.T) {
 	if got := RuntimeBuildCacheScope(request, "4.121.0"); got != first {
 		t.Fatalf("cache scope changed after commit-only change: %q / %q", first, got)
 	}
-	request.DevContainer.ContentSHA256 = strings.Repeat("d", 64)
+	request.DevContainer.Content = `{"image":"debian:13"}`
 	if got := RuntimeBuildCacheScope(request, "4.121.0"); got == first {
 		t.Fatalf("cache scope did not change after configuration content change")
 	}

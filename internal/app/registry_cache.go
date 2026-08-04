@@ -76,6 +76,9 @@ func newRegistryCache(config Config, managerSecret string) (*registryCache, erro
 		if err != nil {
 			return nil, fmt.Errorf("parse cache registry max_size: %w", err)
 		}
+		if maxBytes <= 0 {
+			return nil, fmt.Errorf("cache registry max_size must be positive")
+		}
 	}
 	upstreams := make(map[string]registryCacheUpstream, len(registry.Upstreams))
 	for host, upstream := range registry.Upstreams {
@@ -264,6 +267,9 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 	}
 	if strings.HasPrefix(repository, "cache/"+token.Repository+"/") {
 		if action == "pull" || action == "push" {
+			if err := validateRegistryCacheBlobMount(request, repository); err != nil {
+				return err
+			}
 			return nil
 		}
 		return errors.New("cache registry action is not allowed")
@@ -276,9 +282,28 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 		if !ok || !c.upstreamAllows(host, imagePath) {
 			return errors.New("cache registry mirror repository is not allowed")
 		}
+		if err := validateRegistryCacheBlobMount(request, repository); err != nil {
+			return err
+		}
 		return nil
 	}
 	return errors.New("cache registry repository is not allowed")
+}
+
+func validateRegistryCacheBlobMount(request *http.Request, repository string) error {
+	values := request.URL.Query()
+	mount := strings.TrimSpace(values.Get("mount"))
+	from := strings.TrimSpace(values.Get("from"))
+	if mount == "" && from == "" {
+		return nil
+	}
+	if request.Method != http.MethodPost || mount == "" || from == "" {
+		return errors.New("cache registry blob mount is invalid")
+	}
+	if from != repository {
+		return errors.New("cache registry blob mount source is not allowed")
+	}
+	return nil
 }
 
 func (c *registryCache) upstreamAllows(host, imagePath string) bool {

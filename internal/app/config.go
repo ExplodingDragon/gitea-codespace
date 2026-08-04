@@ -434,8 +434,12 @@ func (c Config) validateRuntimeCache() error {
 		return fmt.Errorf("runtime.cache.registry.storage_path is required")
 	}
 	if strings.TrimSpace(registry.MaxSize) != "" {
-		if _, err := dockerunits.RAMInBytes(registry.MaxSize); err != nil {
+		maxBytes, err := dockerunits.RAMInBytes(registry.MaxSize)
+		if err != nil {
 			return fmt.Errorf("runtime.cache.registry.max_size: %w", err)
+		}
+		if maxBytes <= 0 {
+			return fmt.Errorf("runtime.cache.registry.max_size must be positive")
 		}
 	}
 	if registry.MaxAge.ToStdlib() < 0 {

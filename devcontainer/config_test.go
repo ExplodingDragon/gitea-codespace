@@ -4,8 +4,6 @@
 package devcontainer
 
 import (
-	"crypto/sha256"
-	"encoding/hex"
 	"os"
 	"path/filepath"
 	"testing"
@@ -31,13 +29,11 @@ func TestLoadRepositoryConfiguration(t *testing.T) {
 	if err := os.WriteFile(configPath, content, 0o600); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
-	digest := sha256.Sum256(content)
 	resolved, err := Load(LoadOptions{
 		Workspace:       workspace,
 		AllowedPathRoot: workspace,
 		Source: Source{
-			Path:          ".devcontainer/devcontainer.json",
-			ContentSHA256: hex.EncodeToString(digest[:]),
+			Path: ".devcontainer/devcontainer.json",
 		},
 		LocalEnv: map[string]string{"HOST_NAME": "host-1"},
 		ID:       "environment-id",
@@ -71,13 +67,11 @@ func TestLoadRejectsConfigurationSymlinkOutsideWorkspace(t *testing.T) {
 	if err := os.Symlink(outside, filepath.Join(workspace, "devcontainer.json")); err != nil {
 		t.Fatalf("create config symlink: %v", err)
 	}
-	digest := sha256.Sum256(content)
 	if _, err := Load(LoadOptions{
 		Workspace:       workspace,
 		AllowedPathRoot: workspace,
 		Source: Source{
-			Path:          "devcontainer.json",
-			ContentSHA256: hex.EncodeToString(digest[:]),
+			Path: "devcontainer.json",
 		},
 		ID: "environment-id",
 	}); err == nil {

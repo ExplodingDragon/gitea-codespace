@@ -132,7 +132,6 @@ func TestGatewayProxyResponseRewritesInternalLocation(t *testing.T) {
 	proxyContext := gatewayProxyResponseContext{
 		externalScheme: "https",
 		externalHost:   "11111111-1111-4111-8111-111111111111.gateway.example.test",
-		upstreamScheme: "http",
 		upstreamHost:   "runtime.internal:3000",
 	}
 	tests := []struct {
@@ -184,7 +183,6 @@ func TestGatewayProxyResponseRewritesDefaultPortLocation(t *testing.T) {
 	normalizeGatewayProxyResponse(header, gatewayProxyResponseContext{
 		externalScheme: "https",
 		externalHost:   "codespace.gateway.example.test:8443",
-		upstreamScheme: "http",
 		upstreamHost:   "runtime.internal:80",
 	})
 	if got := header.Get("Location"); got != "https://codespace.gateway.example.test:8443/login" {

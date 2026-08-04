@@ -974,7 +974,7 @@ func proxyGatewayEndpoint(
 	proxyContext gatewayProxyRequestContext,
 ) {
 	upstreamHost := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(route.upstreamPort)))
-	target := &url.URL{Scheme: route.upstreamScheme, Host: upstreamHost}
+	target := &url.URL{Scheme: "http", Host: upstreamHost}
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	transport := &http.Transport{
 		Proxy: nil,
@@ -999,7 +999,6 @@ func proxyGatewayEndpoint(
 		normalizeGatewayProxyResponse(response.Header, gatewayProxyResponseContext{
 			externalScheme: proxyContext.externalScheme,
 			externalHost:   proxyContext.externalHost,
-			upstreamScheme: route.upstreamScheme,
 			upstreamHost:   upstreamHost,
 		})
 		return nil

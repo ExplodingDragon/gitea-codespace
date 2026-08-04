@@ -17,12 +17,11 @@ func newTestWorkspaceEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL str
 	routes := newGatewayRouteStore()
 	routes.SetTCPBackend(backend)
 	if err := routes.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     runtimeendpoint.WorkspaceEndpointID,
-		label:          runtimeendpoint.WorkspaceEndpointLabel,
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
+		codespaceUUID: codespaceUUID,
+		endpointID:    runtimeendpoint.WorkspaceEndpointID,
+		label:         runtimeendpoint.WorkspaceEndpointLabel,
+		instanceName:  "runtime-1",
+		upstreamPort:  runtimeendpoint.WorkspaceEndpointPort,
 	}); err != nil {
 		t.Fatalf("put workspace endpoint: %v", err)
 	}

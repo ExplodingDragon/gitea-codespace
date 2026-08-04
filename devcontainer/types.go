@@ -208,11 +208,10 @@ type Secret struct {
 	DocumentationURL string `json:"documentationUrl"`
 }
 
-// Source selects a repository configuration or a caller-provided default image.
+// Source selects a repository configuration path or caller-provided content.
 type Source struct {
-	Path          string `json:"path,omitempty"`
-	ContentSHA256 string `json:"content_sha256,omitempty"`
-	DefaultImage  string `json:"default_image,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Content string `json:"content,omitempty"`
 }
 
 // LoadOptions controls configuration loading and the caller's permitted path boundary.

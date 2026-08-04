@@ -155,7 +155,21 @@ func TestConfigValidatesRuntimeCache(t *testing.T) {
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "query") {
 		t.Fatalf("registry public_url error = %v", err)
 	}
+	config.Runtime.Cache.Registry.PublicURL = "https://registry.example.com/cache"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "must not contain a path") {
+		t.Fatalf("registry public_url path error = %v", err)
+	}
 	config.Runtime.Cache.Registry.PublicURL = "http://cache.example.com"
+	config.Runtime.Cache.Registry.MaxSize = "0"
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "max_size must be positive") {
+		t.Fatalf("registry max_size error = %v", err)
+	}
+	config.Runtime.Cache.Registry.MaxSize = "10GiB"
+	config.Runtime.Cache.Registry.Upstreams["ghcr.io"] = RuntimeCacheUpstreamConfig{Allow: []string{"*/invalid"}}
+	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "trailing wildcard") {
+		t.Fatalf("registry upstream allow error = %v", err)
+	}
+	config.Runtime.Cache.Registry.Upstreams["ghcr.io"] = RuntimeCacheUpstreamConfig{Allow: []string{"devcontainers/*"}}
 	config.Runtime.Cache.Registry.Upstreams["GHCR.IO"] = RuntimeCacheUpstreamConfig{}
 	if err := config.Validate(); err == nil || !strings.Contains(err.Error(), "lowercase registry host") {
 		t.Fatalf("registry upstream host error = %v", err)

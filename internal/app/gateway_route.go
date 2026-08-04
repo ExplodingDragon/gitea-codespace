@@ -20,13 +20,12 @@ type gatewayTCPBackend interface {
 }
 
 type gatewayEndpointRoute struct {
-	codespaceUUID  string
-	endpointID     string
-	label          string
-	upstreamScheme string
-	instanceName   string
-	upstreamPort   uint32
-	public         bool
+	codespaceUUID string
+	endpointID    string
+	label         string
+	instanceName  string
+	upstreamPort  uint32
+	public        bool
 }
 
 type gatewayRouteStore struct {
@@ -279,7 +278,6 @@ func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
 func sameGatewayEndpointRouting(left, right gatewayEndpointRoute) bool {
 	return left.codespaceUUID == right.codespaceUUID &&
 		left.endpointID == right.endpointID &&
-		left.upstreamScheme == right.upstreamScheme &&
 		left.instanceName == right.instanceName &&
 		left.upstreamPort == right.upstreamPort &&
 		left.public == right.public
@@ -289,18 +287,12 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 	route.codespaceUUID = strings.TrimSpace(route.codespaceUUID)
 	route.endpointID = strings.TrimSpace(route.endpointID)
 	route.label = strings.TrimSpace(route.label)
-	route.upstreamScheme = strings.ToLower(strings.TrimSpace(route.upstreamScheme))
 	route.instanceName = strings.TrimSpace(route.instanceName)
 	if route.codespaceUUID == "" {
 		return gatewayEndpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}
 	if route.endpointID != runtimeendpoint.WorkspaceEndpointID && !isGatewayEndpointID(route.endpointID) {
 		return gatewayEndpointRoute{}, fmt.Errorf("endpoint_id is invalid")
-	}
-	switch route.upstreamScheme {
-	case "http", "https":
-	default:
-		return gatewayEndpointRoute{}, fmt.Errorf("upstream_scheme must be http or https")
 	}
 	if route.instanceName == "" {
 		return gatewayEndpointRoute{}, fmt.Errorf("runtime instance name is required")
@@ -309,7 +301,7 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 		return gatewayEndpointRoute{}, fmt.Errorf("upstream port is invalid")
 	}
 	if route.endpointID == runtimeendpoint.WorkspaceEndpointID &&
-		(route.label != runtimeendpoint.WorkspaceEndpointLabel || route.upstreamScheme != "http" || route.upstreamPort != runtimeendpoint.WorkspaceEndpointPort || route.public) {
+		(route.label != runtimeendpoint.WorkspaceEndpointLabel || route.upstreamPort != runtimeendpoint.WorkspaceEndpointPort || route.public) {
 		return gatewayEndpointRoute{}, fmt.Errorf("workspace endpoint route is invalid")
 	}
 	return route, nil
@@ -317,12 +309,11 @@ func normalizeGatewayEndpointRoute(route gatewayEndpointRoute) (gatewayEndpointR
 
 func gatewayEndpointRouteFromManager(route manager.RuntimeEndpointRoute) (gatewayEndpointRoute, error) {
 	return normalizeGatewayEndpointRoute(gatewayEndpointRoute{
-		codespaceUUID:  route.CodespaceUUID,
-		endpointID:     route.EndpointID,
-		label:          route.Label,
-		upstreamScheme: route.UpstreamScheme,
-		instanceName:   route.InstanceName,
-		upstreamPort:   route.UpstreamPort,
-		public:         route.Public,
+		codespaceUUID: route.CodespaceUUID,
+		endpointID:    route.EndpointID,
+		label:         route.Label,
+		instanceName:  route.InstanceName,
+		upstreamPort:  route.UpstreamPort,
+		public:        route.Public,
 	})
 }

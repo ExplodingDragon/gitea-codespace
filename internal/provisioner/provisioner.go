@@ -62,28 +62,27 @@ type StartupAdmissionChecker interface {
 }
 
 const (
-	DevContainerSourcePlatformDefault = "platform_default"
-	DevContainerSourceRepository      = "repository"
+	DevContainerSourceRepository = "repository"
+	DevContainerSourceTemplate   = "template"
 )
 
-// DevContainerConfiguration identifies the selected internal development environment.
+// DevContainerConfiguration identifies the selected Dev Container configuration.
 type DevContainerConfiguration struct {
-	Source        string
-	Path          string
-	CommitSHA     string
-	ContentSHA256 string
-	DefaultImage  string
+	Source    string
+	Path      string
+	CommitSHA string
+	Content   string
 }
 
 // Validate checks source-specific Dev Container fields before provisioning.
 func (config DevContainerConfiguration) Validate() error {
 	switch strings.TrimSpace(config.Source) {
-	case DevContainerSourcePlatformDefault:
-		if strings.TrimSpace(config.DefaultImage) == "" {
-			return fmt.Errorf("platform default image is required")
+	case DevContainerSourceTemplate:
+		if strings.TrimSpace(config.Content) == "" {
+			return fmt.Errorf("template content is required")
 		}
-		if config.Path != "" || config.CommitSHA != "" || config.ContentSHA256 != "" {
-			return fmt.Errorf("platform default contains repository fields")
+		if config.Path != "" || config.CommitSHA != "" {
+			return fmt.Errorf("template configuration contains repository fields")
 		}
 	case DevContainerSourceRepository:
 		configPath := strings.TrimSpace(config.Path)
@@ -94,12 +93,8 @@ func (config DevContainerConfiguration) Validate() error {
 		if (len(commitSHA) != 40 && len(commitSHA) != 64) || !validHex(commitSHA) {
 			return fmt.Errorf("repository commit SHA is invalid")
 		}
-		contentSHA256 := strings.TrimSpace(config.ContentSHA256)
-		if len(contentSHA256) != 64 || !validHex(contentSHA256) {
-			return fmt.Errorf("repository content SHA256 is invalid")
-		}
-		if config.DefaultImage != "" {
-			return fmt.Errorf("repository configuration contains a default image")
+		if config.Content != "" {
+			return fmt.Errorf("repository configuration contains template content")
 		}
 	default:
 		return fmt.Errorf("source is invalid")

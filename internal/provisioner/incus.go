@@ -47,6 +47,7 @@ const (
 	runtimeSeedGitSSHKnownHosts = "/var/lib/gitea-codespace/seed/known_hosts"
 	runtimeGitCredentialDir     = "/var/lib/gitea-codespace/git"
 	runtimeManifestDir          = "/var/lib/gitea-codespace/runtime"
+	runtimeCodeServerLogFile    = "/var/lib/gitea-codespace/runtime/code-server.log"
 	runtimeStateDir             = "/var/lib/gitea-codespace/state"
 	runtimeGiteaTokenFilePath   = "/var/lib/gitea-codespace/gitea-token"
 	runtimeEndpointManifest     = runtimeendpoint.EndpointManifestPath
@@ -507,11 +508,10 @@ func (p *IncusProvisioner) applyRuntime(ctx context.Context, instanceName string
 		}
 	}
 	source := devcontainer.Source{
-		Path:          request.DevContainer.Path,
-		ContentSHA256: request.DevContainer.ContentSHA256,
+		Path: request.DevContainer.Path,
 	}
-	if request.DevContainer.Source == "platform_default" {
-		source = devcontainer.Source{DefaultImage: request.DevContainer.DefaultImage}
+	if request.DevContainer.Source == DevContainerSourceTemplate {
+		source = devcontainer.Source{Content: request.DevContainer.Content}
 	}
 	runtimeRequest := devcontainerruntime.Request{
 		Version:          devcontainerruntime.FormatVersion,
@@ -623,8 +623,7 @@ func RuntimeBuildCacheScope(request LifecycleRequest, codeServerVersion string) 
 		request.EnvironmentTag,
 		request.DevContainer.Source,
 		request.DevContainer.Path,
-		request.DevContainer.ContentSHA256,
-		request.DevContainer.DefaultImage,
+		request.DevContainer.Content,
 		codeServerVersion,
 		runtime.GOOS,
 		runtime.GOARCH,

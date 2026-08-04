@@ -15,7 +15,6 @@ import (
 type gatewayProxyResponseContext struct {
 	externalScheme string
 	externalHost   string
-	upstreamScheme string
 	upstreamHost   string
 }
 
@@ -220,7 +219,7 @@ func rewriteGatewayProxyLocation(location string, proxyContext gatewayProxyRespo
 	if err != nil || parsed.Host == "" {
 		return location
 	}
-	if !sameGatewayProxyAuthority(parsed.Host, parsed.Scheme, proxyContext.upstreamHost, proxyContext.upstreamScheme) {
+	if !sameGatewayProxyAuthority(parsed.Host, parsed.Scheme, proxyContext.upstreamHost, "http") {
 		return location
 	}
 	parsed.Scheme = proxyContext.externalScheme

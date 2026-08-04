@@ -219,13 +219,12 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 		skipOrFailIncusE2E(t, "Incus E2E server cannot create the lifecycle test instance", err)
 	}
 	assertIncusE2EInstanceRunID(t, ctx, provisioner, instanceName, codespaceUUID, runID)
-	repositoryURL, commitSHA, configurationSHA := seedIncusE2EOfficialInteropRepository(t, ctx, provisioner, instanceName)
+	repositoryURL, commitSHA, _ := seedIncusE2EOfficialInteropRepository(t, ctx, provisioner, instanceName)
 	request := incusE2ELifecycleRequest(codespaceUUID, instanceName, instance.Workdir, LifecycleOperationCreate)
 	request.RepoCloneHTTPURL = repositoryURL
 	request.StartRef = "refs/heads/main"
 	request.CommitSHA = commitSHA
 	request.DevContainer.CommitSHA = commitSHA
-	request.DevContainer.ContentSHA256 = configurationSHA
 	environment := runIncusE2ELifecycleStart(t, ctx, provisioner, instance, request)
 	workspace := environment.Workspace
 	if environment.ComposeProject == "" || environment.PrimaryService != "workspace" || len(environment.RelatedContainerIDs) != 1 {

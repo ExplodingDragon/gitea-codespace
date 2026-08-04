@@ -19,15 +19,23 @@ func startupInputFromCreatePayload(operation *codespacev1.OperationPayload, payl
 	if payload == nil {
 		return StartupInput{}, fmt.Errorf("create payload is required")
 	}
-	username := strings.TrimSpace(payload.GetUsername())
-	gitUserEmail := strings.TrimSpace(payload.GetGitUserEmail())
+	repository := payload.GetRepository()
+	if repository == nil {
+		return StartupInput{}, fmt.Errorf("create repository checkout is required")
+	}
+	gitIdentity := payload.GetGitIdentity()
+	if gitIdentity == nil {
+		return StartupInput{}, fmt.Errorf("create Git identity is required")
+	}
+	username := strings.TrimSpace(gitIdentity.GetGiteaUsername())
+	gitUserEmail := strings.TrimSpace(gitIdentity.GetGitUserEmail())
 	if username == "" {
 		return StartupInput{}, fmt.Errorf("create username is required")
 	}
 	if gitUserEmail == "" {
 		return StartupInput{}, fmt.Errorf("create git user email is required")
 	}
-	repoFullName := strings.Trim(strings.TrimSpace(payload.GetRepoFullName()), "/")
+	repoFullName := strings.Trim(strings.TrimSpace(repository.GetFullName()), "/")
 	if repoFullName == "" || !strings.Contains(repoFullName, "/") {
 		return StartupInput{}, fmt.Errorf("create repository full name is invalid")
 	}
@@ -47,15 +55,14 @@ func startupInputFromCreatePayload(operation *codespacev1.OperationPayload, payl
 		RuntimeUserName: deriveRuntimeUserName(username),
 		EnvironmentTag:  environmentTag,
 	}
-	startupInput.DevContainer.Path = strings.TrimSpace(devContainer.GetRepositoryPath())
-	startupInput.DevContainer.ContentSHA256 = strings.TrimSpace(devContainer.GetRepositoryContentSha256())
-	startupInput.DevContainer.DefaultImage = strings.TrimSpace(devContainer.GetDefaultImage())
-	switch {
-	case startupInput.DevContainer.DefaultImage != "":
-		startupInput.DevContainer.Source = provisioner.DevContainerSourcePlatformDefault
-	case startupInput.DevContainer.Path != "" || startupInput.DevContainer.ContentSHA256 != "":
+	switch source := devContainer.GetSource().(type) {
+	case *codespacev1.DevContainerConfiguration_TemplateContent:
+		startupInput.DevContainer.Source = provisioner.DevContainerSourceTemplate
+		startupInput.DevContainer.Content = strings.TrimSpace(source.TemplateContent)
+	case *codespacev1.DevContainerConfiguration_RepositoryPath:
 		startupInput.DevContainer.Source = provisioner.DevContainerSourceRepository
-		startupInput.DevContainer.CommitSHA = strings.TrimSpace(payload.GetCommitSha())
+		startupInput.DevContainer.Path = strings.TrimSpace(source.RepositoryPath)
+		startupInput.DevContainer.CommitSHA = strings.TrimSpace(repository.GetCommitSha())
 	default:
 		return StartupInput{}, fmt.Errorf("create Dev Container configuration source is invalid")
 	}

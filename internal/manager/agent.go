@@ -338,13 +338,12 @@ type RuntimeMetadataStateStore interface {
 
 // RuntimeEndpointRoute stores one trusted runtime HTTP/WebSocket route.
 type RuntimeEndpointRoute struct {
-	CodespaceUUID  string
-	EndpointID     string
-	Label          string
-	UpstreamScheme string
-	InstanceName   string
-	UpstreamPort   uint32
-	Public         bool
+	CodespaceUUID string
+	EndpointID    string
+	Label         string
+	InstanceName  string
+	UpstreamPort  uint32
+	Public        bool
 }
 
 // RuntimeEndpointApplier applies a complete runtime endpoint route set.
@@ -2446,19 +2445,20 @@ func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.Operati
 	instance, err := a.provisioner.CreateOrStart(ctx, provisioner.InstanceSpec{
 		CodespaceUUID:  operation.GetCodespaceUuid(),
 		Name:           runtimeInstanceName(operation.GetCodespaceUuid()),
-		RepoFullName:   payload.GetRepoFullName(),
+		RepoFullName:   startupInput.RepoFullName,
 		EnvironmentTag: payload.GetEnvironmentTag(),
 	})
 	if err != nil {
 		return err
 	}
+	repository := payload.GetRepository()
 	request := lifecycleRequest(operation, startupInput, instance)
 	request.Operation = provisioner.LifecycleOperationCreate
-	request.RepoCloneHTTPURL = payload.GetRepoCloneHttpUrl()
-	request.RepoCloneSSHURL = payload.GetRepoCloneSshUrl()
-	request.StartRef = payload.GetStartRef()
-	request.CommitSHA = payload.GetCommitSha()
-	request.GitProtocol = gitProtocolName(payload.GetGitProtocol())
+	request.RepoCloneHTTPURL = repository.GetCloneHttpUrl()
+	request.RepoCloneSSHURL = repository.GetCloneSshUrl()
+	request.StartRef = repository.GetStartRef()
+	request.CommitSHA = repository.GetCommitSha()
+	request.GitProtocol = gitProtocolName(repository.GetPreferredProtocol())
 	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, nil, request)
 }
 
@@ -2529,16 +2529,16 @@ func (a *Agent) runStartupOperation(
 	if err != nil {
 		return err
 	}
-	logSink.redactionValues = append([]string{access.GetToken()}, redactionValues...)
+	logSink.redactionValues = append([]string{access.GetGiteaToken()}, redactionValues...)
 	if err := a.provisioner.SeedRuntimeCredentials(ctx, instance.Name, provisioner.RuntimeCredentialSeedRequest{
 		CodespaceUUID:    codespaceUUID,
-		GiteaToken:       access.GetToken(),
-		GitSSHKnownHosts: access.GetGitSshKnownHostsLines(),
+		GiteaToken:       access.GetGiteaToken(),
+		GitSSHKnownHosts: access.GetGitSshTrust().GetKnownHostsLines(),
 	}); err != nil {
 		return err
 	}
-	request.GiteaToken = access.GetToken()
-	request.ServerURL = access.GetServerUrl()
+	request.GiteaToken = access.GetGiteaToken()
+	request.ServerURL = access.GetGiteaServerUrl()
 	request.LogSink = logSink
 	if err := logSink.endGroup(ctx); err != nil {
 		return err
@@ -2639,7 +2639,7 @@ func (a *Agent) loadRuntimeEnvironment(codespaceUUID string) (provisioner.Runtim
 	return environment, nil
 }
 
-func runtimeSecretsFromAccess(access *codespacev1.RequestRuntimeAccessResponse) (provisioner.RuntimeSecretEnvironment, []string, error) {
+func runtimeSecretsFromAccess(access *codespacev1.RuntimeAccessBundle) (provisioner.RuntimeSecretEnvironment, []string, error) {
 	secrets := make(provisioner.RuntimeSecretEnvironment, len(access.GetSecrets()))
 	values := make([]string, 0, len(access.GetSecrets()))
 	maskValues := make(map[string]struct{}, len(access.GetSecrets()))
@@ -2843,12 +2843,11 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 	}
 	routes := make([]RuntimeEndpointRoute, 0, len(declarations)+1)
 	routes = append(routes, RuntimeEndpointRoute{
-		CodespaceUUID:  codespaceUUID,
-		EndpointID:     runtimeendpoint.WorkspaceEndpointID,
-		Label:          runtimeendpoint.WorkspaceEndpointLabel,
-		UpstreamScheme: "http",
-		InstanceName:   instance.Name,
-		UpstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
+		CodespaceUUID: codespaceUUID,
+		EndpointID:    runtimeendpoint.WorkspaceEndpointID,
+		Label:         runtimeendpoint.WorkspaceEndpointLabel,
+		InstanceName:  instance.Name,
+		UpstreamPort:  runtimeendpoint.WorkspaceEndpointPort,
 	})
 	for _, declaration := range declarations {
 		if declaration.UpstreamPort < 1 || declaration.UpstreamPort > 65535 {
@@ -2859,13 +2858,12 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 			return fmt.Errorf("endpoint %s must use id %s", declaration.EndpointID, expectedID)
 		}
 		routes = append(routes, RuntimeEndpointRoute{
-			CodespaceUUID:  codespaceUUID,
-			EndpointID:     declaration.EndpointID,
-			Label:          declaration.Label,
-			UpstreamScheme: declaration.UpstreamScheme,
-			InstanceName:   instance.Name,
-			UpstreamPort:   uint32(declaration.UpstreamPort),
-			Public:         declaration.Public,
+			CodespaceUUID: codespaceUUID,
+			EndpointID:    declaration.EndpointID,
+			Label:         declaration.Label,
+			InstanceName:  instance.Name,
+			UpstreamPort:  uint32(declaration.UpstreamPort),
+			Public:        declaration.Public,
 		})
 	}
 	if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
@@ -3048,18 +3046,21 @@ func (a *Agent) deactivateRuntimeMetadata(codespaceUUID string) error {
 	return errors.Join(cleanupErrors...)
 }
 
-func (a *Agent) requestRuntimeAccess(ctx context.Context, codespaceUUID string, operationRVersion int64, gitSSHPublicKey []byte) (*codespacev1.RequestRuntimeAccessResponse, error) {
+func (a *Agent) requestRuntimeAccess(ctx context.Context, codespaceUUID string, operationRVersion int64, gitSSHPublicKey []byte) (*codespacev1.RuntimeAccessBundle, error) {
 	request := connect.NewRequest(&codespacev1.RequestRuntimeAccessRequest{
 		ProtocolVersion:   controlplane.ProtocolVersion,
 		CodespaceUuid:     codespaceUUID,
 		OperationRversion: operationRVersion,
-		GitSshPublicKey:   gitSSHPublicKey,
+		GitSshKey:         &codespacev1.RuntimeGitSSHKey{PublicKey: gitSSHPublicKey},
 	})
 	response, err := a.managerClient().RequestRuntimeAccess(ctx, request)
 	if err != nil {
 		return nil, fmt.Errorf("request runtime access rpc: %w", err)
 	}
-	return response.Msg, nil
+	if response.Msg.GetAccess() == nil {
+		return nil, fmt.Errorf("request runtime access rpc: response access bundle is missing")
+	}
+	return response.Msg.GetAccess(), nil
 }
 
 func (a *Agent) requestIdleStop(

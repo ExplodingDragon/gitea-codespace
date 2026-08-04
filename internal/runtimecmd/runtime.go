@@ -93,7 +93,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 		}
 		state, err = engine.Create(ctx, options)
 		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, stdout, stderr)
+			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, devcontainerruntime.WorkspaceServiceOptions{InitializeWebIDE: true}, stdout, stderr)
 			if err != nil {
 				_ = engine.Delete(context.WithoutCancel(ctx), state)
 			}
@@ -101,7 +101,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 	case "resume":
 		state, err = engine.Start(ctx, request.Environment, request.Secrets)
 		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, stdout, stderr)
+			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, devcontainerruntime.WorkspaceServiceOptions{}, stdout, stderr)
 		}
 	case "stop":
 		state, err = engine.Stop(ctx, request.Environment)

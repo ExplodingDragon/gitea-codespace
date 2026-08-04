@@ -52,10 +52,6 @@ func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, own
 		if attributes.OnAutoForward == "ignore" {
 			continue
 		}
-		scheme := strings.ToLower(strings.TrimSpace(attributes.Protocol))
-		if scheme == "" {
-			scheme = "http"
-		}
 		label := strings.TrimSpace(attributes.Label)
 		if label == "" {
 			label = "Port " + strconv.Itoa(int(port))
@@ -64,10 +60,9 @@ func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, own
 			return devcontainer.InvalidConfiguration(fmt.Errorf("port %d label: %w", port, err))
 		}
 		manifest.Endpoints = append(manifest.Endpoints, runtimeendpoint.Endpoint{
-			EndpointID:     "port-" + strconv.Itoa(int(port)),
-			Label:          label,
-			UpstreamScheme: scheme,
-			UpstreamPort:   int(port),
+			EndpointID:   "port-" + strconv.Itoa(int(port)),
+			Label:        label,
+			UpstreamPort: int(port),
 		})
 	}
 	if len(manifest.Endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {

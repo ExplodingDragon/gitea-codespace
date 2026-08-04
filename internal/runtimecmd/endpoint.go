@@ -14,12 +14,9 @@ import (
 )
 
 // SetEndpoint adds or replaces a runtime endpoint declaration.
-func SetEndpoint(port uint16, label, scheme string, public bool) error {
+func SetEndpoint(port uint16, label string, public bool) error {
 	if port == 0 {
 		return fmt.Errorf("endpoint port is invalid")
-	}
-	if scheme != "http" && scheme != "https" {
-		return fmt.Errorf("endpoint scheme must be http or https")
 	}
 	label = strings.TrimSpace(label)
 	if label == "" {
@@ -37,7 +34,10 @@ func SetEndpoint(port uint16, label, scheme string, public bool) error {
 		return endpoint.EndpointID == id
 	})
 	manifest.Endpoints = append(manifest.Endpoints, runtimeendpoint.Endpoint{
-		EndpointID: id, Label: label, UpstreamScheme: scheme, UpstreamPort: int(port), Public: public,
+		EndpointID:   id,
+		Label:        label,
+		UpstreamPort: int(port),
+		Public:       public,
 	})
 	return writeEndpointManifest(manifest)
 }

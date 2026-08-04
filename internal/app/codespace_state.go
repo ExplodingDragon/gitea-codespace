@@ -81,20 +81,18 @@ type codespaceStartupInputSnapshot struct {
 }
 
 type codespaceDevContainerSnapshot struct {
-	Source        string `json:"source"`
-	Path          string `json:"path,omitempty"`
-	CommitSHA     string `json:"commit_sha,omitempty"`
-	ContentSHA256 string `json:"content_sha256,omitempty"`
-	DefaultImage  string `json:"default_image,omitempty"`
+	Source    string `json:"source"`
+	Path      string `json:"path,omitempty"`
+	CommitSHA string `json:"commit_sha,omitempty"`
+	Content   string `json:"content,omitempty"`
 }
 
 type codespaceEndpointSnapshot struct {
-	EndpointID     string `json:"endpoint_id"`
-	Label          string `json:"label"`
-	UpstreamScheme string `json:"upstream_scheme"`
-	InstanceName   string `json:"instance_name"`
-	UpstreamPort   uint32 `json:"upstream_port"`
-	Public         bool   `json:"public"`
+	EndpointID   string `json:"endpoint_id"`
+	Label        string `json:"label"`
+	InstanceName string `json:"instance_name"`
+	UpstreamPort uint32 `json:"upstream_port"`
+	Public       bool   `json:"public"`
 }
 
 type codespaceRuntimeMetadataSnapshot struct {
@@ -430,7 +428,6 @@ func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error
 				codespaceUUID:  codespaceUUID,
 				endpointID:     endpoint.EndpointID,
 				label:          endpoint.Label,
-				upstreamScheme: endpoint.UpstreamScheme,
 				instanceName:   endpoint.InstanceName,
 				upstreamPort:   endpoint.UpstreamPort,
 				public:         endpoint.Public,
@@ -487,12 +484,11 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 			workspaceFound = true
 		}
 		endpoints = append(endpoints, codespaceEndpointSnapshot{
-			EndpointID:     localRoute.endpointID,
-			Label:          localRoute.label,
-			UpstreamScheme: localRoute.upstreamScheme,
-			InstanceName:   localRoute.instanceName,
-			UpstreamPort:   localRoute.upstreamPort,
-			Public:         localRoute.public,
+			EndpointID:   localRoute.endpointID,
+			Label:        localRoute.label,
+			InstanceName: localRoute.instanceName,
+			UpstreamPort: localRoute.upstreamPort,
+			Public:       localRoute.public,
 		})
 	}
 	if len(routes) > 0 && !workspaceFound {
@@ -1239,7 +1235,6 @@ func validateStoredEndpointRoutes(path string, codespaceUUID string, endpoints [
 			codespaceUUID:  codespaceUUID,
 			endpointID:     endpoint.EndpointID,
 			label:          endpoint.Label,
-			upstreamScheme: endpoint.UpstreamScheme,
 			instanceName:   endpoint.InstanceName,
 			upstreamPort:   endpoint.UpstreamPort,
 			public:         endpoint.Public,
@@ -1292,11 +1287,10 @@ func startupInputToState(input manager.StartupInput) *codespaceStartupInputSnaps
 		RuntimeUserName: strings.TrimSpace(input.RuntimeUserName),
 		EnvironmentTag:  strings.TrimSpace(input.EnvironmentTag),
 		DevContainer: codespaceDevContainerSnapshot{
-			Source:        strings.TrimSpace(input.DevContainer.Source),
-			Path:          strings.TrimSpace(input.DevContainer.Path),
-			CommitSHA:     strings.TrimSpace(input.DevContainer.CommitSHA),
-			ContentSHA256: strings.TrimSpace(input.DevContainer.ContentSHA256),
-			DefaultImage:  strings.TrimSpace(input.DevContainer.DefaultImage),
+			Source:    strings.TrimSpace(input.DevContainer.Source),
+			Path:      strings.TrimSpace(input.DevContainer.Path),
+			CommitSHA: strings.TrimSpace(input.DevContainer.CommitSHA),
+			Content:   strings.TrimSpace(input.DevContainer.Content),
 		},
 	}
 }
@@ -1310,11 +1304,10 @@ func startupInputFromState(codespaceUUID string, snapshot *codespaceStartupInput
 		RuntimeUserName: strings.TrimSpace(snapshot.RuntimeUserName),
 		EnvironmentTag:  strings.TrimSpace(snapshot.EnvironmentTag),
 		DevContainer: provisioner.DevContainerConfiguration{
-			Source:        strings.TrimSpace(snapshot.DevContainer.Source),
-			Path:          strings.TrimSpace(snapshot.DevContainer.Path),
-			CommitSHA:     strings.TrimSpace(snapshot.DevContainer.CommitSHA),
-			ContentSHA256: strings.TrimSpace(snapshot.DevContainer.ContentSHA256),
-			DefaultImage:  strings.TrimSpace(snapshot.DevContainer.DefaultImage),
+			Source:    strings.TrimSpace(snapshot.DevContainer.Source),
+			Path:      strings.TrimSpace(snapshot.DevContainer.Path),
+			CommitSHA: strings.TrimSpace(snapshot.DevContainer.CommitSHA),
+			Content:   strings.TrimSpace(snapshot.DevContainer.Content),
 		},
 	}
 }
@@ -1384,7 +1377,6 @@ func (s *codespaceState) bumpRuntimeMetadataGeneration() error {
 func sameCodespaceEndpointSnapshot(left, right codespaceEndpointSnapshot) bool {
 	return left.EndpointID == right.EndpointID &&
 		left.Label == right.Label &&
-		left.UpstreamScheme == right.UpstreamScheme &&
 		left.InstanceName == right.InstanceName &&
 		left.UpstreamPort == right.UpstreamPort &&
 		left.Public == right.Public

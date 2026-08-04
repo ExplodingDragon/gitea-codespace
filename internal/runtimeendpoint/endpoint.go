@@ -12,7 +12,7 @@ import (
 
 const (
 	EndpointManifestPath     = "/var/lib/gitea-codespace/runtime/endpoints.json"
-	EndpointManifestVersion  = 1
+	EndpointManifestVersion  = 2
 	MaxEndpointCount         = 64
 	MaxDeclaredEndpointCount = MaxEndpointCount - 1
 	WorkspaceEndpointID      = "workspace"
@@ -28,11 +28,10 @@ type EndpointManifest struct {
 
 // Endpoint identifies one localhost service in the primary Dev Container.
 type Endpoint struct {
-	EndpointID     string `json:"endpoint_id"`
-	Label          string `json:"label"`
-	UpstreamScheme string `json:"upstream_scheme"`
-	UpstreamPort   int    `json:"upstream_port"`
-	Public         bool   `json:"public"`
+	EndpointID   string `json:"endpoint_id"`
+	Label        string `json:"label"`
+	UpstreamPort int    `json:"upstream_port"`
+	Public       bool   `json:"public"`
 }
 
 // ValidateLabel applies the common label constraints used by runtime declarations and Gateway routes.

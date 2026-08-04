@@ -19,13 +19,12 @@ func TestRuntimeEndpointApplierUpdatesRoutesAndNotifiesOnChange(t *testing.T) {
 	notifier := &runtimeEndpointNotifierForTest{}
 	applier := newRuntimeEndpointApplier(state, routes, notifier)
 	endpointRoutes := completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		CodespaceUUID:  codespaceUUID,
-		EndpointID:     "web",
-		Label:          "Web",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
-		Public:         true,
+		CodespaceUUID: codespaceUUID,
+		EndpointID:    "web",
+		Label:         "Web",
+		InstanceName:  "runtime-1",
+		UpstreamPort:  3000,
+		Public:        true,
 	})
 
 	if err := applier.ApplyRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {

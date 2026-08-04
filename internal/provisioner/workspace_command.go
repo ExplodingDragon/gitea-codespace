@@ -29,6 +29,7 @@ const (
 	workspaceCommandControlWait = 2 * time.Second
 	workspaceTCPDialTimeout     = 10 * time.Second
 	workspaceIDEReadyTimeout    = 30 * time.Second
+	workspaceIDELogTailBytes    = 4 * 1024
 )
 
 // OpenWorkspaceCommand opens one Gateway user shell or exec command through Incus exec.
@@ -325,7 +326,14 @@ func (p *IncusProvisioner) CheckWorkspaceIDE(ctx context.Context, instanceName s
 			lastErr = err
 		}
 		if time.Now().After(readyDeadline) {
-			return fmt.Errorf("wait for code-server readiness: %w", lastErr)
+			logContent, exists, err := p.readRuntimeFile(ctx, instanceName, runtimeCodeServerLogFile)
+			if err != nil || !exists || strings.TrimSpace(logContent) == "" {
+				return fmt.Errorf("wait for code-server readiness: %w", lastErr)
+			}
+			if len(logContent) > workspaceIDELogTailBytes {
+				logContent = logContent[len(logContent)-workspaceIDELogTailBytes:]
+			}
+			return fmt.Errorf("wait for code-server readiness: %w; recent code-server log:\n%s", lastErr, strings.TrimSpace(logContent))
 		}
 		timer := time.NewTimer(500 * time.Millisecond)
 		select {

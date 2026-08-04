@@ -1,7 +1,7 @@
 connectrpc.com/connect v1.20.0 h1:6TNDAB+WeNd2uolWNlYczB5E0KNNaVMNUEx8JEUsPmQ=
 connectrpc.com/connect v1.20.0/go.mod h1:A2ygJrukXwWy32vkCAAHNVguZrqZ+jeZ9rGRnGR4dN4=
-gitea.dev/codespace-proto-go v0.0.0-20260801180240-0d3864aebd69 h1:zizzdGuRUXSYPwQgPjIu+jUQyG6pY/N39Yb3Oy7gTi4=
-gitea.dev/codespace-proto-go v0.0.0-20260801180240-0d3864aebd69/go.mod h1:PtyeQBWy45uIqw8bS6jPK2LYSizpS+W3vtvZ+7E9s10=
+gitea.dev/codespace-proto-go v0.0.0-20260804130147-8618625fc14d h1:hvc/YWVNWdrw12vMTKBegcCfZ1C4dSJXy6ONKDzH3mE=
+gitea.dev/codespace-proto-go v0.0.0-20260804130147-8618625fc14d/go.mod h1:PtyeQBWy45uIqw8bS6jPK2LYSizpS+W3vtvZ+7E9s10=
 github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6 h1:He8afgbRMd7mFxO99hRNu+6tazq8nFF9lIwo9JFroBk=
 github.com/AdaLogics/go-fuzz-headers v0.0.0-20240806141605-e8a1dd7889d6/go.mod h1:8o94RPi1/7XTJvwPpRSzSUedZrtlirdB3r9Z20bi2f8=
 github.com/Azure/go-ansiterm v0.0.0-20250102033503-faa5f7b0171c h1:udKWzYgxTojEKWjV8V+WSxDXJ4NFATAsZjh8iIbsQIg=

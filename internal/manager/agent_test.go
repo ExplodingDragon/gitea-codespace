@@ -41,15 +41,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -161,6 +153,30 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	}
 }
 
+func createOperationPayloadForTest() *codespacev1.CreateOperationPayload {
+	return &codespacev1.CreateOperationPayload{
+		Repository: &codespacev1.RepositoryCheckout{
+			FullName:          "owner/repo",
+			CloneHttpUrl:      "https://gitea.example.com/owner/repo.git",
+			CloneSshUrl:       "git@gitea.example.com:owner/repo.git",
+			PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
+			StartRef:          "refs/heads/main",
+			CommitSha:         "0123456789abcdef0123456789abcdef01234567",
+		},
+		EnvironmentTag: "default",
+		GitIdentity: &codespacev1.GitIdentity{
+			GiteaUsername: "test-user",
+			GitUserEmail:  "test-user@example.com",
+		},
+		DevContainer: &codespacev1.DevContainerConfiguration{
+			Source: &codespacev1.DevContainerConfiguration_TemplateContent{
+				TemplateContent: `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`,
+			},
+		},
+		RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{},
+	}
+}
+
 func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 	t.Parallel()
 
@@ -179,7 +195,6 @@ func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 	if len(applier.routes) != 1 ||
 		applier.routes[0].EndpointID != runtimeendpoint.WorkspaceEndpointID ||
 		applier.routes[0].Label != runtimeendpoint.WorkspaceEndpointLabel ||
-		applier.routes[0].UpstreamScheme != "http" ||
 		applier.routes[0].InstanceName != "cs-11111111111141118111" ||
 		applier.routes[0].UpstreamPort != runtimeendpoint.WorkspaceEndpointPort ||
 		applier.routes[0].Public {
@@ -441,14 +456,7 @@ func TestAgentFetchCapacityNewPayloadBecomesWorkerOccupancy(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -548,14 +556,7 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -639,14 +640,7 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -884,14 +878,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -930,14 +917,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 		CodespaceUuid:             codespaceUUID,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
-			Create: &codespacev1.CreateOperationPayload{
-				RepoFullName:     "owner/repo",
-				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-				EnvironmentTag:   "default",
-				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-				CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-			},
+			Create: createOperationPayloadForTest(),
 		},
 	})
 	if err := agent.pollOnce(context.Background()); err != nil {
@@ -983,14 +963,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 		OperationRversion: 1,
 		CodespaceUuid:     codespaceUUID,
 		Command: &codespacev1.OperationPayload_Create{
-			Create: &codespacev1.CreateOperationPayload{
-				RepoFullName:     "owner/repo",
-				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-				EnvironmentTag:   "default",
-				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-				CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-			},
+			Create: createOperationPayloadForTest(),
 		},
 	}
 
@@ -1027,13 +1000,7 @@ func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -1305,15 +1272,7 @@ func TestAgentReportsObservedOperationWhileRunning(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -1368,15 +1327,7 @@ func TestAgentResumesLoadedOperationAfterRenewal(t *testing.T) {
 		LogOffset:                 0,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
-			Create: &codespacev1.CreateOperationPayload{
-				RepoFullName:     "owner/repo",
-				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-				RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-				EnvironmentTag:   "default",
-				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-				RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-				CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-			},
+			Create: createOperationPayloadForTest(),
 		},
 	}
 	stateStore := &memoryOperationStateStore{}
@@ -1441,15 +1392,7 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 200,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -1515,15 +1458,7 @@ func TestAgentTriggersInventoryAfterResourceAbsentFinal(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -3308,15 +3243,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
-				Create: &codespacev1.CreateOperationPayload{
-					RepoFullName:     "owner/repo",
-					RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-					RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-					EnvironmentTag:   "default",
-					GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
-					RuntimeSettings:  &codespacev1.EffectiveCodespaceRuntimeSettings{},
-					CommitSha:        "0123456789abcdef0123456789abcdef01234567",
-				},
+				Create: createOperationPayloadForTest(),
 			},
 		},
 	}
@@ -3606,16 +3533,21 @@ func completeCreatePayloadForTest(operation *codespacev1.OperationPayload) *code
 	if payload == nil {
 		return operation
 	}
-	if payload.Username == "" {
-		payload.Username = "test-user"
+	defaults := createOperationPayloadForTest()
+	if payload.Repository == nil {
+		payload.Repository = defaults.Repository
 	}
-	if payload.GitUserEmail == "" {
-		payload.GitUserEmail = "test-user@example.com"
+	if payload.EnvironmentTag == "" {
+		payload.EnvironmentTag = defaults.EnvironmentTag
+	}
+	if payload.GitIdentity == nil {
+		payload.GitIdentity = defaults.GitIdentity
 	}
 	if payload.DevContainer == nil {
-		payload.DevContainer = &codespacev1.DevContainerConfiguration{
-			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
-		}
+		payload.DevContainer = defaults.DevContainer
+	}
+	if payload.RuntimeSettings == nil {
+		payload.RuntimeSettings = defaults.RuntimeSettings
 	}
 	return operation
 }
@@ -3630,8 +3562,8 @@ func startupInputStoreForTest(codespaceUUID string) StartupInputStateStore {
 		RuntimeUserName: "test-user",
 		EnvironmentTag:  "default",
 		DevContainer: provisioner.DevContainerConfiguration{
-			Source:       "platform_default",
-			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
+			Source:  provisioner.DevContainerSourceTemplate,
+			Content: `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`,
 		},
 	})
 	return store
@@ -3716,17 +3648,19 @@ func (s *managerService) RequestRuntimeAccess(
 	if s.credentialsErr != nil {
 		return nil, s.credentialsErr
 	}
-	if req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshPublicKey()) == 0 {
+	if req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshKey().GetPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	s.gitSSHKeyCalls++
 	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{
-		Token:     "gcs_test",
-		ServerUrl: "https://gitea.example.com/",
-		Secrets: []*codespacev1.RuntimeSecretEnvironmentVariable{
-			{Name: "DATABASE_PASSWORD", Value: "runtime-secret-value"},
+		Access: &codespacev1.RuntimeAccessBundle{
+			GiteaToken:     "gcs_test",
+			GiteaServerUrl: "https://gitea.example.com/",
+			Secrets: []*codespacev1.RuntimeSecretEnvironmentVariable{
+				{Name: "DATABASE_PASSWORD", Value: "runtime-secret-value"},
+			},
+			GitSshTrust: &codespacev1.GitSSHTrust{KnownHostsLines: testKnownHostsLines()},
 		},
-		GitSshKnownHostsLines: testKnownHostsLines(),
 	}), nil
 }
 

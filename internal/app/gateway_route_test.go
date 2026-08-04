@@ -16,15 +16,8 @@ func TestGatewayRouteStoreKeepsLeasesForLabelOnlyUpdate(t *testing.T) {
 	t.Parallel()
 
 	store := newGatewayRouteStore()
-	route := gatewayEndpointRoute{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     "web",
-		label:          "Web",
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   3000,
-		public:         true,
-	}
+	route := gatewayEndpointRouteForTest("11111111-1111-4111-8111-111111111111", "web")
+	route.public = true
 	if err := store.Put(route); err != nil {
 		t.Fatalf("put route: %v", err)
 	}
@@ -49,15 +42,8 @@ func TestGatewayRouteStoreCancelsLeasesForRoutingUpdate(t *testing.T) {
 	t.Parallel()
 
 	store := newGatewayRouteStore()
-	route := gatewayEndpointRoute{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     "web",
-		label:          "Web",
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   3000,
-		public:         true,
-	}
+	route := gatewayEndpointRouteForTest("11111111-1111-4111-8111-111111111111", "web")
+	route.public = true
 	if err := store.Put(route); err != nil {
 		t.Fatalf("put route: %v", err)
 	}
@@ -80,15 +66,7 @@ func TestGatewayRouteStoreDeletesEndpointSessionsForRoutingUpdate(t *testing.T) 
 	store := newGatewayRouteStore()
 	sessions := newGatewaySessionRegistry()
 	store.SetSessionRegistry(sessions)
-	route := gatewayEndpointRoute{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     "web",
-		label:          "Web",
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   3000,
-		public:         false,
-	}
+	route := gatewayEndpointRouteForTest("11111111-1111-4111-8111-111111111111", "web")
 	if err := store.Put(route); err != nil {
 		t.Fatalf("put route: %v", err)
 	}
@@ -117,15 +95,8 @@ func TestGatewayRouteStoreCancelsLeasesForDelete(t *testing.T) {
 	t.Parallel()
 
 	store := newGatewayRouteStore()
-	route := gatewayEndpointRoute{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     "web",
-		label:          "Web",
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   3000,
-		public:         true,
-	}
+	route := gatewayEndpointRouteForTest("11111111-1111-4111-8111-111111111111", "web")
+	route.public = true
 	if err := store.Put(route); err != nil {
 		t.Fatalf("put route: %v", err)
 	}
@@ -147,12 +118,11 @@ func TestGatewayRouteStoreClosesWorkspaceEndpointLease(t *testing.T) {
 	store.SetSessionRegistry(sessions)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	if err := store.Put(gatewayEndpointRoute{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     runtimeendpoint.WorkspaceEndpointID,
-		label:          runtimeendpoint.WorkspaceEndpointLabel,
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
+		codespaceUUID: codespaceUUID,
+		endpointID:    runtimeendpoint.WorkspaceEndpointID,
+		label:         runtimeendpoint.WorkspaceEndpointLabel,
+		instanceName:  "runtime-1",
+		upstreamPort:  runtimeendpoint.WorkspaceEndpointPort,
 	}); err != nil {
 		t.Fatalf("put workspace endpoint: %v", err)
 	}
@@ -184,13 +154,12 @@ func TestGatewayRouteStoreRejectsInvalidWorkspaceEndpoint(t *testing.T) {
 	t.Parallel()
 
 	err := newGatewayRouteStore().Put(gatewayEndpointRoute{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
-		endpointID:     runtimeendpoint.WorkspaceEndpointID,
-		label:          runtimeendpoint.WorkspaceEndpointLabel,
-		upstreamScheme: "http",
-		instanceName:   "runtime-1",
-		upstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
-		public:         true,
+		codespaceUUID: "11111111-1111-4111-8111-111111111111",
+		endpointID:    runtimeendpoint.WorkspaceEndpointID,
+		label:         runtimeendpoint.WorkspaceEndpointLabel,
+		instanceName:  "runtime-1",
+		upstreamPort:  runtimeendpoint.WorkspaceEndpointPort,
+		public:        true,
 	})
 	if err == nil {
 		t.Fatalf("public workspace endpoint route was accepted")
@@ -206,25 +175,13 @@ func TestGatewayRouteStoreCloseCodespaceAccessCancelsLeasesAndSessions(t *testin
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	otherUUID := "22222222-2222-4222-8222-222222222222"
 	for _, route := range []gatewayEndpointRoute{
-		{
-			codespaceUUID:  codespaceUUID,
-			endpointID:     "web",
-			label:          "Web",
-			upstreamScheme: "http",
-			instanceName:   "runtime-1",
-			upstreamPort:   3000,
-			public:         true,
-		},
-		{
-			codespaceUUID:  otherUUID,
-			endpointID:     "web",
-			label:          "Web",
-			upstreamScheme: "http",
-			instanceName:   "runtime-2",
-			upstreamPort:   3000,
-			public:         true,
-		},
+		gatewayEndpointRouteForTest(codespaceUUID, "web"),
+		gatewayEndpointRouteForTest(otherUUID, "web"),
 	} {
+		route.public = true
+		if route.codespaceUUID == otherUUID {
+			route.instanceName = "runtime-2"
+		}
 		if err := store.Put(route); err != nil {
 			t.Fatalf("put route: %v", err)
 		}
@@ -267,5 +224,15 @@ func assertGatewayRouteProxyCancelled(t *testing.T, request *http.Request) {
 	case <-request.Context().Done():
 	case <-time.After(time.Second):
 		t.Fatalf("proxy route context was not cancelled")
+	}
+}
+
+func gatewayEndpointRouteForTest(codespaceUUID, endpointID string) gatewayEndpointRoute {
+	return gatewayEndpointRoute{
+		codespaceUUID: codespaceUUID,
+		endpointID:    endpointID,
+		label:         "Web",
+		instanceName:  "runtime-1",
+		upstreamPort:  3000,
 	}
 }

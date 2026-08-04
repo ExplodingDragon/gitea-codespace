@@ -30,12 +30,11 @@ func completeEndpointRoutesForTest(codespaceUUID string, routes ...manager.Runti
 		instanceName = routes[0].InstanceName
 	}
 	return append([]manager.RuntimeEndpointRoute{{
-		CodespaceUUID:  codespaceUUID,
-		EndpointID:     runtimeendpoint.WorkspaceEndpointID,
-		Label:          runtimeendpoint.WorkspaceEndpointLabel,
-		UpstreamScheme: "http",
-		InstanceName:   instanceName,
-		UpstreamPort:   runtimeendpoint.WorkspaceEndpointPort,
+		CodespaceUUID: codespaceUUID,
+		EndpointID:    runtimeendpoint.WorkspaceEndpointID,
+		Label:         runtimeendpoint.WorkspaceEndpointLabel,
+		InstanceName:  instanceName,
+		UpstreamPort:  runtimeendpoint.WorkspaceEndpointPort,
 	}}, routes...)
 }
 
@@ -80,11 +79,13 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
 			Create: &codespacev1.CreateOperationPayload{
-				RepoFullName:     "owner/repo",
-				RepoCloneHttpUrl: "https://gitea.example.com/owner/repo.git",
-				RepoCloneSshUrl:  "git@gitea.example.com:owner/repo.git",
-				EnvironmentTag:   "default",
-				GitProtocol:      codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
+				Repository: &codespacev1.RepositoryCheckout{
+					FullName:          "owner/repo",
+					CloneHttpUrl:      "https://gitea.example.com/owner/repo.git",
+					CloneSshUrl:       "git@gitea.example.com:owner/repo.git",
+					PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP,
+				},
+				EnvironmentTag: "default",
 			},
 		},
 	}
@@ -101,7 +102,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	loaded := snapshots[0].Payload
 	if loaded.GetCodespaceUuid() != operation.GetCodespaceUuid() ||
 		loaded.GetOperationRversion() != operation.GetOperationRversion() ||
-		loaded.GetCreate().GetRepoFullName() != "owner/repo" {
+		loaded.GetCreate().GetRepository().GetFullName() != "owner/repo" {
 		t.Fatalf("loaded operation = %#v", loaded)
 	}
 	if snapshots[0].WorkerStage != manager.OperationWorkerStageLeasePaused {
@@ -368,11 +369,10 @@ func TestCodespaceStateStoreHealthStopPendingRoundTrip(t *testing.T) {
 		t.Fatalf("save runtime metadata snapshot: %v", err)
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		EndpointID:     "app",
-		Label:          "App",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
+		EndpointID:   "app",
+		Label:        "App",
+		InstanceName: "runtime-1",
+		UpstreamPort: 3000,
 	})); err != nil {
 		t.Fatalf("save endpoint routes: %v", err)
 	}
@@ -427,12 +427,11 @@ func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
 	store := NewCodespaceStateStore(stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	changed, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		EndpointID:     "app-3000",
-		Label:          " App 3000 ",
-		UpstreamScheme: "HTTP",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
-		Public:         true,
+		EndpointID:   "app-3000",
+		Label:        " App 3000 ",
+		InstanceName: "runtime-1",
+		UpstreamPort: 3000,
+		Public:       true,
 	}))
 	if err != nil {
 		t.Fatalf("save endpoint route: %v", err)
@@ -451,7 +450,6 @@ func TestCodespaceStateStoreEndpointRouteRoundTrip(t *testing.T) {
 	if route.codespaceUUID != codespaceUUID ||
 		route.endpointID != "app-3000" ||
 		route.label != "App 3000" ||
-		route.upstreamScheme != "http" ||
 		route.instanceName != "runtime-1" || route.upstreamPort != 3000 ||
 		!route.public {
 		t.Fatalf("route = %#v", route)
@@ -526,11 +524,10 @@ func TestCodespaceStateStoreAllowsDuplicateEndpointLabels(t *testing.T) {
 	var endpointRoutes []manager.RuntimeEndpointRoute
 	for _, endpointID := range []string{"app-3000", "app-3001"} {
 		endpointRoutes = append(endpointRoutes, manager.RuntimeEndpointRoute{
-			EndpointID:     endpointID,
-			Label:          "预览服务",
-			UpstreamScheme: "http",
-			InstanceName:   "runtime-1",
-			UpstreamPort:   3000,
+			EndpointID:   endpointID,
+			Label:        "预览服务",
+			InstanceName: "runtime-1",
+			UpstreamPort: 3000,
 		})
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, endpointRoutes...)); err != nil {
@@ -560,11 +557,10 @@ func TestCodespaceStateStoreEndpointRoutePreservesRuntimeState(t *testing.T) {
 		t.Fatalf("save runtime transition: %v", err)
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		EndpointID:     "web",
-		Label:          "Web",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   8080,
+		EndpointID:   "web",
+		Label:        "Web",
+		InstanceName: "runtime-1",
+		UpstreamPort: 8080,
 	})); err != nil {
 		t.Fatalf("save endpoint route: %v", err)
 	}
@@ -588,17 +584,17 @@ func TestCodespaceStateStoreEndpointLimitAllowsUpdates(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	routes := completeEndpointRoutesForTest(codespaceUUID)
 	for i := 0; i < maxCodespaceEndpoints-1; i++ {
-		routes = append(routes, runtimeEndpointRouteForTest(endpointIDForTest(i), "App", "127.0.0.1:3000"))
+		routes = append(routes, runtimeEndpointRouteForTest(endpointIDForTest(i), "App", 3000))
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
 		t.Fatalf("save max endpoint routes: %v", err)
 	}
 	tooManyRoutes := append([]manager.RuntimeEndpointRoute(nil), routes...)
-	tooManyRoutes = append(tooManyRoutes, runtimeEndpointRouteForTest("extra", "Extra", "127.0.0.1:3001"))
+	tooManyRoutes = append(tooManyRoutes, runtimeEndpointRouteForTest("extra", "Extra", 3001))
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, tooManyRoutes); !errors.Is(err, errEndpointLimitExceeded) {
 		t.Fatalf("extra endpoint err = %v", err)
 	}
-	routes[1] = runtimeEndpointRouteForTest(endpointIDForTest(0), "Updated", "127.0.0.1:3002")
+	routes[1] = runtimeEndpointRouteForTest(endpointIDForTest(0), "Updated", 3002)
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
 		t.Fatalf("update existing endpoint at limit: %v", err)
 	}
@@ -623,12 +619,11 @@ func TestCodespaceStateStoreRuntimeMetadataRequestIncludesEndpoints(t *testing.T
 		t.Fatalf("save runtime metadata snapshot: %v", err)
 	}
 	endpointRoutes := completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		EndpointID:     "app-3000",
-		Label:          "App 3000",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
-		Public:         true,
+		EndpointID:   "app-3000",
+		Label:        "App 3000",
+		InstanceName: "runtime-1",
+		UpstreamPort: 3000,
+		Public:       true,
 	})
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {
 		t.Fatalf("save endpoint route: %v", err)
@@ -716,8 +711,8 @@ func TestCodespaceStateStoreClearRuntimeMetadataKeepsResumeState(t *testing.T) {
 		RuntimeUserName: "developer",
 		EnvironmentTag:  "default",
 		DevContainer: provisioner.DevContainerConfiguration{
-			Source:       "platform_default",
-			DefaultImage: "mcr.microsoft.com/devcontainers/base:ubuntu",
+			Source:  provisioner.DevContainerSourceTemplate,
+			Content: `{"image":"mcr.microsoft.com/devcontainers/base:ubuntu"}`,
 		},
 	}
 	if err := store.SaveStartupInput(input); err != nil {
@@ -742,11 +737,10 @@ func TestCodespaceStateStoreClearRuntimeMetadataKeepsResumeState(t *testing.T) {
 		t.Fatalf("save runtime metadata: %v", err)
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
-		EndpointID:     "app",
-		Label:          "App",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
+		EndpointID:   "app",
+		Label:        "App",
+		InstanceName: "runtime-1",
+		UpstreamPort: 3000,
 	})); err != nil {
 		t.Fatalf("save endpoint route: %v", err)
 	}
@@ -761,11 +755,10 @@ func TestCodespaceStateStoreClearRuntimeMetadataKeepsResumeState(t *testing.T) {
 		t.Fatalf("gateway routes after clear = %#v, err=%v", routes, err)
 	}
 	lateRoute := manager.RuntimeEndpointRoute{
-		EndpointID:     "late",
-		Label:          "Late",
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   4000,
+		EndpointID:   "late",
+		Label:        "Late",
+		InstanceName: "runtime-1",
+		UpstreamPort: 4000,
 	}
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, lateRoute)); err == nil {
 		t.Fatal("late endpoint update was accepted after runtime metadata clear")
@@ -989,13 +982,12 @@ func endpointIDForTest(index int) string {
 	return fmt.Sprintf("app-%02d", index)
 }
 
-func runtimeEndpointRouteForTest(endpointID, label, _ string) manager.RuntimeEndpointRoute {
+func runtimeEndpointRouteForTest(endpointID, label string, port uint32) manager.RuntimeEndpointRoute {
 	return manager.RuntimeEndpointRoute{
-		EndpointID:     endpointID,
-		Label:          label,
-		UpstreamScheme: "http",
-		InstanceName:   "runtime-1",
-		UpstreamPort:   3000,
+		EndpointID:   endpointID,
+		Label:        label,
+		InstanceName: "runtime-1",
+		UpstreamPort: port,
 	}
 }
 
@@ -1019,21 +1011,19 @@ func TestCodespaceStateStoreRuntimeEndpointRoutesReplaceSnapshot(t *testing.T) {
 	}
 	routes := completeEndpointRoutesForTest(codespaceUUID,
 		manager.RuntimeEndpointRoute{
-			CodespaceUUID:  codespaceUUID,
-			EndpointID:     "web",
-			Label:          "Web",
-			UpstreamScheme: "http",
-			InstanceName:   "runtime-1",
-			UpstreamPort:   3000,
-			Public:         true,
+			CodespaceUUID: codespaceUUID,
+			EndpointID:    "web",
+			Label:         "Web",
+			InstanceName:  "runtime-1",
+			UpstreamPort:  3000,
+			Public:        true,
 		},
 		manager.RuntimeEndpointRoute{
-			CodespaceUUID:  codespaceUUID,
-			EndpointID:     "api",
-			Label:          "API",
-			UpstreamScheme: "http",
-			InstanceName:   "runtime-1",
-			UpstreamPort:   3001,
+			CodespaceUUID: codespaceUUID,
+			EndpointID:    "api",
+			Label:         "API",
+			InstanceName:  "runtime-1",
+			UpstreamPort:  3001,
 		},
 	)
 	changed, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, routes)
@@ -1097,7 +1087,7 @@ func TestValidateCodespaceStateFilesRejectsInvalidEndpointSnapshot(t *testing.T)
 	if err := os.WriteFile(path, []byte(`{
 		"state_format_version": 2,
 		"endpoints": [
-			{"endpoint_id": "web", "label": "Bad\u003cLabel", "upstream_scheme": "http", "upstream_host": "127.0.0.1:3000", "public": false}
+			{"endpoint_id": "web", "label": "Bad\u003cLabel", "instance_name": "runtime-1", "upstream_port": 3000, "public": false}
 		]
 	}`), 0o600); err != nil {
 		t.Fatalf("write codespace state: %v", err)
@@ -1124,11 +1114,10 @@ func TestValidateCodespaceStateFilesRejectsTooManyEndpoints(t *testing.T) {
 	}
 	for i := 0; i <= maxCodespaceEndpoints; i++ {
 		state.Endpoints = append(state.Endpoints, codespaceEndpointSnapshot{
-			EndpointID:     endpointIDForTest(i),
-			Label:          "App",
-			UpstreamScheme: "http",
-			InstanceName:   "runtime-1",
-			UpstreamPort:   3000,
+			EndpointID:   endpointIDForTest(i),
+			Label:        "App",
+			InstanceName: "runtime-1",
+			UpstreamPort: 3000,
 		})
 	}
 	content, err := json.Marshal(state)

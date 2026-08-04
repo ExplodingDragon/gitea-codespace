@@ -45,6 +45,11 @@ var runtimeMounts = [...]struct {
 	{path: "/var/lib/gitea-codespace/runtime"},
 }
 
+// WorkspaceServiceOptions selects which create-time IDE initialization steps run.
+type WorkspaceServiceOptions struct {
+	InitializeWebIDE bool
+}
+
 // BuildCreateOptions translates a Codespace create request into product-neutral engine options.
 func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) {
 	mounts := make([]devcontainer.Mount, 0, len(runtimeMounts))
@@ -108,7 +113,7 @@ func ConfigureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 }
 
 // StartWorkspaceServices runs attach lifecycle commands and makes the Web IDE and declared endpoints available.
-func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, stdout, stderr io.Writer) error {
+func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, opts WorkspaceServiceOptions, stdout, stderr io.Writer) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -118,31 +123,33 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
 		return err
 	}
-	customizations := struct {
-		Settings   map[string]any `json:"settings"`
-		Extensions []string       `json:"extensions"`
-	}{}
-	if raw := state.Configuration.Customizations["vscode"]; len(raw) > 0 {
-		if err := json.Unmarshal(raw, &customizations); err != nil {
-			return fmt.Errorf("decode VS Code customizations: %w", err)
-		}
-	}
-	settings := []byte("{}")
-	if customizations.Settings != nil {
-		var err error
-		settings, err = json.Marshal(customizations.Settings)
-		if err != nil {
-			return err
-		}
-	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets, map[string]string{
-		"GITEA_WEB_IDE_PORT": fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
-		"GITEA_WORKSPACE":    state.RemoteWorkdir,
+		"GITEA_WEB_IDE_INITIALIZE": strconv.FormatBool(opts.InitializeWebIDE),
+		"GITEA_WEB_IDE_PORT":       fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
+		"GITEA_WORKSPACE":          state.RemoteWorkdir,
 	})
-	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, bytes.NewReader(settings)); err != nil {
+	var settingsReader io.Reader
+	customizations := webIDECustomizations{}
+	if opts.InitializeWebIDE {
+		if raw := state.Configuration.Customizations["vscode"]; len(raw) > 0 {
+			if err := json.Unmarshal(raw, &customizations); err != nil {
+				return fmt.Errorf("decode VS Code customizations: %w", err)
+			}
+		}
+		settings := []byte("{}")
+		if customizations.Settings != nil {
+			encoded, err := json.Marshal(customizations.Settings)
+			if err != nil {
+				return err
+			}
+			settings = encoded
+		}
+		settingsReader = bytes.NewReader(settings)
+	}
+	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
-	if len(customizations.Extensions) == 0 {
+	if !opts.InitializeWebIDE || len(customizations.Extensions) == 0 {
 		return nil
 	}
 	fmt.Fprintln(stdout, "##[group]Install VS Code extensions")
@@ -157,4 +164,9 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		}
 	}
 	return nil
+}
+
+type webIDECustomizations struct {
+	Settings   map[string]any `json:"settings"`
+	Extensions []string       `json:"extensions"`
 }
