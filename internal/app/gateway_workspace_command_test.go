@@ -10,7 +10,6 @@ import (
 	"net"
 	"strconv"
 	"sync"
-	"time"
 
 	"github.com/pkg/sftp"
 
@@ -113,10 +112,6 @@ func (b *testWorkspaceCommandBackend) OpenWorkspaceCommand(ctx context.Context, 
 	return session, nil
 }
 
-func (b *testWorkspaceCommandBackend) captureStdin() {
-	b.stdin = make(chan []byte, 16)
-}
-
 func (b *testWorkspaceCommandBackend) readStdin(reader io.Reader) {
 	if b.stdin == nil {
 		_, _ = io.Copy(io.Discard, reader)
@@ -189,7 +184,7 @@ func (b *testWorkspaceCommandBackend) CheckDevContainer(ctx context.Context, ins
 		return err
 	}
 	if instanceName == "" {
-		return fmt.Errorf("Dev Container target is missing")
+		return fmt.Errorf("dev container target is missing")
 	}
 	return nil
 }
@@ -260,20 +255,4 @@ func (s *testWorkspaceCommandSession) Close() error {
 		_ = s.stdin.Close()
 	})
 	return nil
-}
-
-func waitTestWorkspaceResize(t testingT, backend *testWorkspaceCommandBackend, cols, rows int) testWorkspaceResize {
-	t.Helper()
-	timer := time.NewTimer(time.Second)
-	defer timer.Stop()
-	for {
-		select {
-		case resize := <-backend.resize:
-			if resize.cols == cols && resize.rows == rows {
-				return resize
-			}
-		case <-timer.C:
-			t.Fatalf("timed out waiting for terminal resize %dx%d", cols, rows)
-		}
-	}
 }

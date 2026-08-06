@@ -19,12 +19,12 @@ import (
 
 func checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
 	if requirements.CPUs > float64(runtime.NumCPU()) {
-		return fmt.Errorf("Dev Container requires %g CPUs but the runtime provides %d", requirements.CPUs, runtime.NumCPU())
+		return fmt.Errorf("dev container requires %g CPUs but the runtime provides %d", requirements.CPUs, runtime.NumCPU())
 	}
 	if strings.TrimSpace(requirements.Memory) != "" {
 		required, err := dockerunits.RAMInBytes(requirements.Memory)
 		if err != nil || required <= 0 {
-			return fmt.Errorf("Dev Container hostRequirements.memory %q is invalid", requirements.Memory)
+			return fmt.Errorf("dev container hostRequirements.memory %q is invalid", requirements.Memory)
 		}
 		var available uint64
 		if content, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil && strings.TrimSpace(string(content)) != "max" {
@@ -38,13 +38,13 @@ func checkHostRequirements(requirements devcontainer.HostRequirements, workspace
 			available = info.Totalram * uint64(info.Unit)
 		}
 		if uint64(required) > available {
-			return fmt.Errorf("Dev Container requires %s memory but the runtime provides %s", requirements.Memory, dockerunits.BytesSize(float64(available)))
+			return fmt.Errorf("dev container requires %s memory but the runtime provides %s", requirements.Memory, dockerunits.BytesSize(float64(available)))
 		}
 	}
 	if strings.TrimSpace(requirements.Storage) != "" {
 		required, err := dockerunits.RAMInBytes(requirements.Storage)
 		if err != nil || required <= 0 {
-			return fmt.Errorf("Dev Container hostRequirements.storage %q is invalid", requirements.Storage)
+			return fmt.Errorf("dev container hostRequirements.storage %q is invalid", requirements.Storage)
 		}
 		var info unix.Statfs_t
 		if err := unix.Statfs(workspace, &info); err != nil {
@@ -52,7 +52,7 @@ func checkHostRequirements(requirements devcontainer.HostRequirements, workspace
 		}
 		available := info.Bavail * uint64(info.Bsize)
 		if uint64(required) > available {
-			return fmt.Errorf("Dev Container requires %s storage but the runtime provides %s", requirements.Storage, dockerunits.BytesSize(float64(available)))
+			return fmt.Errorf("dev container requires %s storage but the runtime provides %s", requirements.Storage, dockerunits.BytesSize(float64(available)))
 		}
 	}
 	return nil
@@ -69,7 +69,7 @@ func (e *Engine) resolveGPURequest(ctx context.Context, requirement []byte) (boo
 	}
 	_, available := info.Runtimes["nvidia"]
 	if !available && value != `"optional"` {
-		return false, fmt.Errorf("Dev Container requires a GPU but the Docker nvidia runtime is unavailable")
+		return false, fmt.Errorf("dev container requires a GPU but the Docker nvidia runtime is unavailable")
 	}
 	return available, nil
 }

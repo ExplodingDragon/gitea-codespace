@@ -1,4 +1,5 @@
 GO ?= go
+ETCD ?= etcd
 
 .PHONY: test
 test: test-scripts
@@ -10,6 +11,28 @@ test-scripts:
 	bash -n internal/devcontainerruntime/builtin/configure-git.sh
 	bash -n internal/devcontainerruntime/builtin/start-web-ide.sh
 	sh -n devcontainer/docker/builtin/update-user.sh
+	bash -n scripts/test-etcd.sh
+
+.PHONY: test-smoke
+test-smoke:
+	$(GO) test -count=1 -run '^(TestInfrastructureStatePersistsConfigAndEncryptedSiteSecret|TestInfrastructureAdminSiteAPIHidesSecret|TestInfrastructureAdminAPIRequiresBearerToken|TestRunWithConfigGatewayRoleSkipsWorkerRPC)$$' ./internal/app
+
+.PHONY: test-etcd-required
+test-etcd-required:
+	ETCD=$(ETCD) GO=$(GO) bash scripts/test-etcd.sh single
+
+.PHONY: test-etcd-cluster-required
+test-etcd-cluster-required:
+	ETCD=$(ETCD) GO=$(GO) bash scripts/test-etcd.sh cluster
+
+.PHONY: test-etcd
+test-etcd:
+	if command -v $(ETCD) >/dev/null 2>&1; then \
+		ETCD=$(ETCD) GO=$(GO) bash scripts/test-etcd.sh single; \
+		ETCD=$(ETCD) GO=$(GO) bash scripts/test-etcd.sh cluster; \
+	else \
+		echo "etcd tests skipped: etcd binary is unavailable"; \
+	fi
 
 .PHONY: test-devcontainer-e2e-required
 test-devcontainer-e2e-required:

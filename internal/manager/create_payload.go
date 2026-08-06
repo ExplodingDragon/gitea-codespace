@@ -48,7 +48,7 @@ func startupInputFromCreatePayload(operation *codespacev1.OperationPayload, payl
 		return StartupInput{}, fmt.Errorf("create Dev Container configuration is required")
 	}
 	startupInput := StartupInput{
-		CodespaceUUID:   operation.GetCodespaceUuid(),
+		CodespaceUUID:   operation.GetRuntimeUuid(),
 		RepoFullName:    repoFullName,
 		Username:        username,
 		GitUserEmail:    gitUserEmail,

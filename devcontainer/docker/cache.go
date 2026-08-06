@@ -27,26 +27,26 @@ import (
 func validateCacheOptions(cache devcontainer.CacheOptions) error {
 	if cache.BuildRegistry != "" {
 		if _, err := parseOCIRepositoryBase(cache.BuildRegistry, true); err != nil {
-			return fmt.Errorf("BuildKit cache registry: %w", err)
+			return fmt.Errorf("buildkit cache registry: %w", err)
 		}
 		if strings.TrimSpace(cache.BuildScope) == "" {
-			return fmt.Errorf("BuildKit cache scope is empty")
+			return fmt.Errorf("buildkit cache scope is empty")
 		}
 	}
 	for registry, mirror := range cache.Mirrors {
 		if registry == "" || registry != strings.ToLower(strings.TrimSpace(registry)) || strings.Contains(registry, "://") {
-			return fmt.Errorf("OCI mirror registry %q is invalid", registry)
+			return fmt.Errorf("oci mirror registry %q is invalid", registry)
 		}
 		if _, err := parseOCIRepositoryBase(mirror, false); err != nil {
-			return fmt.Errorf("OCI mirror for %s: %w", registry, err)
+			return fmt.Errorf("oci mirror for %s: %w", registry, err)
 		}
 	}
 	for registry, credential := range cache.Credentials {
 		if strings.TrimSpace(registry) == "" {
-			return fmt.Errorf("OCI cache credential registry is empty")
+			return fmt.Errorf("oci cache credential registry is empty")
 		}
 		if strings.TrimSpace(credential.Username) == "" || strings.TrimSpace(credential.Password) == "" {
-			return fmt.Errorf("OCI cache credential for %s is incomplete", registry)
+			return fmt.Errorf("oci cache credential for %s is incomplete", registry)
 		}
 	}
 	return nil
@@ -145,10 +145,10 @@ func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bo
 		return false
 	}
 	if err := e.pullImageReference(ctx, imageName); err != nil {
-		fmt.Fprintf(e.stderr, "Dev Container %s image cache miss: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "Dev Container %s image cache miss: %v\n", stage, err)
 		return false
 	}
-	fmt.Fprintf(e.stdout, "Dev Container %s image cache hit\n", stage)
+	_, _ = fmt.Fprintf(e.stdout, "Dev Container %s image cache hit\n", stage)
 	return true
 }
 
@@ -157,25 +157,25 @@ func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImag
 		return
 	}
 	if err := e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
-		fmt.Fprintf(e.stderr, "Warning: tag %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "Warning: tag %s image cache: %v\n", stage, err)
 		return
 	}
 	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), targetImage)
 	if err != nil {
-		fmt.Fprintf(e.stderr, "Warning: resolve %s image cache credentials: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "Warning: resolve %s image cache credentials: %v\n", stage, err)
 		return
 	}
 	reader, err := e.client.ImagePush(ctx, targetImage, image.PushOptions{RegistryAuth: registryAuth})
 	if err != nil {
-		fmt.Fprintf(e.stderr, "Warning: push %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "Warning: push %s image cache: %v\n", stage, err)
 		return
 	}
-	defer reader.Close()
+	defer func() { _ = reader.Close() }()
 	if err := streamDockerProgress(reader); err != nil {
-		fmt.Fprintf(e.stderr, "Warning: publish %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "Warning: publish %s image cache: %v\n", stage, err)
 		return
 	}
-	fmt.Fprintf(e.stdout, "Dev Container %s image cache published\n", stage)
+	_, _ = fmt.Fprintf(e.stdout, "Dev Container %s image cache published\n", stage)
 }
 
 func streamDockerProgress(reader io.Reader) error {
@@ -217,7 +217,7 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		}
 		arguments = append(arguments, options...)
 		arguments = append(arguments, contextPath)
-		command := imagecommand.NewBuildCommand(e.cli)
+		command := imagecommand.NewBuildCommand(e.cli) //nolint:staticcheck // Docker CLI keeps BuildKit cache flags aligned with user-facing docker build behavior.
 		command.SetArgs(arguments)
 		command.SetContext(ctx)
 		command.SilenceUsage = true
@@ -254,21 +254,21 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 		service.Build.CacheFrom = append(service.Build.CacheFrom, "type=registry,ref="+cacheReference)
 		service.Build.CacheTo = append(service.Build.CacheTo, "type=registry,ref="+cacheReference+",mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true")
 		project.Services[serviceName] = service
-		fmt.Fprintf(e.stdout, "##[group]Restore and publish %s build cache\n", stage)
+		_, _ = fmt.Fprintf(e.stdout, "##[group]Restore and publish %s build cache\n", stage)
 	}
 	err := e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
 	if cacheReference != "" {
-		fmt.Fprintln(e.stdout, "##[endgroup]")
+		_, _ = fmt.Fprintln(e.stdout, "##[endgroup]")
 	}
 	if err == nil || cacheReference == "" {
 		return err
 	}
-	fmt.Fprintf(e.stderr, "Warning: %s BuildKit registry cache is unavailable, retrying with the local cache: %v\n", stage, err)
+	_, _ = fmt.Fprintf(e.stderr, "Warning: %s BuildKit registry cache is unavailable, retrying with the local cache: %v\n", stage, err)
 	service.Build.CacheFrom = originalCacheFrom
 	service.Build.CacheTo = originalCacheTo
 	project.Services[serviceName] = service
-	fmt.Fprintf(e.stdout, "##[group]Retry %s build with local cache\n", stage)
+	_, _ = fmt.Fprintf(e.stdout, "##[group]Retry %s build with local cache\n", stage)
 	err = e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
-	fmt.Fprintln(e.stdout, "##[endgroup]")
+	_, _ = fmt.Fprintln(e.stdout, "##[endgroup]")
 	return err
 }

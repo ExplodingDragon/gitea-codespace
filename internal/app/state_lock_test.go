@@ -26,7 +26,7 @@ func TestStateDirLockRejectsSecondHolder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("acquire first lock: %v", err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 
 	if _, err := acquireStateDirLock(stateDir); err == nil {
 		t.Fatalf("expected second lock to fail")
@@ -34,15 +34,13 @@ func TestStateDirLockRejectsSecondHolder(t *testing.T) {
 }
 
 func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
 	stateDir := filepath.Join(t.TempDir(), "state")
-	saveManagerRegistrationForTest(t, stateDir, "https://gitea.example.com", 42)
 	lock, err := acquireStateDirLock(stateDir)
 	if err != nil {
 		t.Fatalf("acquire lock: %v", err)
 	}
-	defer lock.Close()
+	defer func() { _ = lock.Close() }()
+	managerState := saveManagerStateForTest(t, stateDir, "https://gitea.example.com", 42)
 
 	service := &lockTestManagerService{}
 	server := newGiteaManagerServiceServer(t, service)
@@ -53,7 +51,7 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	config.Gateway.HTTP.Listen = "127.0.0.1:0"
 	config.Node.StateDir = stateDir
 	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
-	err = RunWithConfig(&output, config)
+	err = RunWithInfrastructureConfig(&output, InfrastructureRuntimeConfig{Config: config, ManagerState: managerState})
 	if err == nil {
 		t.Fatalf("expected locked state dir error")
 	}
@@ -65,9 +63,7 @@ func TestRunWithConfigStateDirLockFailsBeforeRPC(t *testing.T) {
 	}
 }
 
-func TestRunWithConfigMissingManagerStateFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
+func TestRunWithConfigMissingManagerIdentityFailsBeforeRPC(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state")
 	service := &lockTestManagerService{}
 	server := newLockTestManagerServer(t, service)
@@ -78,11 +74,11 @@ func TestRunWithConfigMissingManagerStateFailsBeforeRPC(t *testing.T) {
 	config.Gateway.HTTP.Listen = "127.0.0.1:0"
 	config.Node.StateDir = stateDir
 	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
-	err := RunWithConfig(&output, config)
+	err := RunWithInfrastructureConfig(&output, InfrastructureRuntimeConfig{Config: config})
 	if err == nil {
-		t.Fatalf("expected missing manager state error")
+		t.Fatalf("expected missing manager identity error")
 	}
-	if !strings.Contains(err.Error(), managerStateFileName) {
+	if !strings.Contains(err.Error(), "gitea_url") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if service.calls.Load() != 0 {
@@ -91,19 +87,17 @@ func TestRunWithConfigMissingManagerStateFailsBeforeRPC(t *testing.T) {
 }
 
 func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
 	stateDir := filepath.Join(t.TempDir(), "state")
 	occupied, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen occupied address: %v", err)
 	}
-	defer occupied.Close()
+	defer func() { _ = occupied.Close() }()
 
 	service := &lockTestManagerService{}
 	server := newGiteaManagerServiceServer(t, service)
 	defer server.Close()
-	saveManagerRegistrationForTest(t, stateDir, server.URL, 42)
+	managerState := saveManagerStateForTest(t, stateDir, server.URL, 42)
 
 	var output bytes.Buffer
 	config := DefaultConfig()
@@ -112,7 +106,7 @@ func TestRunWithConfigListenerBindFailsBeforeRPC(t *testing.T) {
 	config.Gateway.SSH.Listen = "127.0.0.1:0"
 	config.Node.StateDir = stateDir
 	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
-	err = RunWithConfig(&output, config)
+	err = RunWithInfrastructureConfig(&output, InfrastructureRuntimeConfig{Config: config, ManagerState: managerState})
 	if err == nil {
 		t.Fatalf("expected listener bind error")
 	}

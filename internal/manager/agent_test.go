@@ -30,14 +30,13 @@ import (
 func TestAgentHandlesCreateOperation(t *testing.T) {
 	t.Parallel()
 
-	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	stateStore := &memoryOperationStateStore{}
 	metadataStore := &memoryRuntimeMetadataStateStore{}
 	service := &managerService{
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			CodespaceId:               42,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -94,6 +93,14 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	}
 	if service.finalOperationType != codespacev1.OperationType_OPERATION_TYPE_CREATE {
 		t.Fatalf("final operation type = %s", service.finalOperationType)
+	}
+	bindRequest := service.boundRuntimeIdentityRequest()
+	if bindRequest == nil || bindRequest.GetCodespaceId() != 42 || bindRequest.GetOperationRversion() != 1 {
+		t.Fatalf("runtime identity bind request = %#v", bindRequest)
+	}
+	codespaceUUID := bindRequest.GetRuntimeUuid()
+	if codespaceUUID == "" {
+		t.Fatalf("runtime identity was not bound")
 	}
 	if service.metadataGeneration != 6 {
 		t.Fatalf("metadata generation = %d", service.metadataGeneration)
@@ -243,7 +250,7 @@ func TestAgentFetchCapacityUsesLocalWorkers(t *testing.T) {
 		InitialOperations: []OperationSnapshot{
 			{
 				Payload: &codespacev1.OperationPayload{
-					CodespaceUuid:     startupUUID,
+					RuntimeUuid:       startupUUID,
 					OperationRversion: 1,
 					Command:           &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}},
 				},
@@ -251,7 +258,7 @@ func TestAgentFetchCapacityUsesLocalWorkers(t *testing.T) {
 			},
 			{
 				Payload: &codespacev1.OperationPayload{
-					CodespaceUuid:     cleanupUUID,
+					RuntimeUuid:       cleanupUUID,
 					OperationRversion: 1,
 					Command:           &codespacev1.OperationPayload_Delete{Delete: &codespacev1.DeleteOperationPayload{}},
 				},
@@ -452,7 +459,7 @@ func TestAgentFetchCapacityNewPayloadBecomesWorkerOccupancy(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -552,7 +559,7 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -592,7 +599,7 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 
 	service.setOperation(&codespacev1.OperationPayload{
 		OperationRversion:         1,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LeaseValidForMilliseconds: 0,
 		Command: &codespacev1.OperationPayload_AbortCreate{
 			AbortCreate: &codespacev1.AbortCreateOperationPayload{},
@@ -636,7 +643,7 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -678,7 +685,7 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 
 	service.setOperation(&codespacev1.OperationPayload{
 		OperationRversion:         2,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Delete{
 			Delete: &codespacev1.DeleteOperationPayload{},
@@ -709,7 +716,7 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Resume{
@@ -764,7 +771,7 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 
 	service.setOperation(&codespacev1.OperationPayload{
 		OperationRversion:         2,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Delete{
 			Delete: &codespacev1.DeleteOperationPayload{},
@@ -795,7 +802,7 @@ func TestAgentDeleteTakesOverRunningStop(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Stop{
@@ -843,7 +850,7 @@ func TestAgentDeleteTakesOverRunningStop(t *testing.T) {
 
 	service.setOperation(&codespacev1.OperationPayload{
 		OperationRversion:         2,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Delete{
 			Delete: &codespacev1.DeleteOperationPayload{},
@@ -874,7 +881,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -914,7 +921,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 
 	service.setOperation(&codespacev1.OperationPayload{
 		OperationRversion:         1,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
 			Create: createOperationPayloadForTest(),
@@ -961,7 +968,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 	}, server.Client(), trackedProvisioner)
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 1,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Create{
 			Create: createOperationPayloadForTest(),
 		},
@@ -996,7 +1003,7 @@ func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -1058,11 +1065,11 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 		RuntimeMetadataPublisher: publisher,
 	}, http.DefaultClient, provisioner.NewDummy())
 
-	stopOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	stopOperation := &codespacev1.OperationPayload{RuntimeUuid: codespaceUUID}
 	if err := agent.handleStop(context.Background(), stopOperation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
-	deleteOperation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	deleteOperation := &codespacev1.OperationPayload{RuntimeUuid: codespaceUUID}
 	if err := agent.handleDelete(context.Background(), deleteOperation, false); err != nil {
 		t.Fatalf("handle delete: %v", err)
 	}
@@ -1092,7 +1099,7 @@ func TestAgentStopSavesRuntimeEnvironment(t *testing.T) {
 		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
 
-	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	operation := &codespacev1.OperationPayload{RuntimeUuid: codespaceUUID}
 	if err := agent.handleStop(context.Background(), operation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
@@ -1123,7 +1130,7 @@ func TestAgentStopEnvironmentFailureKeepsPreviousEnvironment(t *testing.T) {
 		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
 
-	operation := &codespacev1.OperationPayload{CodespaceUuid: codespaceUUID}
+	operation := &codespacev1.OperationPayload{RuntimeUuid: codespaceUUID}
 	if err := agent.handleStop(context.Background(), operation); err != nil {
 		t.Fatalf("handle stop: %v", err)
 	}
@@ -1148,7 +1155,7 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 		metadataOperationRVersion: 2,
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         2,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Resume{
@@ -1268,7 +1275,7 @@ func TestAgentReportsObservedOperationWhileRunning(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         2,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -1309,8 +1316,8 @@ func TestAgentReportsObservedOperationWhileRunning(t *testing.T) {
 	if len(observed) != 1 {
 		t.Fatalf("observed operations = %d", len(observed))
 	}
-	if observed[0].GetCodespaceUuid() != codespaceUUID || observed[0].GetOperationRversion() != 2 {
-		t.Fatalf("observed operation = %s version %d", observed[0].GetCodespaceUuid(), observed[0].GetOperationRversion())
+	if observed[0].GetRuntimeUuid() != codespaceUUID || observed[0].GetOperationRversion() != 2 {
+		t.Fatalf("observed operation = %s version %d", observed[0].GetRuntimeUuid(), observed[0].GetOperationRversion())
 	}
 
 	close(provisioner.release)
@@ -1323,7 +1330,7 @@ func TestAgentResumesLoadedOperationAfterRenewal(t *testing.T) {
 	codespaceUUID := "33333333-3333-4333-8333-333333333333"
 	operation := &codespacev1.OperationPayload{
 		OperationRversion:         3,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LogOffset:                 0,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
@@ -1368,8 +1375,8 @@ func TestAgentResumesLoadedOperationAfterRenewal(t *testing.T) {
 	if len(observed) != 1 {
 		t.Fatalf("observed operations = %d", len(observed))
 	}
-	if observed[0].GetCodespaceUuid() != codespaceUUID || observed[0].GetOperationRversion() != 3 {
-		t.Fatalf("observed operation = %s version %d", observed[0].GetCodespaceUuid(), observed[0].GetOperationRversion())
+	if observed[0].GetRuntimeUuid() != codespaceUUID || observed[0].GetOperationRversion() != 3 {
+		t.Fatalf("observed operation = %s version %d", observed[0].GetRuntimeUuid(), observed[0].GetOperationRversion())
 	}
 	if stateStore.savedCount() != 0 {
 		t.Fatalf("saved loaded operation = %d", stateStore.savedCount())
@@ -1388,7 +1395,7 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         4,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 200,
 			Command: &codespacev1.OperationPayload_Create{
@@ -1454,7 +1461,7 @@ func TestAgentTriggersInventoryAfterResourceAbsentFinal(t *testing.T) {
 		finalResourceAbsent: true,
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -1502,7 +1509,7 @@ func TestFetchStopsOnOperationVersionRegression(t *testing.T) {
 	service := &managerService{
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         5,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Stop{
@@ -1523,7 +1530,7 @@ func TestFetchStopsOnOperationVersionRegression(t *testing.T) {
 		InitialOperations: []OperationSnapshot{{
 			Payload: &codespacev1.OperationPayload{
 				OperationRversion: 6,
-				CodespaceUuid:     codespaceUUID,
+				RuntimeUuid:       codespaceUUID,
 				Command: &codespacev1.OperationPayload_Stop{
 					Stop: &codespacev1.StopOperationPayload{},
 				},
@@ -1549,7 +1556,7 @@ func TestFetchDropsDelayedOperationVersion(t *testing.T) {
 		InitialOperations: []OperationSnapshot{{
 			Payload: &codespacev1.OperationPayload{
 				OperationRversion: 6,
-				CodespaceUuid:     codespaceUUID,
+				RuntimeUuid:       codespaceUUID,
 				Command: &codespacev1.OperationPayload_Stop{
 					Stop: &codespacev1.StopOperationPayload{},
 				},
@@ -1638,7 +1645,7 @@ func TestAgentRunReportsInventoryBeforeOnline(t *testing.T) {
 	if len(instances) != 1 {
 		t.Fatalf("inventory instances = %d", len(instances))
 	}
-	if instances[0].GetCodespaceUuid() != codespaceUUID ||
+	if instances[0].GetRuntimeUuid() != codespaceUUID ||
 		instances[0].GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING ||
 		instances[0].GetObservedOperationRversion() != 0 {
 		t.Fatalf("inventory instance = %#v", instances[0])
@@ -1849,7 +1856,7 @@ func TestReportInventoryStopsStableRunningAfterHealthFailures(t *testing.T) {
 	}
 	transitions := service.runtimeTransitions()
 	if len(transitions) != 1 ||
-		transitions[0].GetCodespaceUuid() != codespaceUUID ||
+		transitions[0].GetRuntimeUuid() != codespaceUUID ||
 		transitions[0].GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_STOPPED ||
 		transitions[0].GetRuntimeGeneration() != 5 {
 		t.Fatalf("runtime transitions = %#v", transitions)
@@ -2055,7 +2062,7 @@ func TestReportInventoryStopsOnOperationVersionRegression(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid:            codespaceUUID,
+			RuntimeUuid:              codespaceUUID,
 			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME,
 			CurrentOperationRversion: 5,
 		}},
@@ -2074,7 +2081,7 @@ func TestReportInventoryStopsOnOperationVersionRegression(t *testing.T) {
 		InitialOperations: []OperationSnapshot{{
 			Payload: &codespacev1.OperationPayload{
 				OperationRversion: 6,
-				CodespaceUuid:     codespaceUUID,
+				RuntimeUuid:       codespaceUUID,
 				Command: &codespacev1.OperationPayload_Stop{
 					Stop: &codespacev1.StopOperationPayload{},
 				},
@@ -2117,7 +2124,7 @@ func TestInventoryActionDropsDelayedOperationVersion(t *testing.T) {
 		InitialOperations: []OperationSnapshot{{
 			Payload: &codespacev1.OperationPayload{
 				OperationRversion: 6,
-				CodespaceUuid:     codespaceUUID,
+				RuntimeUuid:       codespaceUUID,
 				Command: &codespacev1.OperationPayload_Stop{
 					Stop: &codespacev1.StopOperationPayload{},
 				},
@@ -2132,7 +2139,7 @@ func TestInventoryActionDropsDelayedOperationVersion(t *testing.T) {
 		map[string]int64{codespaceUUID: 4},
 		nil,
 		[]*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid:            codespaceUUID,
+			RuntimeUuid:              codespaceUUID,
 			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME,
 			CurrentOperationRversion: 5,
 		}},
@@ -2167,7 +2174,7 @@ func TestReportInventoryReportsStoppedRuntimeTransition(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid:            codespaceUUID,
+			RuntimeUuid:              codespaceUUID,
 			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
 			CurrentOperationRversion: 31,
 		}},
@@ -2196,7 +2203,7 @@ func TestReportInventoryReportsStoppedRuntimeTransition(t *testing.T) {
 	}
 	transition := transitions[0]
 	if transition.GetProtocolVersion() != 1 ||
-		transition.GetCodespaceUuid() != codespaceUUID ||
+		transition.GetRuntimeUuid() != codespaceUUID ||
 		transition.GetRuntimeGeneration() != 1 ||
 		transition.GetObservedOperationRversion() != 31 ||
 		transition.GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_STOPPED {
@@ -2232,7 +2239,7 @@ func TestReportRuntimeTransitionRequiresPendingStateBeforeRPC(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid:            codespaceUUID,
+			RuntimeUuid:              codespaceUUID,
 			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
 			CurrentOperationRversion: 31,
 		}},
@@ -2280,7 +2287,7 @@ func TestReportRuntimeTransitionRetriesLoadedPendingGeneration(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid:            codespaceUUID,
+			RuntimeUuid:              codespaceUUID,
 			Action:                   codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION,
 			CurrentOperationRversion: 31,
 		}},
@@ -2334,8 +2341,8 @@ func TestReportInventoryPersistsCleanupPendingBeforeDelete(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action:        codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
+			RuntimeUuid: codespaceUUID,
+			Action:      codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
 		}},
 	}
 	cleanupStore := &memoryCleanupStateStore{}
@@ -2384,8 +2391,8 @@ func TestReportInventoryRequiresCleanupPendingBeforeDelete(t *testing.T) {
 	}
 	service := &managerService{
 		inventoryResults: []*codespacev1.RuntimeInstanceResult{{
-			CodespaceUuid: codespaceUUID,
-			Action:        codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
+			RuntimeUuid: codespaceUUID,
+			Action:      codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME,
 		}},
 	}
 	cleanupStore := &memoryCleanupStateStore{
@@ -2510,7 +2517,7 @@ func TestDeleteOperationPersistsCleanupPendingBeforeDelete(t *testing.T) {
 	}, server.Client(), dummyProvisioner)
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 9,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Delete{
 			Delete: &codespacev1.DeleteOperationPayload{},
 		},
@@ -2563,7 +2570,7 @@ func TestDeleteOperationRequiresCleanupPendingBeforeDelete(t *testing.T) {
 	}, server.Client(), dummyProvisioner)
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 9,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Delete{
 			Delete: &codespacev1.DeleteOperationPayload{},
 		},
@@ -2629,7 +2636,7 @@ func TestRequestIdleStopPending(t *testing.T) {
 	}
 	request := requests[0]
 	if request.GetProtocolVersion() != 1 ||
-		request.GetCodespaceUuid() != codespaceUUID ||
+		request.GetRuntimeUuid() != codespaceUUID ||
 		!request.GetObservedSettings().GetAutoStopEnabled() ||
 		request.GetObservedSettings().GetIdleTimeoutSeconds() != 1800 ||
 		request.GetObservedSettings().GetInteractionGeneration() != 33 {
@@ -2756,7 +2763,7 @@ func TestAutoStopRequestsIdleStopAfterTimeout(t *testing.T) {
 	if len(requests) != 1 {
 		t.Fatalf("idle stop requests = %d", len(requests))
 	}
-	if requests[0].GetCodespaceUuid() != codespaceUUID ||
+	if requests[0].GetRuntimeUuid() != codespaceUUID ||
 		!requests[0].GetObservedSettings().GetAutoStopEnabled() ||
 		requests[0].GetObservedSettings().GetIdleTimeoutSeconds() != 1 ||
 		requests[0].GetObservedSettings().GetInteractionGeneration() != 1 {
@@ -2817,7 +2824,7 @@ func TestAutoStopSkipsActiveOperation(t *testing.T) {
 	agent.activeOperations[codespaceUUID] = &operationContext{
 		operationRVersion: 3,
 		payload: &codespacev1.OperationPayload{
-			CodespaceUuid:     codespaceUUID,
+			RuntimeUuid:       codespaceUUID,
 			OperationRversion: 3,
 		},
 	}
@@ -3015,14 +3022,14 @@ func TestAgentUpdateLogBatchesByControlPlaneLimit(t *testing.T) {
 	defer server.Close()
 
 	operation := &codespacev1.OperationPayload{
-		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
 		LogOffset:         5,
 	}
 	firstLine := &codespacev1.LogLine{TimestampUnixNano: 1, Message: "alpha"}
 	maxSize := int64(proto.Size(&codespacev1.UpdateLogRequest{
 		ProtocolVersion:   controlplane.ProtocolVersion,
-		CodespaceUuid:     operation.GetCodespaceUuid(),
+		RuntimeUuid:       operation.GetRuntimeUuid(),
 		OperationRversion: operation.GetOperationRversion(),
 		Offset:            operation.GetLogOffset(),
 		Lines:             []*codespacev1.LogLine{firstLine},
@@ -3088,7 +3095,7 @@ func TestAgentUpdateLogRejectsOversizedLine(t *testing.T) {
 		t.Fatalf("save service settings: %v", err)
 	}
 	operation := &codespacev1.OperationPayload{
-		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
 	}
 
@@ -3116,7 +3123,7 @@ func TestOperationLogSinkBatchesAndStopsAtLogLimit(t *testing.T) {
 
 	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
 	operation := &codespacev1.OperationPayload{
-		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
 	}
 	sink := newOperationLogSink(agent, operation)
@@ -3180,7 +3187,7 @@ func TestAgentUpdateLogRecoversServerOffset(t *testing.T) {
 	defer server.Close()
 	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
 	operation := &codespacev1.OperationPayload{
-		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
 		LogOffset:         5,
 	}
@@ -3239,7 +3246,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 		credentialsErr: testFailureError(connect.CodeFailedPrecondition, failureProtocolMismatch),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         5,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Create{
@@ -3358,6 +3365,7 @@ type managerService struct {
 	fetchCleanupCapacityAvailable int32
 	fetchAcceptedOperationTypes   []codespacev1.AcceptedOperationType
 	fetchAcceptedCreateTags       []string
+	boundRuntimeIDRequest         *codespacev1.BindRuntimeIdentityRequest
 	finalized                     chan struct{}
 	inventoryReported             chan struct{}
 	finalResourceAbsent           bool
@@ -3514,7 +3522,7 @@ func (s *managerService) FetchOperations(
 			leases := make([]*codespacev1.RenewedOperationLease, 0, len(req.Msg.GetObservedOperations()))
 			for _, observed := range req.Msg.GetObservedOperations() {
 				leases = append(leases, &codespacev1.RenewedOperationLease{
-					CodespaceUuid:             observed.GetCodespaceUuid(),
+					RuntimeUuid:               observed.GetRuntimeUuid(),
 					OperationRversion:         observed.GetOperationRversion(),
 					LeaseValidForMilliseconds: 30000,
 				})
@@ -3525,6 +3533,26 @@ func (s *managerService) FetchOperations(
 	}
 	return connect.NewResponse(&codespacev1.FetchOperationsResponse{
 		Operations: []*codespacev1.OperationPayload{completeCreatePayloadForTest(operation)},
+	}), nil
+}
+
+func (s *managerService) BindRuntimeIdentity(
+	_ context.Context,
+	req *connect.Request[codespacev1.BindRuntimeIdentityRequest],
+) (*connect.Response[codespacev1.BindRuntimeIdentityResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.captureAuth(req.Header())
+	if req.Msg.GetProtocolVersion() != 1 ||
+		req.Msg.GetCodespaceId() <= 0 ||
+		req.Msg.GetOperationRversion() <= 0 ||
+		req.Msg.GetRuntimeUuid() == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
+	}
+	s.boundRuntimeIDRequest = cloneProtoForTest(req.Msg)
+	return connect.NewResponse(&codespacev1.BindRuntimeIdentityResponse{
+		RuntimeUuid: req.Msg.GetRuntimeUuid(),
 	}), nil
 }
 
@@ -3596,7 +3624,7 @@ func (s *managerService) ReportInstances(
 	results := make([]*codespacev1.RuntimeInstanceResult, 0, len(req.Msg.GetInstances()))
 	for _, instance := range req.Msg.GetInstances() {
 		results = append(results, &codespacev1.RuntimeInstanceResult{
-			CodespaceUuid: instance.GetCodespaceUuid(),
+			RuntimeUuid: instance.GetRuntimeUuid(),
 		})
 	}
 	return connect.NewResponse(&codespacev1.ReportInstancesResponse{Results: results}), nil
@@ -3669,6 +3697,16 @@ func (s *managerService) gitSSHKeyCallCount() int {
 	defer s.mu.Unlock()
 
 	return s.gitSSHKeyCalls
+}
+
+func (s *managerService) boundRuntimeIdentityRequest() *codespacev1.BindRuntimeIdentityRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.boundRuntimeIDRequest == nil {
+		return nil
+	}
+	return cloneProtoForTest(s.boundRuntimeIDRequest)
 }
 
 func (s *managerService) runtimeMetadataStages() []string {
@@ -4281,15 +4319,6 @@ func (p *stopEnvironmentProvisioner) stoppedCount() int {
 	return p.stopped
 }
 
-func (p *blockingProvisioner) startupRequests() []provisioner.LifecycleRequest {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	requests := make([]provisioner.LifecycleRequest, len(p.startup))
-	copy(requests, p.startup)
-	return requests
-}
-
 func (p *nonDeletingProvisioner) Delete(ctx context.Context, _ string) error {
 	return ctx.Err()
 }
@@ -4609,13 +4638,6 @@ func (p *memoryRuntimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID
 	defer p.mu.Unlock()
 
 	p.deactivated = append(p.deactivated, codespaceUUID)
-}
-
-func (p *memoryRuntimeMetadataPublisher) calls() []string {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-
-	return append([]string(nil), p.codespaceUUIDs...)
 }
 
 func (p *memoryRuntimeMetadataPublisher) deactivatedCalls() []string {

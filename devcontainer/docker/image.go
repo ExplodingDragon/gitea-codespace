@@ -56,7 +56,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		}
 		relativeDockerfile, err := filepath.Rel(contextPath, dockerfile)
 		if err != nil || relativeDockerfile == ".." || strings.HasPrefix(relativeDockerfile, ".."+string(filepath.Separator)) {
-			return "", nil, fmt.Errorf("Dev Container Dockerfile must be inside its build context")
+			return "", nil, fmt.Errorf("dev container Dockerfile must be inside its build context")
 		}
 		imageName := "devcontainer-build:" + resolved.DevContainerID
 		args := make(map[string]*string, len(buildConfig.Args))
@@ -86,10 +86,10 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 	}
 	if mirrored {
 		if err := e.pullImageReference(ctx, fetchReference); err == nil {
-			fmt.Fprintf(e.stderr, "Pulled image %s through mirror %s\n", imageName, fetchReference)
+			_, _ = fmt.Fprintf(e.stderr, "Pulled image %s through mirror %s\n", imageName, fetchReference)
 			return fetchReference, nil
 		} else {
-			fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
+			_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
 		}
 	}
 	if err := e.pullImageReference(ctx, imageName); err != nil {
@@ -110,12 +110,12 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 	if err != nil {
 		return fmt.Errorf("pull Dev Container image %s: %w", imageName, err)
 	}
-	defer reader.Close()
-	fmt.Fprintf(e.stderr, "Pulling image %s\n", imageName)
+	defer func() { _ = reader.Close() }()
+	_, _ = fmt.Fprintf(e.stderr, "Pulling image %s\n", imageName)
 	if err := streamDockerPullProgress(reader, e.stderr); err != nil {
 		return fmt.Errorf("read image pull progress: %w", err)
 	}
-	fmt.Fprintf(e.stderr, "Pulled image %s\n", imageName)
+	_, _ = fmt.Fprintf(e.stderr, "Pulled image %s\n", imageName)
 	return nil
 }
 
@@ -201,7 +201,7 @@ func streamDockerPullProgress(reader io.Reader, output io.Writer) error {
 			return err
 		}
 		if summary := progress.observe(message, time.Now()); summary != "" {
-			fmt.Fprintln(output, summary)
+			_, _ = fmt.Fprintln(output, summary)
 		}
 	}
 }
@@ -310,7 +310,7 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 	if err != nil {
 		return "", err
 	}
-	defer os.RemoveAll(directory)
+	defer func() { _ = os.RemoveAll(directory) }()
 	dockerfile := fmt.Sprintf("FROM %s\nUSER root\nCOPY update-user.sh /tmp/update-user.sh\nRUN /bin/sh /tmp/update-user.sh %s %d %d && rm /tmp/update-user.sh\nUSER %s\n", baseImage, shellQuote(resolved.RemoteUser), hostUser.UID, hostUser.GID, resolved.ContainerUser)
 	if err := os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
 		return "", err

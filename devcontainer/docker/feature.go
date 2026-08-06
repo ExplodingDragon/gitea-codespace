@@ -88,7 +88,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
 	if resolved.FrozenLockfile && !resolved.Synthetic && !lockfileExists {
-		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container lockfile does not exist"))
+		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container lockfile does not exist"))
 	}
 	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
 	for reference, options := range resolved.Features {
@@ -98,7 +98,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err != nil {
 		return "", nil, err
 	}
-	defer os.RemoveAll(buildContext)
+	defer func() { _ = os.RemoveAll(buildContext) }()
 	features := map[string]*resolvedFeature{}
 	var resolveFeature func(string, json.RawMessage) error
 	resolveFeature = func(reference string, rawOptions json.RawMessage) error {
@@ -142,7 +142,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
 	for _, feature := range orderedFeatures {
-		fmt.Fprintf(e.stdout, "Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
+		_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
 	}
 	imageConfiguration, err = devcontainer.ResolveLocalVariables(imageConfiguration, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 	if err != nil {
@@ -203,7 +203,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
 	resolved.Configuration = devcontainer.Merge(effectiveConfiguration, repositoryConfiguration)
-	if err := resolved.Configuration.Finalize(); err != nil {
+	if err := resolved.Finalize(); err != nil {
 		return "", nil, devcontainer.InvalidConfiguration(err)
 	}
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
@@ -306,7 +306,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		if err != nil {
 			return nil, fmt.Errorf("download Dev Container Feature %s: %w", featureReference, err)
 		}
-		defer response.Body.Close()
+		defer func() { _ = response.Body.Close() }()
 		if response.StatusCode < 200 || response.StatusCode >= 300 {
 			return nil, fmt.Errorf("download Dev Container Feature %s: %s", featureReference, response.Status)
 		}
@@ -316,14 +316,14 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		}
 		digest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
 		if locked.Integrity != "" && locked.Integrity != digest {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile integrity does not match", featureReference))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference))
 		}
 		return loadFeatureDirectory(featureReference, resolveReference, digest, rawOptions, directory, true)
 	}
 	resolveReference := featureReference
 	if strings.TrimSpace(locked.Integrity) != "" {
 		if strings.TrimSpace(locked.Resolved) == "" {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile entry is incomplete", featureReference))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile entry is incomplete", featureReference))
 		}
 		resolveReference = locked.Resolved
 	}
@@ -340,10 +340,10 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		}
 		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, plainHTTP)
 		if err == nil {
-			fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
+			_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
 		}
-		fmt.Fprintf(e.stderr, "Warning: OCI mirror for Dev Container Feature %s is unavailable, falling back to the original registry: %v\n", featureReference, err)
+		_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for Dev Container Feature %s is unavailable, falling back to the original registry: %v\n", featureReference, err)
 		if err := os.RemoveAll(directory); err != nil {
 			return nil, err
 		}
@@ -378,7 +378,7 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", featureReference, err)
 	}
 	if locked.Integrity != "" && descriptor.Digest.String() != locked.Integrity {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s lockfile integrity does not match", featureReference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference))
 	}
 	manifestReader, err := repository.Fetch(ctx, descriptor)
 	if err != nil {
@@ -391,10 +391,10 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 		return nil, fmt.Errorf("decode Dev Container Feature manifest %s: %w", featureReference, err)
 	}
 	if !strings.HasPrefix(manifest.Config.MediaType, devContainerFeatureMediaType) {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("OCI artifact %s is not a Dev Container Feature", featureReference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("oci artifact %s is not a Dev Container Feature", featureReference))
 	}
 	if len(manifest.Layers) != 1 {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s must contain one layer", featureReference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s must contain one layer", featureReference))
 	}
 	layer, err := repository.Fetch(ctx, manifest.Layers[0])
 	if err != nil {
@@ -423,14 +423,14 @@ func loadFeatureDirectory(reference, resolved, digest string, rawOptions json.Ra
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("decode Feature metadata: %w", err))
 	}
 	if strings.TrimSpace(metadata.ID) == "" || strings.TrimSpace(metadata.Version) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s identity is incomplete", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s identity is incomplete", reference))
 	}
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s install.sh is missing", reference))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s install.sh is missing", reference))
 	}
 	options, err := resolveFeatureOptions(metadata.Options, rawOptions)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container Feature %s: %w", reference, err))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s: %w", reference, err))
 	}
 	return &resolvedFeature{reference: reference, resolved: resolved, digest: digest, directory: directory, options: options, metadata: metadata, lockable: lockable}, nil
 }
@@ -443,7 +443,7 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 		if err != nil {
 			return err
 		}
-		defer compressed.Close()
+		defer func() { _ = compressed.Close() }()
 		tarReader = tar.NewReader(compressed)
 	} else {
 		tarReader = tar.NewReader(buffered)
@@ -464,10 +464,10 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 			if header.Typeflag == tar.TypeDir {
 				continue
 			}
-			return fmt.Errorf("Feature archive path %q is invalid", header.Name)
+			return fmt.Errorf("feature archive path %q is invalid", header.Name)
 		}
 		if filepath.IsAbs(name) || name == ".." || strings.HasPrefix(name, ".."+string(filepath.Separator)) {
-			return fmt.Errorf("Feature archive path %q is invalid", header.Name)
+			return fmt.Errorf("feature archive path %q is invalid", header.Name)
 		}
 		target := filepath.Join(directory, name)
 		switch header.Typeflag {
@@ -475,7 +475,7 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 			if err := os.MkdirAll(target, os.FileMode(header.Mode)&0o777); err != nil {
 				return err
 			}
-		case tar.TypeReg, tar.TypeRegA:
+		case tar.TypeReg:
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
 			}
@@ -491,7 +491,7 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 			link := filepath.Clean(filepath.FromSlash(header.Linkname))
 			resolved := filepath.Clean(filepath.Join(filepath.Dir(name), link))
 			if filepath.IsAbs(link) || resolved == ".." || strings.HasPrefix(resolved, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("Feature archive link %q leaves the Feature root", header.Name)
+				return fmt.Errorf("feature archive link %q leaves the Feature root", header.Name)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
@@ -502,7 +502,7 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 		case tar.TypeLink:
 			link := filepath.Clean(filepath.FromSlash(header.Linkname))
 			if filepath.IsAbs(link) || link == ".." || strings.HasPrefix(link, ".."+string(filepath.Separator)) {
-				return fmt.Errorf("Feature archive link %q leaves the Feature root", header.Name)
+				return fmt.Errorf("feature archive link %q leaves the Feature root", header.Name)
 			}
 			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 				return err
@@ -511,7 +511,7 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 				return err
 			}
 		default:
-			return fmt.Errorf("Feature archive entry %q has unsupported type", header.Name)
+			return fmt.Errorf("feature archive entry %q has unsupported type", header.Name)
 		}
 	}
 }
@@ -593,7 +593,7 @@ func orderFeatures(features map[string]*resolvedFeature, override []string) ([]*
 		for dependency := range feature.metadata.DependsOn {
 			resolved, ok := findFeatureReference(features, dependency)
 			if !ok {
-				return nil, fmt.Errorf("Feature %s dependency %s is not resolved", reference, dependency)
+				return nil, fmt.Errorf("feature %s dependency %s is not resolved", reference, dependency)
 			}
 			dependencies[reference] = appendUnique(dependencies[reference], []string{resolved})
 		}
@@ -631,7 +631,7 @@ func orderFeatures(features map[string]*resolvedFeature, override []string) ([]*
 			}
 		}
 		if len(candidates) == 0 {
-			return nil, fmt.Errorf("Dev Container Feature dependency graph contains a cycle")
+			return nil, fmt.Errorf("dev container feature dependency graph contains a cycle")
 		}
 		preferred := slices.DeleteFunc(slices.Clone(candidates), func(reference string) bool {
 			return slices.ContainsFunc(installsAfter[reference], func(dependency string) bool {
@@ -700,19 +700,19 @@ func featureReferenceID(reference string) (string, error) {
 
 func writeFeatureBuildContext(root, baseImage string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) error {
 	var dockerfile strings.Builder
-	fmt.Fprintf(&dockerfile, "FROM %s\nUSER root\n", baseImage)
+	_, _ = fmt.Fprintf(&dockerfile, "FROM %s\nUSER root\n", baseImage)
 	environmentNames := make([]string, 0, len(containerEnvironment))
 	for name := range containerEnvironment {
 		environmentNames = append(environmentNames, name)
 	}
 	sort.Strings(environmentNames)
 	for _, name := range environmentNames {
-		fmt.Fprintf(&dockerfile, "ENV %s=%s\n", name, shellQuote(containerEnvironment[name]))
+		_, _ = fmt.Fprintf(&dockerfile, "ENV %s=%s\n", name, shellQuote(containerEnvironment[name]))
 	}
 	dockerfile.WriteString("RUN mkdir -p /tmp/dev-container-feature && \\\n")
-	fmt.Fprintf(&dockerfile, "    printf '%%s\\n' '_CONTAINER_USER=%s' '_REMOTE_USER=%s' > /tmp/dev-container-feature/devcontainer-features.builtin.env && \\\n", containerUser, remoteUser)
-	fmt.Fprintf(&dockerfile, "    echo \"_CONTAINER_USER_HOME=$(getent passwd %s 2>/dev/null | cut -d: -f6)\" >> /tmp/dev-container-feature/devcontainer-features.builtin.env && \\\n", shellQuote(containerUser))
-	fmt.Fprintf(&dockerfile, "    echo \"_REMOTE_USER_HOME=$(getent passwd %s 2>/dev/null | cut -d: -f6)\" >> /tmp/dev-container-feature/devcontainer-features.builtin.env\n", shellQuote(remoteUser))
+	_, _ = fmt.Fprintf(&dockerfile, "    printf '%%s\\n' '_CONTAINER_USER=%s' '_REMOTE_USER=%s' > /tmp/dev-container-feature/devcontainer-features.builtin.env && \\\n", containerUser, remoteUser)
+	_, _ = fmt.Fprintf(&dockerfile, "    echo \"_CONTAINER_USER_HOME=$(getent passwd %s 2>/dev/null | cut -d: -f6)\" >> /tmp/dev-container-feature/devcontainer-features.builtin.env && \\\n", shellQuote(containerUser))
+	_, _ = fmt.Fprintf(&dockerfile, "    echo \"_REMOTE_USER_HOME=$(getent passwd %s 2>/dev/null | cut -d: -f6)\" >> /tmp/dev-container-feature/devcontainer-features.builtin.env\n", shellQuote(remoteUser))
 	for index, feature := range features {
 		target := filepath.Join(root, "feature", strconv.Itoa(index))
 		if err := copyDirectory(feature.directory, target); err != nil {
@@ -725,16 +725,16 @@ func writeFeatureBuildContext(root, baseImage string, features []*resolvedFeatur
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
-			fmt.Fprintf(&featureEnvironment, "%s=%s\n", key, shellQuote(feature.options[key]))
+			_, _ = fmt.Fprintf(&featureEnvironment, "%s=%s\n", key, shellQuote(feature.options[key]))
 		}
 		if err := os.WriteFile(filepath.Join(target, "devcontainer-features.env"), []byte(featureEnvironment.String()), 0o600); err != nil {
 			return err
 		}
-		fmt.Fprintf(&dockerfile, "COPY feature/%d /tmp/dev-container-feature/%d\n", index, index)
-		fmt.Fprintf(&dockerfile, "RUN cd /tmp/dev-container-feature/%d && chmod +x ./install.sh && set -a && . ../devcontainer-features.builtin.env && . ./devcontainer-features.env && set +a && ./install.sh && rm -rf /tmp/dev-container-feature/%d\n", index, index)
+		_, _ = fmt.Fprintf(&dockerfile, "COPY feature/%d /tmp/dev-container-feature/%d\n", index, index)
+		_, _ = fmt.Fprintf(&dockerfile, "RUN cd /tmp/dev-container-feature/%d && chmod +x ./install.sh && set -a && . ../devcontainer-features.builtin.env && . ./devcontainer-features.env && set +a && ./install.sh && rm -rf /tmp/dev-container-feature/%d\n", index, index)
 	}
 	if containerUser != "" {
-		fmt.Fprintf(&dockerfile, "USER %s\n", containerUser)
+		_, _ = fmt.Fprintf(&dockerfile, "USER %s\n", containerUser)
 	}
 	return os.WriteFile(filepath.Join(root, "Dockerfile.features"), []byte(dockerfile.String()), 0o600)
 }

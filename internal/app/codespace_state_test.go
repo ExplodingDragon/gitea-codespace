@@ -74,7 +74,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	store := NewCodespaceStateStore(stateDir)
 	operation := &codespacev1.OperationPayload{
 		OperationRversion:         7,
-		CodespaceUuid:             "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:               "11111111-1111-4111-8111-111111111111",
 		LogOffset:                 3,
 		LeaseValidForMilliseconds: 30000,
 		Command: &codespacev1.OperationPayload_Create{
@@ -100,7 +100,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 		t.Fatalf("snapshots = %d", len(snapshots))
 	}
 	loaded := snapshots[0].Payload
-	if loaded.GetCodespaceUuid() != operation.GetCodespaceUuid() ||
+	if loaded.GetRuntimeUuid() != operation.GetRuntimeUuid() ||
 		loaded.GetOperationRversion() != operation.GetOperationRversion() ||
 		loaded.GetCreate().GetRepository().GetFullName() != "owner/repo" {
 		t.Fatalf("loaded operation = %#v", loaded)
@@ -108,7 +108,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	if snapshots[0].WorkerStage != manager.OperationWorkerStageLeasePaused {
 		t.Fatalf("worker stage = %q", snapshots[0].WorkerStage)
 	}
-	statePath, err := codespaceStatePath(stateDir, operation.GetCodespaceUuid())
+	statePath, err := codespaceStatePath(stateDir, operation.GetRuntimeUuid())
 	if err != nil {
 		t.Fatalf("codespace state path: %v", err)
 	}
@@ -123,7 +123,7 @@ func TestCodespaceStateStoreActiveOperationRoundTrip(t *testing.T) {
 	if state.ActiveOperation == nil || state.ActiveOperation.WorkerStage != string(manager.OperationWorkerStageLeasePaused) {
 		t.Fatalf("persisted worker stage = %#v", state.ActiveOperation)
 	}
-	if err := store.DeleteActiveOperation(operation.GetCodespaceUuid(), operation.GetOperationRversion()); err != nil {
+	if err := store.DeleteActiveOperation(operation.GetRuntimeUuid(), operation.GetOperationRversion()); err != nil {
 		t.Fatalf("delete active operation: %v", err)
 	}
 	snapshots, err = store.LoadActiveOperations()
@@ -196,7 +196,7 @@ func TestCodespaceStateStoreDeleteKeepsNewerOperation(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 8,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Stop{
 			Stop: &codespacev1.StopOperationPayload{},
 		},
@@ -224,7 +224,7 @@ func TestCodespaceStateStoreRuntimeTransitionPreservesActiveOperation(t *testing
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 8,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Stop{
 			Stop: &codespacev1.StopOperationPayload{},
 		},
@@ -304,7 +304,7 @@ func TestCodespaceStateStoreCleanupPendingSkipsOperationRecovery(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 8,
-		CodespaceUuid:     codespaceUUID,
+		RuntimeUuid:       codespaceUUID,
 		Command: &codespacev1.OperationPayload_Stop{
 			Stop: &codespacev1.StopOperationPayload{},
 		},
@@ -1140,7 +1140,7 @@ func TestCodespaceStateStoreRejectsInvalidWorkerStage(t *testing.T) {
 	store := NewCodespaceStateStore(stateDir)
 	operation := &codespacev1.OperationPayload{
 		OperationRversion: 9,
-		CodespaceUuid:     "11111111-1111-4111-8111-111111111111",
+		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		Command: &codespacev1.OperationPayload_Stop{
 			Stop: &codespacev1.StopOperationPayload{},
 		},
@@ -1215,8 +1215,6 @@ func TestValidateCodespaceStateFilesRejectsInvalidName(t *testing.T) {
 }
 
 func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
-	t.Parallel()
-
 	stateDir := filepath.Join(t.TempDir(), "state")
 	writeRunnableState(t, stateDir)
 	codespaceDir, err := codespaceStateDir(stateDir)
@@ -1240,7 +1238,10 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 	config.Gateway.HTTP.Listen = "127.0.0.1:0"
 	config.Node.StateDir = stateDir
 	config.Node.HTTPTimeout = Duration(100 * time.Millisecond)
-	err = RunWithConfig(&output, config)
+	err = RunWithInfrastructureConfig(&output, InfrastructureRuntimeConfig{
+		Config:       config,
+		ManagerState: testManagerState(t, stateDir, "https://gitea.example.com", 42),
+	})
 	if err == nil {
 		t.Fatalf("expected invalid codespace state error")
 	}
@@ -1254,7 +1255,7 @@ func TestRunWithConfigInvalidCodespaceStateFailsBeforeRPC(t *testing.T) {
 
 func writeRunnableState(t *testing.T, stateDir string) {
 	t.Helper()
-	saveManagerRegistrationForTest(t, stateDir, "https://gitea.example.com", 42)
+	_ = saveManagerStateForTest(t, stateDir, "https://gitea.example.com", 42)
 }
 
 func newLockTestManagerServer(t *testing.T, service *lockTestManagerService) *httptest.Server {

@@ -29,43 +29,74 @@ go build -o gitea-codespace .
 
 ## Configuration
 
-The manager uses YAML configuration. Start with the documented example:
+The manager keeps its active site identity and runtime configuration in manager
+state. A single-node deployment can use SQLite:
 
 ```bash
-cp examples/config.example.yaml codespace.yaml
+export GITEA_CODESPACE_STATE=local
+export GITEA_CODESPACE_STATE_PATH=/var/lib/gitea-codespace/manager.db
+export GITEA_CODESPACE_STATE_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export GITEA_CODESPACE_NODE_ID=manager-01
+export GITEA_CODESPACE_NODE_ROLE=all
+export GITEA_CODESPACE_ADMIN_LISTEN=127.0.0.1:18080
+export GITEA_CODESPACE_ADMIN_TOKEN="$(openssl rand -hex 32)"
 ```
 
-The configuration has three top-level sections:
+Multi-node deployments can use etcd for the same state objects:
 
-- `node` defines the manager identity, state directory, capacity, and worker
+```bash
+export GITEA_CODESPACE_STATE=etcd
+export GITEA_CODESPACE_ETCD_ENDPOINTS=http://127.0.0.1:2379
+export GITEA_CODESPACE_ETCD_PREFIX=/gitea-codespace
+export GITEA_CODESPACE_STATE_ENCRYPTION_KEY="$(openssl rand -base64 32)"
+export GITEA_CODESPACE_NODE_ID=gateway-01
+export GITEA_CODESPACE_NODE_ROLE=gateway
+export GITEA_CODESPACE_ADMIN_LISTEN=127.0.0.1:18080
+export GITEA_CODESPACE_ADMIN_TOKEN="$(openssl rand -hex 32)"
+```
+
+`GITEA_CODESPACE_NODE_ROLE=all` starts both the worker and gateway in one
+process. `GITEA_CODESPACE_NODE_ROLE=gateway` starts only the HTTP and SSH
+gateway. This is useful when gateway nodes should be placed near the public
+network edge while worker nodes keep Incus write access and lifecycle state
+transitions in one place.
+
+Run the local administration API and add the Gitea site identity created from
+the Gitea Codespace Manager settings page:
+
+```bash
+./gitea-codespace admin
+```
+
+The active runtime configuration still has three top-level sections:
+
+- `node` defines the manager name, state directory, capacity, and worker
   behavior.
 - `gateway` defines the public HTTP and SSH entry points.
-- `runtime` defines Git and Web IDE behavior, image caching, the Incus
-  connection, and the selectable runtime environments.
+- `runtime` defines Git and Web IDE behavior, image caching, Incus backends,
+  and the selectable runtime environments.
 
 Each entry in `runtime.environments` declares a tag shown on the Codespace
 creation page. It selects an Incus container or virtual-machine source and its
 resource limits. See [`examples/config.example.yaml`](examples/config.example.yaml)
 for all supported settings and deployment comments.
 
-When `--config` is omitted, the command looks for `codespace.yaml` and then
-`codespace.yml` in the current directory. Registration and serving must use the
-same configuration and state directory.
+An existing YAML file can be imported once into an empty local state database by
+starting `serve --config <path>`. After import, `serve` reads the state database;
+the YAML file is only an input format for administrators and is not the live
+runtime source.
 
-## Register
+## Manager identity
 
-Create a site-wide or personal manager registration token in the corresponding
-Gitea Codespace Manager settings, then run:
+Create a site-wide or personal manager in the corresponding Gitea Codespace
+Manager settings. Gitea shows the manager secret once when the identity is
+created. Store that URL, manager ID, and secret through the local administration
+API. The secret is encrypted before it is written to the state database.
 
-```bash
-./gitea-codespace register --config codespace.yaml
-```
-
-The command prompts for the Gitea URL and registration token. It exchanges the
-registration credential for a manager identity and stores that identity in
-`node.state_dir`. The registration token remains in Gitea and is not written to
-the state directory. Protect and persist this directory; it also contains the
-manager's local lifecycle state and gateway keys.
+The manager state database and `node.state_dir` both need to be protected and
+persisted across restarts. The state database stores site identities and the
+active runtime configuration. `node.state_dir` stores lifecycle state, the
+latest inventory generation, and gateway keys.
 
 Use a Gitea URL that is reachable from the manager and from the development
 instances. A loopback URL normally refers to the instance itself and therefore
@@ -73,10 +104,10 @@ cannot be used by a Codespace to clone its repository.
 
 ## Run
 
-Start the registered manager and gateway with:
+Start the manager and gateway with:
 
 ```bash
-./gitea-codespace serve --config codespace.yaml
+./gitea-codespace serve
 ```
 
 The process declares its configured environment tags, polls Gitea for lifecycle
@@ -91,8 +122,8 @@ by interactive endpoints.
 
 ## Architecture
 
-- **Manager:** registers with Gitea, advertises environment tags, claims queued
-  operations, and maintains local lifecycle state.
+- **Manager:** authenticates to Gitea, advertises environment tags, claims
+  queued operations, and maintains local lifecycle state.
 - **Provisioner:** creates and controls Incus instances and executes commands or
   file operations through the Incus API.
 - **Dev Container runtime:** resolves the repository configuration, builds or
@@ -113,6 +144,23 @@ Run tests that do not require a real Incus deployment:
 ```bash
 make test
 ```
+
+Run the fast manager process smoke tests:
+
+```bash
+make test-smoke
+```
+
+Run manager state tests against a real etcd started by the Makefile:
+
+```bash
+make test-etcd-required
+make test-etcd-cluster-required
+```
+
+`make test-etcd` runs both etcd targets when an `etcd` binary is available and
+otherwise prints a skip reason. The required targets fail if etcd is missing,
+which makes them suitable for CI or deployment validation.
 
 Run Incus end-to-end tests automatically when a usable local Incus client is
 available:

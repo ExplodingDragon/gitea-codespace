@@ -43,7 +43,7 @@ func TestGatewayHTTPServerRejectsOversizedHeader(t *testing.T) {
 		_ = listener.Close()
 		t.Fatalf("dial: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.1\r\nHost: example.test\r\nX-Large: %s\r\n\r\n", strings.Repeat("a", gatewayHTTPMaxHeaderBytes*2)); err != nil {
 		t.Fatalf("write request: %v", err)
@@ -52,7 +52,7 @@ func TestGatewayHTTPServerRejectsOversizedHeader(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read response: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusRequestHeaderFieldsTooLarge {
 		t.Fatalf("status = %d", response.StatusCode)
 	}

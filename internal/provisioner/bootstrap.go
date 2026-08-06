@@ -209,7 +209,7 @@ func (p *IncusProvisioner) readRuntimeFile(ctx context.Context, instanceName, pa
 		}
 		return "", false, fmt.Errorf("read %s: %w", path, err)
 	}
-	defer content.Close()
+	defer func() { _ = content.Close() }()
 	data, err := io.ReadAll(io.LimitReader(content, 1024*1024))
 	if err != nil {
 		return "", false, fmt.Errorf("read %s content: %w", path, err)

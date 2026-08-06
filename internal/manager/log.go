@@ -160,7 +160,7 @@ func (a *Agent) updateLogLines(ctx context.Context, operation *codespacev1.Opera
 		}
 		request := connect.NewRequest(&codespacev1.UpdateLogRequest{
 			ProtocolVersion:   controlplane.ProtocolVersion,
-			CodespaceUuid:     operation.GetCodespaceUuid(),
+			RuntimeUuid:       operation.GetRuntimeUuid(),
 			OperationRversion: operation.GetOperationRversion(),
 			Offset:            offset,
 			Lines:             lines[:count],
@@ -170,7 +170,6 @@ func (a *Agent) updateLogLines(ctx context.Context, operation *codespacev1.Opera
 			category := failureCategory(err)
 			currentOffset, ok := logCurrentOffset(err)
 			if ok && (category == failureLogOffsetConflict || category == failureLogOffsetGap) && currentOffset != offset {
-				offset = currentOffset
 				operation.LogOffset = currentOffset
 				request.Msg.Offset = currentOffset
 				response, err = a.managerClient().UpdateLog(ctx, request)
@@ -192,7 +191,7 @@ func (a *Agent) updateLogBatchSize(operation *codespacev1.OperationPayload, offs
 	}
 	request := connect.NewRequest(&codespacev1.UpdateLogRequest{
 		ProtocolVersion:   controlplane.ProtocolVersion,
-		CodespaceUuid:     operation.GetCodespaceUuid(),
+		RuntimeUuid:       operation.GetRuntimeUuid(),
 		OperationRversion: operation.GetOperationRversion(),
 		Offset:            offset,
 		Lines:             lines[:1],

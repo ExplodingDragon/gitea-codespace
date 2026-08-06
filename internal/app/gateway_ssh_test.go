@@ -81,7 +81,7 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -93,12 +93,12 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	output, err := session.Output("echo ready")
 	if err != nil {
 		t.Fatalf("run command through gateway: %v", err)
@@ -106,7 +106,7 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 	if string(output) != "internal ready\n" {
 		t.Fatalf("command output = %q", output)
 	}
-	if service.sshRequest == nil || service.sshRequest.GetCodespaceUuid() != codespaceUUID {
+	if service.sshRequest == nil || service.sshRequest.GetRuntimeUuid() != codespaceUUID {
 		t.Fatalf("verify ssh request = %#v", service.sshRequest)
 	}
 	if request := backend.lastRequest(); request.Interactive {
@@ -172,7 +172,7 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -184,12 +184,12 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	sftpClient, err := sftp.NewClient(client)
 	if err != nil {
 		t.Fatalf("open gateway sftp: %v", err)
 	}
-	defer sftpClient.Close()
+	defer func() { _ = sftpClient.Close() }()
 
 	if err := sftpClient.Mkdir("/dir"); err != nil {
 		t.Fatalf("mkdir over gateway sftp: %v", err)
@@ -246,7 +246,7 @@ func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("listen runtime backend: %v", err)
 	}
-	defer backendListener.Close()
+	defer func() { _ = backendListener.Close() }()
 	backendDone := make(chan error, 3)
 	go func() {
 		for range 3 {
@@ -322,7 +322,7 @@ func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -334,7 +334,7 @@ func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 
 	_, backendPort, err := net.SplitHostPort(backendListener.Addr().String())
 	if err != nil {
@@ -442,7 +442,7 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -454,12 +454,12 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("open session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if err := session.Start("sleep"); err != nil {
 		t.Fatalf("start command through gateway: %v", err)
 	}
@@ -559,7 +559,7 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -571,12 +571,12 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	first, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("open first session: %v", err)
 	}
-	defer first.Close()
+	defer func() { _ = first.Close() }()
 	if err := first.Start("sleep"); err != nil {
 		t.Fatalf("start first command: %v", err)
 	}
@@ -621,7 +621,7 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -664,13 +664,13 @@ func TestGatewaySSHClosesIncompleteHandshake(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	conn, err := net.Dial("tcp", listener.Addr().String())
 	if err != nil {
 		t.Fatalf("dial raw gateway ssh: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
 		t.Fatalf("set raw ssh read deadline: %v", err)
 	}
@@ -723,7 +723,7 @@ func TestGatewaySSHAuthLimiterBlocksBeforeControlPlane(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewayServer)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	dialGatewaySSHExpectFailure(t, listener.Addr().String(), clientKey)

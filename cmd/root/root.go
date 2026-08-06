@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"gitea.dev/codespace/cmd/register"
+	"gitea.dev/codespace/cmd/admin"
 	runtimecommand "gitea.dev/codespace/cmd/runtime"
 	"gitea.dev/codespace/cmd/serve"
 	"gitea.dev/codespace/internal/runtimecmd"
@@ -30,7 +30,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 	command.CompletionOptions.DisableDefaultCmd = true
-	command.AddCommand(register.NewCommand(), serve.NewCommand(), runtimecommand.NewCommand())
+	command.AddCommand(admin.NewCommand(), serve.NewCommand(), runtimecommand.NewCommand())
 	return command
 }
 
@@ -49,7 +49,7 @@ func execute(command *cobra.Command, ctx context.Context, args []string, stdin i
 		if errors.As(err, &exitError) {
 			return exitError.Status
 		}
-		fmt.Fprintf(stderr, "gitea-codespace: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "gitea-codespace: %v\n", err)
 		return 1
 	}
 	return 0

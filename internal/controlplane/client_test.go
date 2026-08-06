@@ -39,7 +39,7 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 func TestCheckMessageSize(t *testing.T) {
 	t.Parallel()
 
-	message := &codespacev1.RegisterManagerRequest{RegistrationToken: "token"}
+	message := &codespacev1.DeclareManagerRequest{ProtocolVersion: ProtocolVersion, Name: "manager"}
 	if err := CheckMessageSize(message, 0); err != nil {
 		t.Fatalf("unlimited message size: %v", err)
 	}

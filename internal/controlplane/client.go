@@ -17,9 +17,9 @@ import (
 const (
 	// ProtocolVersion is the ManagerService protocol implemented by this binary.
 	ProtocolVersion int32 = 1
-	// ManagerIDHeader carries the registered Manager identity.
+	// ManagerIDHeader carries the Gitea-issued Manager identity.
 	ManagerIDHeader = "x-codespace-manager-id"
-	// ManagerSecretHeader authenticates the registered Manager identity.
+	// ManagerSecretHeader authenticates the Gitea-issued Manager identity.
 	ManagerSecretHeader = "x-codespace-manager-secret"
 )
 

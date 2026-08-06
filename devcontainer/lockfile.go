@@ -82,16 +82,16 @@ func WriteLockfile(configurationPath string, lockfile Lockfile, frozen bool) err
 	}
 	if frozen {
 		if errors.Is(readErr, os.ErrNotExist) {
-			return fmt.Errorf("Dev Container lockfile does not exist")
+			return fmt.Errorf("dev container lockfile does not exist")
 		}
-		return fmt.Errorf("Dev Container lockfile does not match resolved Features")
+		return fmt.Errorf("dev container lockfile does not match resolved Features")
 	}
 	file, err := os.CreateTemp(filepath.Dir(path), ".devcontainer-lock-*")
 	if err != nil {
 		return err
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	if _, err := file.Write(content); err != nil {
 		_ = file.Close()
 		return err

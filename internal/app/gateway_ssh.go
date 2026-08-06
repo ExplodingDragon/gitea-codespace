@@ -154,7 +154,7 @@ func (s *gatewaySSHServer) authenticatePublicKey(ctx context.Context, conn ssh.C
 }
 
 func (s *gatewaySSHServer) serveConn(ctx context.Context, conn net.Conn) {
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	releaseTransport, ok := s.reserveTransport()
 	if !ok {
 		return
@@ -185,7 +185,7 @@ func (s *gatewaySSHServer) serveConn(ctx context.Context, conn net.Conn) {
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
-	defer sshConn.Close()
+	defer func() { _ = sshConn.Close() }()
 	go ssh.DiscardRequests(requests)
 
 	auth, ok := gatewaySSHAuthFromPermissions(sshConn.Permissions)
@@ -280,7 +280,7 @@ func (s *gatewaySSHServer) handleChannel(ctx context.Context, auth gatewaySSHAut
 	if err != nil {
 		return
 	}
-	defer clientChannel.Close()
+	defer func() { _ = clientChannel.Close() }()
 
 	target, ok, err := s.loadWorkspaceTarget(auth.codespaceUUID)
 	if err != nil || !ok {
@@ -403,7 +403,7 @@ func (s *gatewaySSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySS
 		_ = backendConn.Close()
 		return
 	}
-	defer clientChannel.Close()
+	defer func() { _ = clientChannel.Close() }()
 	notifyGatewaySSHActivity(activity)
 	s.proxyWorkspaceStream(ctx, clientChannel, requests, backendConn, activity)
 }
@@ -437,7 +437,7 @@ func (s *gatewaySSHServer) revalidateSession(ctx context.Context, auth gatewaySS
 }
 
 func (s *gatewaySSHServer) serveWorkspaceSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, session provisioner.WorkspaceCommandSession, pty gatewaySSHPty, activity chan<- struct{}) {
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if pty.enabled {
 		_ = session.Resize(pty.cols, pty.rows)
 	}

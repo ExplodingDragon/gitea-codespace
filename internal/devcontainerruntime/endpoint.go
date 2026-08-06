@@ -81,7 +81,7 @@ func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest, owner devc
 		return err
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	encodeErr := json.NewEncoder(file).Encode(manifest)
 	chmodErr := file.Chmod(0o600)
 	chownErr := file.Chown(int(owner.UID), int(owner.GID))

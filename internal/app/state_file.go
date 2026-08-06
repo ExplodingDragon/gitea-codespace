@@ -61,7 +61,7 @@ func syncStateDir(dir string) error {
 	if err != nil {
 		return fmt.Errorf("open state dir %s: %w", dir, err)
 	}
-	defer dirFile.Close()
+	defer func() { _ = dirFile.Close() }()
 	if err := dirFile.Sync(); err != nil {
 		return fmt.Errorf("sync state dir %s: %w", dir, err)
 	}

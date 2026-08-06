@@ -40,7 +40,7 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Docker engine: %v", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 
 	readyStage := devcontainer.LifecycleStage("")
 	state, err := engine.Create(ctx, CreateOptions{
@@ -114,7 +114,7 @@ func TestDockerE2EImageSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Docker engine: %v", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
 		OwnerID:         "devcontainer-image-e2e-" + uuid.NewString(),
 		Workspace:       workspace,
@@ -173,7 +173,7 @@ func TestDockerE2EBuildSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Docker engine: %v", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
 		OwnerID: "devcontainer-build-e2e-" + uuid.NewString(), Workspace: workspace, AllowedPathRoot: workspace,
 		Source:   devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
@@ -208,7 +208,7 @@ func TestDockerE2EDockerInDockerFeature(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create Docker engine: %v", err)
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
 		OwnerID:         "devcontainer-dind-e2e-" + uuid.NewString(),
 		Workspace:       workspace,

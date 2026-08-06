@@ -30,8 +30,8 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 	if err != nil || len(commands) == 0 {
 		return err
 	}
-	fmt.Fprintln(stdout, "##[group]initializeCommand")
-	defer fmt.Fprintln(stdout, "##[endgroup]")
+	_, _ = fmt.Fprintln(stdout, "##[group]initializeCommand")
+	defer func() { _, _ = fmt.Fprintln(stdout, "##[endgroup]") }()
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
 		group.Go(func() error {
@@ -125,8 +125,8 @@ func (e *Engine) runLifecycleCommand(ctx context.Context, environment *devcontai
 	if len(commands) == 0 {
 		return nil
 	}
-	fmt.Fprintf(e.stdout, "##[group]%s\n", name)
-	defer fmt.Fprintln(e.stdout, "##[endgroup]")
+	_, _ = fmt.Fprintf(e.stdout, "##[group]%s\n", name)
+	defer func() { _, _ = fmt.Fprintln(e.stdout, "##[endgroup]") }()
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
 		group.Go(func() error {
@@ -204,7 +204,7 @@ func (e *Engine) CopyFile(ctx context.Context, containerID, source, target strin
 	if err != nil {
 		return fmt.Errorf("open source file: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	info, err := file.Stat()
 	if err != nil {
 		return fmt.Errorf("stat runtime binary: %w", err)

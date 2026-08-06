@@ -40,7 +40,7 @@ func TestGatewayWorkspaceProxiesAuthenticatedRoute(t *testing.T) {
 		if got := request.Header.Get(gatewayProxyHeaderUserID); got != "42" {
 			t.Fatalf("user header = %q", got)
 		}
-		fmt.Fprint(writer, "workspace proxied")
+		_, _ = fmt.Fprint(writer, "workspace proxied")
 	}))
 	defer upstream.Close()
 
@@ -49,9 +49,9 @@ func TestGatewayWorkspaceProxiesAuthenticatedRoute(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -93,7 +93,7 @@ func TestGatewayPublicEndpointProxiesPublicRoute(t *testing.T) {
 		if got := request.Header.Get(gatewayProxyHeaderUserID); got != "" {
 			t.Fatalf("user header = %q", got)
 		}
-		fmt.Fprint(writer, "public proxied")
+		_, _ = fmt.Fprint(writer, "public proxied")
 	}))
 	defer upstream.Close()
 
@@ -139,7 +139,7 @@ func TestGatewayPublicEndpointProxiesWebSocketRoute(t *testing.T) {
 			upstreamErrors <- fmt.Errorf("upgrade websocket: %w", err)
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		messageType, message, err := conn.ReadMessage()
 		if err != nil {
 			upstreamErrors <- fmt.Errorf("read websocket message: %w", err)
@@ -178,7 +178,7 @@ func TestGatewayPublicEndpointProxiesWebSocketRoute(t *testing.T) {
 		}
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if err := conn.WriteMessage(websocket.TextMessage, []byte("ping")); err != nil {
 		t.Fatalf("write websocket: %v", err)
 	}
@@ -206,7 +206,7 @@ func TestGatewayPublicEndpointWebSocketClosesWhenRevalidationDenies(t *testing.T
 			t.Errorf("upgrade websocket: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		defer close(upstreamClosed)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -235,7 +235,7 @@ func TestGatewayPublicEndpointWebSocketClosesWhenRevalidationDenies(t *testing.T
 		}
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	service.setPublicEndpointResponse(deniedPublicEndpointResponse("codespace_not_running"))
 	waitForPublicEndpointCalls(t, service, 2)
@@ -289,7 +289,7 @@ func TestGatewayPublicEndpointStreamingHTTPClosesWhenRevalidationDenies(t *testi
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d", response.StatusCode)
 	}
@@ -344,7 +344,7 @@ func TestGatewayPublicEndpointStreamingHTTPClosesWhenRouteDeleted(t *testing.T) 
 	if err != nil {
 		t.Fatalf("get stream: %v", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		t.Fatalf("stream status = %d", response.StatusCode)
 	}
@@ -370,7 +370,7 @@ func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
 					UserId:                42,
-					CodespaceUuid:         codespaceUUID,
+					RuntimeUuid:           codespaceUUID,
 					EndpointId:            "workspace",
 					InteractionGeneration: 7,
 				},
@@ -417,7 +417,7 @@ func TestGatewayOpenCreatesSessionAndWorkspaceRevalidates(t *testing.T) {
 		t.Fatalf("workspace payload = %#v", payload)
 	}
 	if service.revalidateRequest.GetEndpoint().GetUserId() != 42 ||
-		service.revalidateRequest.GetEndpoint().GetCodespaceUuid() != codespaceUUID ||
+		service.revalidateRequest.GetEndpoint().GetRuntimeUuid() != codespaceUUID ||
 		service.revalidateRequest.GetEndpoint().GetEndpointId() != "workspace" {
 		t.Fatalf("revalidate request = %#v", service.revalidateRequest)
 	}
@@ -448,7 +448,7 @@ func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
 			t.Errorf("upgrade websocket: %v", err)
 			return
 		}
-		defer conn.Close()
+		defer func() { _ = conn.Close() }()
 		defer close(upstreamClosed)
 		for {
 			if _, _, err := conn.ReadMessage(); err != nil {
@@ -464,7 +464,7 @@ func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
 					UserId:                42,
-					CodespaceUuid:         codespaceUUID,
+					RuntimeUuid:           codespaceUUID,
 					EndpointId:            "workspace",
 					InteractionGeneration: 7,
 				},
@@ -491,7 +491,7 @@ func TestGatewayWorkspaceWebSocketClosesWhenRevalidationDenies(t *testing.T) {
 		}
 		t.Fatalf("dial websocket: %v", err)
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 
 	service.setRevalidateResponse(deniedRevalidateResponse("codespace_not_running"))
 	waitForRevalidateCalls(t, service, 2)
@@ -539,9 +539,9 @@ func TestGatewayOpenRejectsInvalidCodeRequestWithoutRPC(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: "11111111-1111-4111-8111-111111111111",
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: "11111111-1111-4111-8111-111111111111",
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -585,9 +585,9 @@ func TestGatewayOpenReturnsTooManyRequestsWhenSessionLimitReached(t *testing.T) 
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: "11111111-1111-4111-8111-111111111111",
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: "11111111-1111-4111-8111-111111111111",
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -617,9 +617,9 @@ func TestGatewayWorkspaceIDEUnavailableUsesBrowserErrorPage(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -655,9 +655,9 @@ func TestGatewayWorkspaceIDEUnavailableKeepsJSONForAPI(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -693,9 +693,9 @@ func TestGatewayOpenCreatesConnectingSessionVisibleToAutoStop(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -723,9 +723,9 @@ func TestGatewayOpenReplacesExistingSessionForSameBinding(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -778,9 +778,9 @@ func TestGatewayOpenRejectsMultipleCurrentBindingSessionCookies(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -812,9 +812,9 @@ func TestGatewayWorkspaceIgnoresUnknownAndOtherBindingSessionCookies(t *testing.
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -859,9 +859,9 @@ func TestGatewayWorkspaceRejectsMultipleCurrentBindingSessionCookies(t *testing.
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -906,9 +906,9 @@ func TestGatewayOpenReplacementCancelsOldSessionConnection(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -963,9 +963,9 @@ func TestGatewayOpenRejectsServiceWorkerWithoutRPC(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: "11111111-1111-4111-8111-111111111111",
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: "11111111-1111-4111-8111-111111111111",
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -995,9 +995,9 @@ func TestGatewayOpenRequiresValidHostWhenConfigured(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1025,9 +1025,9 @@ func TestGatewayOpenRejectsHostBindingMismatch(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1056,9 +1056,9 @@ func TestGatewayOpenWithConfiguredHostUsesReservedPath(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1196,9 +1196,9 @@ func TestGatewayOpenRedirectsToReturnToCookie(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1236,9 +1236,9 @@ func TestGatewayOpenClearsOtherSchemeReturnToCookieWithoutReadingIt(t *testing.T
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1279,9 +1279,9 @@ func TestGatewayOpenDuplicateReturnToCookieFallsBackToRoot(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1349,9 +1349,9 @@ func TestGatewayOpenUsesSecureSessionCookieForHTTPSGateway(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1408,9 +1408,9 @@ func TestGatewayOpenUsesGlobalInflightLimit(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: "11111111-1111-4111-8111-111111111111",
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: "11111111-1111-4111-8111-111111111111",
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -1483,7 +1483,7 @@ func TestGatewayPublicEndpointValidatesWithoutLiveSession(t *testing.T) {
 		t.Fatalf("public endpoint payload = %#v", payload)
 	}
 	if service.publicEndpointRequest.GetProtocolVersion() != 1 ||
-		service.publicEndpointRequest.GetCodespaceUuid() != codespaceUUID ||
+		service.publicEndpointRequest.GetRuntimeUuid() != codespaceUUID ||
 		service.publicEndpointRequest.GetEndpointId() != "web" {
 		t.Fatalf("public endpoint request = %#v", service.publicEndpointRequest)
 	}
@@ -1694,9 +1694,9 @@ func TestGatewayWorkspaceRejectsServiceWorkerWithoutRevalidate(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -2014,9 +2014,9 @@ func TestGatewayWorkspaceConcurrentMissSharesRevalidate(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -2073,9 +2073,9 @@ func TestGatewayWorkspaceValidationLimitReturnsUnavailable(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -2133,9 +2133,9 @@ func TestGatewayWorkspaceUsesPerSessionInflightLimit(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},
@@ -2190,9 +2190,9 @@ func TestGatewayWorkspaceAndPublicAuthorizationKeysAreIsolated(t *testing.T) {
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "web",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "web",
 				},
 			},
 		},
@@ -2549,9 +2549,9 @@ func newGatewayWorkspaceSourceTestHandlerWithOrigin(
 		openTokenResponse: &codespacev1.ValidateOpenTokenResponse{
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
-					UserId:        42,
-					CodespaceUuid: codespaceUUID,
-					EndpointId:    "workspace",
+					UserId:      42,
+					RuntimeUuid: codespaceUUID,
+					EndpointId:  "workspace",
 				},
 			},
 		},

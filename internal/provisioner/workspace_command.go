@@ -352,7 +352,7 @@ func (p *IncusProvisioner) checkWorkspaceIDEOnce(ctx context.Context, instanceNa
 	if err != nil {
 		return err
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	if deadline, ok := ctx.Deadline(); ok {
 		_ = conn.SetDeadline(deadline)
 	} else {
@@ -370,7 +370,7 @@ func (p *IncusProvisioner) checkWorkspaceIDEOnce(ctx context.Context, instanceNa
 	if err != nil {
 		return fmt.Errorf("read code-server health: %w", err)
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return fmt.Errorf("code-server health returned %s", response.Status)
 	}

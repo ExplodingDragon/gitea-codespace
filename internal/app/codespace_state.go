@@ -229,8 +229,8 @@ func (s *CodespaceStateStore) LoadActiveOperations() ([]manager.OperationSnapsho
 			return nil, fmt.Errorf("decode active operation payload %s: %w", filepath.Join(dir, entry.Name()), err)
 		}
 		operation := payload.OperationPayload()
-		if operation.GetCodespaceUuid() != codespaceUUID {
-			return nil, fmt.Errorf("active operation payload uuid %s does not match state file uuid %s", operation.GetCodespaceUuid(), codespaceUUID)
+		if operation.GetRuntimeUuid() != codespaceUUID {
+			return nil, fmt.Errorf("active operation payload uuid %s does not match state file uuid %s", operation.GetRuntimeUuid(), codespaceUUID)
 		}
 		if operation.GetOperationRversion() != state.ActiveOperation.OperationRVersion {
 			return nil, fmt.Errorf("active operation payload version %d does not match state version %d", operation.GetOperationRversion(), state.ActiveOperation.OperationRVersion)
@@ -425,12 +425,12 @@ func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error
 		}
 		for _, endpoint := range state.Endpoints {
 			routes = append(routes, gatewayEndpointRoute{
-				codespaceUUID:  codespaceUUID,
-				endpointID:     endpoint.EndpointID,
-				label:          endpoint.Label,
-				instanceName:   endpoint.InstanceName,
-				upstreamPort:   endpoint.UpstreamPort,
-				public:         endpoint.Public,
+				codespaceUUID: codespaceUUID,
+				endpointID:    endpoint.EndpointID,
+				label:         endpoint.Label,
+				instanceName:  endpoint.InstanceName,
+				upstreamPort:  endpoint.UpstreamPort,
+				public:        endpoint.Public,
 			})
 		}
 	}
@@ -679,7 +679,7 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 	target.containerUser = strings.TrimSpace(state.RuntimeEnvironment.Environment.RemoteUser)
 	target.containerWorkdir = strings.TrimSpace(state.RuntimeEnvironment.Environment.RemoteWorkdir)
 	if target.containerID == "" || target.containerUser == "" || !filepath.IsAbs(target.containerWorkdir) {
-		return gatewayWorkspaceTarget{}, false, fmt.Errorf("Dev Container runtime target is missing")
+		return gatewayWorkspaceTarget{}, false, fmt.Errorf("dev container runtime target is missing")
 	}
 	editorPort := uint16(runtimeendpoint.WorkspaceEndpointPort)
 	target.editorPort = uint32(editorPort)
@@ -856,7 +856,7 @@ func (s *CodespaceStateStore) SaveActiveOperation(snapshot manager.OperationSnap
 	if snapshot.Payload == nil {
 		return fmt.Errorf("operation payload is required")
 	}
-	codespaceUUID := snapshot.Payload.GetCodespaceUuid()
+	codespaceUUID := snapshot.Payload.GetRuntimeUuid()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
@@ -1232,12 +1232,12 @@ func validateStoredEndpointRoutes(path string, codespaceUUID string, endpoints [
 	workspaceFound := false
 	for _, endpoint := range endpoints {
 		route, err := normalizeGatewayEndpointRoute(gatewayEndpointRoute{
-			codespaceUUID:  codespaceUUID,
-			endpointID:     endpoint.EndpointID,
-			label:          endpoint.Label,
-			instanceName:   endpoint.InstanceName,
-			upstreamPort:   endpoint.UpstreamPort,
-			public:         endpoint.Public,
+			codespaceUUID: codespaceUUID,
+			endpointID:    endpoint.EndpointID,
+			label:         endpoint.Label,
+			instanceName:  endpoint.InstanceName,
+			upstreamPort:  endpoint.UpstreamPort,
+			public:        endpoint.Public,
 		})
 		if err != nil {
 			return fmt.Errorf("validate codespace state %s: %w", path, err)

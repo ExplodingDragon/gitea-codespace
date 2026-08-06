@@ -27,8 +27,6 @@ var defaultConfigNames = []string{
 
 var errConfigNotFound = errors.New("config file not found")
 
-const defaultRegisterConfigPath = "codespace.yaml"
-
 var (
 	gatewayDNSLabelPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 	codeServerVersionPattern = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$`)
@@ -356,27 +354,6 @@ func LoadConfig(path string) (Config, error) {
 	if err := config.Validate(); err != nil {
 		return Config{}, fmt.Errorf("validate config %s: %w", configPath, err)
 	}
-	return config, nil
-}
-
-// LoadConfigForRegister loads an existing config without requiring manager credentials.
-func LoadConfigForRegister(path string) (Config, error) {
-	configPath, err := DiscoverConfigPath(path)
-	if err != nil {
-		if strings.TrimSpace(path) != "" || !errors.Is(err, errConfigNotFound) {
-			return Config{}, err
-		}
-		config := DefaultConfig()
-		config.applyDefaults()
-		config.resolveRelativePaths(defaultRegisterConfigPath)
-		return config, nil
-	}
-	config, err := decodeConfigFile(configPath)
-	if err != nil {
-		return Config{}, err
-	}
-	config.applyDefaults()
-	config.resolveRelativePaths(configPath)
 	return config, nil
 }
 

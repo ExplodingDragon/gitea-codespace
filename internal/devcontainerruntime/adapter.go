@@ -152,15 +152,15 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if !opts.InitializeWebIDE || len(customizations.Extensions) == 0 {
 		return nil
 	}
-	fmt.Fprintln(stdout, "##[group]Install VS Code extensions")
-	defer fmt.Fprintln(stdout, "##[endgroup]")
+	_, _ = fmt.Fprintln(stdout, "##[group]Install VS Code extensions")
+	defer func() { _, _ = fmt.Fprintln(stdout, "##[endgroup]") }()
 	for _, extension := range customizations.Extensions {
 		extension = strings.TrimSpace(extension)
 		if extension == "" {
 			return fmt.Errorf("VS Code extension identifier is empty")
 		}
 		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
-			fmt.Fprintf(stderr, "##[warning]Install VS Code extension %s: %v\n", extension, err)
+			_, _ = fmt.Fprintf(stderr, "##[warning]Install VS Code extension %s: %v\n", extension, err)
 		}
 	}
 	return nil

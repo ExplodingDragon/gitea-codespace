@@ -26,7 +26,7 @@ func TestGatewayControlPlaneValidateOpenTokenAllowed(t *testing.T) {
 			Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{
 				Allowed: &codespacev1.OpenTokenBinding{
 					UserId:                42,
-					CodespaceUuid:         "11111111-1111-4111-8111-111111111111",
+					RuntimeUuid:           "11111111-1111-4111-8111-111111111111",
 					EndpointId:            "workspace",
 					InteractionGeneration: 7,
 				},
@@ -74,7 +74,7 @@ func TestGatewayControlPlaneValidatePublicEndpointDenied(t *testing.T) {
 		t.Fatalf("public endpoint decision = %#v", decision)
 	}
 	if service.publicEndpointRequest.GetProtocolVersion() != 1 ||
-		service.publicEndpointRequest.GetCodespaceUuid() != "codespace-uuid" ||
+		service.publicEndpointRequest.GetRuntimeUuid() != "codespace-uuid" ||
 		service.publicEndpointRequest.GetEndpointId() != "web" {
 		t.Fatalf("public endpoint request = %#v", service.publicEndpointRequest)
 	}
@@ -138,7 +138,7 @@ func TestGatewayControlPlaneReportRuntimeMetadata(t *testing.T) {
 		t.Fatalf("report runtime metadata: %v", err)
 	}
 	if service.metadataRequest.GetProtocolVersion() != 1 ||
-		service.metadataRequest.GetCodespaceUuid() != "codespace-uuid" ||
+		service.metadataRequest.GetRuntimeUuid() != "codespace-uuid" ||
 		!proto.Equal(service.metadataRequest.GetMetadata(), metadata) ||
 		service.metadataRequest.GetMetadataGeneration() != 3 {
 		t.Fatalf("metadata request = %#v", service.metadataRequest)
@@ -197,7 +197,7 @@ func TestGatewayControlPlaneRevalidateSSHSessionAllowed(t *testing.T) {
 	}
 	if service.revalidateRequest.GetProtocolVersion() != 1 ||
 		service.revalidateRequest.GetSsh().GetUserId() != 42 ||
-		service.revalidateRequest.GetSsh().GetCodespaceUuid() != "codespace-uuid" {
+		service.revalidateRequest.GetSsh().GetRuntimeUuid() != "codespace-uuid" {
 		t.Fatalf("revalidate request = %#v", service.revalidateRequest)
 	}
 	assertGatewayManagerAuth(t, service)

@@ -48,7 +48,7 @@ func Check(ctx context.Context, statePath string, stdout, stderr io.Writer) erro
 	if err != nil {
 		return err
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	_, err = engine.Inspect(ctx, state)
 	return err
 }
@@ -79,7 +79,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 			Recoverable: true,
 		})
 	}
-	defer engine.Close()
+	defer func() { _ = engine.Close() }()
 	var state *devcontainer.State
 	switch request.Action {
 	case "create":
@@ -155,7 +155,7 @@ func Exec(ctx context.Context, options ExecOptions, stdin io.Reader, stdout, std
 	if err != nil {
 		return fmt.Errorf("create Docker client: %w", err)
 	}
-	defer apiClient.Close()
+	defer func() { _ = apiClient.Close() }()
 	created, err := apiClient.ContainerExecCreate(ctx, state.PrimaryContainerID, container.ExecOptions{
 		User:         state.RemoteUser,
 		WorkingDir:   state.RemoteWorkdir,
@@ -173,7 +173,7 @@ func Exec(ctx context.Context, options ExecOptions, stdin io.Reader, stdout, std
 	if err != nil {
 		return fmt.Errorf("attach workspace exec: %w", err)
 	}
-	defer attached.Close()
+	defer func() { attached.Close() }()
 	go func() {
 		_, _ = io.Copy(attached.Conn, stdin)
 		_ = attached.CloseWrite()
@@ -234,7 +234,7 @@ func TCP(ctx context.Context, statePath string, port uint16, stdin io.Reader, st
 	if err != nil {
 		return err
 	}
-	defer apiClient.Close()
+	defer func() { _ = apiClient.Close() }()
 	created, err := apiClient.ContainerExecCreate(ctx, state.PrimaryContainerID, container.ExecOptions{
 		Cmd:          []string{containerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.Itoa(int(port))},
 		AttachStdin:  true,
@@ -249,7 +249,7 @@ func TCP(ctx context.Context, statePath string, port uint16, stdin io.Reader, st
 	if err != nil {
 		return fmt.Errorf("attach runtime TCP bridge: %w", err)
 	}
-	defer attached.Close()
+	defer func() { attached.Close() }()
 	go func() {
 		_, _ = io.Copy(attached.Conn, stdin)
 		_ = attached.CloseWrite()
@@ -280,7 +280,7 @@ func Connect(ctx context.Context, host string, port uint16, stdin io.Reader, std
 	if err != nil {
 		return fmt.Errorf("connect Dev Container localhost port: %w", err)
 	}
-	defer connection.Close()
+	defer func() { _ = connection.Close() }()
 	copyDone := make(chan error, 1)
 	go func() {
 		_, err := io.Copy(connection, stdin)
@@ -349,7 +349,7 @@ func writeJSONAtomic(path string, value any) error {
 		return err
 	}
 	temporary := file.Name()
-	defer os.Remove(temporary)
+	defer func() { _ = os.Remove(temporary) }()
 	encoder := json.NewEncoder(file)
 	encoder.SetEscapeHTML(false)
 	if err := encoder.Encode(value); err != nil {

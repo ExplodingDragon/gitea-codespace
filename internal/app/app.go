@@ -43,24 +43,32 @@ func Run(output io.Writer, configPath string) error {
 		return fmt.Errorf("output is nil")
 	}
 
-	config, err := LoadConfig(configPath)
+	infrastructureConfig, ok, err := LoadInfrastructureRuntimeConfig(configPath)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return fmt.Errorf("load manager infrastructure state: %w", err)
 	}
-	return RunWithConfig(output, config)
+	if ok {
+		return RunWithInfrastructureConfig(output, infrastructureConfig)
+	}
+	return fmt.Errorf("%s must be set to select the manager state backend", managerStateDriverEnv)
 }
 
-// RunWithConfig starts the Manager worker and the process health endpoint.
-func RunWithConfig(output io.Writer, config Config) error {
+// RunWithInfrastructureConfig starts the Manager worker from manager-owned infrastructure state.
+func RunWithInfrastructureConfig(output io.Writer, runtimeConfig InfrastructureRuntimeConfig) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
-	return runWithConfigContext(ctx, output, config)
+	return runWithConfigContext(ctx, output, runtimeConfig)
 }
 
-func runWithConfigContext(ctx context.Context, output io.Writer, config Config) error {
+func runWithConfigContext(ctx context.Context, output io.Writer, runtimeConfig InfrastructureRuntimeConfig) error {
 	if output == nil {
 		return fmt.Errorf("output is nil")
 	}
+	if err := validateManagerNodeRole(runtimeConfig.NodeRole); err != nil {
+		return err
+	}
+	workerEnabled := strings.ToLower(strings.TrimSpace(runtimeConfig.NodeRole)) != managerNodeRoleGateway
+	config := runtimeConfig.Config
 
 	stateLock, err := acquireStateDirLock(config.Node.StateDir)
 	if err != nil {
@@ -72,7 +80,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 		}
 	}()
 
-	state, err := loadProcessState(config)
+	state, err := loadProcessState(config, runtimeConfig.ManagerState)
 	if err != nil {
 		return err
 	}
@@ -90,7 +98,7 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	ctx, cancelProcess := context.WithCancel(ctx)
 	defer cancelProcess()
 
-	runtime, err := newProcessRuntime(ctx, config, state, registryCache)
+	runtime, err := newProcessRuntime(ctx, config, state, registryCache, workerEnabled)
 	if err != nil {
 		return err
 	}
@@ -101,17 +109,25 @@ func runWithConfigContext(ctx context.Context, output io.Writer, config Config) 
 	if listeners.RegistryCache != nil {
 		go serveHTTP(ctx, errorChannel, "cache registry", runtime.registryCacheServer, listeners.RegistryCache)
 		go registryCache.RunGC(ctx)
-		fmt.Fprintf(output, "codespace cache registry listening on %s\n", listeners.RegistryCache.Addr())
+		_, _ = fmt.Fprintf(output, "codespace cache registry listening on %s\n", listeners.RegistryCache.Addr())
 	}
-	fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
-	fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
-	fmt.Fprintf(output, "codespace code-server version %s for new environments\n", config.Runtime.WebIDE.CodeServerVersion)
+	_, _ = fmt.Fprintf(output, "codespace gateway http listening on %s\n", listeners.GatewayHTTP.Addr())
+	_, _ = fmt.Fprintf(output, "codespace gateway ssh listening on %s\n", listeners.GatewaySSH.Addr())
+	if strings.TrimSpace(runtimeConfig.NodeID) != "" {
+		_, _ = fmt.Fprintf(output, "codespace manager node %s\n", runtimeConfig.NodeID)
+	}
+	if !workerEnabled {
+		_, _ = fmt.Fprintln(output, "codespace manager node role gateway")
+	}
+	_, _ = fmt.Fprintf(output, "codespace code-server version %s for new environments\n", config.Runtime.WebIDE.CodeServerVersion)
 
-	go func() {
-		if err := runtime.agent.Run(ctx); err != nil {
-			errorChannel <- fmt.Errorf("manager: %w", err)
-		}
-	}()
+	if runtime.agent != nil {
+		go func() {
+			if err := runtime.agent.Run(ctx); err != nil {
+				errorChannel <- fmt.Errorf("manager: %w", err)
+			}
+		}()
+	}
 
 	var runErr error
 	select {
@@ -148,10 +164,9 @@ type processStateSnapshot struct {
 	gatewaySSHHostKey         gatewaySSHHostKey
 }
 
-func loadProcessState(config Config) (processStateSnapshot, error) {
-	managerState, err := LoadManagerState(config.Node.StateDir)
-	if err != nil {
-		return processStateSnapshot{}, fmt.Errorf("load manager state: %w", err)
+func loadProcessState(config Config, managerState ManagerState) (processStateSnapshot, error) {
+	if err := managerState.Validate(); err != nil {
+		return processStateSnapshot{}, fmt.Errorf("validate manager state: %w", err)
 	}
 	if err := ValidateCodespaceStateFiles(config.Node.StateDir); err != nil {
 		return processStateSnapshot{}, fmt.Errorf("validate codespace state files: %w", err)
@@ -206,7 +221,7 @@ type processRuntime struct {
 	registryCacheServer *http.Server
 }
 
-func newProcessRuntime(ctx context.Context, config Config, state processStateSnapshot, registryCache *registryCache) (*processRuntime, error) {
+func newProcessRuntime(ctx context.Context, config Config, state processStateSnapshot, registryCache *registryCache, workerEnabled bool) (*processRuntime, error) {
 	managerProvisioner, err := newProvisioner(config, state.managerState.ManagerID, registryCache)
 	if err != nil {
 		return nil, fmt.Errorf("create provisioner: %w", err)
@@ -238,66 +253,70 @@ func newProcessRuntime(ctx context.Context, config Config, state processStateSna
 		state.managerState.ManagerSecret,
 		&http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()},
 	)
-	runtimeMetadataPublisher := newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
-	runtimeMetadataPublisher.Run(ctx)
+	var runtimeMetadataPublisher *runtimeMetadataPublisher
 	managerServiceSettings := managerServiceSettingsStores{
 		gatewayControlPlane,
 		gatewayBrowserAuth,
-		runtimeMetadataPublisher,
 	}
-	endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
-	environments := make([]*codespacev1.EnvironmentTag, 0, len(config.Runtime.Environments))
-	for _, environment := range config.Runtime.Environments {
-		environments = append(environments, &codespacev1.EnvironmentTag{
-			Tag:         environment.Tag,
-			Description: environment.Description,
+	var agent *manager.Agent
+	if workerEnabled {
+		runtimeMetadataPublisher = newRuntimeMetadataPublisher(state.codespaceStateStore, gatewayControlPlane, managerProvisioner, 0)
+		runtimeMetadataPublisher.Run(ctx)
+		managerServiceSettings = append(managerServiceSettings, runtimeMetadataPublisher)
+		endpointApplier := newRuntimeEndpointApplier(state.codespaceStateStore, gatewayRoutes, runtimeMetadataPublisher)
+		environments := make([]*codespacev1.EnvironmentTag, 0, len(config.Runtime.Environments))
+		for _, environment := range config.Runtime.Environments {
+			environments = append(environments, &codespacev1.EnvironmentTag{
+				Tag:         environment.Tag,
+				Description: environment.Description,
+			})
+		}
+		sort.Slice(environments, func(i, j int) bool {
+			return environments[i].GetTag() < environments[j].GetTag()
 		})
-	}
-	sort.Slice(environments, func(i, j int) bool {
-		return environments[i].GetTag() < environments[j].GetTag()
-	})
 
-	agent := manager.New(manager.AgentConfig{
-		BaseURL:                      managerServiceBaseURL(state.managerState.GiteaURL),
-		ManagerID:                    state.managerState.ManagerID,
-		ManagerSecret:                state.managerState.ManagerSecret,
-		Name:                         config.Node.Name,
-		GatewayURL:                   config.Gateway.HTTP.PublicURL,
-		GatewaySSHAddr:               config.Gateway.SSH.PublicAddr,
-		GatewaySSHHostKeyAlgo:        state.gatewaySSHHostKey.algorithm,
-		GatewaySSHHostKeySHA256:      state.gatewaySSHHostKey.fingerprintSHA256,
-		GatewaySSHHostKeyUnix:        state.gatewaySSHHostKey.updatedUnix,
-		Version:                      managerBuildVersion(),
-		Environments:                 environments,
-		PollInterval:                 config.Node.PollInterval.ToStdlib(),
-		DeclareInterval:              config.Node.DeclareInterval.ToStdlib(),
-		CapacityTotal:                config.Node.CapacityTotal,
-		StartupWorkers:               config.Node.StartupWorkers,
-		CleanupWorkers:               config.Node.CleanupWorkers,
-		HTTPTimeout:                  config.Node.HTTPTimeout.ToStdlib(),
-		RuntimeMetadataGeneration:    1,
-		InventoryGeneration:          state.managerState.InventoryGeneration,
-		InitialRuntimeGenerations:    state.initialRuntimeGenerations,
-		InitialRuntimeTransitions:    state.initialRuntimeTransitions,
-		InitialCleanupPendings:       state.initialCleanupPendings,
-		InitialHealthStopPendings:    state.initialHealthStopPendings,
-		InitialOperations:            state.initialOperations,
-		OperationStateStore:          state.codespaceStateStore,
-		InventoryStateStore:          NewManagerStateStore(config.Node.StateDir),
-		RuntimeStateStore:            state.codespaceStateStore,
-		CleanupStateStore:            state.codespaceStateStore,
-		HealthStopStateStore:         state.codespaceStateStore,
-		RuntimeEnvironmentStateStore: state.codespaceStateStore,
-		RuntimeMetadataStateStore:    state.codespaceStateStore,
-		StartupInputStateStore:       state.codespaceStateStore,
-		RuntimeEndpointApplier:       endpointApplier,
-		RuntimeHealthStateStore:      state.codespaceStateStore,
-		RuntimeMetadataPublisher:     runtimeMetadataPublisher,
-		SessionTracker:               sessionRegistry,
-		AccessController:             gatewayRoutes,
-		ManagerServiceSettings:       managerServiceSettings,
-		GitSSHKeyType:                config.runtimeGitSSHKeyType(),
-	}, &http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()}, managerProvisioner)
+		agent = manager.New(manager.AgentConfig{
+			BaseURL:                      managerServiceBaseURL(state.managerState.GiteaURL),
+			ManagerID:                    state.managerState.ManagerID,
+			ManagerSecret:                state.managerState.ManagerSecret,
+			Name:                         config.Node.Name,
+			GatewayURL:                   config.Gateway.HTTP.PublicURL,
+			GatewaySSHAddr:               config.Gateway.SSH.PublicAddr,
+			GatewaySSHHostKeyAlgo:        state.gatewaySSHHostKey.algorithm,
+			GatewaySSHHostKeySHA256:      state.gatewaySSHHostKey.fingerprintSHA256,
+			GatewaySSHHostKeyUnix:        state.gatewaySSHHostKey.updatedUnix,
+			Version:                      managerBuildVersion(),
+			Environments:                 environments,
+			PollInterval:                 config.Node.PollInterval.ToStdlib(),
+			DeclareInterval:              config.Node.DeclareInterval.ToStdlib(),
+			CapacityTotal:                config.Node.CapacityTotal,
+			StartupWorkers:               config.Node.StartupWorkers,
+			CleanupWorkers:               config.Node.CleanupWorkers,
+			HTTPTimeout:                  config.Node.HTTPTimeout.ToStdlib(),
+			RuntimeMetadataGeneration:    1,
+			InventoryGeneration:          state.managerState.InventoryGeneration,
+			InitialRuntimeGenerations:    state.initialRuntimeGenerations,
+			InitialRuntimeTransitions:    state.initialRuntimeTransitions,
+			InitialCleanupPendings:       state.initialCleanupPendings,
+			InitialHealthStopPendings:    state.initialHealthStopPendings,
+			InitialOperations:            state.initialOperations,
+			OperationStateStore:          state.codespaceStateStore,
+			InventoryStateStore:          NewManagerStateStore(config.Node.StateDir),
+			RuntimeStateStore:            state.codespaceStateStore,
+			CleanupStateStore:            state.codespaceStateStore,
+			HealthStopStateStore:         state.codespaceStateStore,
+			RuntimeEnvironmentStateStore: state.codespaceStateStore,
+			RuntimeMetadataStateStore:    state.codespaceStateStore,
+			StartupInputStateStore:       state.codespaceStateStore,
+			RuntimeEndpointApplier:       endpointApplier,
+			RuntimeHealthStateStore:      state.codespaceStateStore,
+			RuntimeMetadataPublisher:     runtimeMetadataPublisher,
+			SessionTracker:               sessionRegistry,
+			AccessController:             gatewayRoutes,
+			ManagerServiceSettings:       managerServiceSettings,
+			GitSSHKeyType:                config.runtimeGitSSHKeyType(),
+		}, &http.Client{Timeout: config.Node.HTTPTimeout.ToStdlib()}, managerProvisioner)
+	}
 
 	processHealth := newProcessHealth()
 	gatewayServer := newGatewayHTTPServer(newGatewayHandlerWithOriginAndBrowserAuth(
@@ -975,7 +994,7 @@ func proxyGatewayEndpoint(
 ) {
 	upstreamHost := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(route.upstreamPort)))
 	target := &url.URL{Scheme: "http", Host: upstreamHost}
-	proxy := httputil.NewSingleHostReverseProxy(target)
+	proxy := &httputil.ReverseProxy{}
 	transport := &http.Transport{
 		Proxy: nil,
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -987,13 +1006,13 @@ func proxyGatewayEndpoint(
 	}
 	defer transport.CloseIdleConnections()
 	proxy.Transport = transport
-	proxy.Director = func(upstream *http.Request) {
-		upstream.URL.Scheme = target.Scheme
-		upstream.URL.Host = target.Host
-		upstream.URL.Path = upstreamPath
-		upstream.URL.RawPath = ""
-		upstream.Host = target.Host
-		prepareGatewayProxyRequest(upstream, proxyContext)
+	proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
+		proxyRequest.Out.URL.Scheme = target.Scheme
+		proxyRequest.Out.URL.Host = target.Host
+		proxyRequest.Out.URL.Path = upstreamPath
+		proxyRequest.Out.URL.RawPath = ""
+		proxyRequest.Out.Host = target.Host
+		prepareGatewayProxyRequest(proxyRequest.Out, proxyContext)
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
 		normalizeGatewayProxyResponse(response.Header, gatewayProxyResponseContext{

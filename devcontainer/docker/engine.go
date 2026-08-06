@@ -24,6 +24,7 @@ import (
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/command"
 	containercommand "github.com/docker/cli/cli/command/container"
 	configtypes "github.com/docker/cli/cli/config/types"
@@ -138,7 +139,7 @@ func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
 // Create resolves configuration, creates resources, and completes the first lifecycle.
 func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("Dev Container owner ID is empty"))
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container owner ID is empty"))
 	}
 	environmentID := uuid.NewString()
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
@@ -241,7 +242,7 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 			return err
 		}
 		if existing, ok := featureIDs[featureID]; ok {
-			return fmt.Errorf("Dev Container Feature %s conflicts with %s in repository configuration", reference, existing)
+			return fmt.Errorf("dev container feature %s conflicts with %s in repository configuration", reference, existing)
 		}
 		featureIDs[featureID] = reference
 	}
@@ -260,7 +261,7 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 		}
 		if existing, ok := resolved.Features[reference]; ok {
 			if !featureOptionsEqual(existing, featureOptions) {
-				return fmt.Errorf("Dev Container Feature %s conflicts between %s and %s", reference, featureOrigins[reference], origin)
+				return fmt.Errorf("dev container feature %s conflicts between %s and %s", reference, featureOrigins[reference], origin)
 			}
 			if feature.InstallOnly {
 				resolved.InstallOnlyFeatures[reference] = struct{}{}
@@ -272,7 +273,7 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 			return err
 		}
 		if existing, ok := featureIDs[featureID]; ok {
-			return fmt.Errorf("Dev Container Feature %s from %s conflicts with %s from %s", reference, origin, existing, featureOrigins[existing])
+			return fmt.Errorf("dev container feature %s from %s conflicts with %s from %s", reference, origin, existing, featureOrigins[existing])
 		}
 		resolved.Features[reference] = featureOptions
 		resolved.InjectedFeatureReferences[reference] = struct{}{}
@@ -360,7 +361,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	}
 	config.ExposedPorts = exposedPorts
 	if useGPU {
-		hostConfig.Resources.DeviceRequests = []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}}
+		hostConfig.DeviceRequests = []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}}
 	}
 	if len(resolved.RunArgs) > 0 {
 		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig, publishSpecs)
@@ -396,8 +397,8 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
 		return "", fmt.Errorf("initialize Docker command client: %w", err)
 	}
-	defer cli.Client().Close()
-	createCommand := containercommand.NewCreateCommand(cli)
+	defer func() { _ = cli.Client().Close() }()
+	createCommand := containercommand.NewCreateCommand(cli) //nolint:staticcheck // Docker CLI is used here because devcontainer runArgs must match docker create parsing.
 	createCommand.SetArgs(arguments)
 	createCommand.SetContext(ctx)
 	createCommand.SilenceUsage = true
@@ -461,7 +462,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	for _, value := range hostConfig.SecurityOpt {
 		arguments = append(arguments, "--security-opt", value)
 	}
-	if len(hostConfig.Resources.DeviceRequests) > 0 {
+	if len(hostConfig.DeviceRequests) > 0 {
 		arguments = append(arguments, "--gpus", "all")
 	}
 	for _, spec := range publishSpecs {
@@ -527,12 +528,12 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 			continue
 		}
 		if _, err := resolvePathInsideRoot(resolved.AllowedPathRoot, candidate.Build.Context); err != nil {
-			return "", nil, nil, fmt.Errorf("Docker Compose service %s build context: %w", name, err)
+			return "", nil, nil, fmt.Errorf("docker compose service %s build context: %w", name, err)
 		}
 	}
 	service, ok := project.Services[resolved.Service]
 	if !ok {
-		return "", nil, nil, fmt.Errorf("Docker Compose service %q does not exist", resolved.Service)
+		return "", nil, nil, fmt.Errorf("docker compose service %q does not exist", resolved.Service)
 	}
 	if service.Build != nil {
 		stage := "compose-" + resolved.Service
@@ -542,7 +543,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	baseImage := api.GetImageNameOrDefault(service, project.Name)
 	if strings.TrimSpace(baseImage) == "" {
-		return "", nil, nil, fmt.Errorf("Docker Compose service %q has no image or build", resolved.Service)
+		return "", nil, nil, fmt.Errorf("docker compose service %q has no image or build", resolved.Service)
 	}
 	if service.Build == nil {
 		baseImage, err = e.resolveAndPullImage(ctx, baseImage, resolved.Cache)
@@ -667,7 +668,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		relatedService, ok := project.Services[name]
 		if !ok {
-			return "", nil, nil, devcontainer.InvalidConfiguration(fmt.Errorf("Docker Compose runServices service %q does not exist", name))
+			return "", nil, nil, devcontainer.InvalidConfiguration(fmt.Errorf("docker compose runServices service %q does not exist", name))
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name
@@ -709,7 +710,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	if primary == "" {
 		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
-		return "", nil, nil, fmt.Errorf("Docker Compose service %q did not create a container", resolved.Service)
+		return "", nil, nil, fmt.Errorf("docker compose service %q did not create a container", resolved.Service)
 	}
 	sort.Strings(related)
 	return primary, related, featureDigests, nil
@@ -845,7 +846,7 @@ func (e *Engine) Stop(ctx context.Context, environment *devcontainer.State) (*de
 	}
 	timeoutSeconds := int(timeout.Seconds())
 	for _, id := range environmentContainerIDs(environment) {
-		if err := e.client.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeoutSeconds}); err != nil && !client.IsErrNotFound(err) {
+		if err := e.client.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeoutSeconds}); err != nil && !cerrdefs.IsNotFound(err) {
 			return nil, fmt.Errorf("stop Dev Container %s: %w", id, err)
 		}
 	}
@@ -860,10 +861,10 @@ func (e *Engine) Inspect(ctx context.Context, environment *devcontainer.State) (
 			return nil, fmt.Errorf("inspect Dev Container %s: %w", id, err)
 		}
 		if id == environment.PrimaryContainerID && !inspect.State.Running {
-			return nil, fmt.Errorf("Dev Container %s is not running", id)
+			return nil, fmt.Errorf("dev container %s is not running", id)
 		}
 		if inspect.Config.Labels[labelOwnerID] != environment.OwnerID || inspect.Config.Labels[labelEnvironmentID] != environment.ID {
-			return nil, fmt.Errorf("Dev Container %s identity does not match runtime state", id)
+			return nil, fmt.Errorf("dev container %s identity does not match runtime state", id)
 		}
 	}
 	return environment, nil
@@ -879,7 +880,7 @@ func (e *Engine) Delete(ctx context.Context, environment *devcontainer.State) er
 		if id == "" {
 			continue
 		}
-		if err := e.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil && !client.IsErrNotFound(err) {
+		if err := e.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 			result = errors.Join(result, err)
 		}
 	}
@@ -897,7 +898,7 @@ func (e *Engine) cleanupIncompleteCreate(ctx context.Context, ownerID, composePr
 		return errors.Join(result, err)
 	}
 	for _, item := range containers {
-		if err := e.client.ContainerRemove(ctx, item.ID, container.RemoveOptions{Force: true}); err != nil && !client.IsErrNotFound(err) {
+		if err := e.client.ContainerRemove(ctx, item.ID, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
 			result = errors.Join(result, err)
 		}
 	}

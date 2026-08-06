@@ -86,16 +86,15 @@ func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 			endpointID:    runtimeendpoint.WorkspaceEndpointID,
 		}, true
 	}
-	prefix, uuid32, ok := strings.Cut(label, "-")
-	if !ok {
+	if !strings.Contains(label, "-") {
 		return gatewayEndpointHost{}, false
 	}
 	lastHyphen := strings.LastIndex(label, "-")
 	if lastHyphen < 1 || lastHyphen+1 >= len(label) {
 		return gatewayEndpointHost{}, false
 	}
-	prefix = label[:lastHyphen]
-	uuid32 = label[lastHyphen+1:]
+	prefix := label[:lastHyphen]
+	uuid32 := label[lastHyphen+1:]
 	if !isGatewayEndpointID(prefix) || !isGatewayUUID32(uuid32) {
 		return gatewayEndpointHost{}, false
 	}

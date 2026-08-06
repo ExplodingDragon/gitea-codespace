@@ -365,7 +365,7 @@ printf '%s\n' "$PWD" "$(git symbolic-ref --short HEAD)" "$(git rev-parse --abbre
 	if err != nil {
 		t.Fatalf("open e2e Dev Container command: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	if err := session.Stdin().Close(); err != nil {
 		t.Fatalf("close e2e Dev Container command stdin: %v", err)
 	}
@@ -462,7 +462,7 @@ func seedIncusE2EOfficialInteropRepository(t *testing.T, ctx context.Context, pr
 			return writeRepositoryFile(target, "", 0o755, "directory")
 		}
 		if !info.Mode().IsRegular() {
-			return fmt.Errorf("E2E repository contains unsupported file %s", relative)
+			return fmt.Errorf("e2e repository contains unsupported file %s", relative)
 		}
 		content, err := os.ReadFile(filePath)
 		if err != nil {
@@ -650,8 +650,8 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 		_ = conn.Close()
 		t.Fatalf("create e2e workspace sftp client: %v", err)
 	}
-	defer client.Close()
-	defer conn.Close()
+	defer func() { _ = client.Close() }()
+	defer func() { _ = conn.Close() }()
 	currentDirectory, err := client.Getwd()
 	if err != nil {
 		t.Fatalf("get e2e sftp directory: %v", err)
@@ -664,7 +664,7 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 	if err != nil {
 		t.Fatalf("create e2e sftp file: %v", err)
 	}
-	defer client.Remove(path.Join(workdir, "sftp-e2e.txt"))
+	defer func() { _ = client.Remove(path.Join(workdir, "sftp-e2e.txt")) }()
 	if _, err := file.Write([]byte("incus sftp ready")); err != nil {
 		_ = file.Close()
 		t.Fatalf("write e2e sftp file: %v", err)
@@ -692,7 +692,7 @@ chown 1000:1000 -- "$CODESPACE_E2E_WORKDIR"
 	if err := outside.Close(); err != nil {
 		t.Fatalf("close e2e sftp file outside workspace: %v", err)
 	}
-	defer client.Remove(rootFile)
+	defer func() { _ = client.Remove(rootFile) }()
 	if err := provisioner.execScript(ctx, instanceName, `
 set -eu
 test "$(stat -c '%u:%g' -- "$CODESPACE_E2E_FILE")" = "1000:1000"

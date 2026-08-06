@@ -37,7 +37,7 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
 			OperationRversion:         1,
-			CodespaceUuid:             codespaceUUID,
+			RuntimeUuid:               codespaceUUID,
 			LogOffset:                 0,
 			LeaseValidForMilliseconds: 30000,
 			Command: &codespacev1.OperationPayload_Delete{
@@ -49,7 +49,7 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 	defer controlPlane.Close()
 
 	stateDir := t.TempDir()
-	saveManagerRegistrationForTest(t, stateDir, controlPlane.URL, 7)
+	managerState := saveManagerStateForTest(t, stateDir, controlPlane.URL, 7)
 	config := DefaultConfig()
 	config.provisionerKind = "dummy"
 	config.Node.StateDir = stateDir
@@ -66,7 +66,7 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 	runDone := make(chan error, 1)
 	var output bytes.Buffer
 	go func() {
-		runDone <- runWithConfigContext(ctx, &output, config)
+		runDone <- runWithConfigContext(ctx, &output, appE2ERuntimeConfig(config, managerState))
 	}()
 	select {
 	case <-service.finalized:
@@ -112,7 +112,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 			appE2ECreateOperation(codespaceUUID, 1, repoCloneURL, repoCommitSHA),
 			{
 				OperationRversion:         2,
-				CodespaceUuid:             codespaceUUID,
+				RuntimeUuid:               codespaceUUID,
 				LogOffset:                 0,
 				LeaseValidForMilliseconds: 300000,
 				Command: &codespacev1.OperationPayload_Stop{
@@ -121,7 +121,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 			},
 			{
 				OperationRversion:         3,
-				CodespaceUuid:             codespaceUUID,
+				RuntimeUuid:               codespaceUUID,
 				LogOffset:                 0,
 				LeaseValidForMilliseconds: 300000,
 				Command: &codespacev1.OperationPayload_Resume{
@@ -136,7 +136,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	defer controlPlane.Close()
 
 	stateDir := t.TempDir()
-	saveManagerRegistrationForTest(t, stateDir, controlPlane.URL, managerID)
+	managerState := saveManagerStateForTest(t, stateDir, controlPlane.URL, managerID)
 	defer cleanupAppE2EIncusRuntime(t, managerID, codespaceUUID)
 
 	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir)
@@ -174,7 +174,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	runDone := make(chan error, 1)
 	var output bytes.Buffer
 	go func() {
-		runDone <- runWithConfigContext(ctx, &output, config)
+		runDone <- runWithConfigContext(ctx, &output, appE2ERuntimeConfig(config, managerState))
 	}()
 
 	timer := time.NewTimer(7 * time.Minute)
@@ -253,7 +253,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 		if got := request.Header.Get(gatewayProxyHeaderAccess); got != "public" {
 			t.Fatalf("access header = %q", got)
 		}
-		fmt.Fprint(writer, "endpoint ok")
+		_, _ = fmt.Fprint(writer, "endpoint ok")
 	}))
 	defer upstream.Close()
 	upstreamHost, upstreamPort := splitTestHostPort(t, upstream.URL)
@@ -340,7 +340,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	defer cancel()
 	errorChannel := make(chan error, 1)
 	go serveSSH(ctx, errorChannel, listener, gatewaySSH)
-	defer listener.Close()
+	defer func() { _ = listener.Close() }()
 
 	clientKey := newTestSSHSigner(t)
 	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
@@ -352,12 +352,12 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial gateway ssh: %v", err)
 	}
-	defer client.Close()
+	defer func() { _ = client.Close() }()
 	session, err := client.NewSession()
 	if err != nil {
 		t.Fatalf("open gateway ssh session: %v", err)
 	}
-	defer session.Close()
+	defer func() { _ = session.Close() }()
 	output, err := session.Output("echo ready")
 	if err != nil {
 		t.Fatalf("run gateway ssh command: %v", err)
@@ -375,7 +375,7 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 func appE2ECreateOperation(codespaceUUID string, version int64, repoCloneURL, repoCommitSHA string) *codespacev1.OperationPayload {
 	return &codespacev1.OperationPayload{
 		OperationRversion:         version,
-		CodespaceUuid:             codespaceUUID,
+		RuntimeUuid:               codespaceUUID,
 		LogOffset:                 0,
 		LeaseValidForMilliseconds: 300000,
 		Command: &codespacev1.OperationPayload_Create{
@@ -455,6 +455,10 @@ func assertAppE2EIncusRuntime(
 		}
 	}
 	return runtime.Name
+}
+
+func appE2ERuntimeConfig(config Config, managerState ManagerState) InfrastructureRuntimeConfig {
+	return InfrastructureRuntimeConfig{Config: config, ManagerState: managerState}
 }
 
 func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
@@ -692,7 +696,7 @@ func (s *appE2EManagerService) ReportInstances(
 ) (*connect.Response[codespacev1.ReportInstancesResponse], error) {
 	results := make([]*codespacev1.RuntimeInstanceResult, 0, len(req.Msg.GetInstances()))
 	for _, instance := range req.Msg.GetInstances() {
-		results = append(results, &codespacev1.RuntimeInstanceResult{CodespaceUuid: instance.GetCodespaceUuid()})
+		results = append(results, &codespacev1.RuntimeInstanceResult{RuntimeUuid: instance.GetRuntimeUuid()})
 	}
 	return connect.NewResponse(&codespacev1.ReportInstancesResponse{Results: results}), nil
 }
@@ -701,7 +705,7 @@ func (s *appE2EManagerService) RequestRuntimeAccess(
 	_ context.Context,
 	req *connect.Request[codespacev1.RequestRuntimeAccessRequest],
 ) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
-	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetCodespaceUuid() == "" || req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshKey().GetPublicKey()) == 0 {
+	if req.Msg.GetProtocolVersion() != 1 || req.Msg.GetRuntimeUuid() == "" || req.Msg.GetOperationRversion() <= 0 || len(req.Msg.GetGitSshKey().GetPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{
@@ -811,24 +815,6 @@ func (s *appE2EManagerService) operationLog() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return strings.Join(s.logs, "\n")
-}
-
-func waitAppE2EFinalized(t *testing.T, finalized <-chan struct{}) {
-	t.Helper()
-	waitAppE2EFinalizedCount(t, finalized, 1, 2*time.Second)
-}
-
-func waitAppE2EFinalizedCount(t *testing.T, finalized <-chan struct{}, count int, timeout time.Duration) {
-	t.Helper()
-	timer := time.NewTimer(timeout)
-	defer timer.Stop()
-	for i := 0; i < count; i++ {
-		select {
-		case <-finalized:
-		case <-timer.C:
-			t.Fatalf("operation finalization count = %d, want %d", i, count)
-		}
-	}
 }
 
 func splitTestHostPort(t *testing.T, raw string) (string, int) {

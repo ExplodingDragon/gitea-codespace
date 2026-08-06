@@ -44,7 +44,7 @@ func TestLoadRepositoryConfiguration(t *testing.T) {
 	if len(resolved.DockerComposeFile) != 2 || resolved.Service != "workspace" {
 		t.Fatalf("compose selection = %#v/%q", resolved.DockerComposeFile, resolved.Service)
 	}
-	if err := resolved.Configuration.Finalize(); err != nil {
+	if err := resolved.Finalize(); err != nil {
 		t.Fatalf("finalize repository configuration: %v", err)
 	}
 	if resolved.ShutdownAction != "stopCompose" {
@@ -94,7 +94,7 @@ func TestLoadAllowsConfigurationOutsideWorkspaceWithoutPathPolicy(t *testing.T) 
 	if resolved.ConfigurationPath != configPath {
 		t.Fatalf("configuration path = %q", resolved.ConfigurationPath)
 	}
-	if err := resolved.Configuration.Finalize(); err != nil {
+	if err := resolved.Finalize(); err != nil {
 		t.Fatalf("finalize external configuration: %v", err)
 	}
 	if resolved.ShutdownAction != "stopContainer" {
@@ -122,7 +122,7 @@ func TestLoadImageConfigurationDoesNotSelectCompose(t *testing.T) {
 	if resolved.Image == "" || len(resolved.DockerComposeFile) != 0 {
 		t.Fatalf("source selection = image %q, Compose %#v", resolved.Image, resolved.DockerComposeFile)
 	}
-	if err := resolved.Configuration.Finalize(); err != nil {
+	if err := resolved.Finalize(); err != nil {
 		t.Fatalf("finalize image configuration: %v", err)
 	}
 	if resolved.WaitFor != LifecycleStageUpdateContent || resolved.UserEnvProbe != "loginInteractiveShell" || resolved.ShutdownAction != "stopContainer" {

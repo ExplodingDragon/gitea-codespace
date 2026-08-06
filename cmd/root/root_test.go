@@ -20,7 +20,7 @@ func TestHelpShowsOnlyPublicCommands(t *testing.T) {
 		t.Fatalf("Execute() status = %d, stderr = %q", status, stderr.String())
 	}
 	output := stdout.String()
-	if !strings.Contains(output, "register") || !strings.Contains(output, "serve") {
+	if !strings.Contains(output, "serve") {
 		t.Fatalf("help does not contain public commands:\n%s", output)
 	}
 	if strings.Contains(output, "runtime") {

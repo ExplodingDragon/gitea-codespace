@@ -51,7 +51,7 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 	switch {
 	case contentSource:
 		if strings.TrimSpace(source.Path) != "" {
-			return nil, fmt.Errorf("Dev Container content source contains repository fields")
+			return nil, fmt.Errorf("dev container content source contains repository fields")
 		}
 		content = []byte(source.Content)
 		configPath = filepath.Join(workspace, ".gitea-devcontainer-template.json")
@@ -66,14 +66,14 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 		}
 		configPath = resolvedPath
 		if allowedPathRoot != "" && !pathIsInsideRoot(allowedPathRoot, configPath) {
-			return nil, fmt.Errorf("Dev Container configuration leaves the allowed path root")
+			return nil, fmt.Errorf("dev container configuration leaves the allowed path root")
 		}
 		content, err = os.ReadFile(configPath)
 		if err != nil {
 			return nil, fmt.Errorf("read Dev Container configuration: %w", err)
 		}
 	default:
-		return nil, fmt.Errorf("Dev Container configuration source is empty")
+		return nil, fmt.Errorf("dev container configuration source is empty")
 	}
 	if err != nil {
 		return nil, err
@@ -165,7 +165,7 @@ func normalizeDockerfileBuild(configuration *Configuration) error {
 		configuration.Build = &Build{}
 	}
 	if configured := strings.TrimSpace(configuration.Build.Dockerfile); configured != "" && configured != dockerfile {
-		return fmt.Errorf("Dev Container dockerFile conflicts with build.dockerfile")
+		return fmt.Errorf("dev container dockerFile conflicts with build.dockerfile")
 	}
 	configuration.Build.Dockerfile = dockerfile
 	if configuration.Build.Context == "" {
@@ -190,26 +190,26 @@ func (c *Configuration) Validate() error {
 		sources++
 	}
 	if sources != 1 {
-		return fmt.Errorf("Dev Container configuration must select exactly one image, build, or Docker Compose source")
+		return fmt.Errorf("dev container configuration must select exactly one image, build, or Docker Compose source")
 	}
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.Service) == "" {
-		return fmt.Errorf("Docker Compose Dev Container service is required")
+		return fmt.Errorf("docker compose Dev Container service is required")
 	}
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceFolder) == "" {
-		return fmt.Errorf("Docker Compose Dev Container workspaceFolder is required")
+		return fmt.Errorf("docker compose Dev Container workspaceFolder is required")
 	}
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceMount) != "" {
-		return fmt.Errorf("Docker Compose Dev Container uses service volumes instead of workspaceMount")
+		return fmt.Errorf("docker compose Dev Container uses service volumes instead of workspaceMount")
 	}
 	if c.Build != nil && strings.TrimSpace(c.Build.Dockerfile) == "" {
-		return fmt.Errorf("Dev Container build.dockerfile is required")
+		return fmt.Errorf("dev container build.dockerfile is required")
 	}
 	if c.HostRequirements.CPUs < 0 {
-		return fmt.Errorf("Dev Container hostRequirements.cpus must be a positive number")
+		return fmt.Errorf("dev container hostRequirements.cpus must be a positive number")
 	}
 	for name, value := range map[string]string{"memory": c.HostRequirements.Memory, "storage": c.HostRequirements.Storage} {
 		if value != "" && !byteRequirementPattern.MatchString(value) {
-			return fmt.Errorf("Dev Container hostRequirements.%s %q is invalid", name, value)
+			return fmt.Errorf("dev container hostRequirements.%s %q is invalid", name, value)
 		}
 	}
 	if err := validateGPURequirement(c.HostRequirements.GPU); err != nil {
@@ -220,40 +220,40 @@ func (c *Configuration) Validate() error {
 			return err
 		}
 		if err := validatePortAttributes(attributes); err != nil {
-			return fmt.Errorf("Dev Container portsAttributes %q: %w", key, err)
+			return fmt.Errorf("dev container portsAttributes %q: %w", key, err)
 		}
 	}
 	if c.OtherPortsAttributes != nil {
 		if err := validatePortAttributes(*c.OtherPortsAttributes); err != nil {
-			return fmt.Errorf("Dev Container otherPortsAttributes: %w", err)
+			return fmt.Errorf("dev container otherPortsAttributes: %w", err)
 		}
 	}
 	for _, port := range c.AppPort {
 		if _, err := port.ContainerPort(); err != nil {
-			return fmt.Errorf("Dev Container appPort: %w", err)
+			return fmt.Errorf("dev container appPort: %w", err)
 		}
 	}
 	switch c.WaitFor {
 	case "", LifecycleStageInitialize, LifecycleStageOnCreate, LifecycleStageUpdateContent, LifecycleStagePostCreate, LifecycleStagePostStart:
 	default:
-		return fmt.Errorf("Dev Container waitFor value %q is invalid", c.WaitFor)
+		return fmt.Errorf("dev container waitFor value %q is invalid", c.WaitFor)
 	}
 	switch c.UserEnvProbe {
 	case "", "none", "loginShell", "loginInteractiveShell", "interactiveShell":
 	default:
-		return fmt.Errorf("Dev Container userEnvProbe value %q is invalid", c.UserEnvProbe)
+		return fmt.Errorf("dev container userEnvProbe value %q is invalid", c.UserEnvProbe)
 	}
 	if len(c.DockerComposeFile) > 0 {
 		switch c.ShutdownAction {
 		case "", "none", "stopCompose":
 		default:
-			return fmt.Errorf("Docker Compose shutdownAction value %q is invalid", c.ShutdownAction)
+			return fmt.Errorf("docker compose shutdownAction value %q is invalid", c.ShutdownAction)
 		}
 	} else {
 		switch c.ShutdownAction {
 		case "", "none", "stopContainer":
 		default:
-			return fmt.Errorf("Dev Container shutdownAction value %q is invalid", c.ShutdownAction)
+			return fmt.Errorf("dev container shutdownAction value %q is invalid", c.ShutdownAction)
 		}
 	}
 	return nil
@@ -282,7 +282,7 @@ func validatePortAttributeKey(value string) error {
 	value = strings.TrimSpace(value)
 	if !portNumberOrRangePattern.MatchString(value) {
 		if _, err := regexp.Compile(value); err != nil {
-			return fmt.Errorf("Dev Container portsAttributes key %q is neither a port, range, nor valid process regular expression: %w", value, err)
+			return fmt.Errorf("dev container portsAttributes key %q is neither a port, range, nor valid process regular expression: %w", value, err)
 		}
 		return nil
 	}
@@ -291,12 +291,12 @@ func validatePortAttributeKey(value string) error {
 	for i, part := range parts {
 		port, err := strconv.ParseUint(part, 10, 16)
 		if err != nil || port == 0 {
-			return fmt.Errorf("Dev Container portsAttributes key %q contains an invalid port", value)
+			return fmt.Errorf("dev container portsAttributes key %q contains an invalid port", value)
 		}
 		ports[i] = port
 	}
 	if len(ports) == 2 && ports[0] > ports[1] {
-		return fmt.Errorf("Dev Container portsAttributes range %q is reversed", value)
+		return fmt.Errorf("dev container portsAttributes range %q is reversed", value)
 	}
 	return nil
 }
@@ -313,13 +313,13 @@ func validateGPURequirement(value json.RawMessage) error {
 	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&requirement); err != nil {
-		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
+		return fmt.Errorf("dev container hostRequirements.gpu is invalid")
 	}
 	if requirement.Cores != nil && *requirement.Cores < 1 {
-		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
+		return fmt.Errorf("dev container hostRequirements.gpu is invalid")
 	}
 	if requirement.Memory != "" && !byteRequirementPattern.MatchString(requirement.Memory) {
-		return fmt.Errorf("Dev Container hostRequirements.gpu is invalid")
+		return fmt.Errorf("dev container hostRequirements.gpu is invalid")
 	}
 	return nil
 }
@@ -355,7 +355,7 @@ func validateExtensionProperties(configuration map[string]any) error {
 			continue
 		}
 		if _, ok := value.(map[string]any); !ok {
-			return fmt.Errorf("Dev Container extension property %q must be an object", name)
+			return fmt.Errorf("dev container extension property %q must be an object", name)
 		}
 	}
 	return nil
@@ -380,7 +380,7 @@ func (c substitutionContext) resolve(name, match string) (string, error) {
 		_, arguments, _ := strings.Cut(name, ":")
 		parts := strings.SplitN(arguments, ":", 2)
 		if parts[0] == "" {
-			return match, fmt.Errorf("Dev Container variable %q has no environment variable name", match)
+			return match, fmt.Errorf("dev container variable %q has no environment variable name", match)
 		}
 		if resolved, ok := c.localEnv[parts[0]]; ok {
 			return resolved, nil
@@ -474,7 +474,7 @@ func ResolveContainerVariables(configuration Configuration, workspaceFolder stri
 			if strings.HasPrefix(name, "containerEnv:") {
 				parts := strings.SplitN(strings.TrimPrefix(name, "containerEnv:"), ":", 2)
 				if parts[0] == "" {
-					return match, fmt.Errorf("Dev Container variable %q has no environment variable name", match)
+					return match, fmt.Errorf("dev container variable %q has no environment variable name", match)
 				}
 				if resolved, ok := environment[parts[0]]; ok {
 					return resolved, nil

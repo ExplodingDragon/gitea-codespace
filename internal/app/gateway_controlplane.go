@@ -99,7 +99,7 @@ func (c *gatewayControlPlane) validateOpenToken(ctx context.Context, code string
 			allowed: true,
 			binding: gatewayOpenTokenBinding{
 				userID:                allowed.GetUserId(),
-				codespaceUUID:         allowed.GetCodespaceUuid(),
+				codespaceUUID:         allowed.GetRuntimeUuid(),
 				endpointID:            allowed.GetEndpointId(),
 				interactionGeneration: allowed.GetInteractionGeneration(),
 			},
@@ -114,7 +114,7 @@ func (c *gatewayControlPlane) validateOpenToken(ctx context.Context, code string
 func (c *gatewayControlPlane) validatePublicEndpoint(ctx context.Context, codespaceUUID, endpointID string) (gatewayAccessDecision, error) {
 	request := connect.NewRequest(&codespacev1.ValidatePublicEndpointRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
-		CodespaceUuid:   codespaceUUID,
+		RuntimeUuid:     codespaceUUID,
 		EndpointId:      endpointID,
 	})
 	response, err := c.managerClient().ValidatePublicEndpoint(ctx, request)
@@ -131,7 +131,7 @@ func (c *gatewayControlPlane) validatePublicEndpoint(ctx context.Context, codesp
 func (c *gatewayControlPlane) verifySSHPublicKey(ctx context.Context, codespaceUUID string, publicKey []byte) (gatewaySSHAuthDecision, error) {
 	request := connect.NewRequest(&codespacev1.VerifySSHPublicKeyRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
-		CodespaceUuid:   codespaceUUID,
+		RuntimeUuid:     codespaceUUID,
 		PublicKey:       append([]byte(nil), publicKey...),
 	})
 	response, err := c.managerClient().VerifySSHPublicKey(ctx, request)
@@ -154,7 +154,7 @@ func (c *gatewayControlPlane) verifySSHPublicKey(ctx context.Context, codespaceU
 func (c *gatewayControlPlane) reportRuntimeMetadata(ctx context.Context, codespaceUUID string, metadata *codespacev1.RuntimeMetadata, metadataGeneration int64) error {
 	request := connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{
 		ProtocolVersion:    controlplane.ProtocolVersion,
-		CodespaceUuid:      codespaceUUID,
+		RuntimeUuid:        codespaceUUID,
 		MetadataGeneration: metadataGeneration,
 		Metadata:           metadata,
 	})
@@ -172,9 +172,9 @@ func (c *gatewayControlPlane) revalidateEndpointSession(ctx context.Context, use
 		ProtocolVersion: controlplane.ProtocolVersion,
 		Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{
 			Endpoint: &codespacev1.EndpointSessionBinding{
-				UserId:        userID,
-				CodespaceUuid: codespaceUUID,
-				EndpointId:    endpointID,
+				UserId:      userID,
+				RuntimeUuid: codespaceUUID,
+				EndpointId:  endpointID,
 			},
 		},
 	})
@@ -185,8 +185,8 @@ func (c *gatewayControlPlane) revalidateSSHSession(ctx context.Context, userID i
 		ProtocolVersion: controlplane.ProtocolVersion,
 		Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{
 			Ssh: &codespacev1.SSHSessionBinding{
-				UserId:        userID,
-				CodespaceUuid: codespaceUUID,
+				UserId:      userID,
+				RuntimeUuid: codespaceUUID,
 			},
 		},
 	})

@@ -651,7 +651,7 @@ func (p *IncusProvisioner) installRuntimeExecutable(ctx context.Context, instanc
 		"386":   {"i386", "i486", "i586", "i686", "x86"},
 	}
 	if !slices.Contains(compatible[runtime.GOARCH], strings.TrimSpace(architecture)) {
-		return fmt.Errorf("Manager executable architecture %s does not match runtime architecture %q", runtime.GOARCH, strings.TrimSpace(architecture))
+		return fmt.Errorf("manager executable architecture %s does not match runtime architecture %q", runtime.GOARCH, strings.TrimSpace(architecture))
 	}
 	managerExecutable := p.runtimeBinary
 	if managerExecutable == "" {
@@ -665,7 +665,7 @@ func (p *IncusProvisioner) installRuntimeExecutable(ctx context.Context, instanc
 	if err != nil {
 		return fmt.Errorf("read Manager executable: %w", err)
 	}
-	defer content.Close()
+	defer func() { _ = content.Close() }()
 	if err := p.writeRuntimeFile(ctx, instanceName, runtimeExecutableDir, "", 0o755, "directory"); err != nil {
 		return err
 	}
@@ -857,7 +857,7 @@ func (p *IncusProvisioner) readCredentialFile(ctx context.Context, instanceName,
 		}
 		return "", false, fmt.Errorf("read %s: %w", path, err)
 	}
-	defer content.Close()
+	defer func() { _ = content.Close() }()
 	data, err := io.ReadAll(io.LimitReader(content, 4096))
 	if err != nil {
 		return "", false, fmt.Errorf("read %s content: %w", path, err)
@@ -1495,7 +1495,7 @@ func instanceNetworkDevice(instance *api.Instance, networkName string) (string, 
 	}
 	parsed, err := net.ParseMAC(hardwareAddress)
 	if err != nil {
-		return "", "", fmt.Errorf("NIC device %s on Incus network %s has invalid MAC address %q", deviceName, networkName, hardwareAddress)
+		return "", "", fmt.Errorf("nic device %s on Incus network %s has invalid MAC address %q", deviceName, networkName, hardwareAddress)
 	}
 	return deviceName, parsed.String(), nil
 }
@@ -1517,7 +1517,7 @@ func instanceStateCommunicationHost(state *api.InstanceState, hardwareAddress st
 			continue
 		}
 		if matchedInterface != "" {
-			return "", fmt.Errorf("MAC address %s is reported by multiple guest interfaces: %s and %s", target, matchedInterface, interfaceName)
+			return "", fmt.Errorf("mac address %s is reported by multiple guest interfaces: %s and %s", target, matchedInterface, interfaceName)
 		}
 		matchedInterface = interfaceName
 		host = networkCommunicationHost(network)

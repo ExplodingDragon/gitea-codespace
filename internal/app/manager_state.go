@@ -14,67 +14,26 @@ import (
 
 const (
 	managerStateFormatVersion = 1
-	managerStateFileName      = "manager-state.json"
+	managerRuntimeFileName    = "manager-runtime.json"
 	currentProtocolVersion    = 1
 )
 
-// ManagerState stores the registered Manager identity and inventory generation.
+// ManagerState stores the Manager identity used by the running process.
 type ManagerState struct {
-	StateFormatVersion  int    `json:"state_format_version"`
-	ProtocolVersion     int32  `json:"protocol_version"`
-	GiteaURL            string `json:"gitea_url"`
-	ManagerID           int64  `json:"manager_id"`
-	ManagerSecret       string `json:"manager_secret"`
-	RegisteredUnix      int64  `json:"registered_unix"`
-	InventoryGeneration int64  `json:"inventory_generation"`
+	GiteaURL            string
+	ManagerID           int64
+	ManagerSecret       string
+	InventoryGeneration int64
 }
 
-// LoadManagerState loads the registered Manager state from stateDir.
-func LoadManagerState(stateDir string) (ManagerState, error) {
-	path, err := managerStatePath(stateDir)
-	if err != nil {
-		return ManagerState{}, err
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return ManagerState{}, fmt.Errorf("read manager state %s: %w", path, err)
-	}
-	var state ManagerState
-	if err := json.Unmarshal(content, &state); err != nil {
-		return ManagerState{}, fmt.Errorf("decode manager state %s: %w", path, err)
-	}
-	if err := state.Validate(); err != nil {
-		return ManagerState{}, fmt.Errorf("validate manager state %s: %w", path, err)
-	}
-	return state, nil
-}
-
-// SaveManagerState atomically stores the registered Manager state in stateDir.
-func SaveManagerState(stateDir string, state ManagerState) error {
-	path, err := managerStatePath(stateDir)
-	if err != nil {
-		return err
-	}
-	state.StateFormatVersion = managerStateFormatVersion
-	state.ProtocolVersion = currentProtocolVersion
-	state.GiteaURL, err = normalizeGiteaURL(state.GiteaURL)
-	if err != nil {
-		return err
-	}
-	if err := state.Validate(); err != nil {
-		return err
-	}
-	return writeJSONFileAtomic(path, state)
+type managerRuntimeState struct {
+	StateFormatVersion  int   `json:"state_format_version"`
+	ProtocolVersion     int32 `json:"protocol_version"`
+	InventoryGeneration int64 `json:"inventory_generation"`
 }
 
 // Validate checks whether the Manager state is usable.
 func (s ManagerState) Validate() error {
-	if s.StateFormatVersion != managerStateFormatVersion {
-		return fmt.Errorf("state_format_version must be %d", managerStateFormatVersion)
-	}
-	if s.ProtocolVersion != currentProtocolVersion {
-		return fmt.Errorf("protocol_version must be %d", currentProtocolVersion)
-	}
 	if _, err := normalizeGiteaURL(s.GiteaURL); err != nil {
 		return err
 	}
@@ -83,9 +42,6 @@ func (s ManagerState) Validate() error {
 	}
 	if strings.TrimSpace(s.ManagerSecret) == "" {
 		return fmt.Errorf("manager_secret is required")
-	}
-	if s.RegisteredUnix <= 0 {
-		return fmt.Errorf("registered_unix is required")
 	}
 	if s.InventoryGeneration < 0 {
 		return fmt.Errorf("inventory_generation must not be negative")
@@ -105,12 +61,18 @@ func NewManagerStateStore(stateDir string) *ManagerStateStore {
 
 // SaveInventoryGeneration persists the latest allocated inventory generation.
 func (s *ManagerStateStore) SaveInventoryGeneration(generation int64) error {
-	state, err := LoadManagerState(s.stateDir)
+	if generation < 0 {
+		return fmt.Errorf("inventory_generation must not be negative")
+	}
+	path, err := managerRuntimeStatePath(s.stateDir)
 	if err != nil {
 		return err
 	}
-	state.InventoryGeneration = generation
-	return SaveManagerState(s.stateDir, state)
+	return writeJSONFileAtomic(path, managerRuntimeState{
+		StateFormatVersion:  managerStateFormatVersion,
+		ProtocolVersion:     currentProtocolVersion,
+		InventoryGeneration: generation,
+	})
 }
 
 func normalizeGiteaURL(value string) (string, error) {
@@ -127,10 +89,38 @@ func normalizeGiteaURL(value string) (string, error) {
 	return value, nil
 }
 
-func managerStatePath(stateDir string) (string, error) {
+func loadInventoryGeneration(stateDir string) (int64, error) {
+	path, err := managerRuntimeStatePath(stateDir)
+	if err != nil {
+		return 0, err
+	}
+	content, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("read manager runtime state %s: %w", path, err)
+	}
+	var state managerRuntimeState
+	if err := json.Unmarshal(content, &state); err != nil {
+		return 0, fmt.Errorf("decode manager runtime state %s: %w", path, err)
+	}
+	if state.StateFormatVersion != managerStateFormatVersion {
+		return 0, fmt.Errorf("validate manager runtime state %s: state_format_version must be %d", path, managerStateFormatVersion)
+	}
+	if state.ProtocolVersion != currentProtocolVersion {
+		return 0, fmt.Errorf("validate manager runtime state %s: protocol_version must be %d", path, currentProtocolVersion)
+	}
+	if state.InventoryGeneration < 0 {
+		return 0, fmt.Errorf("validate manager runtime state %s: inventory_generation must not be negative", path)
+	}
+	return state.InventoryGeneration, nil
+}
+
+func managerRuntimeStatePath(stateDir string) (string, error) {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
 		return "", fmt.Errorf("manager.state_dir is required")
 	}
-	return filepath.Join(stateDir, managerStateFileName), nil
+	return filepath.Join(stateDir, managerRuntimeFileName), nil
 }
