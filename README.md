@@ -70,7 +70,7 @@ the Gitea Codespace Manager settings page:
 
 The active runtime configuration still has three top-level sections:
 
-- `node` defines the manager name, state directory, capacity, and worker
+- `node` defines the local node name, state directory, capacity, and worker
   behavior.
 - `gateway` defines the public HTTP and SSH entry points.
 - `runtime` defines Git and Web IDE behavior, image caching, Incus backends,

@@ -724,7 +724,6 @@ func (a *Agent) declare(ctx context.Context, state codespacev1.ManagerRuntimeSta
 		GatewaySshAddr:                     a.config.GatewaySSHAddr,
 		Environments:                       a.config.Environments,
 		Version:                            a.config.Version,
-		Name:                               a.config.Name,
 		ManagerRuntimeState:                state,
 		GatewaySshHostKeyAlgorithm:         a.config.GatewaySSHHostKeyAlgo,
 		GatewaySshHostKeyFingerprintSha256: a.config.GatewaySSHHostKeySHA256,
