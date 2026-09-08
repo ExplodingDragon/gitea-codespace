@@ -12,6 +12,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -52,7 +53,7 @@ type gatewaySSHServer struct {
 	config             *ssh.ServerConfig
 	state              gatewayWorkspaceTargetStore
 	backend            gatewayWorkspaceBackend
-	controlPlane       *gatewayControlPlane
+	controlPlane       gatewayControlPlaneClient
 	sessions           *gatewaySessionRegistry
 	access             *gatewayAccessController
 	authLimiter        *gatewaySSHAuthLimiter
@@ -71,7 +72,7 @@ func newGatewaySSHServer(
 	hostKey ssh.Signer,
 	state gatewayWorkspaceTargetStore,
 	backend gatewayWorkspaceBackend,
-	controlPlane *gatewayControlPlane,
+	controlPlane gatewayControlPlaneClient,
 	sessions *gatewaySessionRegistry,
 	access *gatewayAccessController,
 	gatewayConfig GatewayConfig,
@@ -734,6 +735,8 @@ func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {
 }
 
 func serveSSH(ctx context.Context, errorChannel chan<- error, listener net.Listener, server *gatewaySSHServer) {
+	var connections sync.WaitGroup
+	defer connections.Wait()
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
@@ -747,6 +750,10 @@ func serveSSH(ctx context.Context, errorChannel chan<- error, listener net.Liste
 			_ = conn.Close()
 			continue
 		}
-		go server.serveConn(ctx, conn)
+		connections.Add(1)
+		go func() {
+			defer connections.Done()
+			server.serveConn(ctx, conn)
+		}()
 	}
 }

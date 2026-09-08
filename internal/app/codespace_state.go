@@ -7,8 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"math"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -25,25 +25,20 @@ import (
 
 const (
 	codespaceStateFormatVersion = 3
-	codespaceStateDirName       = "codespaces"
 	maxCodespaceEndpoints       = runtimeendpoint.MaxEndpointCount
 )
 
 var errEndpointLimitExceeded = errors.New("endpoint limit exceeded")
 
-// CodespaceStateHeader stores the common format marker on a Codespace snapshot.
-type CodespaceStateHeader struct {
-	StateFormatVersion int `json:"state_format_version"`
-}
-
-// CodespaceStateStore reads and writes Codespace state files in state_dir.
+// CodespaceStateStore persists recovery checkpoints in the deployment store.
 type CodespaceStateStore struct {
-	stateDir string
+	records  *executionStateStore
 	sessions *gatewaySessionRegistry
 	mu       sync.Mutex
 }
 
 type codespaceState struct {
+	revision                            int64
 	StateFormatVersion                  int                                `json:"state_format_version"`
 	CodespaceUUID                       string                             `json:"codespace_uuid,omitempty"`
 	RuntimeGeneration                   int64                              `json:"runtime_generation,omitempty"`
@@ -138,9 +133,9 @@ func (target gatewayWorkspaceTarget) commandRequest() provisioner.WorkspaceComma
 	}
 }
 
-// NewCodespaceStateStore creates a Codespace state store rooted at stateDir.
-func NewCodespaceStateStore(stateDir string) *CodespaceStateStore {
-	return &CodespaceStateStore{stateDir: stateDir}
+// NewCodespaceStateStore uses the current leader term for every checkpoint write.
+func NewCodespaceStateStore(records *executionStateStore) *CodespaceStateStore {
+	return &CodespaceStateStore{records: records}
 }
 
 func (s *CodespaceStateStore) SetSessionRegistry(sessions *gatewaySessionRegistry) {
@@ -152,287 +147,123 @@ func (s *CodespaceStateStore) SetSessionRegistry(sessions *gatewaySessionRegistr
 	s.sessions = sessions
 }
 
-// ValidateCodespaceStateFiles checks existing Codespace snapshots before Manager starts external work.
-func ValidateCodespaceStateFiles(stateDir string) error {
-	dir, err := codespaceStateDir(stateDir)
-	if err != nil {
-		return err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	for _, entry := range entries {
-		if entry.IsDir() {
-			return fmt.Errorf("unexpected directory in codespace state dir: %s", filepath.Join(dir, entry.Name()))
-		}
-		if filepath.Ext(entry.Name()) != ".json" {
-			return fmt.Errorf("unexpected file in codespace state dir: %s", filepath.Join(dir, entry.Name()))
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
-			return fmt.Errorf("invalid codespace state filename %s: %w", filepath.Join(dir, entry.Name()), err)
-		}
-		if err := validateCodespaceStateFile(filepath.Join(dir, entry.Name())); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-// LoadActiveOperations returns complete active operation contexts from local snapshots.
-func (s *CodespaceStateStore) LoadActiveOperations() ([]manager.OperationSnapshot, error) {
+// Recover validates all snapshots before blocking operations with unknown remote effects.
+func (s *CodespaceStateStore) Recover() (processSiteState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
+	result := processSiteState{
+		codespaceStateStore:       s,
+		initialRuntimeGenerations: make(map[string]int64),
 	}
-	entries, err := os.ReadDir(dir)
+	entries, err := s.records.list("runtimes/")
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
+		return result, fmt.Errorf("list codespace checkpoints: %w", err)
 	}
-	snapshots := make([]manager.OperationSnapshot, 0, len(entries))
-	seen := make(map[string]struct{}, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
+	states := make([]codespaceState, 0, len(entries))
+	payloads := make([]*codespacev1.OperationPayload, 0, len(entries))
+	for _, key := range entries {
+		runtimeUUID := strings.TrimPrefix(key, "runtimes/")
+		if err := validateCodespaceStateUUID(runtimeUUID); err != nil {
+			return result, fmt.Errorf("invalid runtime checkpoint %s: %w", key, err)
 		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
+		state, err := s.load(key, runtimeUUID)
 		if err != nil {
-			return nil, err
+			return result, err
 		}
-		if state.CleanupPending {
-			continue
-		}
-		if state.HealthStopPending {
-			continue
-		}
-		if state.ActiveOperation == nil {
-			continue
-		}
-		if state.ActiveOperation.WorkerStage == string(manager.OperationWorkerStageActive) {
-			state.ActiveOperation.WorkerStage = string(manager.OperationWorkerStageLeasePaused)
-			if err := writeJSONFileAtomic(filepath.Join(dir, entry.Name()), state); err != nil {
-				return nil, fmt.Errorf("pause active operation state %s: %w", filepath.Join(dir, entry.Name()), err)
+		var payload *codespacev1.OperationPayload
+		if active := state.ActiveOperation; active != nil && !state.CleanupPending && !state.HealthStopPending {
+			payload = new(codespacev1.OperationPayload)
+			if err := protojson.Unmarshal(active.Payload, payload); err != nil {
+				return result, fmt.Errorf("decode active operation %s: %w", runtimeUUID, err)
+			}
+			if payload.GetRuntimeUuid() != runtimeUUID || payload.GetOperationRversion() != active.OperationRVersion {
+				return result, fmt.Errorf("active operation identity does not match state %s", runtimeUUID)
 			}
 		}
-		var payload codespacev1OperationPayload
-		if err := protojson.Unmarshal(state.ActiveOperation.Payload, payload.Message()); err != nil {
-			return nil, fmt.Errorf("decode active operation payload %s: %w", filepath.Join(dir, entry.Name()), err)
-		}
-		operation := payload.OperationPayload()
-		if operation.GetRuntimeUuid() != codespaceUUID {
-			return nil, fmt.Errorf("active operation payload uuid %s does not match state file uuid %s", operation.GetRuntimeUuid(), codespaceUUID)
-		}
-		if operation.GetOperationRversion() != state.ActiveOperation.OperationRVersion {
-			return nil, fmt.Errorf("active operation payload version %d does not match state version %d", operation.GetOperationRversion(), state.ActiveOperation.OperationRVersion)
-		}
-		if _, ok := seen[codespaceUUID]; ok {
-			return nil, fmt.Errorf("duplicate codespace state %s", codespaceUUID)
-		}
-		seen[codespaceUUID] = struct{}{}
-		snapshots = append(snapshots, manager.OperationSnapshot{
-			Payload:     operation,
-			WorkerStage: manager.OperationWorkerStage(state.ActiveOperation.WorkerStage),
-		})
+		payloads = append(payloads, payload)
+		states = append(states, state)
+		result.runtimeUUIDs = append(result.runtimeUUIDs, runtimeUUID)
 	}
-	return snapshots, nil
-}
-
-// LoadRuntimeGenerations returns persisted per-Codespace runtime generation baselines.
-func (s *CodespaceStateStore) LoadRuntimeGenerations() (map[string]int64, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	generations := make(map[string]int64, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
-		}
+	for i, state := range states {
+		runtimeUUID := result.runtimeUUIDs[i]
 		if state.RuntimeGeneration > 0 {
-			generations[codespaceUUID] = state.RuntimeGeneration
-		}
-	}
-	return generations, nil
-}
-
-// LoadRuntimeTransitionPendings returns pending runtime transition reports from local snapshots.
-func (s *CodespaceStateStore) LoadRuntimeTransitionPendings() ([]manager.RuntimeTransitionSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	transitions := make([]manager.RuntimeTransitionSnapshot, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
-		}
-		if state.CleanupPending {
-			continue
+			result.initialRuntimeGenerations[runtimeUUID] = state.RuntimeGeneration
 		}
 		if state.HealthStopPending {
-			continue
-		}
-		if state.PendingRuntimeTransition == nil {
-			continue
-		}
-		targetState, err := runtimeTransitionTargetStateFromString(state.PendingRuntimeTransition.TargetState)
-		if err != nil {
-			return nil, err
-		}
-		transitions = append(transitions, manager.RuntimeTransitionSnapshot{
-			CodespaceUUID:             codespaceUUID,
-			TargetState:               targetState,
-			RuntimeGeneration:         state.PendingRuntimeTransition.RuntimeGeneration,
-			ObservedOperationRVersion: state.PendingRuntimeTransition.ObservedOperationRVersion,
-		})
-	}
-	return transitions, nil
-}
-
-// LoadCleanupPendings returns Codespaces that must finish local cleanup before RPC work.
-func (s *CodespaceStateStore) LoadCleanupPendings() ([]string, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	codespaceUUIDs := make([]string, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
+			result.initialHealthStopPendings = append(result.initialHealthStopPendings, manager.HealthStopSnapshot{
+				CodespaceUUID:             runtimeUUID,
+				ObservedOperationRVersion: state.HealthStopObservedOperationRVersion,
+			})
 		}
 		if state.CleanupPending {
-			codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
+			result.initialCleanupPendings = append(result.initialCleanupPendings, runtimeUUID)
 		}
-	}
-	return codespaceUUIDs, nil
-}
-
-// LoadHealthStopPendings returns health-driven stops that must complete before normal RPC work.
-func (s *CodespaceStateStore) LoadHealthStopPendings() ([]manager.HealthStopSnapshot, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	pendings := make([]manager.HealthStopSnapshot, 0, len(entries))
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+		if state.CleanupPending || state.HealthStopPending {
 			continue
 		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
+		if active := state.ActiveOperation; active != nil {
+			if active.WorkerStage == string(manager.OperationWorkerStageActive) {
+				active.WorkerStage = string(manager.OperationWorkerStageRecoveryBlocked)
+				if err := s.save(entries[i], state); err != nil {
+					return result, err
+				}
+			}
+			result.initialOperations = append(result.initialOperations, manager.OperationSnapshot{
+				Payload: payloads[i], WorkerStage: manager.OperationWorkerStage(active.WorkerStage),
+			})
 		}
-		if !state.HealthStopPending {
-			continue
-		}
-		pendings = append(pendings, manager.HealthStopSnapshot{
-			CodespaceUUID:             codespaceUUID,
-			ObservedOperationRVersion: state.HealthStopObservedOperationRVersion,
-		})
-	}
-	return pendings, nil
-}
-
-// LoadGatewayRoutes returns persisted Endpoint routes for Gateway startup recovery.
-func (s *CodespaceStateStore) LoadGatewayRoutes() ([]gatewayEndpointRoute, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	dir, err := codespaceStateDir(s.stateDir)
-	if err != nil {
-		return nil, err
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("read codespace state dir %s: %w", dir, err)
-	}
-	routes := make([]gatewayEndpointRoute, 0)
-	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
-			continue
-		}
-		codespaceUUID := strings.TrimSuffix(entry.Name(), ".json")
-		state, err := loadCodespaceStateFile(filepath.Join(dir, entry.Name()), codespaceUUID)
-		if err != nil {
-			return nil, err
-		}
-		if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil {
+		if transition := state.PendingRuntimeTransition; transition != nil {
+			target, err := runtimeTransitionTargetStateFromString(transition.TargetState)
+			if err != nil {
+				return result, err
+			}
+			result.initialRuntimeTransitions = append(result.initialRuntimeTransitions, manager.RuntimeTransitionSnapshot{
+				CodespaceUUID: runtimeUUID, TargetState: target, RuntimeGeneration: transition.RuntimeGeneration,
+				ObservedOperationRVersion: transition.ObservedOperationRVersion,
+			})
 			continue
 		}
 		for _, endpoint := range state.Endpoints {
-			routes = append(routes, gatewayEndpointRoute{
-				codespaceUUID: codespaceUUID,
-				endpointID:    endpoint.EndpointID,
-				label:         endpoint.Label,
-				instanceName:  endpoint.InstanceName,
-				upstreamPort:  endpoint.UpstreamPort,
-				public:        endpoint.Public,
+			result.initialGatewayRoutes = append(result.initialGatewayRoutes, gatewayEndpointRoute{
+				codespaceUUID: runtimeUUID, endpointID: endpoint.EndpointID, label: endpoint.Label,
+				instanceName: endpoint.InstanceName, upstreamPort: endpoint.UpstreamPort, public: endpoint.Public,
 			})
 		}
+	}
+	return result, nil
+}
+
+// LoadGatewayRoutesForRuntime returns persisted Endpoint routes for one runtime.
+func (s *CodespaceStateStore) LoadGatewayRoutesForRuntime(codespaceUUID string) ([]gatewayEndpointRoute, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
+		return nil, fmt.Errorf("invalid codespace uuid: %w", err)
+	}
+	path, err := codespaceStateKey(codespaceUUID)
+	if err != nil {
+		return nil, err
+	}
+	state, err := s.load(path, codespaceUUID)
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	if state.CleanupPending || state.HealthStopPending || state.PendingRuntimeTransition != nil {
+		return nil, nil
+	}
+	routes := make([]gatewayEndpointRoute, 0, len(state.Endpoints))
+	for _, endpoint := range state.Endpoints {
+		routes = append(routes, gatewayEndpointRoute{
+			codespaceUUID: codespaceUUID,
+			endpointID:    endpoint.EndpointID,
+			label:         endpoint.Label,
+			instanceName:  endpoint.InstanceName,
+			upstreamPort:  endpoint.UpstreamPort,
+			public:        endpoint.Public,
+		})
 	}
 	return routes, nil
 }
@@ -447,11 +278,11 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 	if len(routes) > maxCodespaceEndpoints {
 		return false, errEndpointLimitExceeded
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return false, err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, codespaceUUID)
+	state, err := s.loadOptional(path, codespaceUUID)
 	if err != nil {
 		return false, err
 	}
@@ -506,7 +337,7 @@ func (s *CodespaceStateStore) SaveRuntimeEndpointRoutes(codespaceUUID string, ro
 	if err := state.bumpRuntimeMetadataGeneration(); err != nil {
 		return false, err
 	}
-	return true, writeCodespaceStateFile(path, state)
+	return true, s.save(path, state)
 }
 
 // SaveRuntimeMetadataSnapshot stores the current runtime metadata base.
@@ -522,11 +353,11 @@ func (s *CodespaceStateStore) SaveRuntimeMetadataSnapshot(snapshot manager.Runti
 	if err := validateRuntimeMetadataSnapshot(snapshot); err != nil {
 		return err
 	}
-	path, err := codespaceStatePath(s.stateDir, snapshot.CodespaceUUID)
+	path, err := codespaceStateKey(snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, snapshot.CodespaceUUID)
+	state, err := s.loadOptional(path, snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -546,7 +377,7 @@ func (s *CodespaceStateStore) SaveRuntimeMetadataSnapshot(snapshot manager.Runti
 		},
 		ResourceUsage: runtimeResourceUsageToState(snapshot.ResourceUsage),
 	}
-	if err := writeJSONFileAtomic(path, state); err != nil {
+	if err := s.save(path, state); err != nil {
 		return err
 	}
 	newTarget, hasNewTarget := gatewayWorkspaceTargetFromRuntimeMetadata(state.RuntimeMetadata)
@@ -564,13 +395,13 @@ func (s *CodespaceStateStore) ClearRuntimeMetadata(codespaceUUID string) error {
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -581,7 +412,7 @@ func (s *CodespaceStateStore) ClearRuntimeMetadata(codespaceUUID string) error {
 	state.RuntimeMetadataInactive = true
 	state.RuntimeMetadata = nil
 	state.Endpoints = nil
-	if err := writeCodespaceStateFile(path, state); err != nil {
+	if err := s.save(path, state); err != nil {
 		return err
 	}
 	if s.sessions != nil {
@@ -597,13 +428,13 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataRequest(codespaceUUID string) (
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return 0, nil, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return 0, nil, false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return 0, nil, false, nil
 		}
 		return 0, nil, false, err
@@ -652,13 +483,13 @@ func (s *CodespaceStateStore) LoadGatewayWorkspaceTarget(codespaceUUID string) (
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return gatewayWorkspaceTarget{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return gatewayWorkspaceTarget{}, false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return gatewayWorkspaceTarget{}, false, nil
 		}
 		return gatewayWorkspaceTarget{}, false, err
@@ -693,13 +524,13 @@ func (s *CodespaceStateStore) UpdateRuntimeResourceUsage(codespaceUUID string, u
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return false, nil
 		}
 		return false, err
@@ -715,7 +546,7 @@ func (s *CodespaceStateStore) UpdateRuntimeResourceUsage(codespaceUUID string, u
 	if err := state.bumpRuntimeMetadataGeneration(); err != nil {
 		return false, err
 	}
-	return true, writeCodespaceStateFile(path, state)
+	return true, s.save(path, state)
 }
 
 // LoadRuntimeMetadataSnapshot returns the persisted runtime metadata snapshot.
@@ -725,13 +556,13 @@ func (s *CodespaceStateStore) LoadRuntimeMetadataSnapshot(codespaceUUID string) 
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return manager.RuntimeMetadataSnapshot{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return manager.RuntimeMetadataSnapshot{}, false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return manager.RuntimeMetadataSnapshot{}, false, nil
 		}
 		return manager.RuntimeMetadataSnapshot{}, false, err
@@ -764,18 +595,18 @@ func (s *CodespaceStateStore) SaveStartupInput(input manager.StartupInput) error
 	if err := validateStartupInput(input); err != nil {
 		return err
 	}
-	path, err := codespaceStatePath(s.stateDir, input.CodespaceUUID)
+	path, err := codespaceStateKey(input.CodespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, input.CodespaceUUID)
+	state, err := s.loadOptional(path, input.CodespaceUUID)
 	if err != nil {
 		return err
 	}
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = input.CodespaceUUID
 	state.StartupInput = startupInputToState(input)
-	return writeCodespaceStateFile(path, state)
+	return s.save(path, state)
 }
 
 // LoadStartupInput returns the persisted create-time startup input.
@@ -785,13 +616,13 @@ func (s *CodespaceStateStore) LoadStartupInput(codespaceUUID string) (manager.St
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return manager.StartupInput{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return manager.StartupInput{}, false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return manager.StartupInput{}, false, nil
 		}
 		return manager.StartupInput{}, false, err
@@ -831,11 +662,11 @@ func (s *CodespaceStateStore) RebaseRuntimeMetadataGeneration(codespaceUUID stri
 	if currentGeneration == math.MaxInt64 {
 		return fmt.Errorf("metadata_generation is exhausted")
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -846,7 +677,7 @@ func (s *CodespaceStateStore) RebaseRuntimeMetadataGeneration(codespaceUUID stri
 		return nil
 	}
 	state.RuntimeMetadata.MetadataGeneration = currentGeneration + 1
-	return writeJSONFileAtomic(path, state)
+	return s.save(path, state)
 }
 
 // SaveActiveOperation stores one complete active operation context.
@@ -874,11 +705,11 @@ func (s *CodespaceStateStore) SaveActiveOperation(snapshot manager.OperationSnap
 	if err != nil {
 		return fmt.Errorf("encode active operation payload: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, codespaceUUID)
+	state, err := s.loadOptional(path, codespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -889,7 +720,7 @@ func (s *CodespaceStateStore) SaveActiveOperation(snapshot manager.OperationSnap
 		WorkerStage:       string(workerStage),
 		Payload:           json.RawMessage(payload),
 	}
-	return writeJSONFileAtomic(path, state)
+	return s.save(path, state)
 }
 
 // SaveRuntimeEnvironment stores the complete local runtime target.
@@ -902,18 +733,18 @@ func (s *CodespaceStateStore) SaveRuntimeEnvironment(codespaceUUID string, envir
 	if err := environment.Validate(); err != nil {
 		return err
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, codespaceUUID)
+	state, err := s.loadOptional(path, codespaceUUID)
 	if err != nil {
 		return err
 	}
 	state.StateFormatVersion = codespaceStateFormatVersion
 	state.CodespaceUUID = codespaceUUID
 	state.RuntimeEnvironment = &environment
-	return writeCodespaceStateFile(path, state)
+	return s.save(path, state)
 }
 
 // LoadRuntimeEnvironment returns the complete local runtime target.
@@ -923,13 +754,13 @@ func (s *CodespaceStateStore) LoadRuntimeEnvironment(codespaceUUID string) (prov
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return provisioner.RuntimeEnvironment{}, false, fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return provisioner.RuntimeEnvironment{}, false, err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return provisioner.RuntimeEnvironment{}, false, nil
 		}
 		return provisioner.RuntimeEnvironment{}, false, err
@@ -950,13 +781,13 @@ func (s *CodespaceStateStore) DeleteActiveOperation(codespaceUUID string, operat
 	if operationRVersion <= 0 {
 		return fmt.Errorf("operation_rversion must be positive")
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -965,7 +796,7 @@ func (s *CodespaceStateStore) DeleteActiveOperation(codespaceUUID string, operat
 		return nil
 	}
 	state.ActiveOperation = nil
-	if err := writeCodespaceStateFile(path, state); err != nil {
+	if err := s.save(path, state); err != nil {
 		return fmt.Errorf("clear active operation state %s: %w", path, err)
 	}
 	return nil
@@ -988,11 +819,11 @@ func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.Runt
 	if err != nil {
 		return err
 	}
-	path, err := codespaceStatePath(s.stateDir, snapshot.CodespaceUUID)
+	path, err := codespaceStateKey(snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, snapshot.CodespaceUUID)
+	state, err := s.loadOptional(path, snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -1009,7 +840,7 @@ func (s *CodespaceStateStore) SaveRuntimeTransitionPending(snapshot manager.Runt
 		RuntimeGeneration:         snapshot.RuntimeGeneration,
 		ObservedOperationRVersion: snapshot.ObservedOperationRVersion,
 	}
-	return writeJSONFileAtomic(path, state)
+	return s.save(path, state)
 }
 
 // ClearRuntimeTransitionPending clears the pending transition after the matching report is resolved.
@@ -1022,13 +853,13 @@ func (s *CodespaceStateStore) ClearRuntimeTransitionPending(codespaceUUID string
 	if runtimeGeneration <= 0 {
 		return fmt.Errorf("runtime_generation must be positive")
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return nil
 		}
 		return err
@@ -1037,7 +868,7 @@ func (s *CodespaceStateStore) ClearRuntimeTransitionPending(codespaceUUID string
 		return nil
 	}
 	state.PendingRuntimeTransition = nil
-	return writeCodespaceStateFile(path, state)
+	return s.save(path, state)
 }
 
 // SaveHealthStopPending stores a health-driven stop intent before stopping runtime resources.
@@ -1050,11 +881,11 @@ func (s *CodespaceStateStore) SaveHealthStopPending(snapshot manager.HealthStopS
 	if snapshot.ObservedOperationRVersion <= 0 {
 		return fmt.Errorf("observed_operation_rversion must be positive")
 	}
-	path, err := codespaceStatePath(s.stateDir, snapshot.CodespaceUUID)
+	path, err := codespaceStateKey(snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, snapshot.CodespaceUUID)
+	state, err := s.loadOptional(path, snapshot.CodespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -1070,7 +901,7 @@ func (s *CodespaceStateStore) SaveHealthStopPending(snapshot manager.HealthStopS
 	state.CodespaceUUID = snapshot.CodespaceUUID
 	state.HealthStopPending = true
 	state.HealthStopObservedOperationRVersion = snapshot.ObservedOperationRVersion
-	return writeJSONFileAtomic(path, state)
+	return s.save(path, state)
 }
 
 // SaveCleanupPending stores the local cleanup state before deleting runtime resources.
@@ -1080,11 +911,11 @@ func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	state, err := loadOptionalCodespaceStateFile(path, codespaceUUID)
+	state, err := s.loadOptional(path, codespaceUUID)
 	if err != nil {
 		return err
 	}
@@ -1094,51 +925,45 @@ func (s *CodespaceStateStore) SaveCleanupPending(codespaceUUID string) error {
 	state.HealthStopPending = false
 	state.HealthStopObservedOperationRVersion = 0
 	state.CleanupPending = true
-	return writeJSONFileAtomic(path, state)
+	return s.save(path, state)
 }
 
-// ClearCodespaceState removes the local Codespace snapshot after cleanup completes.
+// ClearCodespaceState removes the Codespace checkpoint after cleanup completes.
 func (s *CodespaceStateStore) ClearCodespaceState(codespaceUUID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return fmt.Errorf("invalid codespace uuid: %w", err)
 	}
-	path, err := codespaceStatePath(s.stateDir, codespaceUUID)
+	path, err := codespaceStateKey(codespaceUUID)
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("remove codespace state %s: %w", path, err)
+	_, revision, err := s.records.load(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return nil
 	}
-	return syncStateDir(filepath.Dir(path))
-}
-
-func validateCodespaceStateFile(path string) error {
-	_, err := loadCodespaceStateFile(path, strings.TrimSuffix(filepath.Base(path), ".json"))
-	return err
-}
-
-func writeCodespaceStateFile(path string, state codespaceState) error {
-	if state.hasPersistentData() {
-		return writeJSONFileAtomic(path, state)
-	}
-	if err := os.Remove(path); err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		return fmt.Errorf("remove codespace state %s: %w", path, err)
-	}
-	return syncStateDir(filepath.Dir(path))
-}
-
-func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, error) {
-	content, err := os.ReadFile(path)
 	if err != nil {
-		return codespaceState{}, fmt.Errorf("read codespace state %s: %w", path, err)
+		return err
+	}
+	return s.records.remove(path, revision)
+}
+
+func (s *CodespaceStateStore) save(key string, state codespaceState) error {
+	if !state.hasPersistentData() {
+		return s.records.remove(key, state.revision)
+	}
+	content, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	return s.records.save(key, content, state.revision)
+}
+
+func (s *CodespaceStateStore) load(path string, codespaceUUID string) (codespaceState, error) {
+	content, revision, err := s.records.load(path)
+	if err != nil {
+		return codespaceState{}, fmt.Errorf("read codespace checkpoint %s: %w", path, err)
 	}
 	var state codespaceState
 	if err := json.Unmarshal(content, &state); err != nil {
@@ -1148,7 +973,7 @@ func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, 
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: state_format_version must be %d", path, codespaceStateFormatVersion)
 	}
 	if state.CodespaceUUID != "" && state.CodespaceUUID != codespaceUUID {
-		return codespaceState{}, fmt.Errorf("validate codespace state %s: codespace_uuid must match filename", path)
+		return codespaceState{}, fmt.Errorf("validate codespace state %s: codespace_uuid must match runtime identity", path)
 	}
 	if state.RuntimeGeneration < 0 {
 		return codespaceState{}, fmt.Errorf("validate codespace state %s: runtime_generation must not be negative", path)
@@ -1192,6 +1017,7 @@ func loadCodespaceStateFile(path string, codespaceUUID string) (codespaceState, 
 			return codespaceState{}, fmt.Errorf("validate codespace state %s: %w", path, err)
 		}
 	}
+	state.revision = revision
 	return state, nil
 }
 
@@ -1267,9 +1093,7 @@ func validateActiveOperationState(path string, operation *codespaceActiveOperati
 		return fmt.Errorf("validate codespace state %s: active operation_rversion must be positive", path)
 	}
 	switch operation.WorkerStage {
-	case "":
-		operation.WorkerStage = string(manager.OperationWorkerStageActive)
-	case string(manager.OperationWorkerStageActive), string(manager.OperationWorkerStageLeasePaused):
+	case string(manager.OperationWorkerStageActive), string(manager.OperationWorkerStageLeasePaused), string(manager.OperationWorkerStageRecoveryBlocked):
 	default:
 		return fmt.Errorf("validate codespace state %s: active operation worker_stage is invalid", path)
 	}
@@ -1345,10 +1169,10 @@ func validateStartupInputState(path, codespaceUUID string, snapshot *codespaceSt
 	return nil
 }
 
-func loadOptionalCodespaceStateFile(path string, codespaceUUID string) (codespaceState, error) {
-	state, err := loadCodespaceStateFile(path, codespaceUUID)
+func (s *CodespaceStateStore) loadOptional(path string, codespaceUUID string) (codespaceState, error) {
+	state, err := s.load(path, codespaceUUID)
 	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
+		if errors.Is(err, fs.ErrNotExist) {
 			return codespaceState{
 				StateFormatVersion: codespaceStateFormatVersion,
 				CodespaceUUID:      codespaceUUID,
@@ -1507,23 +1331,11 @@ func runtimeTransitionTargetStateFromString(state string) (codespacev1.RuntimeSt
 	}
 }
 
-func codespaceStateDir(stateDir string) (string, error) {
-	stateDir = strings.TrimSpace(stateDir)
-	if stateDir == "" {
-		return "", fmt.Errorf("manager.state_dir is required")
-	}
-	return filepath.Join(stateDir, codespaceStateDirName), nil
-}
-
-func codespaceStatePath(stateDir string, codespaceUUID string) (string, error) {
+func codespaceStateKey(codespaceUUID string) (string, error) {
 	if err := validateCodespaceStateUUID(codespaceUUID); err != nil {
 		return "", err
 	}
-	dir, err := codespaceStateDir(stateDir)
-	if err != nil {
-		return "", err
-	}
-	return filepath.Join(dir, codespaceUUID+".json"), nil
+	return "runtimes/" + codespaceUUID, nil
 }
 
 func validateCodespaceStateUUID(codespaceUUID string) error {
@@ -1535,16 +1347,4 @@ func validateCodespaceStateUUID(codespaceUUID string) error {
 		return fmt.Errorf("codespace uuid must be canonical lower-case UUID v4")
 	}
 	return nil
-}
-
-type codespacev1OperationPayload struct {
-	payload codespacev1.OperationPayload
-}
-
-func (p *codespacev1OperationPayload) Message() *codespacev1.OperationPayload {
-	return &p.payload
-}
-
-func (p *codespacev1OperationPayload) OperationPayload() *codespacev1.OperationPayload {
-	return &p.payload
 }

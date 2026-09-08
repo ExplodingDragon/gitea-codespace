@@ -71,7 +71,7 @@ const (
 )
 
 const (
-	incusConfigManagerID      = "user.gitea.manager_id"
+	incusConfigSiteID         = "user.gitea.site_id"
 	incusConfigCodespaceUUID  = "user.gitea.codespace_uuid"
 	incusConfigSchemaVersion  = "user.gitea.schema_version"
 	incusConfigEnvironmentTag = "user.gitea.environment_tag"
@@ -86,7 +86,7 @@ type bootstrapCredentialFile struct {
 
 // IncusConfig configures one Incus-backed provisioner.
 type IncusConfig struct {
-	ManagerID           int64
+	SiteID              int64
 	Project             string
 	ProjectManage       bool
 	Remote              string
@@ -121,7 +121,7 @@ type IncusEnvironmentConfig struct {
 // IncusProvisioner provisions codespace as Incus instances.
 type IncusProvisioner struct {
 	client             incus.InstanceServer
-	managerID          string
+	siteID             string
 	project            string
 	networkName        string
 	environments       map[string]incusEnvironment
@@ -154,16 +154,36 @@ type incusCPUSample struct {
 	observedUnix int64
 }
 
+// NewIncusGateway connects without preparing worker resources. Project requests
+// are deferred until routing, because the elected worker may still be creating it.
+func NewIncusGateway(ctx context.Context, config IncusConfig) (*IncusProvisioner, error) {
+	if config.SiteID <= 0 || strings.TrimSpace(config.Project) == "" {
+		return nil, fmt.Errorf("gateway site and project are required")
+	}
+	baseClient, err := connectIncusBase(ctx, config)
+	if err != nil {
+		return nil, fmt.Errorf("connect incus gateway: %w", err)
+	}
+	server, _, err := baseClient.GetServer()
+	if err != nil {
+		return nil, fmt.Errorf("get incus gateway server: %w", err)
+	}
+	if err := validateIncusServer(server, ""); err != nil {
+		return nil, err
+	}
+	return &IncusProvisioner{client: withProject(baseClient, config.Project), siteID: fmt.Sprintf("%d", config.SiteID), project: config.Project}, nil
+}
+
 // NewIncus creates one Incus-backed provisioner.
-func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
-	if config.ManagerID <= 0 {
-		return nil, fmt.Errorf("manager_id is required")
+func NewIncus(ctx context.Context, config IncusConfig) (*IncusProvisioner, error) {
+	if config.SiteID <= 0 {
+		return nil, fmt.Errorf("site_id is required")
 	}
 	networkName := strings.TrimSpace(config.NetworkName)
 	if networkName == "" {
 		return nil, fmt.Errorf("incus network name is required")
 	}
-	baseClient, err := connectIncusBase(config)
+	baseClient, err := connectIncusBase(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("connect incus: %w", err)
 	}
@@ -202,7 +222,7 @@ func NewIncus(config IncusConfig) (*IncusProvisioner, error) {
 
 	return &IncusProvisioner{
 		client:             client,
-		managerID:          fmt.Sprintf("%d", config.ManagerID),
+		siteID:             fmt.Sprintf("%d", config.SiteID),
 		project:            project,
 		networkName:        networkName,
 		environments:       environments,
@@ -1137,7 +1157,7 @@ func (p *IncusProvisioner) createInstance(ctx context.Context, spec InstanceSpec
 		return err
 	}
 	instanceConfig := map[string]string{
-		incusConfigManagerID:      p.managerID,
+		incusConfigSiteID:         p.siteID,
 		incusConfigCodespaceUUID:  spec.CodespaceUUID,
 		incusConfigSchemaVersion:  "1",
 		incusConfigEnvironmentTag: spec.EnvironmentTag,
@@ -1279,7 +1299,7 @@ func (p *IncusProvisioner) ListInstances(ctx context.Context) ([]*Instance, erro
 }
 
 func (p *IncusProvisioner) instanceFromAPI(instance api.Instance) (*Instance, bool) {
-	if strings.TrimSpace(instance.Config[incusConfigManagerID]) != p.managerID {
+	if strings.TrimSpace(instance.Config[incusConfigSiteID]) != p.siteID {
 		return nil, false
 	}
 	codespaceUUID := strings.TrimSpace(instance.Config[incusConfigCodespaceUUID])
@@ -1551,16 +1571,16 @@ func incusRuntimeState(status string) RuntimeState {
 	}
 }
 
-func connectIncusBase(config IncusConfig) (incus.InstanceServer, error) {
+func connectIncusBase(ctx context.Context, config IncusConfig) (incus.InstanceServer, error) {
 	if config.Remote != "" {
-		client, err := incus.ConnectIncus(config.Remote, nil)
+		client, err := incus.ConnectIncusWithContext(ctx, config.Remote, nil)
 		if err != nil {
 			return nil, fmt.Errorf("connect remote %s: %w", config.Remote, err)
 		}
 		return client, nil
 	}
 
-	client, err := incus.ConnectIncusUnix(config.UnixSocket, nil)
+	client, err := incus.ConnectIncusUnixWithContext(ctx, config.UnixSocket, nil)
 	if err != nil {
 		return nil, fmt.Errorf("connect unix socket %q: %w", config.UnixSocket, err)
 	}

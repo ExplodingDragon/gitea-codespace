@@ -2604,8 +2604,10 @@ func newTestEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL string) *gat
 	t.Helper()
 	host, port := splitTestHostPort(t, upstreamURL)
 	routes := newGatewayRouteStore()
-	routes.SetTCPBackend(&testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(host, strconv.Itoa(port))})
+	routes.SetSiteBackend(1, &testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(host, strconv.Itoa(port))})
+	t.Cleanup(routes.Close)
 	if err := routes.Put(gatewayEndpointRoute{
+		siteID:        1,
 		codespaceUUID: codespaceUUID,
 		endpointID:    "web",
 		instanceName:  "runtime-1",

@@ -6,6 +6,7 @@ package manager
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"math"
 	"net/http"
@@ -32,6 +33,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 
 	stateStore := &memoryOperationStateStore{}
 	metadataStore := &memoryRuntimeMetadataStateStore{}
+	identityStore := &memoryRuntimeIdentityStore{}
 	service := &managerService{
 		finalized: make(chan struct{}, 1),
 		operation: &codespacev1.OperationPayload{
@@ -51,7 +53,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	defer server.Close()
 
 	provisioner := newCredentialTrackingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -66,6 +68,7 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 		RuntimeMetadataGeneration: 1,
 		OperationStateStore:       stateStore,
 		RuntimeMetadataStateStore: metadataStore,
+		RuntimeIdentityStore:      identityStore,
 	}, server.Client(), provisioner)
 
 	if err := agent.declare(context.Background(), codespacev1.ManagerRuntimeState_MANAGER_RUNTIME_STATE_ONLINE); err != nil {
@@ -101,6 +104,9 @@ func TestAgentHandlesCreateOperation(t *testing.T) {
 	codespaceUUID := bindRequest.GetRuntimeUuid()
 	if codespaceUUID == "" {
 		t.Fatalf("runtime identity was not bound")
+	}
+	if identityStore.codespaceUUID != codespaceUUID || identityStore.codespaceID != 42 || identityStore.operationRVersion != 1 || identityStore.environmentTag != "default" {
+		t.Fatalf("saved runtime identity = %#v", identityStore)
 	}
 	if service.metadataGeneration != 6 {
 		t.Fatalf("metadata generation = %d", service.metadataGeneration)
@@ -188,7 +194,7 @@ func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 	t.Parallel()
 
 	applier := &recordingRuntimeEndpointApplier{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		RuntimeEndpointApplier: applier,
 	}, nil, provisioner.NewDummy())
 	if err := agent.syncRuntimeEndpointManifest(context.Background(), "11111111-1111-4111-8111-111111111111", &provisioner.Instance{
@@ -212,7 +218,7 @@ func TestSyncRuntimeEndpointManifestAddsWorkspaceEndpoint(t *testing.T) {
 func TestAgentRedactsLifecycleLogSecrets(t *testing.T) {
 	t.Parallel()
 
-	agent := New(AgentConfig{ManagerSecret: "manager-secret"}, nil, provisioner.NewDummy())
+	agent := newTestAgent(AgentConfig{ManagerSecret: "manager-secret"}, nil, provisioner.NewDummy())
 	message := agent.redactLogMessage(
 		`manager-secret gcs_test runtime-secret-value Authorization: Bearer abc http://user:pass@gitea.example/repo basic xyz`,
 		"gcs_test",
@@ -240,7 +246,7 @@ func TestAgentFetchCapacityUsesLocalWorkers(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -305,7 +311,7 @@ func TestAgentFetchCapacityUsesRuntimeLimit(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create runtime: %v", err)
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -337,7 +343,7 @@ func TestAgentFetchCapacityZeroWhenRuntimeListFails(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -377,7 +383,7 @@ func TestAgentFetchCapacityReservesInFlightFetchSlots(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -427,7 +433,7 @@ func TestAgentFetchCapacityReleasesUnusedSuccessfulFetchSlots(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -474,7 +480,7 @@ func TestAgentFetchCapacityNewPayloadBecomesWorkerOccupancy(t *testing.T) {
 	defer server.Close()
 
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -517,7 +523,7 @@ func TestAgentFetchCapacityUsesStartupAdmission(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        server.URL,
 		ManagerID:      7,
 		ManagerSecret:  "manager-secret",
@@ -575,7 +581,7 @@ func TestAgentAbortCreateTakesOverRunningCreate(t *testing.T) {
 
 	stateStore := &memoryOperationStateStore{}
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -660,7 +666,7 @@ func TestAgentDeleteTakesOverRunningCreate(t *testing.T) {
 	stateStore := &memoryOperationStateStore{}
 	publisher := &memoryRuntimeMetadataPublisher{}
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -743,7 +749,7 @@ func TestAgentDeleteTakesOverRunningResume(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create dummy instance: %v", err)
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -827,7 +833,7 @@ func TestAgentDeleteTakesOverRunningStop(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create dummy instance: %v", err)
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -897,7 +903,7 @@ func TestAgentSameVersionRunningCreatePayloadIsIgnored(t *testing.T) {
 
 	stateStore := &memoryOperationStateStore{}
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -954,7 +960,7 @@ func TestCreateOperationCleansRuntimeAfterMetadataVersionExhausted(t *testing.T)
 	defer server.Close()
 
 	trackedProvisioner := newCredentialTrackingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1017,7 +1023,7 @@ func TestAgentRecoverableRuntimeFailurePausesOperation(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1059,7 +1065,7 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	access := &memoryAccessController{}
 	publisher := &memoryRuntimeMetadataPublisher{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                  "http://127.0.0.1",
 		AccessController:         access,
 		RuntimeMetadataPublisher: publisher,
@@ -1070,7 +1076,7 @@ func TestAgentStopAndDeleteCloseCodespaceAccess(t *testing.T) {
 		t.Fatalf("handle stop: %v", err)
 	}
 	deleteOperation := &codespacev1.OperationPayload{RuntimeUuid: codespaceUUID}
-	if err := agent.handleDelete(context.Background(), deleteOperation, false); err != nil {
+	if err := agent.handleDelete(context.Background(), deleteOperation); err != nil {
 		t.Fatalf("handle delete: %v", err)
 	}
 
@@ -1094,7 +1100,7 @@ func TestAgentStopSavesRuntimeEnvironment(t *testing.T) {
 		DummyProvisioner: provisioner.NewDummy(),
 		access:           provisioner.LifecycleResult{Environment: stopped.Environment},
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                      "http://127.0.0.1",
 		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
@@ -1125,7 +1131,7 @@ func TestAgentStopEnvironmentFailureKeepsPreviousEnvironment(t *testing.T) {
 		DummyProvisioner: provisioner.NewDummy(),
 		stopErr:          errors.New("stop runtime failed"),
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                      "http://127.0.0.1",
 		RuntimeEnvironmentStateStore: store,
 	}, http.DefaultClient, runtimeProvisioner)
@@ -1180,7 +1186,7 @@ func TestAgentHandlesResumeOperationWritesCredentials(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create existing instance: %v", err)
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1290,7 +1296,7 @@ func TestAgentReportsObservedOperationWhileRunning(t *testing.T) {
 	defer server.Close()
 
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1348,7 +1354,7 @@ func TestAgentResumesLoadedOperationAfterRenewal(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1412,7 +1418,7 @@ func TestAgentPausesCreateWhenLocalLeaseExpires(t *testing.T) {
 	stateStore := &memoryOperationStateStore{}
 	publisher := &memoryRuntimeMetadataPublisher{}
 	provisioner := newBlockingProvisioner()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1475,7 +1481,7 @@ func TestAgentTriggersInventoryAfterResourceAbsentFinal(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1523,7 +1529,7 @@ func TestFetchStopsOnOperationVersionRegression(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -1551,7 +1557,7 @@ func TestFetchDropsDelayedOperationVersion(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "99999999-9999-4999-8999-999999999999"
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL: "http://127.0.0.1",
 		InitialOperations: []OperationSnapshot{{
 			Payload: &codespacev1.OperationPayload{
@@ -1598,7 +1604,7 @@ func TestAgentRunReportsInventoryBeforeOnline(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	inventoryStore := &memoryInventoryStateStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -1668,7 +1674,7 @@ func TestReportInventoryPersistsGenerationBeforeRPCFailure(t *testing.T) {
 	defer server.Close()
 
 	inventoryStore := &memoryInventoryStateStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -1716,7 +1722,7 @@ func TestReportInventoryStopsStableRunningWhenGiteaTokenMissing(t *testing.T) {
 			},
 		},
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                 server.URL,
 		ManagerID:               7,
 		ManagerSecret:           "manager-secret",
@@ -1771,7 +1777,7 @@ func TestReportInventoryStopsStableRunningWhenWorkspaceGitInvalid(t *testing.T) 
 	repairProvisioner.status = provisioner.CredentialStatus{
 		GiteaTokenPresent: true,
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                      server.URL,
 		ManagerID:                    7,
 		ManagerSecret:                "manager-secret",
@@ -1831,7 +1837,7 @@ func TestReportInventoryStopsStableRunningAfterHealthFailures(t *testing.T) {
 			codespaceUUID: readyHealthSnapshot(codespaceUUID),
 		},
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1893,7 +1899,7 @@ func TestReportInventoryDefersHealthCheckForNewRuntimeToNextRound(t *testing.T) 
 		},
 	}
 	publisher := &memoryRuntimeMetadataPublisher{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1953,7 +1959,7 @@ func TestReportInventoryHealthSuccessResetsFailures(t *testing.T) {
 			codespaceUUID: readyHealthSnapshot(codespaceUUID),
 		},
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -1987,7 +1993,7 @@ func TestReportInventoryStopsOnInventoryGenerationExhaustion(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2019,7 +2025,7 @@ func TestAgentRunStopsOnInventoryStateHistoryConflict(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:         server.URL,
 		ManagerID:       7,
 		ManagerSecret:   "manager-secret",
@@ -2073,7 +2079,7 @@ func TestReportInventoryStopsOnOperationVersionRegression(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2118,7 +2124,7 @@ func TestInventoryActionDropsDelayedOperationVersion(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create dummy runtime: %v", err)
 	}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             "http://127.0.0.1",
 		InventoryGeneration: 6,
 		InitialOperations: []OperationSnapshot{{
@@ -2186,7 +2192,7 @@ func TestReportInventoryReportsStoppedRuntimeTransition(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2253,7 +2259,7 @@ func TestReportRuntimeTransitionRequiresPendingStateBeforeRPC(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2299,7 +2305,7 @@ func TestReportRuntimeTransitionRetriesLoadedPendingGeneration(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2352,7 +2358,7 @@ func TestReportInventoryPersistsCleanupPendingBeforeDelete(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2404,7 +2410,7 @@ func TestReportInventoryRequiresCleanupPendingBeforeDelete(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:             server.URL,
 		ManagerID:           7,
 		ManagerSecret:       "manager-secret",
@@ -2438,7 +2444,7 @@ func TestAgentRunsLoadedCleanupPending(t *testing.T) {
 		t.Fatalf("create dummy runtime: %v", err)
 	}
 	cleanupStore := &memoryCleanupStateStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                "http://127.0.0.1",
 		InitialCleanupPendings: []string{codespaceUUID},
 		CleanupStateStore:      cleanupStore,
@@ -2474,7 +2480,7 @@ func TestCleanupLocalRuntimeKeepsStateUntilInstanceIsAbsent(t *testing.T) {
 		t.Fatalf("create dummy runtime: %v", err)
 	}
 	cleanupStore := &memoryCleanupStateStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:           "http://127.0.0.1",
 		CleanupStateStore: cleanupStore,
 	}, http.DefaultClient, &nonDeletingProvisioner{DummyProvisioner: dummyProvisioner})
@@ -2509,7 +2515,7 @@ func TestDeleteOperationPersistsCleanupPendingBeforeDelete(t *testing.T) {
 	defer server.Close()
 
 	cleanupStore := &memoryCleanupStateStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:           server.URL,
 		ManagerID:         7,
 		ManagerSecret:     "manager-secret",
@@ -2560,7 +2566,7 @@ func TestDeleteOperationRequiresCleanupPendingBeforeDelete(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -2614,7 +2620,7 @@ func TestRequestIdleStopPending(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -2666,7 +2672,7 @@ func TestRequestIdleStopObservationChanged(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -2704,7 +2710,7 @@ func TestRequestIdleStopNotApplicable(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -2740,7 +2746,7 @@ func TestAutoStopRequestsIdleStopAfterTimeout(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -2781,7 +2787,7 @@ func TestAutoStopInteractionGenerationRestartsIdleWindow(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "99999999-9999-4999-8999-999999999999"
-	agent := New(AgentConfig{BaseURL: "http://127.0.0.1"}, http.DefaultClient, provisioner.NewDummy())
+	agent := newTestAgent(AgentConfig{BaseURL: "http://127.0.0.1"}, http.DefaultClient, provisioner.NewDummy())
 	started := time.Unix(100, 0)
 	agent.applyRuntimeSettings(codespaceUUID, &codespacev1.EffectiveCodespaceRuntimeSettings{
 		AutoStopEnabled:       true,
@@ -2813,7 +2819,7 @@ func TestAutoStopSkipsActiveOperation(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "99999999-9999-4999-8999-999999999999"
-	agent := New(AgentConfig{BaseURL: "http://127.0.0.1"}, http.DefaultClient, provisioner.NewDummy())
+	agent := newTestAgent(AgentConfig{BaseURL: "http://127.0.0.1"}, http.DefaultClient, provisioner.NewDummy())
 	now := time.Now()
 	agent.applyRuntimeSettings(codespaceUUID, &codespacev1.EffectiveCodespaceRuntimeSettings{
 		AutoStopEnabled:       true,
@@ -2841,7 +2847,7 @@ func TestAutoStopSkipsLiveSession(t *testing.T) {
 	t.Parallel()
 
 	codespaceUUID := "99999999-9999-4999-8999-999999999999"
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:        "http://127.0.0.1",
 		SessionTracker: staticSessionTracker{codespaceUUID: 1},
 	}, http.DefaultClient, provisioner.NewDummy())
@@ -2875,7 +2881,7 @@ func TestAgentRunRetriesTransientFetchError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:         server.URL,
 		ManagerID:       7,
 		ManagerSecret:   "manager-secret",
@@ -2922,7 +2928,7 @@ func TestAgentRunStopsOnProtocolMismatch(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:         server.URL,
 		ManagerID:       7,
 		ManagerSecret:   "manager-secret",
@@ -2976,7 +2982,7 @@ func TestAgentDeclareSavesManagerServiceSettings(t *testing.T) {
 	defer server.Close()
 
 	store := &memoryManagerServiceSettingsStore{}
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                server.URL,
 		ManagerID:              7,
 		ManagerSecret:          "manager-secret",
@@ -3034,7 +3040,7 @@ func TestAgentUpdateLogBatchesByControlPlaneLimit(t *testing.T) {
 		Offset:            operation.GetLogOffset(),
 		Lines:             []*codespacev1.LogLine{firstLine},
 	}))
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -3082,7 +3088,7 @@ func TestAgentUpdateLogRejectsOversizedLine(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:       server.URL,
 		ManagerID:     7,
 		ManagerSecret: "manager-secret",
@@ -3121,7 +3127,7 @@ func TestOperationLogSinkBatchesAndStopsAtLogLimit(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
+	agent := newTestAgent(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
 	operation := &codespacev1.OperationPayload{
 		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
@@ -3185,7 +3191,7 @@ func TestAgentUpdateLogRecoversServerOffset(t *testing.T) {
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	defer server.Close()
-	agent := New(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
+	agent := newTestAgent(AgentConfig{BaseURL: server.URL, ManagerID: 7, ManagerSecret: "manager-secret"}, server.Client(), provisioner.NewDummy())
 	operation := &codespacev1.OperationPayload{
 		RuntimeUuid:       "11111111-1111-4111-8111-111111111111",
 		OperationRversion: 9,
@@ -3261,7 +3267,7 @@ func TestAgentRunStopsOnWorkerProtocolMismatch(t *testing.T) {
 	defer server.Close()
 
 	runtimeProvisioner := provisioner.NewDummy()
-	agent := New(AgentConfig{
+	agent := newTestAgent(AgentConfig{
 		BaseURL:                   server.URL,
 		ManagerID:                 7,
 		ManagerSecret:             "manager-secret",
@@ -3387,6 +3393,27 @@ type managerService struct {
 }
 
 type staticSessionTracker map[string]int
+
+type memoryRuntimeIdentityStore struct {
+	codespaceUUID      string
+	codespaceID        int64
+	operationRVersion  int64
+	environmentTag     string
+	deletedRuntimeUUID string
+}
+
+func (s *memoryRuntimeIdentityStore) SaveRuntimeIdentity(_ context.Context, codespaceUUID string, codespaceID, operationRVersion int64, environmentTag string) error {
+	s.codespaceUUID = codespaceUUID
+	s.codespaceID = codespaceID
+	s.operationRVersion = operationRVersion
+	s.environmentTag = environmentTag
+	return nil
+}
+
+func (s *memoryRuntimeIdentityStore) DeleteRuntimeIdentity(_ context.Context, codespaceUUID string) error {
+	s.deletedRuntimeUUID = codespaceUUID
+	return nil
+}
 
 func (t staticSessionTracker) LiveSessions(codespaceUUID string) int {
 	return t[codespaceUUID]
@@ -4059,7 +4086,7 @@ type recordingRuntimeEndpointApplier struct {
 	routes        []RuntimeEndpointRoute
 }
 
-func (a *recordingRuntimeEndpointApplier) ApplyRuntimeEndpointRoutes(codespaceUUID string, routes []RuntimeEndpointRoute) error {
+func (a *recordingRuntimeEndpointApplier) ApplyRuntimeEndpointRoutes(_ context.Context, codespaceUUID string, routes []RuntimeEndpointRoute) error {
 	a.codespaceUUID = codespaceUUID
 	a.routes = append([]RuntimeEndpointRoute(nil), routes...)
 	return nil
@@ -4633,7 +4660,7 @@ func (p *memoryRuntimeMetadataPublisher) NotifyRuntimeMetadata(codespaceUUID str
 	p.notified = append(p.notified, codespaceUUID)
 }
 
-func (p *memoryRuntimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID string) {
+func (p *memoryRuntimeMetadataPublisher) DeactivateRuntimeMetadata(_ context.Context, codespaceUUID string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
@@ -4759,5 +4786,134 @@ func operationCommandName(operation *codespacev1.OperationPayload) string {
 		return "abort_resume"
 	default:
 		return ""
+	}
+}
+
+type memoryStartupInputStore struct {
+	mu     sync.Mutex
+	inputs map[string]StartupInput
+}
+
+func newMemoryStartupInputStore() *memoryStartupInputStore {
+	return &memoryStartupInputStore{inputs: map[string]StartupInput{}}
+}
+
+func (s *memoryStartupInputStore) SaveStartupInput(input StartupInput) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if strings.TrimSpace(input.CodespaceUUID) == "" {
+		return fmt.Errorf("codespace uuid is empty")
+	}
+	s.inputs[input.CodespaceUUID] = input
+	return nil
+}
+
+func (s *memoryStartupInputStore) LoadStartupInput(codespaceUUID string) (StartupInput, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	input, ok := s.inputs[codespaceUUID]
+	if !ok {
+		return StartupInput{}, false, nil
+	}
+	return input, true, nil
+}
+
+func newTestAgent(config AgentConfig, client *http.Client, backend provisioner.Provisioner) *Agent {
+	if config.StartupInputStateStore == nil {
+		config.StartupInputStateStore = newMemoryStartupInputStore()
+	}
+	return New(config, client, backend)
+}
+
+type shutdownProvisioner struct {
+	ignoreCancellation bool
+	*provisioner.DummyProvisioner
+	started  chan struct{}
+	stopping chan struct{}
+	release  chan struct{}
+}
+
+func (p *shutdownProvisioner) CreateOrStart(ctx context.Context, _ provisioner.InstanceSpec) (*provisioner.Instance, error) {
+	close(p.started)
+	<-ctx.Done()
+	return nil, ctx.Err()
+}
+
+func (p *shutdownProvisioner) Stop(ctx context.Context, _ string) error {
+	close(p.stopping)
+	if p.ignoreCancellation {
+		<-p.release
+		return nil
+	}
+	select {
+	case <-p.release:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+func TestAgentRunWaitsForStartupShutdown(t *testing.T) {
+	for _, expire := range []bool{false, true} {
+		t.Run(fmt.Sprintf("deadline=%t", expire), func(t *testing.T) {
+			backend := &shutdownProvisioner{DummyProvisioner: provisioner.NewDummy(), started: make(chan struct{}), stopping: make(chan struct{}), release: make(chan struct{})}
+			backend.ignoreCancellation = expire
+			release := sync.OnceFunc(func() { close(backend.release) })
+			defer release()
+			service := &managerService{operation: &codespacev1.OperationPayload{
+				RuntimeUuid: "55555555-5555-4555-8555-555555555555", OperationRversion: 1, LeaseValidForMilliseconds: 30000,
+				Command: &codespacev1.OperationPayload_Create{Create: createOperationPayloadForTest()},
+			}}
+			path, handler := codespacev1connect.NewManagerServiceHandler(service)
+			mux := http.NewServeMux()
+			mux.Handle(path, handler)
+			server := httptest.NewServer(mux)
+			defer server.Close()
+			state := &memoryOperationStateStore{}
+			agent := newTestAgent(AgentConfig{
+				BaseURL: server.URL, ManagerID: 7, ManagerSecret: "secret", Environments: []*codespacev1.EnvironmentTag{{Tag: "default"}},
+				PollInterval: time.Millisecond, CapacityTotal: 1, StartupWorkers: 1, CleanupWorkers: 1,
+				ShutdownTimeout: time.Second, OperationStateStore: state,
+			}, server.Client(), backend)
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() { done <- agent.Run(ctx) }()
+			select {
+			case <-backend.started:
+			case <-time.After(3 * time.Second):
+				t.Fatal("startup did not begin")
+			}
+			cancel()
+			select {
+			case <-backend.stopping:
+			case <-time.After(time.Second):
+				t.Fatal("cleanup did not begin")
+			}
+			select {
+			case err := <-done:
+				t.Fatalf("returned before cleanup: %v", err)
+			default:
+			}
+			if !expire {
+				release()
+			}
+			select {
+			case err := <-done:
+				if expire && !errors.Is(err, context.DeadlineExceeded) {
+					t.Fatalf("shutdown deadline error = %v", err)
+				}
+				if !expire && err != nil {
+					t.Fatal(err)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("shutdown did not finish")
+			}
+			release()
+			agent.operationWorkers.Wait()
+			if state.savedStage() != OperationWorkerStageLeasePaused {
+				t.Fatalf("stage=%s", state.savedStage())
+			}
+		})
 	}
 }

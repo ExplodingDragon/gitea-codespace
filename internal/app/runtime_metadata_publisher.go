@@ -34,10 +34,17 @@ type runtimeMetadataPublisher struct {
 	mu      sync.Mutex
 	ctx     context.Context
 	workers map[string]*runtimeMetadataWorker
+	cancel  context.CancelFunc
+	closed  bool
+	tasks   sync.WaitGroup
 
-	refreshInterval time.Duration
-	refreshWake     chan struct{}
-	refreshStarted  bool
+	refreshInterval  time.Duration
+	refreshWake      chan struct{}
+	gatewaySnapshots *gatewayRuntimeSnapshotPublisher
+}
+
+func (p *runtimeMetadataPublisher) SetGatewaySnapshotPublisher(publisher *gatewayRuntimeSnapshotPublisher) {
+	p.gatewaySnapshots = publisher
 }
 
 type runtimeResourceUsageSampler interface {
@@ -103,6 +110,9 @@ func (p *runtimeMetadataPublisher) ActivateRuntimeMetadata(codespaceUUID string)
 		return false, nil
 	}
 	worker, ok := p.ensureWorker(codespaceUUID)
+	if worker == nil {
+		return false, context.Canceled
+	}
 	if ok {
 		worker.notify()
 	}
@@ -114,6 +124,9 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 		return fmt.Errorf("runtime metadata publisher is not ready")
 	}
 	worker, _ := p.ensureWorker(codespaceUUID)
+	if worker == nil {
+		return context.Canceled
+	}
 	worker.publishMu.Lock()
 	defer worker.publishMu.Unlock()
 
@@ -130,7 +143,7 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 			return fmt.Errorf("runtime metadata snapshot %s is missing", codespaceUUID)
 		}
 		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadata, generation); err != nil {
-			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
+			if handled, handleErr := p.handleMetadataPublishError(ctx, codespaceUUID, err); handled {
 				if handleErr != nil {
 					return handleErr
 				}
@@ -141,6 +154,11 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 			}
 			continue
 		}
+		if p.gatewaySnapshots != nil {
+			if err := p.gatewaySnapshots.Sync(ctx, codespaceUUID); err != nil {
+				return fmt.Errorf("save shared gateway runtime %s: %w", codespaceUUID, err)
+			}
+		}
 		return nil
 	}
 }
@@ -148,13 +166,20 @@ func (p *runtimeMetadataPublisher) PublishRuntimeMetadata(ctx context.Context, c
 func (p *runtimeMetadataPublisher) ensureWorker(codespaceUUID string) (*runtimeMetadataWorker, bool) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
+	if p.closed {
+		return nil, false
+	}
 
 	worker, ok := p.workers[codespaceUUID]
 	if !ok {
 		worker = newRuntimeMetadataWorker()
 		p.workers[codespaceUUID] = worker
 		if p.ctx != nil {
-			go p.runWorker(p.ctx, codespaceUUID, worker)
+			p.tasks.Add(1)
+			go func() {
+				defer p.tasks.Done()
+				p.runWorker(p.ctx, codespaceUUID, worker)
+			}()
 			ok = true
 		}
 	} else if p.ctx != nil {
@@ -168,12 +193,27 @@ func (p *runtimeMetadataPublisher) Run(ctx context.Context) {
 		return
 	}
 	p.mu.Lock()
-	p.ctx = ctx
-	if !p.refreshStarted {
-		p.refreshStarted = true
-		go p.runRefresh(ctx)
+	defer p.mu.Unlock()
+	if !p.closed && p.ctx == nil {
+		p.ctx, p.cancel = context.WithCancel(ctx)
+		p.tasks.Add(1)
+		go func() {
+			defer p.tasks.Done()
+			p.runRefresh(p.ctx)
+		}()
+	}
+}
+
+// Close prevents new background work before waiting, so the store may be closed
+// only after the last refresh or metadata publication has returned.
+func (p *runtimeMetadataPublisher) Close() {
+	p.mu.Lock()
+	p.closed = true
+	if p.cancel != nil {
+		p.cancel()
 	}
 	p.mu.Unlock()
+	p.tasks.Wait()
 }
 
 func (p *runtimeMetadataPublisher) runRefresh(ctx context.Context) {
@@ -264,7 +304,7 @@ func (p *runtimeMetadataPublisher) publishUntilCurrent(ctx context.Context, code
 			return false
 		}
 		if err := p.controlPlane.reportRuntimeMetadata(ctx, codespaceUUID, metadata, generation); err != nil {
-			if handled, handleErr := p.handleMetadataPublishError(codespaceUUID, err); handled {
+			if handled, handleErr := p.handleMetadataPublishError(ctx, codespaceUUID, err); handled {
 				if handleErr != nil {
 					worker.logPublishError(codespaceUUID, generation, handleErr)
 					return true
@@ -313,7 +353,7 @@ func newRuntimeMetadataWorker() *runtimeMetadataWorker {
 	}
 }
 
-func (p *runtimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID string) {
+func (p *runtimeMetadataPublisher) DeactivateRuntimeMetadata(ctx context.Context, codespaceUUID string) {
 	if p == nil {
 		return
 	}
@@ -326,9 +366,14 @@ func (p *runtimeMetadataPublisher) DeactivateRuntimeMetadata(codespaceUUID strin
 	if worker != nil {
 		close(worker.stop)
 	}
+	if p.gatewaySnapshots != nil {
+		if err := p.gatewaySnapshots.Delete(ctx, codespaceUUID); err != nil {
+			log.Printf("delete shared gateway runtime %s: %v", codespaceUUID, err)
+		}
+	}
 }
 
-func (p *runtimeMetadataPublisher) handleMetadataPublishError(codespaceUUID string, err error) (bool, error) {
+func (p *runtimeMetadataPublisher) handleMetadataPublishError(ctx context.Context, codespaceUUID string, err error) (bool, error) {
 	category, staleGeneration, ok := metadataFailure(err)
 	if !ok {
 		return false, nil
@@ -345,7 +390,7 @@ func (p *runtimeMetadataPublisher) handleMetadataPublishError(codespaceUUID stri
 		if clearErr := p.state.ClearRuntimeMetadata(codespaceUUID); clearErr != nil {
 			return true, fmt.Errorf("clear stale runtime metadata %s: %w", codespaceUUID, clearErr)
 		}
-		p.DeactivateRuntimeMetadata(codespaceUUID)
+		p.DeactivateRuntimeMetadata(ctx, codespaceUUID)
 		return true, err
 	default:
 		return false, nil

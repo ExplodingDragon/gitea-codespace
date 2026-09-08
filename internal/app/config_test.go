@@ -11,14 +11,11 @@ import (
 	"time"
 )
 
-func TestLoadConfigYAML(t *testing.T) {
+func TestAdminRuntimeConfigYAML(t *testing.T) {
 	t.Parallel()
 
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "codespace.yaml")
 	content := `
 node:
-  state_dir: "state"
   name: "yaml-manager"
   poll_interval: "1s"
   capacity_total: 3
@@ -70,18 +67,12 @@ runtime:
         root_disk: "10GiB"
       profiles: ["default"]
 `
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write yaml config: %v", err)
-	}
 
-	config, err := LoadConfig(configPath)
+	config, err := decodeAdminRuntimeConfig(strings.NewReader(content))
 	if err != nil {
 		t.Fatalf("load yaml config: %v", err)
 	}
 
-	if config.Node.StateDir != filepath.Join(dir, "state") {
-		t.Fatalf("manager state dir = %q", config.Node.StateDir)
-	}
 	if config.Node.Name != "yaml-manager" || config.Gateway.HTTP.PublicURL != "https://codespace.example.com" {
 		t.Fatalf("config = %#v", config)
 	}
@@ -186,7 +177,11 @@ func TestLoadCheckedInYAMLConfigs(t *testing.T) {
 		t.Run(path, func(t *testing.T) {
 			t.Parallel()
 
-			config, err := LoadConfig(path)
+			content, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			config, err := decodeAdminRuntimeConfig(strings.NewReader(string(content)))
 			if err != nil {
 				t.Fatalf("load checked-in config %s: %v", path, err)
 			}
@@ -200,36 +195,16 @@ func TestLoadCheckedInYAMLConfigs(t *testing.T) {
 	}
 }
 
-func TestLoadConfigRejectsJSON(t *testing.T) {
+func TestAdminRuntimeConfigRejectsDuplicateEnvironmentTags(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "codespace.json")
-	if err := os.WriteFile(configPath, []byte(`{"version":1}`), 0o644); err != nil {
-		t.Fatalf("write json config: %v", err)
-	}
-	_, err := LoadConfig(configPath)
-	if err == nil {
-		t.Fatalf("expected json config error")
-	}
-	if !strings.Contains(err.Error(), "must be a yaml file") {
-		t.Fatalf("json config error = %v", err)
-	}
-}
-
-func TestLoadConfigRejectsDuplicateEnvironmentTags(t *testing.T) {
-	t.Parallel()
-
-	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
 	content := `
 runtime:
   environments:
     - tag: "default"
     - tag: "default"
 `
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write yaml config: %v", err)
-	}
-	_, err := LoadConfig(configPath)
+	_, err := decodeAdminRuntimeConfig(strings.NewReader(content))
 	if err == nil {
 		t.Fatalf("expected duplicate tag error")
 	}
@@ -238,10 +213,9 @@ runtime:
 	}
 }
 
-func TestLoadConfigInstanceSource(t *testing.T) {
+func TestAdminRuntimeConfigInstanceSource(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "codespace.yaml")
 	content := `
 runtime:
   environments:
@@ -257,10 +231,7 @@ runtime:
         root_disk: "10GiB"
       profiles: ["default"]
 `
-	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write yaml config: %v", err)
-	}
-	config, err := LoadConfig(configPath)
+	config, err := decodeAdminRuntimeConfig(strings.NewReader(content))
 	if err != nil {
 		t.Fatalf("load yaml config: %v", err)
 	}

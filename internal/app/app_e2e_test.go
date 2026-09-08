@@ -48,25 +48,24 @@ func TestAppE2EManagerProcessDeleteCleanupWithDummyProvisioner(t *testing.T) {
 	controlPlane := newGiteaManagerServiceServer(t, service)
 	defer controlPlane.Close()
 
-	stateDir := t.TempDir()
-	managerState := saveManagerStateForTest(t, stateDir, controlPlane.URL, 7)
+	managerState := ManagerSite{ID: 7, GiteaURL: controlPlane.URL, ManagerID: 7, ManagerSecret: "manager-secret"}
 	config := DefaultConfig()
 	config.provisionerKind = "dummy"
-	config.Node.StateDir = stateDir
 	config.Node.PollInterval = Duration(10 * time.Millisecond)
 	config.Node.DeclareInterval = Duration(50 * time.Millisecond)
 	config.Node.HTTPTimeout = Duration(time.Second)
 	config.Gateway.HTTP.Listen = "127.0.0.1:0"
 	config.Gateway.SSH.Listen = "127.0.0.1:0"
-	config.Gateway.HTTP.PublicURL = "http://127.0.0.1"
-	config.Gateway.SSH.PublicAddr = "127.0.0.1:22"
+	config.Gateway.HTTP.PublicURL = "http://gateway.example.test"
+	config.Gateway.SSH.PublicAddr = "gateway.example.test:22"
 	config.Node.ShutdownTimeout = Duration(time.Second)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	runDone := make(chan error, 1)
 	var output bytes.Buffer
+	runtimeConfig := appE2ERuntimeConfig(t, config, managerState)
 	go func() {
-		runDone <- runWithConfigContext(ctx, &output, appE2ERuntimeConfig(config, managerState))
+		runDone <- runManagerRuntime(ctx, &output, runtimeConfig)
 	}()
 	select {
 	case <-service.finalized:
@@ -102,8 +101,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 		t.Fatal("Manager process Incus lifecycle E2E requires CODESPACE_E2E_REPO_CLONE_HTTP_URL and CODESPACE_E2E_REPO_COMMIT_SHA")
 	}
 
-	runSuffix := uint64(time.Now().UnixNano()) & 0xffffffffffff
-	codespaceUUID := fmt.Sprintf("33333333-3333-4333-8333-%012x", runSuffix)
+	var codespaceUUID string
 	managerID := time.Now().UnixNano()
 	service := &appE2EManagerService{
 		finalized:      make(chan struct{}, 3),
@@ -135,13 +133,13 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	controlPlane := newGiteaManagerServiceServer(t, service)
 	defer controlPlane.Close()
 
-	stateDir := t.TempDir()
-	managerState := saveManagerStateForTest(t, stateDir, controlPlane.URL, managerID)
-	defer cleanupAppE2EIncusRuntime(t, managerID, codespaceUUID)
+	managerState := ManagerSite{ID: managerID, GiteaURL: controlPlane.URL, ManagerID: managerID, ManagerSecret: "manager-secret"}
+	service.operations[0].CodespaceId = 1
+	defer func() { cleanupAppE2EIncusRuntime(t, managerID, service.runtimeUUID()) }()
 
-	config := appE2EIncusManagerConfig(controlPlane.URL, stateDir)
+	config := appE2EIncusManagerConfig()
 	config.runtimeExecutable = buildAppE2ERuntimeExecutable(t)
-	testBackend, err := newProvisioner(config, managerID, nil)
+	testBackend, err := newProvisioner(context.Background(), config, managerID, nil, true)
 	if err != nil {
 		t.Fatalf("create Incus E2E inspection backend: %v", err)
 	}
@@ -173,8 +171,9 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	defer cancel()
 	runDone := make(chan error, 1)
 	var output bytes.Buffer
+	runtimeConfig := appE2ERuntimeConfig(t, config, managerState)
 	go func() {
-		runDone <- runWithConfigContext(ctx, &output, appE2ERuntimeConfig(config, managerState))
+		runDone <- runManagerRuntime(ctx, &output, runtimeConfig)
 	}()
 
 	timer := time.NewTimer(7 * time.Minute)
@@ -188,7 +187,11 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 	for finalizedCount := 0; finalizedCount < 3; {
 		select {
 		case <-service.finalized:
-			observedName := assertAppE2EIncusRuntime(t, ctx, incusProvisioner, incusClient, stateDir, codespaceUUID, expectedInstanceType, expectedStates[finalizedCount])
+			codespaceUUID = service.runtimeUUID()
+			if status := service.finalStatus(); status != codespacev1.FinalStatus_FINAL_STATUS_DONE {
+				t.Fatalf("operation %d final status = %s\noperation log:\n%s", finalizedCount+1, status, service.operationLog())
+			}
+			observedName := assertAppE2EIncusRuntime(t, ctx, incusProvisioner, incusClient, runtimeConfig.store, managerID, codespaceUUID, expectedInstanceType, expectedStates[finalizedCount])
 			if instanceName == "" {
 				instanceName = observedName
 			} else if observedName != instanceName {
@@ -237,7 +240,7 @@ func TestAppE2EManagerProcessIncusCreateStopResumeLifecycle(t *testing.T) {
 
 func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	routes := newGatewayRouteStore()
 
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -257,7 +260,8 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	}))
 	defer upstream.Close()
 	upstreamHost, upstreamPort := splitTestHostPort(t, upstream.URL)
-	routes.SetTCPBackend(&testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))})
+	routes.SetSiteBackend(1, &testWorkspaceCommandBackend{tcpAddress: net.JoinHostPort(upstreamHost, strconv.Itoa(upstreamPort))})
+	t.Cleanup(routes.Close)
 
 	service := &gatewayManagerService{
 		publicEndpointResponse: allowedPublicEndpointResponse(),
@@ -282,7 +286,10 @@ func TestAppE2ERuntimeEndpointGatewayHTTPAndSSH(t *testing.T) {
 	if _, err := store.SaveRuntimeEndpointRoutes(codespaceUUID, completeEndpointRoutesForTest(codespaceUUID, route)); err != nil {
 		t.Fatalf("save runtime endpoint routes: %v", err)
 	}
-	if err := routes.ReplaceRuntimeEndpointRoutes(codespaceUUID, []manager.RuntimeEndpointRoute{route}); err != nil {
+	if err := routes.Put(gatewayEndpointRoute{
+		siteID: 1, codespaceUUID: codespaceUUID, endpointID: route.EndpointID, label: route.Label,
+		instanceName: route.InstanceName, upstreamPort: route.UpstreamPort, public: route.Public,
+	}); err != nil {
 		t.Fatalf("replace runtime endpoint routes: %v", err)
 	}
 
@@ -399,7 +406,9 @@ func assertAppE2EIncusRuntime(
 	ctx context.Context,
 	incusProvisioner *provisioner.IncusProvisioner,
 	incusClient incus.InstanceServer,
-	stateDir, codespaceUUID string,
+	stateStore *etcdInfrastructureStore,
+	siteID int64,
+	codespaceUUID string,
 	expectedType api.InstanceType,
 	expectedState provisioner.RuntimeState,
 ) string {
@@ -435,35 +444,52 @@ func assertAppE2EIncusRuntime(
 		t.Fatalf("Manager E2E memory limit = %q, want 1GiB", instance.Config["limits.memory"])
 	}
 
-	store := NewCodespaceStateStore(stateDir)
-	if expectedState == provisioner.RuntimeStateRunning {
-		snapshot, ok, err := store.LoadRuntimeMetadataSnapshot(codespaceUUID)
-		if err != nil {
-			t.Fatalf("load Manager E2E runtime metadata: %v", err)
+	snapshots, err := stateStore.ListGatewayRuntimes(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var snapshot GatewayRuntimeSnapshot
+	found := false
+	for _, candidate := range snapshots {
+		if candidate.RuntimeUUID == codespaceUUID && candidate.SiteID == siteID {
+			snapshot, found = candidate, true
 		}
-		if !ok || snapshot.InstanceName != runtime.Name || snapshot.Workdir == "" {
-			t.Fatalf("Manager E2E runtime metadata = %#v, present=%v", snapshot, ok)
+	}
+	if expectedState == provisioner.RuntimeStateRunning {
+		if !found || snapshot.InstanceName != runtime.Name || snapshot.Workdir == "" {
+			t.Fatalf("Manager E2E route = %#v, present=%v", snapshot, found)
 		}
 		if err := incusProvisioner.CheckWorkspaceAccess(ctx, runtime.Name, snapshot.Workdir); err != nil {
-			t.Fatalf("check Manager E2E workspace through Incus agent: %v", err)
+			t.Fatal(err)
 		}
-	} else {
-		if _, _, ok, err := store.LoadRuntimeMetadataRequest(codespaceUUID); err != nil {
-			t.Fatalf("load stopped Manager E2E runtime metadata: %v", err)
-		} else if ok {
-			t.Fatal("stopped Manager E2E runtime still has publishable metadata")
-		}
+	} else if found {
+		t.Fatal("stopped runtime still has a published gateway route")
 	}
 	return runtime.Name
 }
 
-func appE2ERuntimeConfig(config Config, managerState ManagerState) InfrastructureRuntimeConfig {
-	return InfrastructureRuntimeConfig{Config: config, ManagerState: managerState}
+func appE2ERuntimeConfig(t *testing.T, config Config, managerState ManagerSite) InfrastructureRuntimeConfig {
+	t.Helper()
+	setInfrastructureStateEnv(t, filepath.Join(t.TempDir(), "etcd"))
+	store, err := openEmbeddedInfrastructureStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.SaveConfigOnly(context.Background(), config); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.UpsertSite(context.Background(), UpsertAdminSiteOptions{
+		ID: managerState.ID, GiteaURL: managerState.GiteaURL, ManagerID: managerState.ManagerID,
+		ManagerSecret: managerState.ManagerSecret, Enabled: true,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return InfrastructureRuntimeConfig{Config: config, Sites: []ManagerSite{managerState}, NodeID: "e2e", store: store}
 }
 
-func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
+func appE2EIncusManagerConfig() Config {
 	config := DefaultConfig()
-	config.Node.StateDir = stateDir
 	config.Node.Name = "app-e2e-incus-manager"
 	config.Node.PollInterval = Duration(100 * time.Millisecond)
 	config.Node.DeclareInterval = Duration(200 * time.Millisecond)
@@ -471,8 +497,8 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
 	config.Node.CapacityTotal = 1
 	config.Node.StartupWorkers = 1
 	config.Node.CleanupWorkers = 1
-	config.Gateway.HTTP.PublicURL = "http://127.0.0.1"
-	config.Gateway.SSH.PublicAddr = "127.0.0.1:22"
+	config.Gateway.HTTP.PublicURL = "http://gateway.example.test"
+	config.Gateway.SSH.PublicAddr = "gateway.example.test:22"
 	config.Gateway.HTTP.Listen = "127.0.0.1:0"
 	config.Gateway.SSH.Listen = "127.0.0.1:0"
 	config.Node.ShutdownTimeout = Duration(5 * time.Second)
@@ -483,7 +509,7 @@ func appE2EIncusManagerConfig(controlPlaneURL, stateDir string) Config {
 		unixSocket := appE2EEnvDefault("CODESPACE_E2E_INCUS_UNIX_SOCKET", "/var/lib/incus/unix.socket")
 		config.Runtime.Incus.Endpoint = "unix://" + unixSocket
 	}
-	config.Runtime.Incus.Project.Name = strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT"))
+	config.Runtime.Incus.Project.Name = appE2EEnvDefault("CODESPACE_E2E_INCUS_PROJECT", "default")
 	config.Runtime.Incus.Network.Name = appE2EEnvDefault("CODESPACE_E2E_INCUS_NETWORK", "csnet")
 	config.Runtime.Environments = []EnvironmentConfig{{
 		Tag:  "default",
@@ -520,7 +546,7 @@ func buildAppE2ERuntimeExecutable(t *testing.T) string {
 func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID string) {
 	t.Helper()
 	config := provisioner.IncusConfig{
-		ManagerID:   managerID,
+		SiteID:      managerID,
 		Remote:      strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
 		UnixSocket:  strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),
 		Project:     strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_PROJECT")),
@@ -536,7 +562,7 @@ func cleanupAppE2EIncusRuntime(t *testing.T, managerID int64, codespaceUUID stri
 			},
 		},
 	}
-	incusProvisioner, err := provisioner.NewIncus(config)
+	incusProvisioner, err := provisioner.NewIncus(context.Background(), config)
 	if err != nil {
 		t.Logf("cleanup incus provisioner unavailable: %v", err)
 		return
@@ -600,19 +626,42 @@ func appE2EIncusProfiles() []string {
 type appE2EManagerService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 
-	mu             sync.Mutex
-	operation      *codespacev1.OperationPayload
-	operations     []*codespacev1.OperationPayload
-	declared       bool
-	fetched        bool
-	metadata       bool
-	readyMetadata  map[int64]struct{}
-	status         codespacev1.FinalStatus
-	statuses       []codespacev1.FinalStatus
-	logs           []string
-	finalized      chan struct{}
-	operationIndex int
-	operationLimit int
+	mu               sync.Mutex
+	operation        *codespacev1.OperationPayload
+	operations       []*codespacev1.OperationPayload
+	declared         bool
+	fetched          bool
+	metadata         bool
+	readyMetadata    map[int64]struct{}
+	status           codespacev1.FinalStatus
+	statuses         []codespacev1.FinalStatus
+	logs             []string
+	finalized        chan struct{}
+	operationIndex   int
+	operationLimit   int
+	boundRuntimeUUID string
+}
+
+func (s *appE2EManagerService) BindRuntimeIdentity(
+	_ context.Context,
+	req *connect.Request[codespacev1.BindRuntimeIdentityRequest],
+) (*connect.Response[codespacev1.BindRuntimeIdentityResponse], error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if req.Msg.GetCodespaceId() != 1 || req.Msg.GetOperationRversion() != 1 || req.Msg.GetRuntimeUuid() == "" || s.boundRuntimeUUID != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
+	}
+	s.boundRuntimeUUID = req.Msg.GetRuntimeUuid()
+	for _, operation := range s.operations {
+		operation.RuntimeUuid = s.boundRuntimeUUID
+	}
+	return connect.NewResponse(&codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: s.boundRuntimeUUID}), nil
+}
+
+func (s *appE2EManagerService) runtimeUUID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.boundRuntimeUUID
 }
 
 func (s *appE2EManagerService) DeclareManager(
@@ -643,13 +692,26 @@ func (s *appE2EManagerService) FetchOperations(
 		return nil, connect.NewError(connect.CodeInvalidArgument, nil)
 	}
 	s.fetched = true
-	operation := s.nextOperationLocked()
-	if operation == nil {
-		return connect.NewResponse(&codespacev1.FetchOperationsResponse{}), nil
+	response := &codespacev1.FetchOperationsResponse{}
+	if s.operationIndex > len(s.statuses) {
+		active := s.operation
+		if len(s.operations) > 0 {
+			active = s.operations[s.operationIndex-1]
+		}
+		for _, observed := range req.Msg.GetObservedOperations() {
+			if active != nil && observed.GetRuntimeUuid() == active.GetRuntimeUuid() && observed.GetOperationRversion() == active.GetOperationRversion() {
+				response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{
+					RuntimeUuid: observed.GetRuntimeUuid(), OperationRversion: observed.GetOperationRversion(),
+					LeaseValidForMilliseconds: active.GetLeaseValidForMilliseconds(),
+				})
+			}
+		}
 	}
-	return connect.NewResponse(&codespacev1.FetchOperationsResponse{
-		Operations: []*codespacev1.OperationPayload{completeAppE2ECreatePayload(operation)},
-	}), nil
+	operation := s.nextOperationLocked()
+	if operation != nil {
+		response.Operations = []*codespacev1.OperationPayload{completeAppE2ECreatePayload(operation)}
+	}
+	return connect.NewResponse(response), nil
 }
 
 func completeAppE2ECreatePayload(operation *codespacev1.OperationPayload) *codespacev1.OperationPayload {
@@ -746,7 +808,7 @@ func (s *appE2EManagerService) UpdateLog(
 		s.logs = append(s.logs, line.GetMessage())
 	}
 	s.mu.Unlock()
-	return connect.NewResponse(&codespacev1.UpdateLogResponse{NextOffset: req.Msg.GetOffset() + 1}), nil
+	return connect.NewResponse(&codespacev1.UpdateLogResponse{NextOffset: req.Msg.GetOffset() + int64(len(req.Msg.GetLines()))}), nil
 }
 
 func (s *appE2EManagerService) FinalizeOperation(

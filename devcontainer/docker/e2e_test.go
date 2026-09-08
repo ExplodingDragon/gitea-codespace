@@ -216,7 +216,7 @@ func TestDockerE2EDockerInDockerFeature(t *testing.T) {
 		Source: devcontainer.Source{Content: `{
 			"image": "mcr.microsoft.com/devcontainers/base:debian",
 			"features": {
-				"ghcr.io/devcontainers/features/docker-in-docker:2": {}
+				"ghcr.io/devcontainers/features/docker-in-docker:2": {"moby": false}
 			}
 		}`},
 		HostUser: devcontainer.HostUser{Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME")},
@@ -241,7 +241,8 @@ done
 docker info >/dev/null
 docker run --rm hello-world >/dev/null`
 	if _, stderr, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment, nil); err != nil {
-		t.Fatalf("verify Docker-in-Docker environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
+		daemonLog, _, logErr := engine.Exec(ctx, state.PrimaryContainerID, "root", "/", []string{"cat", "/tmp/dockerd.log"}, nil, nil)
+		t.Fatalf("verify Docker-in-Docker environment: %v\n%s\ndaemon log (read error: %v):\n%s", err, strings.TrimSpace(string(stderr)), logErr, daemonLog)
 	}
 }
 

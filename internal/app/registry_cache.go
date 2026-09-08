@@ -135,24 +135,6 @@ func newRegistryCacheHTTPServer(cache *registryCache) *http.Server {
 	}
 }
 
-func registryCacheBuildRegistry(cache *registryCache) string {
-	if cache == nil || !cache.enabled {
-		return ""
-	}
-	return cache.publicURL + "/cache"
-}
-
-func registryCacheMirrors(cache *registryCache) map[string]string {
-	if cache == nil || !cache.enabled {
-		return nil
-	}
-	mirrors := make(map[string]string, len(cache.upstreams))
-	for host := range cache.upstreams {
-		mirrors[host] = cache.publicURL + "/mirror/" + host
-	}
-	return mirrors
-}
-
 func (c *registryCache) RunGC(ctx context.Context) {
 	if c == nil || !c.enabled || c.gcInterval <= 0 || (c.maxAge <= 0 && c.maxBytes <= 0) {
 		return

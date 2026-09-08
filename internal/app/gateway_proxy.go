@@ -7,9 +7,12 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/http/httputil"
 	"net/url"
 	"strconv"
 	"strings"
+
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
 type gatewayProxyResponseContext struct {
@@ -37,6 +40,52 @@ const (
 	gatewayReturnToCookieName       = "gitea_codespace_return_to"
 	gatewaySecureReturnToCookieName = "__Host-gitea_codespace_return_to"
 )
+
+func proxyGatewayEndpoint(
+	writer http.ResponseWriter,
+	request *http.Request,
+	routes *gatewayRouteStore,
+	route gatewayEndpointRoute,
+	upstreamPath string,
+	proxyContext gatewayProxyRequestContext,
+) {
+	upstreamHost := net.JoinHostPort("127.0.0.1", strconv.Itoa(int(route.upstreamPort)))
+	target := &url.URL{Scheme: "http", Host: upstreamHost}
+	proxy := &httputil.ReverseProxy{}
+	transport, err := routes.Transport(route)
+	if err != nil {
+		writeGatewayError(writer, request, http.StatusBadGateway, "Endpoint is unavailable", "The runtime endpoint route is unavailable.", "gateway upstream unavailable")
+		return
+	}
+	proxy.Transport = transport
+	proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
+		proxyRequest.Out.URL.Scheme = target.Scheme
+		proxyRequest.Out.URL.Host = target.Host
+		proxyRequest.Out.URL.Path = upstreamPath
+		proxyRequest.Out.URL.RawPath = ""
+		proxyRequest.Out.Host = target.Host
+		prepareGatewayProxyRequest(proxyRequest.Out, proxyContext)
+	}
+	proxy.ModifyResponse = func(response *http.Response) error {
+		normalizeGatewayProxyResponse(response.Header, gatewayProxyResponseContext{
+			externalScheme: proxyContext.externalScheme,
+			externalHost:   proxyContext.externalHost,
+			upstreamHost:   upstreamHost,
+		})
+		return nil
+	}
+	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+		log.Printf("gateway proxy %s/%s: %v", route.codespaceUUID, route.endpointID, err)
+		title := "Endpoint is unavailable"
+		message := "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting."
+		if route.endpointID == runtimeendpoint.WorkspaceEndpointID {
+			title = "Workspace is unavailable"
+			message = "Codespace Gateway could not connect to the Web IDE. The development environment may still be starting."
+		}
+		writeGatewayError(writer, request, http.StatusBadGateway, title, message, "gateway upstream unavailable")
+	}
+	proxy.ServeHTTP(writer, request)
+}
 
 func prepareGatewayProxyRequest(request *http.Request, proxyContext gatewayProxyRequestContext) {
 	header := request.Header

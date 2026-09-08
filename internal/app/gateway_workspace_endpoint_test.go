@@ -15,8 +15,10 @@ func newTestWorkspaceEndpointRoutes(t *testing.T, codespaceUUID, upstreamURL str
 	backend := newTestWorkspaceCommandBackend("")
 	backend.tcpAddress = strings.TrimPrefix(upstreamURL, "http://")
 	routes := newGatewayRouteStore()
-	routes.SetTCPBackend(backend)
+	routes.SetSiteBackend(1, backend)
+	t.Cleanup(routes.Close)
 	if err := routes.Put(gatewayEndpointRoute{
+		siteID:        1,
 		codespaceUUID: codespaceUUID,
 		endpointID:    runtimeendpoint.WorkspaceEndpointID,
 		label:         runtimeendpoint.WorkspaceEndpointLabel,

@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/url"
 	"path"
+	"path/filepath"
 	"sort"
 	"strings"
 
@@ -196,7 +197,8 @@ func streamDockerProgress(reader io.Reader) error {
 
 func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string) error {
 	if len(options) > 0 {
-		arguments := []string{"--file", dockerfile, "--tag", imageName}
+		// Docker CLI resolves --file against the process directory, unlike Compose.
+		arguments := []string{"--file", filepath.Join(contextPath, dockerfile), "--tag", imageName}
 		if target != "" {
 			arguments = append(arguments, "--target", target)
 		}

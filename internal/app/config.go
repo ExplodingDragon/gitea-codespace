@@ -4,12 +4,9 @@
 package app
 
 import (
-	"bytes"
-	"errors"
 	"fmt"
 	"net"
 	"net/url"
-	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -19,13 +16,6 @@ import (
 	dockerunits "github.com/docker/go-units"
 	"gopkg.in/yaml.v3"
 )
-
-var defaultConfigNames = []string{
-	"codespace.yaml",
-	"codespace.yml",
-}
-
-var errConfigNotFound = errors.New("config file not found")
 
 var (
 	gatewayDNSLabelPattern   = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -78,7 +68,6 @@ type Config struct {
 
 // NodeConfig stores manager node behavior and local state.
 type NodeConfig struct {
-	StateDir        string   `yaml:"state_dir"`
 	Name            string   `yaml:"name"`
 	PollInterval    Duration `yaml:"poll_interval"`
 	DeclareInterval Duration `yaml:"declare_interval"`
@@ -238,7 +227,6 @@ type EnvironmentResourcesConfig struct {
 func DefaultConfig() Config {
 	config := Config{
 		Node: NodeConfig{
-			StateDir:        "codespace-state",
 			Name:            "codespace-manager",
 			PollInterval:    Duration(750 * time.Millisecond),
 			DeclareInterval: Duration(5 * time.Second),
@@ -319,62 +307,6 @@ func DefaultConfig() Config {
 	}
 	config.provisionerKind = "incus"
 	return config
-}
-
-// DiscoverConfigPath returns one existing config path.
-func DiscoverConfigPath(path string) (string, error) {
-	if strings.TrimSpace(path) != "" {
-		return path, nil
-	}
-
-	for _, candidate := range defaultConfigNames {
-		if _, err := os.Stat(candidate); err == nil {
-			return candidate, nil
-		} else if !os.IsNotExist(err) {
-			return "", fmt.Errorf("stat config %s: %w", candidate, err)
-		}
-	}
-
-	return "", fmt.Errorf("%w, tried %s", errConfigNotFound, strings.Join(defaultConfigNames, ", "))
-}
-
-// LoadConfig loads one YAML config file.
-func LoadConfig(path string) (Config, error) {
-	configPath, err := DiscoverConfigPath(path)
-	if err != nil {
-		return Config{}, err
-	}
-
-	config, err := decodeConfigFile(configPath)
-	if err != nil {
-		return Config{}, err
-	}
-	config.applyDefaults()
-	config.resolveRelativePaths(configPath)
-	if err := config.Validate(); err != nil {
-		return Config{}, fmt.Errorf("validate config %s: %w", configPath, err)
-	}
-	return config, nil
-}
-
-func decodeConfigFile(configPath string) (Config, error) {
-	content, err := os.ReadFile(configPath)
-	if err != nil {
-		return Config{}, fmt.Errorf("read config %s: %w", configPath, err)
-	}
-
-	config := DefaultConfig()
-	switch strings.ToLower(filepath.Ext(configPath)) {
-	case ".yaml", ".yml", "":
-	default:
-		return Config{}, fmt.Errorf("config %s must be a yaml file", configPath)
-	}
-	decoder := yaml.NewDecoder(bytes.NewReader(content))
-	decoder.KnownFields(true)
-	if err := decoder.Decode(&config); err != nil {
-		return Config{}, fmt.Errorf("decode yaml config %s: %w", configPath, err)
-	}
-	return config, nil
 }
 
 // Validate checks whether the config is usable.
@@ -550,9 +482,6 @@ func (c Config) runtimeGitSSHKeyType() string {
 }
 
 func (c *NodeConfig) applyDefaults(defaults NodeConfig) {
-	if strings.TrimSpace(c.StateDir) == "" {
-		c.StateDir = defaults.StateDir
-	}
 	if strings.TrimSpace(c.Name) == "" {
 		c.Name = defaults.Name
 	}
@@ -596,9 +525,6 @@ func (c Config) validateGatewayAddresses() error {
 }
 
 func (c Config) validateNode() error {
-	if strings.TrimSpace(c.Node.StateDir) == "" {
-		return fmt.Errorf("node.state_dir is required")
-	}
 	if strings.TrimSpace(c.Node.Name) == "" {
 		return fmt.Errorf("node.name is required")
 	}
@@ -962,20 +888,4 @@ func minInt32(left, right int32) int32 {
 		return left
 	}
 	return right
-}
-
-func (c *Config) resolveRelativePaths(configPath string) {
-	if strings.TrimSpace(configPath) == "" {
-		return
-	}
-	configDir := filepath.Dir(configPath)
-	if configDir == "." || configDir == "" {
-		return
-	}
-	if !filepath.IsAbs(c.Node.StateDir) {
-		c.Node.StateDir = filepath.Clean(filepath.Join(configDir, c.Node.StateDir))
-	}
-	if c.Runtime.Cache.Registry.Enabled && !filepath.IsAbs(c.Runtime.Cache.Registry.StoragePath) {
-		c.Runtime.Cache.Registry.StoragePath = filepath.Clean(filepath.Join(configDir, c.Runtime.Cache.Registry.StoragePath))
-	}
 }

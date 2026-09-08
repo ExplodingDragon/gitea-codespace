@@ -4,6 +4,8 @@
 package app
 
 import (
+	"context"
+	"errors"
 	"path/filepath"
 	"testing"
 
@@ -11,13 +13,11 @@ import (
 )
 
 func TestRuntimeEndpointApplierUpdatesRoutesAndNotifiesOnChange(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
-	state := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
-	routes := newGatewayRouteStore()
+	state := newTestCodespaceStateStore(t, filepath.Join(t.TempDir(), "state"))
 	notifier := &runtimeEndpointNotifierForTest{}
-	applier := newRuntimeEndpointApplier(state, routes, notifier)
+	applier := &runtimeEndpointApplier{state: state, publisher: notifier}
 	endpointRoutes := completeEndpointRoutesForTest(codespaceUUID, manager.RuntimeEndpointRoute{
 		CodespaceUUID: codespaceUUID,
 		EndpointID:    "web",
@@ -27,18 +27,18 @@ func TestRuntimeEndpointApplierUpdatesRoutesAndNotifiesOnChange(t *testing.T) {
 		Public:        true,
 	})
 
-	if err := applier.ApplyRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {
+	if err := applier.ApplyRuntimeEndpointRoutes(context.Background(), codespaceUUID, endpointRoutes); err != nil {
 		t.Fatalf("apply endpoint routes: %v", err)
 	}
 	if notifier.calls != 1 || notifier.codespaceUUID != codespaceUUID {
 		t.Fatalf("metadata notifications = %d uuid=%q", notifier.calls, notifier.codespaceUUID)
 	}
-	route, ok := routes.Get(codespaceUUID, "web")
-	if !ok || !route.public || route.instanceName != "runtime-1" || route.upstreamPort != 3000 {
-		t.Fatalf("gateway route ok=%v route=%#v", ok, route)
+	routes, err := state.LoadGatewayRoutesForRuntime(codespaceUUID)
+	if err != nil || len(routes) != 2 {
+		t.Fatalf("saved routes = %#v, error = %v", routes, err)
 	}
 
-	if err := applier.ApplyRuntimeEndpointRoutes(codespaceUUID, endpointRoutes); err != nil {
+	if err := applier.ApplyRuntimeEndpointRoutes(context.Background(), codespaceUUID, endpointRoutes); err != nil {
 		t.Fatalf("reapply endpoint routes: %v", err)
 	}
 	if notifier.calls != 1 {
@@ -54,4 +54,21 @@ type runtimeEndpointNotifierForTest struct {
 func (n *runtimeEndpointNotifierForTest) NotifyRuntimeMetadata(codespaceUUID string) {
 	n.codespaceUUID = codespaceUUID
 	n.calls++
+}
+
+type canceledGatewaySnapshotStore struct{ managerInfrastructureStore }
+
+func (canceledGatewaySnapshotStore) DeleteGatewayRuntime(ctx context.Context, _ string) error {
+	return ctx.Err()
+}
+
+func TestRuntimeEndpointApplierPropagatesCancellation(t *testing.T) {
+	state := newTestCodespaceStateStore(t, t.TempDir())
+	applier := &runtimeEndpointApplier{state: state, snapshots: &gatewayRuntimeSnapshotPublisher{store: canceledGatewaySnapshotStore{}}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	err := applier.ApplyRuntimeEndpointRoutes(ctx, "11111111-1111-4111-8111-111111111111", nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("apply canceled routes: %v", err)
+	}
 }

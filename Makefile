@@ -15,7 +15,7 @@ test-scripts:
 
 .PHONY: test-smoke
 test-smoke:
-	$(GO) test -count=1 -run '^(TestInfrastructureStatePersistsConfigAndEncryptedSiteSecret|TestInfrastructureAdminSiteAPIHidesSecret|TestInfrastructureAdminAPIRequiresBearerToken|TestRunWithConfigGatewayRoleSkipsWorkerRPC)$$' ./internal/app
+	$(GO) test -count=1 -run '^(TestDeploymentLeaderHandover|TestLeaderExecutionHandoverPreservesGateway|TestSharedGatewayActivity|TestInventoryGenerationPersistsAndIsolatesSites|TestSharedGatewayRouteWatch|TestGatewaySSHHostKeySharedAcrossNodes|TestEmbeddedServiceConfigurationAndShutdown|TestInfrastructureStatePersistsConfigAndEncryptedSiteSecret|TestInfrastructureAdminSiteAPIHidesSecret|TestInfrastructureAdminVerifiesEnabledSite|TestInfrastructureAdminAPIRequiresBearerToken|TestGatewayServiceSkipsWorkerRPC|TestSharedCapacityCoordinatorDoesNotDoubleAdvertiseCapacity)$$' ./internal/app ./internal/manager
 
 .PHONY: test-etcd-required
 test-etcd-required:

@@ -13,7 +13,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-const stateDirLockFileName = "manager.lock"
+const stateDirLockFileName = "etcd.lock"
 
 type stateDirLock struct {
 	file *os.File
@@ -22,7 +22,7 @@ type stateDirLock struct {
 func acquireStateDirLock(stateDir string) (*stateDirLock, error) {
 	stateDir = strings.TrimSpace(stateDir)
 	if stateDir == "" {
-		return nil, fmt.Errorf("manager.state_dir is required")
+		return nil, fmt.Errorf("embedded etcd state directory is required")
 	}
 	if err := os.MkdirAll(stateDir, 0o700); err != nil {
 		return nil, fmt.Errorf("create state dir %s: %w", stateDir, err)

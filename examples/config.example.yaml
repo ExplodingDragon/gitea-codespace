@@ -1,7 +1,6 @@
 node:
   # A stable name shown in Gitea. It should describe this Manager deployment.
   name: "local-incus-manager"
-  state_dir: "codespace-state"
   capacity_total: 4
 
 gateway:

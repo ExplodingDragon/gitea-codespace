@@ -1,6 +1,5 @@
 node:
   name: "local-incus-manager"
-  state_dir: "codespace-state"
   capacity_total: 4
 
 gateway:

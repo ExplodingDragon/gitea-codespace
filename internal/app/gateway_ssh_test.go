@@ -10,7 +10,8 @@ import (
 	"errors"
 	"io"
 	"net"
-	"os"
+	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -23,12 +24,11 @@ import (
 )
 
 func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
 
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
@@ -118,11 +118,10 @@ func TestGatewaySSHProxiesSessionToWorkspaceCommand(t *testing.T) {
 }
 
 func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
@@ -238,7 +237,6 @@ func TestGatewaySSHSFTPUsesWorkspaceBackend(t *testing.T) {
 }
 
 func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
@@ -272,7 +270,7 @@ func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 		}
 	}()
 
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
@@ -380,12 +378,11 @@ func TestGatewaySSHDirectTCPIPUsesRuntimeLoopback(t *testing.T) {
 }
 
 func TestGatewaySSHClosesIdleTransport(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
 
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
@@ -499,12 +496,11 @@ func TestGatewaySSHClosesIdleTransport(t *testing.T) {
 }
 
 func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
-	t.Parallel()
 
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	gatewayHostKey := newTestSSHSigner(t)
 
-	store := NewCodespaceStateStore(t.TempDir())
+	store := newTestCodespaceStateStore(t, t.TempDir())
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
 		MetadataGeneration: 1,
@@ -590,7 +586,6 @@ func TestGatewaySSHRejectsChannelsOverLimit(t *testing.T) {
 }
 
 func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
-	t.Parallel()
 
 	gatewayHostKey := newTestSSHSigner(t)
 	gatewayConfig := DefaultConfig().Gateway
@@ -640,7 +635,6 @@ func TestGatewaySSHRejectsTransportWhenGlobalInflightFull(t *testing.T) {
 }
 
 func TestGatewaySSHClosesIncompleteHandshake(t *testing.T) {
-	t.Parallel()
 
 	gatewayConfig := DefaultConfig().Gateway
 	gatewayConfig.SSH.HandshakeTimeout = Duration(50 * time.Millisecond)
@@ -690,7 +684,6 @@ func TestGatewaySSHClosesIncompleteHandshake(t *testing.T) {
 }
 
 func TestGatewaySSHAuthLimiterBlocksBeforeControlPlane(t *testing.T) {
-	t.Parallel()
 
 	gatewayHostKey := newTestSSHSigner(t)
 	service := &gatewayManagerService{
@@ -740,27 +733,45 @@ func TestGatewaySSHAuthLimiterBlocksBeforeControlPlane(t *testing.T) {
 	assertNoListenerError(t, errorChannel)
 }
 
-func TestGatewaySSHHostKeyPersistsInStateDir(t *testing.T) {
-	t.Parallel()
-
-	dir := t.TempDir()
-	first, err := loadOrCreateGatewaySSHHostKey(dir)
+func TestGatewaySSHHostKeySharedAcrossNodes(t *testing.T) {
+	setInfrastructureStateEnv(t, filepath.Join(t.TempDir(), "etcd"))
+	store, err := openEmbeddedInfrastructureStore()
 	if err != nil {
-		t.Fatalf("load first host key: %v", err)
+		t.Fatal(err)
 	}
-	second, err := loadOrCreateGatewaySSHHostKey(dir)
+	defer func() { _ = store.Close() }()
+	first, err := store.LoadGatewaySSHHostKey(context.Background())
 	if err != nil {
-		t.Fatalf("load second host key: %v", err)
+		t.Fatal(err)
 	}
-	if first.fingerprintSHA256 == "" || first.fingerprintSHA256 != second.fingerprintSHA256 {
-		t.Fatalf("fingerprints = %q %q", first.fingerprintSHA256, second.fingerprintSHA256)
-	}
-	info, err := os.Stat(dir + "/" + gatewaySSHHostKeyFileName)
+	second, err := store.LoadGatewaySSHHostKey(context.Background())
 	if err != nil {
-		t.Fatalf("stat host key: %v", err)
+		t.Fatal(err)
 	}
-	if mode := info.Mode().Perm(); mode != 0o600 {
-		t.Fatalf("host key mode = %o", mode)
+	if first.fingerprintSHA256 == "" || first.fingerprintSHA256 != second.fingerprintSHA256 || first.updatedUnix != second.updatedUnix {
+		t.Fatal("shared SSH identity differs")
+	}
+	response, err := store.client.Get(context.Background(), store.key("gateway-host-key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(response.Kvs) != 1 || strings.Contains(string(response.Kvs[0].Value), "PRIVATE KEY") {
+		t.Fatal("host key is not stored encrypted")
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := openEmbeddedInfrastructureStore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = reopened.Close() }()
+	restored, err := reopened.LoadGatewaySSHHostKey(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if restored.fingerprintSHA256 != first.fingerprintSHA256 {
+		t.Fatal("SSH identity changed after restart")
 	}
 }
 

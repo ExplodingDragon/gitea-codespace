@@ -33,7 +33,7 @@ func TestIncusE2EConnectsToDefaultServer(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	provisioner, err := NewIncus(incusE2EConfig(1, "connect"))
+	provisioner, err := NewIncus(context.Background(), incusE2EConfig(1, "connect"))
 	if err != nil {
 		if strings.Contains(err.Error(), "connect incus") {
 			t.Skipf("default Incus connection is unavailable: %v", err)
@@ -58,13 +58,13 @@ func TestIncusE2EManagedProjectResources(t *testing.T) {
 	config.NetworkName = networkName
 	config.NetworkManage = true
 
-	baseClient, err := connectIncusBase(config)
+	baseClient, err := connectIncusBase(context.Background(), config)
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
 	}
 	defer cleanupIncusE2EManagedProject(t, baseClient, projectName, networkName)
 
-	provisioner, err := NewIncus(config)
+	provisioner, err := NewIncus(context.Background(), config)
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E managed project cannot be prepared", err)
 	}
@@ -108,7 +108,7 @@ func TestIncusE2ECreateStopDeleteInstance(t *testing.T) {
 
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	config := incusE2EConfig(time.Now().UnixNano(), runID)
-	provisioner, err := NewIncus(config)
+	provisioner, err := NewIncus(context.Background(), config)
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
 	}
@@ -187,7 +187,7 @@ func TestIncusE2ENativeDevContainerLifecycle(t *testing.T) {
 	runID := fmt.Sprintf("run-%d", time.Now().UnixNano())
 	config := incusE2EConfig(time.Now().UnixNano(), runID)
 	config.RuntimeExecutable = buildIncusE2ERuntimeExecutable(t)
-	provisioner, err := NewIncus(config)
+	provisioner, err := NewIncus(context.Background(), config)
 	if err != nil {
 		skipOrFailIncusE2E(t, "Incus E2E connection is unavailable", err)
 	}
@@ -729,7 +729,7 @@ func assertIncusE2EInstanceRunID(t *testing.T, ctx context.Context, provisioner 
 	if err != nil {
 		t.Fatalf("get e2e instance: %v", err)
 	}
-	if instance.Config[incusConfigManagerID] != provisioner.managerID ||
+	if instance.Config[incusConfigSiteID] != provisioner.siteID ||
 		instance.Config[incusConfigCodespaceUUID] != codespaceUUID ||
 		instance.Config[incusConfigE2ERunID] != runID {
 		t.Fatalf("e2e instance config = %#v", instance.Config)
@@ -744,7 +744,7 @@ func cleanupIncusE2EInstance(ctx context.Context, provisioner *IncusProvisioner,
 		}
 		return fmt.Errorf("get e2e cleanup instance %s: %w", instanceName, err)
 	}
-	if instance.Config[incusConfigManagerID] != provisioner.managerID ||
+	if instance.Config[incusConfigSiteID] != provisioner.siteID ||
 		instance.Config[incusConfigCodespaceUUID] != codespaceUUID ||
 		instance.Config[incusConfigE2ERunID] != runID {
 		return fmt.Errorf("refuse cleanup for instance %s with config %#v", instanceName, instance.Config)
@@ -772,7 +772,7 @@ func incusE2EConfig(managerID int64, runID string) IncusConfig {
 		image = defaultIncusImage
 	}
 	return IncusConfig{
-		ManagerID:         managerID,
+		SiteID:            managerID,
 		CodeServerVersion: "4.121.0",
 		Remote:            strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_REMOTE")),
 		UnixSocket:        strings.TrimSpace(os.Getenv("CODESPACE_E2E_INCUS_UNIX_SOCKET")),

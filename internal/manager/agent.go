@@ -4,13 +4,7 @@
 package manager
 
 import (
-	"bytes"
 	"context"
-	"crypto"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/rsa"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"log"
@@ -18,11 +12,9 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
@@ -31,7 +23,6 @@ import (
 	"gitea.dev/codespace/internal/provisioner"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"github.com/google/uuid"
-	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -139,6 +130,8 @@ func runtimeResourceUsageProto(usage provisioner.RuntimeResourceUsage) *codespac
 
 // AgentConfig configures the Manager worker.
 type AgentConfig struct {
+	// ExecutionContext remains live during normal shutdown, but ends on leadership loss.
+	ExecutionContext             context.Context
 	BaseURL                      string
 	ManagerID                    int64
 	ManagerSecret                string
@@ -155,7 +148,10 @@ type AgentConfig struct {
 	CapacityTotal                int32
 	StartupWorkers               int32
 	CleanupWorkers               int32
+	CapacitySiteID               int64
+	CapacityCoordinator          CapacityCoordinator
 	HTTPTimeout                  time.Duration
+	ShutdownTimeout              time.Duration
 	RuntimeMetadataGeneration    int64
 	InventoryGeneration          int64
 	InitialRuntimeGenerations    map[string]int64
@@ -174,6 +170,7 @@ type AgentConfig struct {
 	RuntimeEndpointApplier       RuntimeEndpointApplier
 	RuntimeHealthStateStore      RuntimeHealthStateStore
 	RuntimeMetadataPublisher     RuntimeMetadataPublisher
+	RuntimeIdentityStore         RuntimeIdentityStore
 	SessionTracker               SessionTracker
 	AccessController             AccessController
 	ManagerServiceSettings       ManagerServiceSettingsStore
@@ -217,6 +214,9 @@ const (
 	OperationWorkerStageActive OperationWorkerStage = "active"
 	// OperationWorkerStageLeasePaused means the operation context is retained but local execution is paused.
 	OperationWorkerStageLeasePaused OperationWorkerStage = "lease_paused"
+	// OperationWorkerStageRecoveryBlocked retains an interrupted operation whose
+	// remote effects are unknown. It must be cleared by control-plane reconciliation.
+	OperationWorkerStageRecoveryBlocked OperationWorkerStage = "recovery_blocked"
 )
 
 // OperationStateStore persists operation contexts that must survive process restart.
@@ -284,35 +284,6 @@ type StartupInputStateStore interface {
 	LoadStartupInput(codespaceUUID string) (StartupInput, bool, error)
 }
 
-type memoryStartupInputStore struct {
-	mu     sync.Mutex
-	inputs map[string]StartupInput
-}
-
-func newMemoryStartupInputStore() *memoryStartupInputStore {
-	return &memoryStartupInputStore{inputs: map[string]StartupInput{}}
-}
-
-func (s *memoryStartupInputStore) SaveStartupInput(input StartupInput) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if strings.TrimSpace(input.CodespaceUUID) == "" {
-		return fmt.Errorf("codespace uuid is empty")
-	}
-	s.inputs[input.CodespaceUUID] = input
-	return nil
-}
-
-func (s *memoryStartupInputStore) LoadStartupInput(codespaceUUID string) (StartupInput, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	input, ok := s.inputs[codespaceUUID]
-	if !ok {
-		return StartupInput{}, false, nil
-	}
-	return input, true, nil
-}
-
 // RuntimeMetadataSnapshot stores the current complete runtime metadata base owned by a Codespace.
 type RuntimeMetadataSnapshot struct {
 	CodespaceUUID      string
@@ -349,7 +320,7 @@ type RuntimeEndpointRoute struct {
 
 // RuntimeEndpointApplier applies a complete runtime endpoint route set.
 type RuntimeEndpointApplier interface {
-	ApplyRuntimeEndpointRoutes(codespaceUUID string, routes []RuntimeEndpointRoute) error
+	ApplyRuntimeEndpointRoutes(ctx context.Context, codespaceUUID string, routes []RuntimeEndpointRoute) error
 }
 
 // RuntimeHealthStateStore loads ready runtime metadata used by health checks.
@@ -362,7 +333,13 @@ type RuntimeMetadataPublisher interface {
 	ActivateRuntimeMetadata(codespaceUUID string) (bool, error)
 	NotifyRuntimeMetadata(codespaceUUID string)
 	PublishRuntimeMetadata(ctx context.Context, codespaceUUID string) error
-	DeactivateRuntimeMetadata(codespaceUUID string)
+	DeactivateRuntimeMetadata(ctx context.Context, codespaceUUID string)
+}
+
+// RuntimeIdentityStore persists the control-plane identity bound to a local runtime.
+type RuntimeIdentityStore interface {
+	SaveRuntimeIdentity(context.Context, string, int64, int64, string) error
+	DeleteRuntimeIdentity(context.Context, string) error
 }
 
 type workspaceGitChecker interface {
@@ -379,6 +356,7 @@ type runtimeDevelopmentEnvironmentChecker interface {
 }
 
 type operationContext struct {
+	recoveryBlocked   bool
 	operationRVersion int64
 	payload           *codespacev1.OperationPayload
 	running           bool
@@ -456,6 +434,7 @@ type Agent struct {
 	endpointApplier      RuntimeEndpointApplier
 	runtimeHealthStore   RuntimeHealthStateStore
 	metadataPublisher    RuntimeMetadataPublisher
+	runtimeIdentityStore RuntimeIdentityStore
 	sessionTracker       SessionTracker
 	accessController     AccessController
 	settingsStore        ManagerServiceSettingsStore
@@ -465,6 +444,9 @@ type Agent struct {
 	healthFailures       map[string]int
 	healthCandidates     map[string]struct{}
 	criticalErrors       chan error
+	operationWorkers     sync.WaitGroup
+	shutdownContext      context.Context
+	capacityCoordinator  CapacityCoordinator
 }
 
 // New creates one Manager worker.
@@ -475,9 +457,6 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		metadataGeneration = 1
 	}
 	startupInputStore := config.StartupInputStateStore
-	if startupInputStore == nil {
-		startupInputStore = newMemoryStartupInputStore()
-	}
 	gitSSHKeyType := normalizeRuntimeGitSSHKeyType(config.GitSSHKeyType)
 	agent := &Agent{
 		config:               config,
@@ -503,6 +482,7 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		endpointApplier:      config.RuntimeEndpointApplier,
 		runtimeHealthStore:   config.RuntimeHealthStateStore,
 		metadataPublisher:    config.RuntimeMetadataPublisher,
+		runtimeIdentityStore: config.RuntimeIdentityStore,
 		sessionTracker:       config.SessionTracker,
 		accessController:     config.AccessController,
 		settingsStore:        config.ManagerServiceSettings,
@@ -511,6 +491,7 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 		healthFailures:       make(map[string]int),
 		healthCandidates:     make(map[string]struct{}),
 		criticalErrors:       make(chan error, 1),
+		capacityCoordinator:  config.CapacityCoordinator,
 	}
 	for codespaceUUID, generation := range config.InitialRuntimeGenerations {
 		if codespaceUUID == "" || generation <= 0 {
@@ -549,9 +530,13 @@ func New(config AgentConfig, httpClient *http.Client, provisioner provisioner.Pr
 			continue
 		}
 		agent.activeOperations[codespaceUUID] = &operationContext{
+			recoveryBlocked:   snapshot.WorkerStage == OperationWorkerStageRecoveryBlocked,
 			operationRVersion: operationRVersion,
 			payload:           snapshot.Payload,
 			running:           false,
+		}
+		if snapshot.WorkerStage == OperationWorkerStageRecoveryBlocked {
+			log.Printf("operation %s version %d was interrupted with unknown remote effects; awaiting control-plane reconciliation", codespaceUUID, operationRVersion)
 		}
 	}
 	return agent
@@ -585,7 +570,49 @@ func (a *Agent) saveServiceSettings(settings ManagerServiceSettings) error {
 }
 
 // Run declares the Manager and processes operations until ctx is cancelled.
-func (a *Agent) Run(ctx context.Context) error {
+func (a *Agent) Run(ctx context.Context) (runErr error) {
+	if a.startupInputStore == nil {
+		return fmt.Errorf("startup input state store is required")
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	shutdownCtx, finishShutdown := context.WithCancel(context.WithoutCancel(ctx))
+	if a.config.ExecutionContext != nil {
+		stopLost := context.AfterFunc(a.config.ExecutionContext, finishShutdown)
+		defer stopLost()
+	}
+	a.shutdownContext = shutdownCtx
+	timeout := a.config.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	go func() {
+		select {
+		case <-ctx.Done():
+		case <-shutdownCtx.Done():
+			return
+		}
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case <-timer.C:
+			finishShutdown()
+		case <-shutdownCtx.Done():
+		}
+	}()
+	defer func() {
+		cancel()
+		defer finishShutdown()
+		done := make(chan struct{})
+		go func() {
+			a.operationWorkers.Wait()
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-shutdownCtx.Done():
+			runErr = errors.Join(runErr, fmt.Errorf("wait for operation shutdown: %w", context.DeadlineExceeded))
+		}
+	}()
 	if err := a.runCleanupPendings(ctx); err != nil {
 		return runContextError(err)
 	}
@@ -748,7 +775,8 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 	requestOperationVersions := a.currentOperationVersions()
 	instances, listErr := a.provisioner.ListInstances(ctx)
 	capacity := a.reserveFetchCapacity(instances, listErr)
-	defer a.releaseFetchReservation(capacity)
+	started := fetchCapacity{}
+	defer func() { a.releaseFetchReservation(capacity, started) }()
 	capacity = a.applyStartupAdmission(ctx, capacity)
 	request := connect.NewRequest(&codespacev1.FetchOperationsRequest{
 		ProtocolVersion:          controlplane.ProtocolVersion,
@@ -776,6 +804,13 @@ func (a *Agent) pollOnce(ctx context.Context) error {
 		duration := operationLeaseDurationFromRequestStart(requestStarted, operation)
 		if err := a.startOperation(ctx, operation, duration); err != nil {
 			return fmt.Errorf("start operation %s version %d: %w", operation.GetRuntimeUuid(), operation.GetOperationRversion(), err)
+		}
+		switch operation.GetCommand().(type) {
+		case *codespacev1.OperationPayload_Create, *codespacev1.OperationPayload_Resume:
+			started.startup++
+		case *codespacev1.OperationPayload_Stop, *codespacev1.OperationPayload_Delete,
+			*codespacev1.OperationPayload_AbortCreate, *codespacev1.OperationPayload_AbortResume:
+			started.cleanup++
 		}
 	}
 	for _, lease := range response.Msg.GetRenewedLeases() {
@@ -817,1062 +852,6 @@ func (a *Agent) applyStartupAdmission(ctx context.Context, capacity fetchCapacit
 	return capacity
 }
 
-func (a *Agent) reportInventoryOnce(ctx context.Context) error {
-	instances, err := a.provisioner.ListInstances(ctx)
-	if err != nil {
-		return fmt.Errorf("list runtime instances: %w", err)
-	}
-	if len(instances) > maxInventoryInstances {
-		return fmt.Errorf("runtime inventory has %d instances, limit is %d", len(instances), maxInventoryInstances)
-	}
-	generation, err := a.nextInventoryGeneration()
-	if err != nil {
-		return err
-	}
-	refs := a.runtimeInstanceRefs(instances)
-	nextHealthCandidates := runtimeHealthCandidates(refs)
-	healthCandidates := a.currentRuntimeHealthCandidates()
-	a.updateRuntimeObservations(refs)
-	runtimeStates := runtimeStatesByUUID(refs)
-	requestOperationVersions := a.currentOperationVersions()
-	request := connect.NewRequest(&codespacev1.ReportInstancesRequest{
-		ProtocolVersion:     controlplane.ProtocolVersion,
-		InventoryGeneration: generation,
-		Instances:           refs,
-	})
-	response, err := a.managerClient().ReportInstances(ctx, request)
-	if err != nil {
-		return fmt.Errorf("report instances rpc: %w", err)
-	}
-	if a.currentInventoryGeneration() != generation {
-		return nil
-	}
-	if err := a.applyInventoryResults(ctx, generation, runtimeStates, requestOperationVersions, healthCandidates, response.Msg.GetResults()); err != nil {
-		return err
-	}
-	a.replaceRuntimeHealthCandidates(nextHealthCandidates)
-	return nil
-}
-
-func (a *Agent) nextInventoryGeneration() (int64, error) {
-	a.inventoryMu.Lock()
-	defer a.inventoryMu.Unlock()
-
-	next := a.inventoryGeneration + 1
-	if next <= 0 {
-		return 0, &categorizedError{
-			category: failureLocalStateCommit,
-			message:  "inventory_generation exhausted",
-		}
-	}
-	if a.inventoryStore != nil {
-		if err := a.inventoryStore.SaveInventoryGeneration(next); err != nil {
-			return 0, &categorizedError{
-				category: failureLocalStateCommit,
-				message:  fmt.Sprintf("save inventory generation %d: %v", next, err),
-			}
-		}
-	}
-	a.inventoryGeneration = next
-	return next, nil
-}
-
-func (a *Agent) currentInventoryGeneration() int64 {
-	a.inventoryMu.Lock()
-	defer a.inventoryMu.Unlock()
-
-	return a.inventoryGeneration
-}
-
-func (a *Agent) runtimeInstanceRefs(instances []*provisioner.Instance) []*codespacev1.RuntimeInstanceRef {
-	observed := a.observedOperationVersions()
-	refs := make([]*codespacev1.RuntimeInstanceRef, 0, len(instances))
-	for _, instance := range instances {
-		if instance == nil || instance.CodespaceUUID == "" {
-			continue
-		}
-		refs = append(refs, &codespacev1.RuntimeInstanceRef{
-			RuntimeUuid:               instance.CodespaceUUID,
-			RuntimeState:              runtimeStateToProto(instance.RuntimeState),
-			ObservedOperationRversion: observed[instance.CodespaceUUID],
-		})
-	}
-	return refs
-}
-
-func (a *Agent) observedOperationVersions() map[string]int64 {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	observed := make(map[string]int64, len(a.activeOperations))
-	for codespaceUUID, operation := range a.activeOperations {
-		if operation.payload == nil || operation.operationRVersion <= 0 {
-			continue
-		}
-		observed[codespaceUUID] = operation.operationRVersion
-	}
-	return observed
-}
-
-func (a *Agent) currentOperationVersions() map[string]int64 {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	versions := make(map[string]int64, len(a.activeOperations))
-	for codespaceUUID, operation := range a.activeOperations {
-		if operation.operationRVersion <= 0 {
-			continue
-		}
-		versions[codespaceUUID] = operation.operationRVersion
-	}
-	return versions
-}
-
-func runtimeStatesByUUID(refs []*codespacev1.RuntimeInstanceRef) map[string]codespacev1.RuntimeState {
-	states := make(map[string]codespacev1.RuntimeState, len(refs))
-	for _, ref := range refs {
-		if ref == nil || ref.GetRuntimeUuid() == "" {
-			continue
-		}
-		states[ref.GetRuntimeUuid()] = ref.GetRuntimeState()
-	}
-	return states
-}
-
-func runtimeHealthCandidates(refs []*codespacev1.RuntimeInstanceRef) map[string]struct{} {
-	candidates := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if ref == nil ||
-			ref.GetRuntimeUuid() == "" ||
-			ref.GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING {
-			continue
-		}
-		candidates[ref.GetRuntimeUuid()] = struct{}{}
-	}
-	return candidates
-}
-
-func (a *Agent) currentRuntimeHealthCandidates() map[string]struct{} {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	candidates := make(map[string]struct{}, len(a.healthCandidates))
-	for codespaceUUID := range a.healthCandidates {
-		candidates[codespaceUUID] = struct{}{}
-	}
-	return candidates
-}
-
-func (a *Agent) replaceRuntimeHealthCandidates(candidates map[string]struct{}) {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	a.healthCandidates = candidates
-}
-
-func (a *Agent) updateRuntimeObservations(refs []*codespacev1.RuntimeInstanceRef) {
-	now := time.Now()
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	seen := make(map[string]struct{}, len(refs))
-	for _, ref := range refs {
-		if ref == nil || ref.GetRuntimeUuid() == "" {
-			continue
-		}
-		codespaceUUID := ref.GetRuntimeUuid()
-		seen[codespaceUUID] = struct{}{}
-		state := a.autoStopStateLocked(codespaceUUID)
-		state.runtimeState = ref.GetRuntimeState()
-		if ref.GetRuntimeState() != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING {
-			state.idleStarted = time.Time{}
-			state.metadataReady = false
-		}
-		a.refreshIdleStartLocked(codespaceUUID, state, now)
-	}
-	for codespaceUUID, state := range a.autoStops {
-		if _, ok := seen[codespaceUUID]; !ok && state.runtimeState != codespacev1.RuntimeState_RUNTIME_STATE_UNSPECIFIED {
-			state.runtimeState = codespacev1.RuntimeState_RUNTIME_STATE_UNSPECIFIED
-			state.metadataReady = false
-			state.idleStarted = time.Time{}
-			state.requestInFlight = false
-		}
-	}
-}
-
-func (a *Agent) applyRuntimeSettings(codespaceUUID string, settings *codespacev1.EffectiveCodespaceRuntimeSettings, now time.Time) {
-	if codespaceUUID == "" || settings == nil {
-		return
-	}
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	state := a.autoStopStateLocked(codespaceUUID)
-	oldInteraction := int64(0)
-	if state.settings != nil {
-		oldInteraction = state.settings.GetInteractionGeneration()
-	}
-	next := cloneRuntimeSettings(settings)
-	if oldInteraction > next.InteractionGeneration {
-		next.InteractionGeneration = oldInteraction
-	}
-	state.settings = next
-	state.requestInFlight = false
-	if !next.GetAutoStopEnabled() || next.GetIdleTimeoutSeconds() <= 0 {
-		state.idleStarted = time.Time{}
-		state.retryAfter = time.Time{}
-		state.pendingVersion = 0
-		return
-	}
-	if next.GetInteractionGeneration() > oldInteraction {
-		state.idleStarted = time.Time{}
-		state.retryAfter = time.Time{}
-		state.pendingVersion = 0
-	}
-	a.refreshIdleStartLocked(codespaceUUID, state, now)
-}
-
-func (a *Agent) reconcileAutoStops(ctx context.Context) error {
-	now := time.Now()
-	requests := a.dueAutoStopRequests(now)
-	for _, request := range requests {
-		result, err := a.requestIdleStop(ctx, request.codespaceUUID, request.settings)
-		if err != nil {
-			a.finishIdleStopRequest(request.codespaceUUID, now.Add(30*time.Second), 0)
-			return err
-		}
-		a.applyIdleStopResult(request.codespaceUUID, result, now)
-	}
-	return nil
-}
-
-func (a *Agent) dueAutoStopRequests(now time.Time) []autoStopRequest {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	requests := make([]autoStopRequest, 0)
-	for codespaceUUID, state := range a.autoStops {
-		if state.requestInFlight || (!state.retryAfter.IsZero() && now.Before(state.retryAfter)) {
-			continue
-		}
-		if !a.autoStopEligibleLocked(codespaceUUID, state) {
-			a.refreshIdleStartLocked(codespaceUUID, state, now)
-			continue
-		}
-		if state.idleStarted.IsZero() {
-			state.idleStarted = now
-			continue
-		}
-		timeout := time.Duration(state.settings.GetIdleTimeoutSeconds()) * time.Second
-		if now.Sub(state.idleStarted) < timeout {
-			continue
-		}
-		state.requestInFlight = true
-		requests = append(requests, autoStopRequest{
-			codespaceUUID: codespaceUUID,
-			settings:      cloneRuntimeSettings(state.settings),
-		})
-	}
-	return requests
-}
-
-func (a *Agent) finishIdleStopRequest(codespaceUUID string, retryAfter time.Time, pendingVersion int64) {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	state := a.autoStops[codespaceUUID]
-	if state == nil {
-		return
-	}
-	state.requestInFlight = false
-	state.retryAfter = retryAfter
-	if pendingVersion > 0 {
-		state.pendingVersion = pendingVersion
-	}
-}
-
-func (a *Agent) applyIdleStopResult(codespaceUUID string, result *idleStopResult, now time.Time) {
-	if result == nil {
-		a.finishIdleStopRequest(codespaceUUID, now.Add(30*time.Second), 0)
-		return
-	}
-	switch result.outcome {
-	case idleStopOutcomePending:
-		a.finishIdleStopRequest(codespaceUUID, now.Add(30*time.Second), result.operationRVersion)
-	case idleStopOutcomeObservationChanged:
-		a.applyRuntimeSettings(codespaceUUID, result.runtimeSettings, now)
-	case idleStopOutcomeNotApplicable:
-		a.applyIdleStopNotApplicable(codespaceUUID, result.notApplicable, now)
-	default:
-		a.finishIdleStopRequest(codespaceUUID, now.Add(30*time.Second), 0)
-	}
-}
-
-func (a *Agent) applyIdleStopNotApplicable(
-	codespaceUUID string,
-	reason codespacev1.IdleStopNotApplicableReason,
-	now time.Time,
-) {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	state := a.autoStops[codespaceUUID]
-	if state == nil {
-		return
-	}
-	state.requestInFlight = false
-	switch reason {
-	case codespacev1.IdleStopNotApplicableReason_IDLE_STOP_NOT_APPLICABLE_REASON_ALREADY_STOPPED:
-		state.runtimeState = codespacev1.RuntimeState_RUNTIME_STATE_STOPPED
-		state.metadataReady = false
-		state.idleStarted = time.Time{}
-		state.retryAfter = time.Time{}
-	case codespacev1.IdleStopNotApplicableReason_IDLE_STOP_NOT_APPLICABLE_REASON_STATE_UNAVAILABLE:
-		state.idleStarted = time.Time{}
-		state.retryAfter = time.Time{}
-	default:
-		state.retryAfter = now.Add(30 * time.Second)
-	}
-}
-
-func (a *Agent) markRuntimeReady(codespaceUUID string) {
-	if codespaceUUID == "" {
-		return
-	}
-	now := time.Now()
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	state := a.autoStopStateLocked(codespaceUUID)
-	state.runtimeState = codespacev1.RuntimeState_RUNTIME_STATE_RUNNING
-	state.metadataReady = true
-	a.refreshIdleStartLocked(codespaceUUID, state, now)
-}
-
-func (a *Agent) markRuntimeStopped(codespaceUUID string) {
-	a.markRuntimeInactive(codespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED)
-}
-
-func (a *Agent) markRuntimeRemoved(codespaceUUID string) {
-	if codespaceUUID == "" {
-		return
-	}
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	delete(a.autoStops, codespaceUUID)
-}
-
-func (a *Agent) markRuntimeInactive(codespaceUUID string, runtimeState codespacev1.RuntimeState) {
-	if codespaceUUID == "" {
-		return
-	}
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	state := a.autoStopStateLocked(codespaceUUID)
-	state.runtimeState = runtimeState
-	state.metadataReady = false
-	state.idleStarted = time.Time{}
-	state.requestInFlight = false
-	state.retryAfter = time.Time{}
-	state.pendingVersion = 0
-}
-
-func (a *Agent) autoStopStateLocked(codespaceUUID string) *autoStopState {
-	state := a.autoStops[codespaceUUID]
-	if state == nil {
-		state = &autoStopState{}
-		a.autoStops[codespaceUUID] = state
-	}
-	return state
-}
-
-func (a *Agent) refreshIdleStartLocked(codespaceUUID string, state *autoStopState, now time.Time) {
-	if state == nil || !a.autoStopEligibleLocked(codespaceUUID, state) {
-		if state != nil && (state.settings == nil || !state.settings.GetAutoStopEnabled() || state.settings.GetIdleTimeoutSeconds() <= 0) {
-			state.idleStarted = time.Time{}
-		}
-		return
-	}
-	if state.idleStarted.IsZero() {
-		state.idleStarted = now
-	}
-}
-
-func (a *Agent) autoStopEligibleLocked(codespaceUUID string, state *autoStopState) bool {
-	if state == nil || state.settings == nil {
-		return false
-	}
-	if state.runtimeState != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING || !state.metadataReady {
-		return false
-	}
-	if !state.settings.GetAutoStopEnabled() || state.settings.GetIdleTimeoutSeconds() <= 0 {
-		return false
-	}
-	if a.liveSessions(codespaceUUID) > 0 {
-		return false
-	}
-	return !a.hasActiveOperation(codespaceUUID)
-}
-
-func (a *Agent) hasActiveOperation(codespaceUUID string) bool {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	_, ok := a.activeOperations[codespaceUUID]
-	return ok
-}
-
-func (a *Agent) liveSessions(codespaceUUID string) int {
-	if a.sessionTracker == nil {
-		return 0
-	}
-	return a.sessionTracker.LiveSessions(codespaceUUID)
-}
-
-func cloneRuntimeSettings(settings *codespacev1.EffectiveCodespaceRuntimeSettings) *codespacev1.EffectiveCodespaceRuntimeSettings {
-	if settings == nil {
-		return nil
-	}
-	return &codespacev1.EffectiveCodespaceRuntimeSettings{
-		AutoStopEnabled:       settings.GetAutoStopEnabled(),
-		IdleTimeoutSeconds:    settings.GetIdleTimeoutSeconds(),
-		InteractionGeneration: settings.GetInteractionGeneration(),
-	}
-}
-
-func (a *Agent) applyInventoryResults(
-	ctx context.Context,
-	generation int64,
-	runtimeStates map[string]codespacev1.RuntimeState,
-	requestOperationVersions map[string]int64,
-	healthCandidates map[string]struct{},
-	results []*codespacev1.RuntimeInstanceResult,
-) error {
-	for _, result := range results {
-		if result == nil || result.GetRuntimeUuid() == "" {
-			continue
-		}
-		if a.currentInventoryGeneration() != generation {
-			return nil
-		}
-		if err := a.applyInventoryResult(ctx, runtimeStates, requestOperationVersions, healthCandidates, result); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *Agent) applyInventoryResult(
-	ctx context.Context,
-	runtimeStates map[string]codespacev1.RuntimeState,
-	requestOperationVersions map[string]int64,
-	healthCandidates map[string]struct{},
-	result *codespacev1.RuntimeInstanceResult,
-) error {
-	codespaceUUID := result.GetRuntimeUuid()
-	if result.GetRuntimeSettings() != nil {
-		a.applyRuntimeSettings(codespaceUUID, result.GetRuntimeSettings(), time.Now())
-	}
-	currentOperationRVersion := result.GetCurrentOperationRversion()
-	switch result.GetAction() {
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME:
-		if err := a.saveCleanupPending(codespaceUUID); err != nil {
-			return err
-		}
-		if err := a.clearOperationContext(codespaceUUID, 0); err != nil {
-			return err
-		}
-		if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
-			return err
-		}
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME:
-		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, currentOperationRVersion)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-		if !a.operationVersionAtMost(codespaceUUID, currentOperationRVersion) {
-			return nil
-		}
-		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
-			return err
-		}
-		if err := a.provisioner.Stop(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
-			return fmt.Errorf("stop local runtime %s: %w", codespaceUUID, err)
-		}
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEAR_OPERATION_CONTEXT:
-		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, currentOperationRVersion)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-		if err := a.clearOperationContext(codespaceUUID, currentOperationRVersion); err != nil {
-			return err
-		}
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REFETCH_OPERATION:
-		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, currentOperationRVersion)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-		log.Printf("inventory requested operation refetch for %s version %d", codespaceUUID, currentOperationRVersion)
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REPORT_RUNTIME_TRANSITION:
-		ok, err := a.validateOperationResponseVersion("inventory action", codespaceUUID, requestOperationVersions, currentOperationRVersion)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return nil
-		}
-		runtimeState := runtimeStates[codespaceUUID]
-		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
-			return err
-		}
-		runtimeGeneration, reported, err := a.reportRuntimeTransition(ctx, codespaceUUID, runtimeState, currentOperationRVersion)
-		if err != nil {
-			return err
-		}
-		if !reported {
-			return nil
-		}
-		if runtimeState == codespacev1.RuntimeState_RUNTIME_STATE_FAILED {
-			if err := a.saveCleanupPending(codespaceUUID); err != nil {
-				return err
-			}
-			if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
-				return err
-			}
-			return nil
-		}
-		if err := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
-			return fmt.Errorf("clear runtime transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, err)
-		}
-	case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_UNSPECIFIED:
-		if err := a.repairStableRunningRuntime(ctx, codespaceUUID, runtimeStates, requestOperationVersions, healthCandidates); err != nil {
-			return err
-		}
-		if runtimeStates[codespaceUUID] == codespacev1.RuntimeState_RUNTIME_STATE_RUNNING && requestOperationVersions[codespaceUUID] == 0 && a.metadataPublisher != nil {
-			active, err := a.metadataPublisher.ActivateRuntimeMetadata(codespaceUUID)
-			if err != nil {
-				return fmt.Errorf("activate stable runtime metadata %s: %w", codespaceUUID, err)
-			}
-			if active {
-				a.markRuntimeReady(codespaceUUID)
-			}
-		}
-	default:
-		return fmt.Errorf("inventory action for %s is invalid", codespaceUUID)
-	}
-	return nil
-}
-
-func (a *Agent) repairStableRunningRuntime(
-	ctx context.Context,
-	codespaceUUID string,
-	runtimeStates map[string]codespacev1.RuntimeState,
-	requestOperationVersions map[string]int64,
-	healthCandidates map[string]struct{},
-) error {
-	if runtimeStates[codespaceUUID] != codespacev1.RuntimeState_RUNTIME_STATE_RUNNING || requestOperationVersions[codespaceUUID] != 0 {
-		return nil
-	}
-	if err := a.repairStableRunningCredentials(ctx, codespaceUUID); err != nil {
-		return err
-	}
-	if _, ok := healthCandidates[codespaceUUID]; !ok {
-		return nil
-	}
-	return a.checkStableRunningHealth(ctx, codespaceUUID)
-}
-
-func (a *Agent) validateOperationResponseVersion(
-	rpc string,
-	codespaceUUID string,
-	requestOperationVersions map[string]int64,
-	responseOperationVersion int64,
-) (bool, error) {
-	if responseOperationVersion <= 0 {
-		return false, &categorizedError{
-			category: failureOperationRegression,
-			message:  fmt.Sprintf("%s for %s has non-positive operation version %d", rpc, codespaceUUID, responseOperationVersion),
-		}
-	}
-	requestVersion := requestOperationVersions[codespaceUUID]
-	localVersion := a.currentOperationVersion(codespaceUUID)
-	if responseOperationVersion < requestVersion {
-		return false, &categorizedError{
-			category: failureOperationRegression,
-			message: fmt.Sprintf(
-				"%s version regression for %s: request_version=%d local_version=%d response_version=%d",
-				rpc,
-				codespaceUUID,
-				requestVersion,
-				localVersion,
-				responseOperationVersion,
-			),
-		}
-	}
-	if responseOperationVersion < localVersion {
-		return false, nil
-	}
-	return true, nil
-}
-
-func (a *Agent) repairStableRunningCredentials(ctx context.Context, codespaceUUID string) error {
-	if a.provisioner == nil || codespaceUUID == "" {
-		return nil
-	}
-	instanceName := runtimeInstanceName(codespaceUUID)
-	status, err := a.provisioner.CheckCredentials(ctx, instanceName)
-	if err != nil {
-		return fmt.Errorf("check runtime credentials %s: %w", codespaceUUID, err)
-	}
-	if !status.GiteaTokenPresent {
-		observedOperationRVersion, observedErr := a.stableRunningObservedOperationVersion(codespaceUUID)
-		if observedErr != nil {
-			return observedErr
-		}
-		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
-			return err
-		}
-		if stopErr := a.provisioner.Stop(ctx, instanceName); stopErr != nil {
-			return fmt.Errorf("stop runtime with missing gitea token %s: %w", codespaceUUID, stopErr)
-		}
-		runtimeGeneration, reported, reportErr := a.reportRuntimeTransition(ctx, codespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED, observedOperationRVersion)
-		if reportErr != nil {
-			return reportErr
-		}
-		if reported {
-			if clearErr := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); clearErr != nil {
-				return fmt.Errorf("clear stopped transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, clearErr)
-			}
-		}
-		return nil
-	}
-	if err := a.checkStableRunningWorkspaceGit(ctx, codespaceUUID, instanceName); err != nil {
-		observedOperationRVersion, observedErr := a.stableRunningObservedOperationVersion(codespaceUUID)
-		if observedErr != nil {
-			return observedErr
-		}
-		if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
-			return err
-		}
-		if stopErr := a.provisioner.Stop(ctx, instanceName); stopErr != nil {
-			return fmt.Errorf("stop runtime with invalid workspace git credentials %s: %w", codespaceUUID, stopErr)
-		}
-		runtimeGeneration, reported, reportErr := a.reportRuntimeTransition(ctx, codespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED, observedOperationRVersion)
-		if reportErr != nil {
-			return reportErr
-		}
-		if reported {
-			if clearErr := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); clearErr != nil {
-				return fmt.Errorf("clear stopped transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, clearErr)
-			}
-		}
-		return nil
-	}
-	if err := a.syncRuntimeEndpointManifest(ctx, codespaceUUID, &provisioner.Instance{
-		CodespaceUUID: codespaceUUID,
-		Name:          instanceName,
-	}); err != nil {
-		return fmt.Errorf("sync runtime endpoint manifest %s: %w", codespaceUUID, err)
-	}
-	return nil
-}
-
-func (a *Agent) checkStableRunningWorkspaceGit(ctx context.Context, codespaceUUID string, instanceName string) error {
-	checker, ok := a.provisioner.(workspaceGitChecker)
-	if !ok || a.runtimeEnvStateStore == nil {
-		return nil
-	}
-	environment, ok, err := a.runtimeEnvStateStore.LoadRuntimeEnvironment(codespaceUUID)
-	if err != nil {
-		return fmt.Errorf("load runtime environment %s: %w", codespaceUUID, err)
-	}
-	if !ok {
-		return fmt.Errorf("runtime environment is missing")
-	}
-	workdir := strings.TrimSpace(environment.Environment.Workspace)
-	if workdir == "" {
-		return fmt.Errorf("workspace path is missing")
-	}
-	status, err := checker.CheckWorkspaceGit(ctx, instanceName, workdir)
-	if err != nil {
-		return fmt.Errorf("check workspace git %s: %w", codespaceUUID, err)
-	}
-	if !status.CredentialConfigured {
-		return fmt.Errorf("workspace git credentials are not configured for origin %q", status.OriginURL)
-	}
-	return nil
-}
-
-func (a *Agent) stableRunningObservedOperationVersion(codespaceUUID string) (int64, error) {
-	if a.runtimeHealthStore == nil {
-		return 0, fmt.Errorf("ready runtime metadata is missing")
-	}
-	snapshot, ok, err := a.runtimeHealthStore.LoadRuntimeMetadataSnapshot(codespaceUUID)
-	if err != nil {
-		return 0, fmt.Errorf("load runtime metadata %s: %w", codespaceUUID, err)
-	}
-	if !ok || snapshot.Boot.Stage != RuntimeBootStageReady || snapshot.Boot.OperationRVersion <= 0 {
-		return 0, fmt.Errorf("ready runtime metadata is missing")
-	}
-	return snapshot.Boot.OperationRVersion, nil
-}
-
-func (a *Agent) checkStableRunningHealth(ctx context.Context, codespaceUUID string) error {
-	if a.runtimeHealthStore == nil || codespaceUUID == "" {
-		return nil
-	}
-	snapshot, ok, err := a.runtimeHealthStore.LoadRuntimeMetadataSnapshot(codespaceUUID)
-	if err != nil {
-		return fmt.Errorf("load runtime metadata for health %s: %w", codespaceUUID, err)
-	}
-	if !ok || snapshot.Boot.Stage != RuntimeBootStageReady {
-		a.clearRuntimeHealthFailure(codespaceUUID)
-		return nil
-	}
-	var healthErr error
-	if checker, ok := a.provisioner.(workspaceAccessChecker); ok {
-		healthErr = a.checkRuntimeWorkspaceAccess(ctx, checker, snapshot)
-	}
-	if healthErr == nil {
-		healthErr = a.checkRuntimeDevelopmentEnvironment(ctx, codespaceUUID, snapshot.InstanceName)
-	}
-	if healthErr == nil {
-		a.clearRuntimeHealthFailure(codespaceUUID)
-		return nil
-	}
-	failures := a.recordRuntimeHealthFailure(codespaceUUID)
-	if failures < runtimeHealthFailuresBeforeStop {
-		a.closeCodespaceAccess(codespaceUUID)
-		log.Printf("runtime health check failed for %s (%d/%d): %v", codespaceUUID, failures, runtimeHealthFailuresBeforeStop, healthErr)
-		return nil
-	}
-	log.Printf("runtime health check failed for %s (%d/%d), stopping runtime: %v", codespaceUUID, failures, runtimeHealthFailuresBeforeStop, healthErr)
-
-	pending := HealthStopSnapshot{
-		CodespaceUUID:             codespaceUUID,
-		ObservedOperationRVersion: snapshot.Boot.OperationRVersion,
-	}
-	if err := a.saveHealthStopPending(pending); err != nil {
-		return err
-	}
-	runtimeGeneration, reported, err := a.finishHealthStopPending(ctx, pending)
-	if err != nil {
-		return err
-	}
-	if reported {
-		if err := a.clearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
-			return fmt.Errorf("clear unhealthy stopped transition pending %s generation %d: %w", codespaceUUID, runtimeGeneration, err)
-		}
-	}
-	a.clearRuntimeHealthFailure(codespaceUUID)
-	return nil
-}
-
-func (a *Agent) recordRuntimeHealthFailure(codespaceUUID string) int {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	a.healthFailures[codespaceUUID]++
-	return a.healthFailures[codespaceUUID]
-}
-
-func (a *Agent) clearRuntimeHealthFailure(codespaceUUID string) {
-	a.autoStopMu.Lock()
-	defer a.autoStopMu.Unlock()
-
-	delete(a.healthFailures, codespaceUUID)
-}
-
-func (a *Agent) saveHealthStopPending(pending HealthStopSnapshot) error {
-	if pending.CodespaceUUID == "" || pending.ObservedOperationRVersion <= 0 {
-		return fmt.Errorf("health stop pending is invalid")
-	}
-	if a.healthStopStateStore != nil {
-		if err := a.healthStopStateStore.SaveHealthStopPending(pending); err != nil {
-			return fmt.Errorf("save health stop pending %s: %w", pending.CodespaceUUID, err)
-		}
-	}
-	a.activeMu.Lock()
-	a.healthStopPendings[pending.CodespaceUUID] = pending
-	a.activeMu.Unlock()
-	return nil
-}
-
-func (a *Agent) clearHealthStopPendingLocal(codespaceUUID string) {
-	a.activeMu.Lock()
-	delete(a.healthStopPendings, codespaceUUID)
-	a.activeMu.Unlock()
-}
-
-func (a *Agent) runHealthStopPendings(ctx context.Context) error {
-	a.activeMu.Lock()
-	pendings := make([]HealthStopSnapshot, 0, len(a.healthStopPendings))
-	for _, pending := range a.healthStopPendings {
-		pendings = append(pendings, pending)
-	}
-	a.activeMu.Unlock()
-
-	for _, pending := range pendings {
-		runtimeGeneration, reported, err := a.finishHealthStopPending(ctx, pending)
-		if err != nil {
-			return err
-		}
-		if reported {
-			if err := a.clearRuntimeTransitionPending(pending.CodespaceUUID, runtimeGeneration); err != nil {
-				return fmt.Errorf("clear health stopped transition pending %s generation %d: %w", pending.CodespaceUUID, runtimeGeneration, err)
-			}
-		}
-	}
-	return nil
-}
-
-func (a *Agent) finishHealthStopPending(ctx context.Context, pending HealthStopSnapshot) (int64, bool, error) {
-	if err := a.deactivateRuntimeMetadata(pending.CodespaceUUID); err != nil {
-		return 0, false, err
-	}
-	instanceName := runtimeInstanceName(pending.CodespaceUUID)
-	if err := a.provisioner.Stop(ctx, instanceName); err != nil {
-		return 0, false, fmt.Errorf("stop health pending runtime %s: %w", pending.CodespaceUUID, err)
-	}
-	a.markRuntimeStopped(pending.CodespaceUUID)
-	transition, err := a.prepareRuntimeTransitionPending(pending.CodespaceUUID, codespacev1.RuntimeState_RUNTIME_STATE_STOPPED, pending.ObservedOperationRVersion)
-	if err != nil {
-		return 0, false, err
-	}
-	a.clearHealthStopPendingLocal(pending.CodespaceUUID)
-	if err := a.sendRuntimeTransition(ctx, transition); err != nil {
-		return transition.RuntimeGeneration, false, err
-	}
-	return transition.RuntimeGeneration, true, nil
-}
-
-func (a *Agent) cleanupLocalRuntime(ctx context.Context, codespaceUUID string) error {
-	if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
-		return err
-	}
-	if err := a.provisioner.Delete(ctx, runtimeInstanceName(codespaceUUID)); err != nil {
-		return fmt.Errorf("cleanup local runtime %s: %w", codespaceUUID, err)
-	}
-	exists, err := a.runtimeInstanceExists(ctx, codespaceUUID)
-	if err != nil {
-		return err
-	}
-	if exists {
-		return fmt.Errorf("cleanup local runtime %s: runtime instance still exists after delete", codespaceUUID)
-	}
-	if a.cleanupStateStore != nil {
-		if err := a.cleanupStateStore.ClearCodespaceState(codespaceUUID); err != nil {
-			return fmt.Errorf("clear codespace cleanup state %s: %w", codespaceUUID, err)
-		}
-	}
-	a.runtimeMu.Lock()
-	delete(a.runtimeTransitions, codespaceUUID)
-	delete(a.runtimeGenerations, codespaceUUID)
-	a.runtimeMu.Unlock()
-	a.activeMu.Lock()
-	delete(a.cleanupPendings, codespaceUUID)
-	a.activeMu.Unlock()
-	a.markRuntimeRemoved(codespaceUUID)
-	return nil
-}
-
-func (a *Agent) runtimeInstanceExists(ctx context.Context, codespaceUUID string) (bool, error) {
-	instances, err := a.provisioner.ListInstances(ctx)
-	if err != nil {
-		return false, fmt.Errorf("confirm runtime cleanup %s: %w", codespaceUUID, err)
-	}
-	for _, instance := range instances {
-		if instance != nil && instance.CodespaceUUID == codespaceUUID {
-			return true, nil
-		}
-	}
-	return false, nil
-}
-
-func (a *Agent) saveCleanupPending(codespaceUUID string) error {
-	if a.cleanupStateStore == nil {
-		return nil
-	}
-	if err := a.cleanupStateStore.SaveCleanupPending(codespaceUUID); err != nil {
-		return &categorizedError{
-			category: failureLocalStateCommit,
-			message:  fmt.Sprintf("save cleanup pending %s: %v", codespaceUUID, err),
-		}
-	}
-	a.activeMu.Lock()
-	a.cleanupPendings[codespaceUUID] = struct{}{}
-	a.activeMu.Unlock()
-	return nil
-}
-
-func (a *Agent) clearDeleteCleanupState(codespaceUUID string) error {
-	if a.cleanupStateStore != nil {
-		if err := a.cleanupStateStore.ClearCodespaceState(codespaceUUID); err != nil {
-			return fmt.Errorf("clear delete cleanup state %s: %w", codespaceUUID, err)
-		}
-	}
-	a.runtimeMu.Lock()
-	delete(a.runtimeTransitions, codespaceUUID)
-	delete(a.runtimeGenerations, codespaceUUID)
-	a.runtimeMu.Unlock()
-	a.activeMu.Lock()
-	delete(a.cleanupPendings, codespaceUUID)
-	a.activeMu.Unlock()
-	return nil
-}
-
-func (a *Agent) runCleanupPendings(ctx context.Context) error {
-	a.activeMu.Lock()
-	codespaceUUIDs := make([]string, 0, len(a.cleanupPendings))
-	for codespaceUUID := range a.cleanupPendings {
-		codespaceUUIDs = append(codespaceUUIDs, codespaceUUID)
-	}
-	a.activeMu.Unlock()
-
-	for _, codespaceUUID := range codespaceUUIDs {
-		if err := a.cleanupLocalRuntime(ctx, codespaceUUID); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (a *Agent) reportRuntimeTransition(
-	ctx context.Context,
-	codespaceUUID string,
-	runtimeState codespacev1.RuntimeState,
-	observedOperationRVersion int64,
-) (int64, bool, error) {
-	if runtimeState != codespacev1.RuntimeState_RUNTIME_STATE_STOPPED &&
-		runtimeState != codespacev1.RuntimeState_RUNTIME_STATE_FAILED {
-		return 0, false, nil
-	}
-	transition, err := a.prepareRuntimeTransitionPending(codespaceUUID, runtimeState, observedOperationRVersion)
-	if err != nil {
-		return 0, false, err
-	}
-	if err := a.sendRuntimeTransition(ctx, transition); err != nil {
-		return 0, false, err
-	}
-	return transition.RuntimeGeneration, true, nil
-}
-
-func (a *Agent) sendRuntimeTransition(ctx context.Context, transition RuntimeTransitionSnapshot) error {
-	request := connect.NewRequest(&codespacev1.ReportRuntimeTransitionRequest{
-		ProtocolVersion:           controlplane.ProtocolVersion,
-		RuntimeUuid:               transition.CodespaceUUID,
-		RuntimeGeneration:         transition.RuntimeGeneration,
-		ObservedOperationRversion: transition.ObservedOperationRVersion,
-		RuntimeState:              transition.TargetState,
-	})
-	if _, err := a.managerClient().ReportRuntimeTransition(ctx, request); err != nil {
-		return fmt.Errorf("report runtime transition rpc: %w", err)
-	}
-	return nil
-}
-
-func (a *Agent) prepareRuntimeTransitionPending(
-	codespaceUUID string,
-	runtimeState codespacev1.RuntimeState,
-	observedOperationRVersion int64,
-) (RuntimeTransitionSnapshot, error) {
-	a.runtimeMu.Lock()
-	if pending, ok := a.runtimeTransitions[codespaceUUID]; ok {
-		a.runtimeMu.Unlock()
-		return pending, nil
-	}
-	next := a.runtimeGenerations[codespaceUUID] + 1
-	a.runtimeMu.Unlock()
-
-	if next <= 0 {
-		return RuntimeTransitionSnapshot{}, fmt.Errorf("runtime_generation exhausted for %s", codespaceUUID)
-	}
-	transition := RuntimeTransitionSnapshot{
-		CodespaceUUID:             codespaceUUID,
-		TargetState:               runtimeState,
-		RuntimeGeneration:         next,
-		ObservedOperationRVersion: observedOperationRVersion,
-	}
-	if a.runtimeStateStore != nil {
-		if err := a.runtimeStateStore.SaveRuntimeTransitionPending(transition); err != nil {
-			return RuntimeTransitionSnapshot{}, fmt.Errorf("save runtime transition pending %s generation %d: %w", codespaceUUID, next, err)
-		}
-	}
-	a.runtimeMu.Lock()
-	if a.runtimeGenerations[codespaceUUID] < next {
-		a.runtimeGenerations[codespaceUUID] = next
-	}
-	a.runtimeTransitions[codespaceUUID] = transition
-	a.runtimeMu.Unlock()
-	return transition, nil
-}
-
-func (a *Agent) clearRuntimeTransitionPending(codespaceUUID string, runtimeGeneration int64) error {
-	if a.runtimeStateStore != nil {
-		if err := a.runtimeStateStore.ClearRuntimeTransitionPending(codespaceUUID, runtimeGeneration); err != nil {
-			return err
-		}
-	}
-	a.runtimeMu.Lock()
-	if pending, ok := a.runtimeTransitions[codespaceUUID]; ok && pending.RuntimeGeneration == runtimeGeneration {
-		delete(a.runtimeTransitions, codespaceUUID)
-	}
-	a.runtimeMu.Unlock()
-	return nil
-}
-
-func (a *Agent) clearOperationContext(codespaceUUID string, maxOperationRVersion int64) error {
-	var operationRVersion int64
-	a.activeMu.Lock()
-	if current, ok := a.activeOperations[codespaceUUID]; ok {
-		operationRVersion = current.operationRVersion
-		if maxOperationRVersion == 0 || operationRVersion <= maxOperationRVersion {
-			a.stopLeaseLocked(current)
-			delete(a.activeOperations, codespaceUUID)
-		} else {
-			operationRVersion = 0
-		}
-	}
-	a.activeMu.Unlock()
-
-	if operationRVersion > 0 && a.stateStore != nil {
-		if err := a.stateStore.DeleteActiveOperation(codespaceUUID, operationRVersion); err != nil {
-			return fmt.Errorf("delete operation state %s version %d: %w", codespaceUUID, operationRVersion, err)
-		}
-	}
-	return nil
-}
-
-func (a *Agent) operationVersionAtMost(codespaceUUID string, operationRVersion int64) bool {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	current, ok := a.activeOperations[codespaceUUID]
-	return !ok || current.operationRVersion <= operationRVersion
-}
-
-func (a *Agent) currentOperationVersion(codespaceUUID string) int64 {
-	a.activeMu.Lock()
-	defer a.activeMu.Unlock()
-
-	current, ok := a.activeOperations[codespaceUUID]
-	if !ok {
-		return 0
-	}
-	return current.operationRVersion
-}
-
 type fetchCapacity struct {
 	startup            int32
 	cleanup            int32
@@ -1911,30 +890,46 @@ func (a *Agent) reserveFetchCapacity(instances []*provisioner.Instance, listErr 
 	defer a.activeMu.Unlock()
 
 	capacity := a.fetchCapacityLocked(instances)
+	if a.capacityCoordinator != nil {
+		snapshot := a.operationCapacitySnapshotLocked()
+		observation := CapacityObservation{
+			RuntimeOccupied: int32(len(runtimeCapacityOccupants(instances, snapshot.startup))),
+			StartupActive:   int32(len(snapshot.startup)),
+			CleanupActive:   int32(len(snapshot.cleanup) + len(snapshot.cleanupPendings)),
+		}
+		reserved := a.capacityCoordinator.Reserve(a.config.CapacitySiteID, observation, CapacityReservation{Startup: capacity.startup, Cleanup: capacity.cleanup})
+		capacity.startup = reserved.Startup
+		capacity.cleanup = reserved.Cleanup
+	}
 	a.fetchReservedStartup += capacity.startup
 	a.fetchReservedCleanup += capacity.cleanup
 	return capacity
 }
 
-func (a *Agent) releaseFetchReservation(capacity fetchCapacity) {
+func (a *Agent) releaseFetchReservation(capacity, started fetchCapacity) {
 	a.activeMu.Lock()
 	defer a.activeMu.Unlock()
 
-	a.fetchReservedStartup = positiveInt32(a.fetchReservedStartup - capacity.startup)
-	a.fetchReservedCleanup = positiveInt32(a.fetchReservedCleanup - capacity.cleanup)
+	a.fetchReservedStartup = max(0, a.fetchReservedStartup-capacity.startup)
+	a.fetchReservedCleanup = max(0, a.fetchReservedCleanup-capacity.cleanup)
+	if a.capacityCoordinator != nil {
+		a.capacityCoordinator.Release(a.config.CapacitySiteID,
+			CapacityReservation{Startup: capacity.startup, Cleanup: capacity.cleanup},
+			CapacityReservation{Startup: started.startup, Cleanup: started.cleanup})
+	}
 }
 
 func (a *Agent) fetchCapacityLocked(instances []*provisioner.Instance) fetchCapacity {
 	snapshot := a.operationCapacitySnapshotLocked()
-	runtimeSlots := positiveInt32(a.runtimeSlotsAvailable(instances, snapshot.startup) - a.fetchReservedStartup)
-	startupSlots := positiveInt32(a.startupWorkers() - int32(len(snapshot.startup)) - a.fetchReservedStartup)
-	cleanupSlots := positiveInt32(a.cleanupWorkers() - int32(len(snapshot.cleanup)) - int32(len(snapshot.cleanupPendings)) - a.fetchReservedCleanup)
+	runtimeSlots := max(0, a.runtimeSlotsAvailable(instances, snapshot.startup)-a.fetchReservedStartup)
+	startupSlots := max(0, a.startupWorkers()-int32(len(snapshot.startup))-a.fetchReservedStartup)
+	cleanupSlots := max(0, a.cleanupWorkers()-int32(len(snapshot.cleanup))-int32(len(snapshot.cleanupPendings))-a.fetchReservedCleanup)
 	acceptedCreateTags := make([]string, 0, len(a.config.Environments))
 	for _, environment := range a.config.Environments {
 		acceptedCreateTags = append(acceptedCreateTags, environment.GetTag())
 	}
 	return fetchCapacity{
-		startup:            minInt32(runtimeSlots, startupSlots),
+		startup:            min(runtimeSlots, startupSlots),
 		cleanup:            cleanupSlots,
 		acceptedCreateTags: acceptedCreateTags,
 		acceptResume:       true,
@@ -1977,6 +972,10 @@ func (a *Agent) operationCapacitySnapshotLocked() operationCapacitySnapshot {
 }
 
 func (a *Agent) runtimeSlotsAvailable(instances []*provisioner.Instance, activeStartup map[string]struct{}) int32 {
+	return max(0, a.config.CapacityTotal-int32(len(runtimeCapacityOccupants(instances, activeStartup))))
+}
+
+func runtimeCapacityOccupants(instances []*provisioner.Instance, activeStartup map[string]struct{}) map[string]struct{} {
 	occupied := make(map[string]struct{}, len(instances)+len(activeStartup))
 	for _, instance := range instances {
 		if instance == nil || instance.CodespaceUUID == "" {
@@ -1990,7 +989,7 @@ func (a *Agent) runtimeSlotsAvailable(instances []*provisioner.Instance, activeS
 	for codespaceUUID := range activeStartup {
 		occupied[codespaceUUID] = struct{}{}
 	}
-	return positiveInt32(a.config.CapacityTotal - int32(len(occupied)))
+	return occupied
 }
 
 func (a *Agent) startupWorkers() int32 {
@@ -2010,27 +1009,13 @@ func (a *Agent) cleanupWorkers() int32 {
 	return 4
 }
 
-func positiveInt32(value int32) int32 {
-	if value < 0 {
-		return 0
-	}
-	return value
-}
-
-func minInt32(left, right int32) int32 {
-	if left < right {
-		return left
-	}
-	return right
-}
-
 func (a *Agent) observedOperations() []*codespacev1.ObservedOperation {
 	a.activeMu.Lock()
 	defer a.activeMu.Unlock()
 
 	observed := make([]*codespacev1.ObservedOperation, 0, len(a.activeOperations))
 	for codespaceUUID, operation := range a.activeOperations {
-		if operation.payload == nil || operation.operationRVersion <= 0 {
+		if operation.payload == nil || operation.operationRVersion <= 0 || operation.recoveryBlocked {
 			continue
 		}
 		observed = append(observed, &codespacev1.ObservedOperation{
@@ -2062,6 +1047,10 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 	a.activeMu.Lock()
 	current, ok := a.activeOperations[codespaceUUID]
 	if ok {
+		if current.recoveryBlocked {
+			a.activeMu.Unlock()
+			return nil
+		}
 		if current.operationRVersion > operationRVersion {
 			a.activeMu.Unlock()
 			log.Printf("skip operation %s version %d while version %d is active", codespaceUUID, operationRVersion, current.operationRVersion)
@@ -2089,7 +1078,7 @@ func (a *Agent) startOperation(ctx context.Context, operation *codespacev1.Opera
 			a.activeOperations[codespaceUUID] = operationContext
 			a.activeMu.Unlock()
 
-			if err := a.deactivateRuntimeMetadata(codespaceUUID); err != nil {
+			if err := a.deactivateRuntimeMetadata(ctx, codespaceUUID); err != nil {
 				return err
 			}
 			a.runOperation(operationCtx, operation)
@@ -2161,6 +1150,13 @@ func (a *Agent) bindCreateRuntimeIdentity(ctx context.Context, operation *codesp
 	if response.Msg.GetRuntimeUuid() != runtimeUUID {
 		return "", fmt.Errorf("bind runtime identity returned unexpected uuid")
 	}
+	if a.runtimeIdentityStore != nil {
+		if err := a.runtimeIdentityStore.SaveRuntimeIdentity(
+			ctx, runtimeUUID, operation.GetCodespaceId(), operation.GetOperationRversion(), operation.GetCreate().GetEnvironmentTag(),
+		); err != nil {
+			return "", &categorizedError{category: failureLocalStateCommit, message: fmt.Sprintf("save runtime identity: %v", err)}
+		}
+	}
 	return runtimeUUID, nil
 }
 
@@ -2198,14 +1194,18 @@ func (a *Agent) resumeRenewedOperation(ctx context.Context, lease *codespacev1.R
 func (a *Agent) runOperation(ctx context.Context, operation *codespacev1.OperationPayload) {
 	codespaceUUID := operation.GetRuntimeUuid()
 	operationRVersion := operation.GetOperationRversion()
+	a.operationWorkers.Add(1)
 	go func() {
+		defer a.operationWorkers.Done()
 		if err := a.handleOperation(ctx, operation); err != nil {
 			critical := isManagerCriticalError(err)
 			if ctx.Err() != nil && isStartupOperation(operation) {
-				if deactivateErr := a.deactivateRuntimeMetadata(codespaceUUID); deactivateErr != nil {
+				cleanupCtx, cancel := a.newCleanupContext()
+				defer cancel()
+				if deactivateErr := a.deactivateRuntimeMetadata(cleanupCtx, codespaceUUID); deactivateErr != nil {
 					log.Printf("deactivate paused operation %s version %d: %v", codespaceUUID, operationRVersion, deactivateErr)
 				}
-				if stopErr := a.provisioner.Stop(context.Background(), runtimeInstanceName(codespaceUUID)); stopErr != nil {
+				if stopErr := a.provisioner.Stop(cleanupCtx, runtimeInstanceName(codespaceUUID)); stopErr != nil {
 					log.Printf("stop paused operation %s version %d: %v", codespaceUUID, operationRVersion, stopErr)
 				}
 			}
@@ -2334,9 +1334,9 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 	case *codespacev1.OperationPayload_Stop:
 		err = a.handleStop(ctx, operation)
 	case *codespacev1.OperationPayload_Delete:
-		err = a.handleDelete(ctx, operation, true)
+		err = a.handleDelete(ctx, operation)
 	case *codespacev1.OperationPayload_AbortCreate:
-		err = a.handleDelete(ctx, operation, false)
+		err = a.handleDelete(ctx, operation)
 	case *codespacev1.OperationPayload_AbortResume:
 		err = a.handleStop(ctx, operation)
 	default:
@@ -2394,7 +1394,7 @@ func (a *Agent) handleOperation(ctx context.Context, operation *codespacev1.Oper
 		a.handleResourceAbsentFinal(ctx, operation)
 	}
 	if isDeleteOperation(operation) {
-		return a.clearDeleteCleanupState(operation.GetRuntimeUuid())
+		return a.clearDeleteCleanupState(ctx, operation.GetRuntimeUuid())
 	}
 	return nil
 }
@@ -2447,405 +1447,9 @@ func (a *Agent) handleResourceAbsentFinal(ctx context.Context, operation *codesp
 		return
 	}
 	a.finishOperation(operation.GetRuntimeUuid(), operation.GetOperationRversion(), operation)
-	a.triggerResourceAbsentInventory(context.Background(), operation)
-}
-
-func (a *Agent) handleCreate(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.CreateOperationPayload) error {
-	startupInput, err := startupInputFromCreatePayload(operation, payload)
-	if err != nil {
-		return err
-	}
-	if !slices.ContainsFunc(a.config.Environments, func(environment *codespacev1.EnvironmentTag) bool {
-		return environment.GetTag() == startupInput.EnvironmentTag
-	}) {
-		return fmt.Errorf("environment tag %q is not configured", startupInput.EnvironmentTag)
-	}
-	if err := a.saveStartupInput(startupInput); err != nil {
-		return err
-	}
-	instance, err := a.provisioner.CreateOrStart(ctx, provisioner.InstanceSpec{
-		CodespaceUUID:  operation.GetRuntimeUuid(),
-		Name:           runtimeInstanceName(operation.GetRuntimeUuid()),
-		RepoFullName:   startupInput.RepoFullName,
-		EnvironmentTag: payload.GetEnvironmentTag(),
-	})
-	if err != nil {
-		return err
-	}
-	repository := payload.GetRepository()
-	request := lifecycleRequest(operation, startupInput, instance)
-	request.Operation = provisioner.LifecycleOperationCreate
-	request.RepoCloneHTTPURL = repository.GetCloneHttpUrl()
-	request.RepoCloneSSHURL = repository.GetCloneSshUrl()
-	request.StartRef = repository.GetStartRef()
-	request.CommitSHA = repository.GetCommitSha()
-	request.GitProtocol = gitProtocolName(repository.GetPreferredProtocol())
-	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, nil, request)
-}
-
-func (a *Agent) handleResume(ctx context.Context, operation *codespacev1.OperationPayload, payload *codespacev1.ResumeOperationPayload) error {
-	startupInput, ok, err := a.loadStartupInput(operation.GetRuntimeUuid())
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("startup input is missing for codespace %s", operation.GetRuntimeUuid())
-	}
-	runtimeEnvironment, err := a.loadRuntimeEnvironment(operation.GetRuntimeUuid())
-	if err != nil {
-		return err
-	}
-	instance, err := a.provisioner.StartExisting(ctx, provisioner.InstanceSpec{
-		CodespaceUUID: operation.GetRuntimeUuid(),
-		Name:          runtimeInstanceName(operation.GetRuntimeUuid()),
-	})
-	if err != nil {
-		return err
-	}
-	instance.Workdir = runtimeEnvironment.Environment.Workspace
-	request := lifecycleRequest(operation, startupInput, instance)
-	request.Operation = provisioner.LifecycleOperationResume
-	request.Environment = &runtimeEnvironment.Environment
-	return a.runStartupOperation(ctx, operation, payload.GetRuntimeSettings(), instance, &runtimeEnvironment, request)
-}
-
-func (a *Agent) runStartupOperation(
-	ctx context.Context,
-	operation *codespacev1.OperationPayload,
-	settings *codespacev1.EffectiveCodespaceRuntimeSettings,
-	instance *provisioner.Instance,
-	existing *provisioner.RuntimeEnvironment,
-	request provisioner.LifecycleRequest,
-) (returnErr error) {
-	codespaceUUID := operation.GetRuntimeUuid()
-	a.applyRuntimeSettings(codespaceUUID, settings, time.Now())
-	startedUnix := time.Now().Unix()
-	logSink := newOperationLogSink(a, operation)
-	defer func() {
-		flushCtx := context.WithoutCancel(ctx)
-		logSink.closeGroups(flushCtx)
-		_ = logSink.FlushLifecycleLog(flushCtx)
-	}()
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareRuntime, startedUnix); err != nil {
-		return err
-	}
-	if err := logSink.startGroup(ctx, "Prepare runtime access"); err != nil {
-		return err
-	}
-	key, err := a.runtimeGitSSHKeySeed(ctx, instance.Name)
-	if err != nil {
-		return err
-	}
-	if err := a.provisioner.SeedRuntimeGitSSHKey(ctx, instance.Name, provisioner.RuntimeGitSSHKeySeedRequest{
-		GitSSHPrivateKey: key.privateKey,
-		GitSSHPublicKey:  key.publicKey,
-	}); err != nil {
-		return err
-	}
-	access, err := a.requestRuntimeAccess(ctx, codespaceUUID, operation.GetOperationRversion(), key.publicWire)
-	if err != nil {
-		return err
-	}
-	runtimeSecrets, redactionValues, err := runtimeSecretsFromAccess(access)
-	if err != nil {
-		return err
-	}
-	logSink.redactionValues = append([]string{access.GetGiteaToken()}, redactionValues...)
-	if err := a.provisioner.SeedRuntimeCredentials(ctx, instance.Name, provisioner.RuntimeCredentialSeedRequest{
-		CodespaceUUID:    codespaceUUID,
-		GiteaToken:       access.GetGiteaToken(),
-		GitSSHKnownHosts: access.GetGitSshTrust().GetKnownHostsLines(),
-	}); err != nil {
-		return err
-	}
-	request.GiteaToken = access.GetGiteaToken()
-	request.ServerURL = access.GetGiteaServerUrl()
-	request.LogSink = logSink
-	if err := logSink.endGroup(ctx); err != nil {
-		return err
-	}
-	identity := provisioner.SystemIdentity{}
-	if request.Operation == provisioner.LifecycleOperationCreate {
-		if err := logSink.startGroup(ctx, "Initialize system and workspace"); err != nil {
-			return err
-		}
-		identity, err = a.provisioner.BootstrapSystem(ctx, instance.Name, request)
-		if err != nil {
-			return err
-		}
-		if err := logSink.endGroup(ctx); err != nil {
-			return err
-		}
-		if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageBootstrapSystem, startedUnix); err != nil {
-			return err
-		}
-		instance.Workdir = identity.Workspace
-		request.Workdir = identity.Workspace
-	} else {
-		if existing == nil {
-			return fmt.Errorf("runtime environment is required for resume")
-		}
-		identity.UID = existing.User
-		identity.GID = existing.Group
-		identity.Workspace = existing.Environment.Workspace
-		if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageBootstrapSystem, startedUnix); err != nil {
-			return err
-		}
-	}
-	startupComplete := false
-	defer func() {
-		if !startupComplete {
-			cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			returnErr = errors.Join(returnErr, a.provisioner.ClearRuntimeSecrets(cleanupCtx, instance.Name))
-		}
-	}()
-	if err := a.provisioner.WriteRuntimeSecrets(ctx, instance.Name, identity.UID, identity.GID, runtimeSecrets); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePrepareWorkspace, startedUnix); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageStartEnvironment, startedUnix); err != nil {
-		return err
-	}
-	if err := logSink.startGroup(ctx, "Start Dev Container"); err != nil {
-		return err
-	}
-	result, err := a.provisioner.StartEnvironment(ctx, instance.Name, request)
-	if err != nil {
-		return err
-	}
-	if err := logSink.endGroup(ctx); err != nil {
-		return err
-	}
-	instance.Workdir = result.Environment.Workspace
-	if err := a.saveRuntimeEnvironment(codespaceUUID, provisioner.RuntimeEnvironment{User: identity.UID, Group: identity.GID, Environment: result.Environment}); err != nil {
-		return err
-	}
-	if err := logSink.startGroup(ctx, "Publish access endpoints"); err != nil {
-		return err
-	}
-	if err := a.validateRuntimeReady(ctx, codespaceUUID, instance); err != nil {
-		return err
-	}
-	if err := a.syncRuntimeEndpointManifest(ctx, codespaceUUID, instance); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStagePublishReady, startedUnix); err != nil {
-		return err
-	}
-	if err := a.reportBootMetadata(ctx, operation, instance, RuntimeBootStageReady, startedUnix); err != nil {
-		return err
-	}
-	if err := logSink.endGroup(ctx); err != nil {
-		return err
-	}
-	a.markRuntimeReady(codespaceUUID)
-	startupComplete = true
-	return nil
-}
-
-func (a *Agent) loadRuntimeEnvironment(codespaceUUID string) (provisioner.RuntimeEnvironment, error) {
-	if a.runtimeEnvStateStore == nil {
-		return provisioner.RuntimeEnvironment{}, fmt.Errorf("runtime environment store is missing")
-	}
-	environment, ok, err := a.runtimeEnvStateStore.LoadRuntimeEnvironment(codespaceUUID)
-	if err != nil {
-		return provisioner.RuntimeEnvironment{}, fmt.Errorf("load runtime environment %s: %w", codespaceUUID, err)
-	}
-	if !ok {
-		return provisioner.RuntimeEnvironment{}, fmt.Errorf("runtime environment is missing for codespace %s", codespaceUUID)
-	}
-	return environment, nil
-}
-
-func runtimeSecretsFromAccess(access *codespacev1.RuntimeAccessBundle) (provisioner.RuntimeSecretEnvironment, []string, error) {
-	secrets := make(provisioner.RuntimeSecretEnvironment, len(access.GetSecrets()))
-	values := make([]string, 0, len(access.GetSecrets()))
-	maskValues := make(map[string]struct{}, len(access.GetSecrets()))
-	for _, secret := range access.GetSecrets() {
-		name, value := secret.GetName(), secret.GetValue()
-		if !runtimeSecretNamePattern.MatchString(name) || value == "" || !utf8.ValidString(value) || strings.IndexByte(value, 0) >= 0 {
-			return nil, nil, fmt.Errorf("runtime secret %q is invalid", name)
-		}
-		if _, exists := secrets[name]; exists {
-			return nil, nil, fmt.Errorf("runtime secret %q is duplicated", name)
-		}
-		secrets[name] = value
-		for _, maskValue := range append([]string{value}, strings.FieldsFunc(value, func(r rune) bool { return r == '\r' || r == '\n' })...) {
-			maskValue = strings.TrimSpace(maskValue)
-			if maskValue == "" {
-				continue
-			}
-			if _, exists := maskValues[maskValue]; !exists {
-				maskValues[maskValue] = struct{}{}
-				values = append(values, maskValue)
-			}
-		}
-	}
-	slices.SortStableFunc(values, func(a, b string) int { return len(b) - len(a) })
-	return secrets, values, nil
-}
-
-func lifecycleRequest(
-	operation *codespacev1.OperationPayload,
-	startupInput StartupInput,
-	instance *provisioner.Instance,
-) provisioner.LifecycleRequest {
-	return provisioner.LifecycleRequest{
-		CodespaceUUID:    operation.GetRuntimeUuid(),
-		CodespaceName:    runtimeInstanceName(operation.GetRuntimeUuid()),
-		UserName:         startupInput.Username,
-		GitUserEmail:     startupInput.GitUserEmail,
-		RuntimeUserName:  startupInput.RuntimeUserName,
-		RepoFullName:     startupInput.RepoFullName,
-		Workdir:          instance.Workdir,
-		EnvironmentTag:   startupInput.EnvironmentTag,
-		DevContainer:     startupInput.DevContainer,
-		OperationVersion: operation.GetOperationRversion(),
-	}
-}
-
-func gitProtocolName(protocol codespacev1.GitProtocol) string {
-	switch protocol {
-	case codespacev1.GitProtocol_GIT_PROTOCOL_SSH:
-		return "ssh"
-	default:
-		return "http"
-	}
-}
-
-func (a *Agent) saveStartupInput(input StartupInput) error {
-	if a.startupInputStore == nil {
-		return nil
-	}
-	if err := a.startupInputStore.SaveStartupInput(input); err != nil {
-		return fmt.Errorf("save startup input: %w", err)
-	}
-	return nil
-}
-
-func (a *Agent) loadStartupInput(codespaceUUID string) (StartupInput, bool, error) {
-	if a.startupInputStore == nil {
-		return StartupInput{}, false, nil
-	}
-	input, ok, err := a.startupInputStore.LoadStartupInput(codespaceUUID)
-	if err != nil {
-		return StartupInput{}, false, fmt.Errorf("load startup input: %w", err)
-	}
-	return input, ok, nil
-}
-
-type runtimeGitSSHKeySeed struct {
-	privateKey []byte
-	publicKey  []byte
-	publicWire []byte
-}
-
-func generateRuntimeGitSSHKey(keyType string) (runtimeGitSSHKeySeed, error) {
-	switch normalizeRuntimeGitSSHKeyType(keyType) {
-	case gitSSHKeyTypeRSA4096:
-		return generateRSARuntimeGitSSHKey()
-	default:
-		return generateEd25519RuntimeGitSSHKey()
-	}
-}
-
-func (a *Agent) runtimeGitSSHKeySeed(ctx context.Context, instanceName string) (runtimeGitSSHKeySeed, error) {
-	status, err := a.provisioner.CheckCredentials(ctx, instanceName)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("check runtime git ssh key: %w", err)
-	}
-	if len(bytes.TrimSpace(status.GitSSHPrivateKey)) == 0 && len(bytes.TrimSpace(status.GitSSHPublicKey)) == 0 {
-		return generateRuntimeGitSSHKey(a.gitSSHKeyType)
-	}
-	return runtimeGitSSHKeySeedFromCredentials(status.GitSSHPrivateKey, status.GitSSHPublicKey)
-}
-
-func runtimeGitSSHKeySeedFromCredentials(privateKeyPEM, publicKeyAuthorized []byte) (runtimeGitSSHKeySeed, error) {
-	privateKeyPEM = bytes.TrimSpace(privateKeyPEM)
-	publicKeyAuthorized = bytes.TrimSpace(publicKeyAuthorized)
-	if len(privateKeyPEM) == 0 || len(publicKeyAuthorized) == 0 {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("runtime git ssh private and public key files must both exist")
-	}
-	rawPrivateKey, err := ssh.ParseRawPrivateKey(privateKeyPEM)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("parse runtime git ssh private key: %w", err)
-	}
-	signer, ok := rawPrivateKey.(crypto.Signer)
-	if !ok {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("runtime git ssh private key is not a signer")
-	}
-	privatePublicKey, err := ssh.NewPublicKey(signer.Public())
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("marshal runtime git ssh private key public half: %w", err)
-	}
-	publicKey, _, _, _, err := ssh.ParseAuthorizedKey(publicKeyAuthorized)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("parse runtime git ssh public key: %w", err)
-	}
-	if !bytes.Equal(privatePublicKey.Marshal(), publicKey.Marshal()) {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("runtime git ssh private and public key do not match")
-	}
-	privateKeyCopy := append([]byte(nil), privateKeyPEM...)
-	privateKeyCopy = append(privateKeyCopy, '\n')
-	return runtimeGitSSHKeySeed{
-		privateKey: privateKeyCopy,
-		publicKey:  ssh.MarshalAuthorizedKey(publicKey),
-		publicWire: publicKey.Marshal(),
-	}, nil
-}
-
-func generateEd25519RuntimeGitSSHKey() (runtimeGitSSHKeySeed, error) {
-	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("generate runtime git ssh key: %w", err)
-	}
-	sshPublicKey, err := ssh.NewPublicKey(publicKey)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("marshal runtime git ssh public key: %w", err)
-	}
-	privateBlock, err := ssh.MarshalPrivateKey(privateKey, "gitea-codespace")
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("marshal runtime git ssh private key: %w", err)
-	}
-	return runtimeGitSSHKeySeed{
-		privateKey: pem.EncodeToMemory(privateBlock),
-		publicKey:  ssh.MarshalAuthorizedKey(sshPublicKey),
-		publicWire: sshPublicKey.Marshal(),
-	}, nil
-}
-
-func generateRSARuntimeGitSSHKey() (runtimeGitSSHKeySeed, error) {
-	privateKey, err := rsa.GenerateKey(rand.Reader, 4096)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("generate runtime git ssh key: %w", err)
-	}
-	sshPublicKey, err := ssh.NewPublicKey(&privateKey.PublicKey)
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("marshal runtime git ssh public key: %w", err)
-	}
-	privateBlock, err := ssh.MarshalPrivateKey(privateKey, "gitea-codespace")
-	if err != nil {
-		return runtimeGitSSHKeySeed{}, fmt.Errorf("marshal runtime git ssh private key: %w", err)
-	}
-	return runtimeGitSSHKeySeed{
-		privateKey: pem.EncodeToMemory(privateBlock),
-		publicKey:  ssh.MarshalAuthorizedKey(sshPublicKey),
-		publicWire: sshPublicKey.Marshal(),
-	}, nil
-}
-
-func normalizeRuntimeGitSSHKeyType(keyType string) string {
-	switch strings.ToLower(strings.TrimSpace(keyType)) {
-	case "", gitSSHKeyTypeEd25519:
-		return gitSSHKeyTypeEd25519
-	case gitSSHKeyTypeRSA4096:
-		return gitSSHKeyTypeRSA4096
-	default:
-		return gitSSHKeyTypeEd25519
-	}
+	cleanupCtx, cancel := a.newCleanupContext()
+	defer cancel()
+	a.triggerResourceAbsentInventory(cleanupCtx, operation)
 }
 
 func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID string, instance *provisioner.Instance) error {
@@ -2887,7 +1491,7 @@ func (a *Agent) syncRuntimeEndpointManifest(ctx context.Context, codespaceUUID s
 			Public:        declaration.Public,
 		})
 	}
-	if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, routes); err != nil {
+	if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(ctx, codespaceUUID, routes); err != nil {
 		return fmt.Errorf("apply runtime endpoint routes: %w", err)
 	}
 	return nil
@@ -2981,7 +1585,7 @@ func (a *Agent) checkRuntimeWorkspaceAccess(ctx context.Context, checker workspa
 }
 
 func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.OperationPayload) error {
-	if err := a.deactivateRuntimeMetadata(operation.GetRuntimeUuid()); err != nil {
+	if err := a.deactivateRuntimeMetadata(ctx, operation.GetRuntimeUuid()); err != nil {
 		return err
 	}
 	logSink := newOperationLogSink(a, operation)
@@ -3022,14 +1626,12 @@ func (a *Agent) handleStop(ctx context.Context, operation *codespacev1.Operation
 	return nil
 }
 
-func (a *Agent) handleDelete(ctx context.Context, operation *codespacev1.OperationPayload, cleanupPending bool) error {
-	if err := a.deactivateRuntimeMetadata(operation.GetRuntimeUuid()); err != nil {
+func (a *Agent) handleDelete(ctx context.Context, operation *codespacev1.OperationPayload) error {
+	if err := a.deactivateRuntimeMetadata(ctx, operation.GetRuntimeUuid()); err != nil {
 		return err
 	}
-	if cleanupPending {
-		if err := a.saveCleanupPending(operation.GetRuntimeUuid()); err != nil {
-			return err
-		}
+	if err := a.saveCleanupPending(operation.GetRuntimeUuid()); err != nil {
+		return err
 	}
 	if err := a.provisioner.Delete(ctx, runtimeInstanceName(operation.GetRuntimeUuid())); err != nil {
 		return err
@@ -3045,14 +1647,14 @@ func (a *Agent) closeCodespaceAccess(codespaceUUID string) {
 	a.accessController.CloseCodespaceAccess(codespaceUUID)
 }
 
-func (a *Agent) deactivateRuntimeMetadata(codespaceUUID string) error {
+func (a *Agent) deactivateRuntimeMetadata(ctx context.Context, codespaceUUID string) error {
 	if codespaceUUID == "" {
 		return nil
 	}
 	a.closeCodespaceAccess(codespaceUUID)
 	var cleanupErrors []error
 	if a.endpointApplier != nil {
-		if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(codespaceUUID, nil); err != nil {
+		if err := a.endpointApplier.ApplyRuntimeEndpointRoutes(ctx, codespaceUUID, nil); err != nil {
 			cleanupErrors = append(cleanupErrors, fmt.Errorf("clear runtime endpoint routes %s: %w", codespaceUUID, err))
 		}
 	}
@@ -3062,7 +1664,7 @@ func (a *Agent) deactivateRuntimeMetadata(codespaceUUID string) error {
 		}
 	}
 	if a.metadataPublisher != nil {
-		a.metadataPublisher.DeactivateRuntimeMetadata(codespaceUUID)
+		a.metadataPublisher.DeactivateRuntimeMetadata(ctx, codespaceUUID)
 	}
 	return errors.Join(cleanupErrors...)
 }
@@ -3386,4 +1988,21 @@ func runtimeInstanceName(codespaceUUID string) string {
 		shortUUID = shortUUID[:20]
 	}
 	return "cs-" + shortUUID
+}
+
+// newCleanupContext bounds detached cleanup by the worker's shutdown deadline.
+func (a *Agent) newCleanupContext() (context.Context, context.CancelFunc) {
+	parent := a.shutdownContext
+	if parent == nil {
+		parent = context.Background()
+	}
+	timeout := a.config.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = 10 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(parent, timeout)
+	if a.config.ExecutionContext != nil && a.config.ExecutionContext.Err() != nil {
+		cancel()
+	}
+	return ctx, cancel
 }

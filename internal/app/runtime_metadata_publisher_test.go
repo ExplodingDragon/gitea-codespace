@@ -14,10 +14,78 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/manager"
+	"gitea.dev/codespace/internal/provisioner"
 )
 
+type shutdownResourceSampler struct {
+	entered   chan struct{}
+	release   chan struct{}
+	state     *executionStateStore
+	committed chan error
+}
+
+func (s *shutdownResourceSampler) RuntimeResourceUsage(ctx context.Context, _ string) (provisioner.RuntimeResourceUsage, error) {
+	close(s.entered)
+	<-ctx.Done()
+	<-s.release
+	s.committed <- s.state.save("last-observation", []byte("saved during shutdown"), 0)
+	return provisioner.RuntimeResourceUsage{}, ctx.Err()
+}
+
+func TestRuntimeMetadataPublisherShutdownWaitsForLastStoreUse(t *testing.T) {
+	store := newTestCodespaceStateStore(t, t.TempDir())
+	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
+		CodespaceUUID: runtimeUUID, MetadataGeneration: 1,
+		InstanceName: "cs-11111111111141118111", Workdir: "/workspaces/repo",
+		Boot: manager.RuntimeMetadataBoot{OperationRVersion: 1, Stage: manager.RuntimeBootStageReady, StartedUnix: 10, LastUpdateUnix: 11},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	controlPlane, closeServer := newTestGatewayControlPlane(t, &gatewayManagerService{})
+	defer closeServer()
+	sampler := &shutdownResourceSampler{entered: make(chan struct{}), release: make(chan struct{}), state: store.records, committed: make(chan error, 1)}
+	publisher := newRuntimeMetadataPublisher(store, controlPlane, sampler, time.Millisecond)
+	publisher.Run(context.Background())
+	released := false
+	defer func() {
+		if !released {
+			close(sampler.release)
+		}
+		publisher.Close()
+	}()
+	if _, err := publisher.ActivateRuntimeMetadata(runtimeUUID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-sampler.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sampler did not start")
+	}
+	done := make(chan struct{})
+	go func() { publisher.Close(); close(done) }()
+	select {
+	case <-done:
+		t.Fatal("publisher closed before its storage user returned")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(sampler.release)
+	released = true
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("publisher did not finish shutdown")
+	}
+	if err := <-sampler.committed; err != nil {
+		t.Fatalf("last checkpoint: %v", err)
+	}
+	content, _, err := store.records.load("last-observation")
+	if err != nil || string(content) != "saved during shutdown" {
+		t.Fatalf("checkpoint: %q %v", content, err)
+	}
+}
+
 func TestRuntimeMetadataPublisherSettingsWakeOnlyOnIntervalChange(t *testing.T) {
-	t.Parallel()
 
 	publisher := newRuntimeMetadataPublisher(nil, nil, nil, 0)
 	settings := manager.ManagerServiceSettings{RuntimeMetadataRefreshInterval: time.Minute}
@@ -46,14 +114,13 @@ func TestRuntimeMetadataPublisherSettingsWakeOnlyOnIntervalChange(t *testing.T) 
 }
 
 func TestRuntimeMetadataPublisherRefreshesWhileSettingsRepeat(t *testing.T) {
-	t.Parallel()
 
 	service := &gatewayManagerService{}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
 
 	stateDir := filepath.Join(t.TempDir(), "state")
-	store := NewCodespaceStateStore(stateDir)
+	store := newTestCodespaceStateStore(t, stateDir)
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	if err := store.SaveRuntimeMetadataSnapshot(manager.RuntimeMetadataSnapshot{
 		CodespaceUUID:      codespaceUUID,
@@ -108,12 +175,11 @@ func TestRuntimeMetadataPublisherRefreshesWhileSettingsRepeat(t *testing.T) {
 }
 
 func TestRuntimeMetadataPublisherNotifyDoesNotActivate(t *testing.T) {
-	t.Parallel()
 
 	service := &gatewayManagerService{}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	store := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
+	store := newTestCodespaceStateStore(t, filepath.Join(t.TempDir(), "state"))
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	if err := store.SaveRuntimeMetadataSnapshot(readyRuntimeMetadataSnapshot(codespaceUUID)); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)
@@ -138,7 +204,6 @@ func TestRuntimeMetadataPublisherNotifyDoesNotActivate(t *testing.T) {
 }
 
 func TestRuntimeMetadataPublisherStaleOperationStopsWorker(t *testing.T) {
-	t.Parallel()
 
 	connectErr := connect.NewError(connect.CodeFailedPrecondition, errors.New("stale operation"))
 	detail, err := connect.NewErrorDetail(&codespacev1.FailureDetail{Category: "stale_operation"})
@@ -149,7 +214,7 @@ func TestRuntimeMetadataPublisherStaleOperationStopsWorker(t *testing.T) {
 	service := &gatewayManagerService{metadataErr: connectErr}
 	controlPlane, closeServer := newTestGatewayControlPlane(t, service)
 	defer closeServer()
-	store := NewCodespaceStateStore(filepath.Join(t.TempDir(), "state"))
+	store := newTestCodespaceStateStore(t, filepath.Join(t.TempDir(), "state"))
 	codespaceUUID := "11111111-1111-4111-8111-111111111111"
 	if err := store.SaveRuntimeMetadataSnapshot(readyRuntimeMetadataSnapshot(codespaceUUID)); err != nil {
 		t.Fatalf("save runtime metadata: %v", err)

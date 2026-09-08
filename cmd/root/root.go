@@ -11,7 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"gitea.dev/codespace/cmd/admin"
+	"gitea.dev/codespace/cmd/gateway"
 	runtimecommand "gitea.dev/codespace/cmd/runtime"
 	"gitea.dev/codespace/cmd/serve"
 	"gitea.dev/codespace/internal/runtimecmd"
@@ -30,7 +30,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 	command.CompletionOptions.DisableDefaultCmd = true
-	command.AddCommand(admin.NewCommand(), serve.NewCommand(), runtimecommand.NewCommand())
+	command.AddCommand(serve.NewCommand(), gateway.NewCommand(), runtimecommand.NewCommand())
 	return command
 }
 

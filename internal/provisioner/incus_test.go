@@ -9,9 +9,12 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
 	"path"
+	"path/filepath"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,13 +34,13 @@ func (s *recordingLifecycleLogSink) WriteLifecycleLog(ctx context.Context, messa
 func TestIncusInstanceFromAPIRequiresManagerOwnership(t *testing.T) {
 	t.Parallel()
 
-	provisioner := &IncusProvisioner{managerID: "7"}
+	provisioner := &IncusProvisioner{siteID: "7"}
 	instance, ok := provisioner.instanceFromAPI(api.Instance{
 		Name:   "cs-11111111222243338444",
 		Status: "Running",
 		InstancePut: api.InstancePut{
 			Config: map[string]string{
-				incusConfigManagerID:      "7",
+				incusConfigSiteID:         "7",
 				incusConfigCodespaceUUID:  "11111111-2222-4333-8444-555555555555",
 				incusConfigEnvironmentTag: "default",
 			},
@@ -57,13 +60,13 @@ func TestIncusInstanceFromAPIRequiresManagerOwnership(t *testing.T) {
 func TestIncusInstanceFromAPISkipsOtherManagers(t *testing.T) {
 	t.Parallel()
 
-	provisioner := &IncusProvisioner{managerID: "7"}
+	provisioner := &IncusProvisioner{siteID: "7"}
 	_, ok := provisioner.instanceFromAPI(api.Instance{
 		Name:   "cs-11111111222243338444",
 		Status: "Running",
 		InstancePut: api.InstancePut{
 			Config: map[string]string{
-				incusConfigManagerID:     "8",
+				incusConfigSiteID:        "8",
 				incusConfigCodespaceUUID: "11111111-2222-4333-8444-555555555555",
 			},
 		},
@@ -76,13 +79,13 @@ func TestIncusInstanceFromAPISkipsOtherManagers(t *testing.T) {
 func TestIncusInstanceFromAPISkipsMissingCodespaceUUID(t *testing.T) {
 	t.Parallel()
 
-	provisioner := &IncusProvisioner{managerID: "7"}
+	provisioner := &IncusProvisioner{siteID: "7"}
 	_, ok := provisioner.instanceFromAPI(api.Instance{
 		Name:   "cs-11111111222243338444",
 		Status: "Running",
 		InstancePut: api.InstancePut{
 			Config: map[string]string{
-				incusConfigManagerID: "7",
+				incusConfigSiteID: "7",
 			},
 		},
 	})
@@ -256,7 +259,7 @@ func TestIncusCreateRequestUsesEnvironmentResources(t *testing.T) {
 		"path": "/",
 		"pool": "default",
 	}, map[string]string{
-		incusConfigManagerID:      "7",
+		incusConfigSiteID:         "7",
 		incusConfigCodespaceUUID:  "11111111-1111-4111-8111-111111111111",
 		incusConfigEnvironmentTag: "default",
 	})
@@ -1001,5 +1004,44 @@ func TestBoundedOutputBufferKeepsRecentOutput(t *testing.T) {
 	}
 	if !buffer.Truncated() {
 		t.Fatalf("buffer was not marked truncated")
+	}
+}
+
+func TestIncusGatewayExistingProject(t *testing.T) {
+	socket := filepath.Join(t.TempDir(), "incus.sock")
+	listener, err := net.Listen("unix", socket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reads atomic.Int32
+	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/1.0" {
+			t.Errorf("unexpected gateway initialization request: %s %s", r.Method, r.URL)
+			http.Error(w, "unsupported request", http.StatusBadRequest)
+			return
+		}
+		project := r.URL.Query().Get("project")
+		if project == "" {
+			project = "default"
+		}
+		if project == "codespace" {
+			reads.Add(1)
+		}
+		metadata := api.Server{ServerUntrusted: api.ServerUntrusted{Auth: "trusted"},
+			Environment: api.ServerEnvironment{Server: "incus", Project: project}}
+		_ = json.NewEncoder(w).Encode(map[string]any{"type": "sync", "status": "Success", "status_code": 200, "metadata": metadata})
+	})}
+	done := make(chan error, 1)
+	go func() { done <- server.Serve(listener) }()
+	defer func() { _ = server.Close(); <-done }()
+	gateway, err := NewIncusGateway(context.Background(), IncusConfig{SiteID: 1, Project: "codespace", UnixSocket: socket})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := gateway.client.GetServer(); err != nil {
+		t.Fatal(err)
+	}
+	if gateway.project != "codespace" || gateway.siteID != "1" || reads.Load() == 0 {
+		t.Fatal("gateway did not connect to the existing site project")
 	}
 }

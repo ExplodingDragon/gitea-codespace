@@ -4,18 +4,17 @@
 package app
 
 import (
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
+	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"golang.org/x/crypto/ssh"
 )
-
-const gatewaySSHHostKeyFileName = "gateway-ssh-host-key"
 
 type gatewaySSHHostKey struct {
 	signer            ssh.Signer
@@ -24,64 +23,65 @@ type gatewaySSHHostKey struct {
 	updatedUnix       int64
 }
 
-func loadOrCreateGatewaySSHHostKey(stateDir string) (gatewaySSHHostKey, error) {
-	path, err := gatewaySSHKeyPath(stateDir, gatewaySSHHostKeyFileName)
+// LoadGatewaySSHHostKey shares one encrypted SSH identity across all gateway nodes.
+func (s *etcdInfrastructureStore) LoadGatewaySSHHostKey(ctx context.Context) (gatewaySSHHostKey, error) {
+	key := s.key("gateway-host-key")
+	response, err := s.client.Get(ctx, key)
 	if err != nil {
 		return gatewaySSHHostKey{}, err
 	}
-	content, err := loadOrCreateGatewaySSHKeyFile(path)
+	var record struct {
+		PrivateKey  string `json:"private_key"`
+		UpdatedUnix int64  `json:"updated_unix"`
+	}
+	if len(response.Kvs) == 0 {
+		_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+		if err != nil {
+			return gatewaySSHHostKey{}, err
+		}
+		block, err := ssh.MarshalPrivateKey(privateKey, "gitea-codespace")
+		if err != nil {
+			return gatewaySSHHostKey{}, err
+		}
+		record.PrivateKey, err = s.secret.encrypt(string(pem.EncodeToMemory(block)))
+		if err != nil {
+			return gatewaySSHHostKey{}, err
+		}
+		record.UpdatedUnix = time.Now().Unix()
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			return gatewaySSHHostKey{}, err
+		}
+		result, err := s.client.Txn(ctx).
+			If(clientv3.Compare(clientv3.CreateRevision(key), "=", 0)).
+			Then(clientv3.OpPut(key, string(encoded))).
+			Else(clientv3.OpGet(key)).Commit()
+		if err != nil {
+			return gatewaySSHHostKey{}, err
+		}
+		if !result.Succeeded {
+			values := result.Responses[0].GetResponseRange().Kvs
+			if len(values) != 1 {
+				return gatewaySSHHostKey{}, fmt.Errorf("shared SSH host key disappeared")
+			}
+			if err := json.Unmarshal(values[0].Value, &record); err != nil {
+				return gatewaySSHHostKey{}, err
+			}
+		}
+	} else if err := json.Unmarshal(response.Kvs[0].Value, &record); err != nil {
+		return gatewaySSHHostKey{}, err
+	}
+	content, err := s.secret.decrypt(record.PrivateKey)
 	if err != nil {
 		return gatewaySSHHostKey{}, err
 	}
-	signer, err := ssh.ParsePrivateKey(content)
+	signer, err := ssh.ParsePrivateKey([]byte(content))
 	if err != nil {
-		return gatewaySSHHostKey{}, fmt.Errorf("parse gateway ssh host key %s: %w", path, err)
+		return gatewaySSHHostKey{}, fmt.Errorf("parse shared SSH host key: %w", err)
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		return gatewaySSHHostKey{}, fmt.Errorf("stat gateway ssh host key %s: %w", path, err)
+	if record.UpdatedUnix <= 0 {
+		return gatewaySSHHostKey{}, fmt.Errorf("shared SSH host key creation time is invalid")
 	}
-	return gatewaySSHHostKey{
-		signer:            signer,
-		algorithm:         signer.PublicKey().Type(),
-		fingerprintSHA256: ssh.FingerprintSHA256(signer.PublicKey()),
-		updatedUnix:       info.ModTime().Unix(),
-	}, nil
-}
-
-func gatewaySSHKeyPath(stateDir, name string) (string, error) {
-	stateDir = strings.TrimSpace(stateDir)
-	if stateDir == "" {
-		return "", fmt.Errorf("manager.state_dir is required")
-	}
-	return filepath.Join(stateDir, name), nil
-}
-
-func loadOrCreateGatewaySSHKeyFile(path string) ([]byte, error) {
-	content, err := os.ReadFile(path)
-	if err == nil {
-		return content, nil
-	}
-	if !os.IsNotExist(err) {
-		return nil, fmt.Errorf("read gateway ssh key %s: %w", path, err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("create state dir %s: %w", filepath.Dir(path), err)
-	}
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, fmt.Errorf("generate gateway ssh host key: %w", err)
-	}
-	block, err := ssh.MarshalPrivateKey(privateKey, "gitea-codespace")
-	if err != nil {
-		return nil, fmt.Errorf("marshal gateway ssh host key: %w", err)
-	}
-	content = pem.EncodeToMemory(block)
-	if len(content) == 0 {
-		return nil, fmt.Errorf("encode gateway ssh host key")
-	}
-	if err := os.WriteFile(path, content, 0o600); err != nil {
-		return nil, fmt.Errorf("write gateway ssh host key %s: %w", path, err)
-	}
-	return content, nil
+	return gatewaySSHHostKey{signer: signer, algorithm: signer.PublicKey().Type(),
+		fingerprintSHA256: ssh.FingerprintSHA256(signer.PublicKey()), updatedUnix: record.UpdatedUnix}, nil
 }

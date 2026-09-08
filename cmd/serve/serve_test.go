@@ -9,20 +9,17 @@ import (
 	"testing"
 )
 
-func TestCommandPassesConfigAndOutput(t *testing.T) {
+func TestCommandPassesOutput(t *testing.T) {
 	var output bytes.Buffer
-	var gotConfig string
-	command := newCommand(func(writer io.Writer, configPath string) error {
-		gotConfig = configPath
+	command := newCommand(func(writer io.Writer) error {
 		_, err := io.WriteString(writer, "started")
 		return err
 	})
-	command.SetArgs([]string{"--config", "/etc/gitea-codespace.yaml"})
 	command.SetOut(&output)
 	if err := command.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
 	}
-	if gotConfig != "/etc/gitea-codespace.yaml" || output.String() != "started" {
-		t.Fatalf("command arguments = (%q, %q)", gotConfig, output.String())
+	if output.String() != "started" {
+		t.Fatalf("command output = %q", output.String())
 	}
 }
