@@ -1,0 +1,28 @@
+{
+  "name": "codespace-admin",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite --host 127.0.0.1",
+    "build": "vue-tsc --noEmit && vite build",
+    "check": "vue-tsc --noEmit",
+    "format": "prettier --write \"src/**/*.{ts,vue,css}\" \"tests/**/*.ts\" \"*.ts\"",
+    "format:check": "prettier --check \"src/**/*.{ts,vue,css}\" \"tests/**/*.ts\" \"*.ts\"",
+    "test": "playwright test"
+  },
+  "dependencies": {
+    "@lucide/vue": "^1.42.0",
+    "naive-ui": "^2.45.3",
+    "vue": "^3.5.42",
+    "vue-router": "^5.3.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^26.4.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "prettier": "3.6.2",
+    "typescript": "^5.9.3",
+    "vite": "^8.2.2",
+    "vue-tsc": "^3.3.11"
+  }
+}

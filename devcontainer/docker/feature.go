@@ -338,7 +338,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 				plainHTTP = mirrorURL.Scheme == "http"
 			}
 		}
-		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, plainHTTP)
+		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, plainHTTP, cache.Credentials)
 		if err == nil {
 			_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
@@ -348,10 +348,10 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 			return nil, err
 		}
 	}
-	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, false)
+	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, false, cache.Credentials)
 }
 
-func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, plainHTTP bool) (*resolvedFeature, error) {
+func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, plainHTTP bool, registryCredentials map[string]devcontainer.RegistryCredential) (*resolvedFeature, error) {
 	original, err := registry.ParseReference(featureReference)
 	if err != nil {
 		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err))
@@ -371,7 +371,11 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if err != nil {
 		return nil, fmt.Errorf("open Docker credential store: %w", err)
 	}
-	repository.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credentials.Credential(credentialStore)}
+	credential := credentials.Credential(credentialStore)
+	if configured, ok := registryCredentials[parsed.Registry]; ok {
+		credential = auth.StaticCredential(parsed.Registry, auth.Credential{Username: configured.Username, Password: configured.Password})
+	}
+	repository.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credential}
 	repository.PlainHTTP = plainHTTP
 	descriptor, err := repository.Resolve(ctx, parsed.Reference)
 	if err != nil {

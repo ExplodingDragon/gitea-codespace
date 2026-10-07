@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"testing"
 
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/runtimecmd"
 )
 
@@ -32,10 +33,11 @@ func TestEndpointCommandsMapArguments(t *testing.T) {
 	var gotLabel string
 	var gotPort uint16
 	var gotPublic bool
-	command := newEndpointCommandWithRun(func(port uint16, label string, public bool) error {
+	list := func(context.Context) ([]*codespacev1.RuntimeEndpoint, error) { return nil, nil }
+	command := newEndpointCommandWithRun(list, func(_ context.Context, port uint16, label string, public bool) error {
 		gotLabel, gotPort, gotPublic = label, port, public
 		return nil
-	}, func(uint16) error {
+	}, func(context.Context, uint16) error {
 		t.Fatal("delete called while testing set")
 		return nil
 	})
@@ -48,10 +50,10 @@ func TestEndpointCommandsMapArguments(t *testing.T) {
 	}
 
 	var deletedPort uint16
-	command = newEndpointCommandWithRun(func(uint16, string, bool) error {
+	command = newEndpointCommandWithRun(list, func(context.Context, uint16, string, bool) error {
 		t.Fatal("set called while testing delete")
 		return nil
-	}, func(port uint16) error {
+	}, func(_ context.Context, port uint16) error {
 		deletedPort = port
 		return nil
 	})

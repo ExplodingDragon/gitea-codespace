@@ -36,28 +36,24 @@ const (
 )
 
 var runtimeMounts = [...]struct {
-	path     string
+	source   string
+	target   string
 	readOnly bool
 }{
-	{path: "/var/lib/gitea-codespace/gitea-token", readOnly: true},
-	{path: "/var/lib/gitea-codespace/git", readOnly: true},
-	{path: "/var/lib/gitea-codespace/bin", readOnly: true},
-	{path: "/var/lib/gitea-codespace/runtime"},
+	{source: "/run/codespace/gitea-token", target: "/var/lib/gitea-codespace/gitea-token", readOnly: true},
+	{source: "/run/codespace/git", target: "/var/lib/gitea-codespace/git", readOnly: true},
+	{source: "/run/codespace/bin", target: "/var/lib/gitea-codespace/bin", readOnly: true},
+	{source: runtimeendpoint.AgentSocketPath, target: runtimeendpoint.ContainerSocketPath},
+	{source: "/usr/local/bin/gitea-codespace", target: ContainerRuntimeBinary, readOnly: true},
 }
 
-// WorkspaceServiceOptions selects which create-time IDE initialization steps run.
-type WorkspaceServiceOptions struct {
-	InitializeWebIDE bool
-}
-
-// BuildCreateOptions translates a Codespace create request into product-neutral engine options.
-func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) {
+func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) {
 	mounts := make([]devcontainer.Mount, 0, len(runtimeMounts))
 	for _, item := range runtimeMounts {
-		if _, err := os.Stat(item.path); err == nil {
-			mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.path, Target: item.path, ReadOnly: item.readOnly})
+		if _, err := os.Stat(item.source); err == nil {
+			mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.source, Target: item.target, ReadOnly: item.readOnly})
 		} else if !os.IsNotExist(err) {
-			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.path, err)
+			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.source, err)
 		}
 	}
 	return containerdocker.CreateOptions{
@@ -87,24 +83,17 @@ func BuildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 	}, nil
 }
 
-// ConfigureCreate installs the runtime bridge and the immutable Git identity before lifecycle commands run.
-func ConfigureCreate(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
-	executable, err := os.Executable()
-	if err != nil {
-		return fmt.Errorf("locate runtime binary: %w", err)
-	}
-	if err := engine.CopyFile(ctx, state.PrimaryContainerID, executable, ContainerRuntimeBinary, 0o755); err != nil {
-		return err
+func configureCreate(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
+	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
+		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
 	}
 	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
 		return err
 	}
-	if err := InitializeConfiguredEndpoints(state.Configuration, request.HostUser); err != nil {
-		return fmt.Errorf("initialize runtime endpoints: %w", err)
-	}
 	values := map[string]string{
 		"GITEA_GIT_USER_NAME":  request.GitUserName,
 		"GITEA_GIT_USER_EMAIL": request.GitUserEmail,
+		"GITEA_WORKSPACE":      state.RemoteWorkdir,
 	}
 	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", configureGitScript}, values, nil); err != nil {
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
@@ -112,8 +101,7 @@ func ConfigureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 	return nil
 }
 
-// StartWorkspaceServices runs attach lifecycle commands and makes the Web IDE and declared endpoints available.
-func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, opts WorkspaceServiceOptions, stdout, stderr io.Writer) error {
+func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, initializeWebIDE bool, stdout, stderr io.Writer) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -124,13 +112,13 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		return err
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets, map[string]string{
-		"GITEA_WEB_IDE_INITIALIZE": strconv.FormatBool(opts.InitializeWebIDE),
+		"GITEA_WEB_IDE_INITIALIZE": strconv.FormatBool(initializeWebIDE),
 		"GITEA_WEB_IDE_PORT":       fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
 		"GITEA_WORKSPACE":          state.RemoteWorkdir,
 	})
 	var settingsReader io.Reader
 	customizations := webIDECustomizations{}
-	if opts.InitializeWebIDE {
+	if initializeWebIDE {
 		if raw := state.Configuration.Customizations["vscode"]; len(raw) > 0 {
 			if err := json.Unmarshal(raw, &customizations); err != nil {
 				return fmt.Errorf("decode VS Code customizations: %w", err)
@@ -149,18 +137,17 @@ func StartWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
-	if !opts.InitializeWebIDE || len(customizations.Extensions) == 0 {
+	if !initializeWebIDE || len(customizations.Extensions) == 0 {
 		return nil
 	}
-	_, _ = fmt.Fprintln(stdout, "##[group]Install VS Code extensions")
-	defer func() { _, _ = fmt.Fprintln(stdout, "##[endgroup]") }()
+	_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
 	for _, extension := range customizations.Extensions {
 		extension = strings.TrimSpace(extension)
 		if extension == "" {
 			return fmt.Errorf("VS Code extension identifier is empty")
 		}
 		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
-			_, _ = fmt.Fprintf(stderr, "##[warning]Install VS Code extension %s: %v\n", extension, err)
+			_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
 		}
 	}
 	return nil

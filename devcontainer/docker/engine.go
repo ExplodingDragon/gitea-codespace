@@ -537,7 +537,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	if service.Build != nil {
 		stage := "compose-" + resolved.Service
-		if err := e.buildService(ctx, project, resolved.Service, buildCacheReference(resolved.Cache, stage), stage); err != nil {
+		if err := e.buildService(ctx, project, resolved.Service, resolved.Cache, stage); err != nil {
 			return "", nil, nil, fmt.Errorf("build Docker Compose Dev Container service: %w", err)
 		}
 	}
@@ -672,7 +672,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name
-			if err := e.buildService(ctx, project, name, buildCacheReference(resolved.Cache, stage), stage); err != nil {
+			if err := e.buildService(ctx, project, name, resolved.Cache, stage); err != nil {
 				return "", nil, nil, fmt.Errorf("build Docker Compose service %s: %w", name, err)
 			}
 			continue

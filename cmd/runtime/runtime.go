@@ -19,6 +19,7 @@ func NewCommand() *cobra.Command {
 		newExecCommand(),
 		newTCPCommand(),
 		newConnectCommand(),
+		newSFTPCommand(),
 		newEndpointCommand(),
 	)
 	return command

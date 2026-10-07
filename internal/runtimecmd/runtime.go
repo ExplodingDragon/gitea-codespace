@@ -22,6 +22,7 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/moby/term"
+	"github.com/pkg/sftp"
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
@@ -65,49 +66,7 @@ func Apply(ctx context.Context, requestPath, resultPath string, stdout, stderr i
 			Error:   fmt.Sprintf("decode runtime request: %v", err),
 		})
 	}
-	if err := request.Validate(); err != nil {
-		return writeJSONAtomic(resultPath, devcontainerruntime.Result{
-			Version: devcontainerruntime.FormatVersion,
-			Error:   err.Error(),
-		})
-	}
-	engine, err := containerdocker.New(ctx, stdout, stderr)
-	if err != nil {
-		return writeJSONAtomic(resultPath, devcontainerruntime.Result{
-			Version:     devcontainerruntime.FormatVersion,
-			Error:       err.Error(),
-			Recoverable: true,
-		})
-	}
-	defer func() { _ = engine.Close() }()
-	var state *devcontainer.State
-	switch request.Action {
-	case "create":
-		options, optionsErr := devcontainerruntime.BuildCreateOptions(request)
-		if optionsErr != nil {
-			err = devcontainer.InvalidConfiguration(optionsErr)
-			break
-		}
-		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			return devcontainerruntime.ConfigureCreate(ctx, engine, state, request)
-		}
-		state, err = engine.Create(ctx, options)
-		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, devcontainerruntime.WorkspaceServiceOptions{InitializeWebIDE: true}, stdout, stderr)
-			if err != nil {
-				_ = engine.Delete(context.WithoutCancel(ctx), state)
-			}
-		}
-	case "resume":
-		state, err = engine.Start(ctx, request.Environment, request.Secrets)
-		if err == nil {
-			err = devcontainerruntime.StartWorkspaceServices(ctx, engine, state, request.Secrets, devcontainerruntime.WorkspaceServiceOptions{}, stdout, stderr)
-		}
-	case "stop":
-		state, err = engine.Stop(ctx, request.Environment)
-	case "inspect":
-		state, err = engine.Inspect(ctx, request.Environment)
-	}
+	state, err := devcontainerruntime.Apply(ctx, request, stdout, stderr)
 	if err != nil {
 		return writeJSONAtomic(resultPath, devcontainerruntime.Result{
 			Version:     devcontainerruntime.FormatVersion,
@@ -293,6 +252,31 @@ func Connect(ctx context.Context, host string, port uint16, stdin io.Reader, std
 	inputErr := <-copyDone
 	return errors.Join(inputErr, outputErr)
 }
+
+// SFTP serves the container filesystem as the Docker exec user. The initial
+// directory is a convenience; normal Unix permissions remain the boundary.
+func SFTP(workdir string, stdin io.Reader, stdout io.Writer) error {
+	if !filepath.IsAbs(workdir) {
+		return fmt.Errorf("SFTP working directory must be absolute")
+	}
+	stream := &readWriteCloser{Reader: stdin, Writer: stdout}
+	server, err := sftp.NewServer(stream, sftp.WithServerWorkingDirectory(workdir))
+	if err != nil {
+		return err
+	}
+	defer func() { _ = server.Close() }()
+	if err := server.Serve(); err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	return nil
+}
+
+type readWriteCloser struct {
+	io.Reader
+	io.Writer
+}
+
+func (*readWriteCloser) Close() error { return nil }
 
 // ExitError reports the exit status returned by a Dev Container command.
 type ExitError struct {

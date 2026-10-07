@@ -4,16 +4,37 @@
 package docker
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"slices"
 	"strings"
 	"testing"
 
+	composetypes "github.com/compose-spec/compose-go/v2/types"
+	composeapi "github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+type cacheFallbackCompose struct {
+	composeapi.Compose
+	cacheFrom []composetypes.StringList
+	cacheTo   []composetypes.StringList
+}
+
+func (c *cacheFallbackCompose) Build(_ context.Context, project *composetypes.Project, _ composeapi.BuildOptions) error {
+	service := project.Services["image"]
+	c.cacheFrom = append(c.cacheFrom, slices.Clone(service.Build.CacheFrom))
+	c.cacheTo = append(c.cacheTo, slices.Clone(service.Build.CacheTo))
+	if len(c.cacheFrom) == 1 {
+		return errors.New("cache manifest is absent")
+	}
+	return nil
+}
 
 func TestEngineConfigurationHelpers(t *testing.T) {
 	t.Parallel()
@@ -144,6 +165,33 @@ func TestCacheReferences(t *testing.T) {
 		options:   map[string]string{"version": "latest"},
 	}}, "root", "root", map[string]string{"PATH": "/usr/bin"}) {
 		t.Fatalf("Feature image cache reference is not stable and content-specific: %q / %q", featureImage, changedFeature)
+	}
+}
+
+func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
+	t.Parallel()
+
+	compose := &cacheFallbackCompose{}
+	engine := &Engine{compose: compose, stdout: io.Discard, stderr: io.Discard}
+	project := &composetypes.Project{Services: composetypes.Services{"image": {
+		Name: "image",
+		Build: &composetypes.BuildConfig{
+			CacheFrom: composetypes.StringList{"type=local,src=/cache/import"},
+			CacheTo:   composetypes.StringList{"type=local,dest=/cache/export"},
+		},
+	}}}
+	cache := devcontainer.CacheOptions{BuildRegistry: "http://registry.example.com/codespace", BuildScope: "scope"}
+	reference := buildCacheReference(cache, "repository")
+	if err := engine.buildService(t.Context(), project, "image", cache, "repository"); err != nil {
+		t.Fatal(err)
+	}
+	registryImport := "type=registry,ref=" + reference + ",registry.insecure=true"
+	if len(compose.cacheFrom) != 2 || !slices.Contains(compose.cacheFrom[0], registryImport) || slices.Contains(compose.cacheFrom[1], registryImport) {
+		t.Fatalf("cache import attempts = %#v", compose.cacheFrom)
+	}
+	registryExport := "type=registry,ref=" + reference + ",mode=max,oci-mediatypes=true,image-manifest=true,registry.insecure=true"
+	if len(compose.cacheTo) != 2 || !slices.Contains(compose.cacheTo[0], registryExport) || slices.Contains(compose.cacheTo[1], registryExport) || !slices.Contains(compose.cacheTo[1], "type=local,dest=/cache/export") {
+		t.Fatalf("cache export attempts = %#v", compose.cacheTo)
 	}
 }
 

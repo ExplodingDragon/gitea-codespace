@@ -4,28 +4,25 @@
 package devcontainerruntime
 
 import (
-	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-// InitializeConfiguredEndpoints writes the repository defaults before the first
-// lifecycle command. Subsequent starts preserve changes made by the remote user.
-func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, owner devcontainer.HostUser) error {
+// ConfiguredEndpoints returns the repository defaults used for the first create.
+// The Agent persists the returned values before publishing a ready target.
+func ConfiguredEndpoints(configuration devcontainer.Configuration) ([]*codespacev1.RuntimeEndpoint, error) {
 	ports := map[uint16]struct{}{}
 	for _, port := range configuration.ForwardPorts {
 		value, err := devContainerPort(port)
 		if err != nil {
-			return devcontainer.InvalidConfiguration(fmt.Errorf("forwardPorts: %w", err))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("forwardPorts: %w", err))
 		}
 		if value != 0 {
 			ports[value] = struct{}{}
@@ -34,13 +31,13 @@ func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, own
 	for _, port := range configuration.AppPort {
 		value, err := port.ContainerPort()
 		if err != nil {
-			return devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
 		}
 		if value != 0 {
 			ports[value] = struct{}{}
 		}
 	}
-	manifest := runtimeendpoint.EndpointManifest{Version: runtimeendpoint.EndpointManifestVersion, Endpoints: make([]runtimeendpoint.Endpoint, 0, len(ports))}
+	endpoints := make([]*codespacev1.RuntimeEndpoint, 0, len(ports))
 	ordered := make([]int, 0, len(ports))
 	for port := range ports {
 		ordered = append(ordered, int(port))
@@ -57,40 +54,14 @@ func InitializeConfiguredEndpoints(configuration devcontainer.Configuration, own
 			label = "Port " + strconv.Itoa(int(port))
 		}
 		if err := runtimeendpoint.ValidateLabel(label); err != nil {
-			return devcontainer.InvalidConfiguration(fmt.Errorf("port %d label: %w", port, err))
+			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("port %d label: %w", port, err))
 		}
-		manifest.Endpoints = append(manifest.Endpoints, runtimeendpoint.Endpoint{
-			EndpointID:   "port-" + strconv.Itoa(int(port)),
-			Label:        label,
-			UpstreamPort: int(port),
-		})
+		endpoints = append(endpoints, &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Port: uint32(port)})
 	}
-	if len(manifest.Endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
-		return devcontainer.InvalidConfiguration(fmt.Errorf("configured endpoints exceed limit %d", runtimeendpoint.MaxDeclaredEndpointCount))
+	if len(endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
+		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("configured endpoints exceed limit %d", runtimeendpoint.MaxDeclaredEndpointCount))
 	}
-	return writeEndpointManifest(manifest, owner)
-}
-
-func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest, owner devcontainer.HostUser) error {
-	directory := filepath.Dir(runtimeendpoint.EndpointManifestPath)
-	if err := os.MkdirAll(directory, 0o700); err != nil {
-		return err
-	}
-	file, err := os.CreateTemp(directory, ".endpoints-*")
-	if err != nil {
-		return err
-	}
-	temporary := file.Name()
-	defer func() { _ = os.Remove(temporary) }()
-	encodeErr := json.NewEncoder(file).Encode(manifest)
-	chmodErr := file.Chmod(0o600)
-	chownErr := file.Chown(int(owner.UID), int(owner.GID))
-	syncErr := file.Sync()
-	closeErr := file.Close()
-	if err := errors.Join(encodeErr, chmodErr, chownErr, syncErr, closeErr); err != nil {
-		return err
-	}
-	return os.Rename(temporary, runtimeendpoint.EndpointManifestPath)
+	return endpoints, nil
 }
 
 func devContainerPort(port devcontainer.Port) (uint16, error) {

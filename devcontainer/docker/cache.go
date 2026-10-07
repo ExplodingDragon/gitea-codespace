@@ -236,41 +236,48 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		Image: imageName,
 		Build: &types.BuildConfig{Context: contextPath, Dockerfile: dockerfile, Args: buildArgs, Target: target, CacheFrom: types.StringList(cacheFrom)},
 	}
-	cacheReference := buildCacheReference(cache, stage)
 	project := &types.Project{
 		Name:       fmt.Sprintf("devcontainer-build-%x", projectDigest[:8]),
 		WorkingDir: contextPath,
 		Services:   types.Services{"image": service},
 	}
-	return e.buildService(ctx, project, "image", cacheReference, stage)
+	return e.buildService(ctx, project, "image", cache, stage)
 }
 
-func (e *Engine) buildService(ctx context.Context, project *types.Project, serviceName, cacheReference, stage string) error {
+func (e *Engine) buildService(ctx context.Context, project *types.Project, serviceName string, cache devcontainer.CacheOptions, stage string) error {
 	service, ok := project.Services[serviceName]
 	if !ok || service.Build == nil {
 		return nil
 	}
+	cacheReference := buildCacheReference(cache, stage)
 	originalCacheFrom := append(types.StringList(nil), service.Build.CacheFrom...)
 	originalCacheTo := append(types.StringList(nil), service.Build.CacheTo...)
 	if cacheReference != "" {
-		service.Build.CacheFrom = append(service.Build.CacheFrom, "type=registry,ref="+cacheReference)
-		service.Build.CacheTo = append(service.Build.CacheTo, "type=registry,ref="+cacheReference+",mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true")
+		cacheFrom := "type=registry,ref=" + cacheReference
+		cacheTo := "type=registry,ref=" + cacheReference + ",mode=max,oci-mediatypes=true,image-manifest=true"
+		if endpoint, err := parseOCIRepositoryBase(cache.BuildRegistry, true); err == nil && endpoint.Scheme == "http" {
+			cacheFrom += ",registry.insecure=true"
+			cacheTo += ",registry.insecure=true"
+		}
+		service.Build.CacheFrom = append(service.Build.CacheFrom, cacheFrom)
+		service.Build.CacheTo = append(service.Build.CacheTo, cacheTo)
 		project.Services[serviceName] = service
-		_, _ = fmt.Fprintf(e.stdout, "##[group]Restore and publish %s build cache\n", stage)
+		_, _ = fmt.Fprintf(e.stdout, "Restore and publish %s build cache\n", stage)
 	}
 	err := e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
-	if cacheReference != "" {
-		_, _ = fmt.Fprintln(e.stdout, "##[endgroup]")
+	if err == nil {
+		if cacheReference != "" {
+			_, _ = fmt.Fprintf(e.stdout, "Dev Container %s build cache published\n", stage)
+		}
+		return nil
 	}
-	if err == nil || cacheReference == "" {
+	if cacheReference == "" {
 		return err
 	}
 	_, _ = fmt.Fprintf(e.stderr, "Warning: %s BuildKit registry cache is unavailable, retrying with the local cache: %v\n", stage, err)
 	service.Build.CacheFrom = originalCacheFrom
 	service.Build.CacheTo = originalCacheTo
 	project.Services[serviceName] = service
-	_, _ = fmt.Fprintf(e.stdout, "##[group]Retry %s build with local cache\n", stage)
-	err = e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
-	_, _ = fmt.Fprintln(e.stdout, "##[endgroup]")
-	return err
+	_, _ = fmt.Fprintf(e.stdout, "Retry %s build with local cache\n", stage)
+	return e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
 }

@@ -1,0 +1,255 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: codespace-system
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: codespace-manager
+  namespace: codespace-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: codespace-manager
+rules:
+  - apiGroups: [codespace.gitea.dev]
+    resources: [giteasites, giteasites/status, giteasites/finalizers, environmenttemplates, environmenttemplates/status, codespaces, codespaces/status, codespaces/finalizers]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [namespaces, pods, pods/finalizers, persistentvolumeclaims, secrets, configmaps, services, resourcequotas, limitranges, serviceaccounts]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [apps]
+    resources: [deployments]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [networking.k8s.io]
+    resources: [networkpolicies]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [gateway.networking.k8s.io]
+    resources: [httproutes, tcproutes]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [cert-manager.io]
+    resources: [certificates]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [node.k8s.io]
+    resources: [runtimeclasses]
+    verbs: [get, list, watch]
+  - apiGroups: [storage.k8s.io]
+    resources: [storageclasses]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: codespace-manager
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: codespace-manager
+subjects:
+  - kind: ServiceAccount
+    name: codespace-manager
+    namespace: codespace-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: codespace-manager-election
+  namespace: codespace-system
+rules:
+  - apiGroups: [coordination.k8s.io]
+    resources: [leases]
+    verbs: [get, list, watch, create, update, patch, delete]
+  - apiGroups: [""]
+    resources: [events]
+    verbs: [create, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: codespace-manager-election
+  namespace: codespace-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: codespace-manager-election
+subjects:
+  - kind: ServiceAccount
+    name: codespace-manager
+    namespace: codespace-system
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: codespace-manager
+  namespace: codespace-system
+spec:
+  secretName: codespace-manager-identity
+  issuerRef:
+    kind: ClusterIssuer
+    name: codespace-identity
+  uris:
+    - spiffe://codespace/manager/codespace-system
+  dnsNames:
+    - codespace-manager.codespace-system.svc
+  usages: [server auth, client auth]
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codespace-manager
+  namespace: codespace-system
+spec:
+  replicas: 2
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codespace
+      app.kubernetes.io/component: manager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codespace
+        app.kubernetes.io/component: manager
+    spec:
+      serviceAccountName: codespace-manager
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: manager
+          # Replace this digest with the published Manager image used by this cluster.
+          image: registry.example.com/gitea/codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          imagePullPolicy: IfNotPresent
+          args:
+            - serve
+            - --admin-address=:18080
+            - --admin-public-url=https://manager.example.com
+            # Replace this digest with the imported Manager image used by this cluster.
+            - --component-image=registry.example.com/gitea/codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - name: admin
+              containerPort: 18080
+            - name: agent
+              containerPort: 8443
+            - name: component
+              containerPort: 8445
+            - name: health
+              containerPort: 8081
+          readinessProbe:
+            httpGet:
+              port: health
+              path: /healthz
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              port: health
+              path: /healthz
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: [ALL]
+          volumeMounts:
+            - name: identity
+              mountPath: /var/run/codespace/identity
+              readOnly: true
+            - name: admin
+              mountPath: /var/run/codespace/admin
+              readOnly: true
+      volumes:
+        - name: identity
+          secret:
+            secretName: codespace-manager-identity
+            defaultMode: 0440
+        - name: admin
+          secret:
+            secretName: codespace-manager-admin
+            defaultMode: 0440
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: codespace-manager
+  namespace: codespace-system
+spec:
+  selector:
+    app.kubernetes.io/name: codespace
+    app.kubernetes.io/component: manager
+    codespace.gitea.dev/manager-leader: "true"
+  ports:
+    - name: agent
+      port: 8443
+      targetPort: agent
+    - name: admin
+      port: 18080
+      targetPort: admin
+    - name: component
+      port: 8445
+      targetPort: component
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: codespace-manager
+  namespace: codespace-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: codespace
+      app.kubernetes.io/component: manager
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [gateway, cache]
+      ports:
+        - protocol: TCP
+          port: 8445
+    - from:
+        - namespaceSelector:
+            matchExpressions:
+              - key: codespace.gitea.dev/site-uid
+                operator: Exists
+      ports:
+        - protocol: TCP
+          port: 8443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              codespace.gitea.dev/admin-ingress: "true"
+      ports:
+        - protocol: TCP
+          port: 18080

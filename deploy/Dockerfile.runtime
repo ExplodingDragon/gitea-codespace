@@ -1,0 +1,15 @@
+FROM docker:28.5.1-dind
+
+RUN apk add --no-cache \
+    bash \
+    ca-certificates \
+    e2fsprogs \
+    git \
+    openssh-client \
+    shadow \
+    util-linux
+
+COPY --chmod=0555 bin/gitea-codespace /usr/local/bin/gitea-codespace
+
+ENTRYPOINT ["/usr/local/bin/gitea-codespace"]
+CMD ["agent"]

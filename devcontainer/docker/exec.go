@@ -30,8 +30,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 	if err != nil || len(commands) == 0 {
 		return err
 	}
-	_, _ = fmt.Fprintln(stdout, "##[group]initializeCommand")
-	defer func() { _, _ = fmt.Fprintln(stdout, "##[endgroup]") }()
+	_, _ = fmt.Fprintln(stdout, "initializeCommand")
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
 		group.Go(func() error {
@@ -125,8 +124,7 @@ func (e *Engine) runLifecycleCommand(ctx context.Context, environment *devcontai
 	if len(commands) == 0 {
 		return nil
 	}
-	_, _ = fmt.Fprintf(e.stdout, "##[group]%s\n", name)
-	defer func() { _, _ = fmt.Fprintln(e.stdout, "##[endgroup]") }()
+	_, _ = fmt.Fprintf(e.stdout, "%s\n", name)
 	group, groupCtx := errgroup.WithContext(ctx)
 	for _, arguments := range commands {
 		group.Go(func() error {
@@ -198,32 +196,14 @@ func (e *Engine) exec(ctx context.Context, containerID, user, workdir string, co
 	return stdout.Bytes(), stderr.Bytes(), nil
 }
 
-// CopyFile copies one host file into a container with the requested mode.
-func (e *Engine) CopyFile(ctx context.Context, containerID, source, target string, mode int64) error {
-	file, err := os.Open(source)
-	if err != nil {
-		return fmt.Errorf("open source file: %w", err)
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("stat runtime binary: %w", err)
-	}
-	return e.copyContent(ctx, containerID, target, mode, info.Size(), file)
-}
-
 // CopyContent copies in-memory content into a container with the requested mode.
 func (e *Engine) CopyContent(ctx context.Context, containerID, target string, mode int64, content []byte) error {
-	return e.copyContent(ctx, containerID, target, mode, int64(len(content)), bytes.NewReader(content))
-}
-
-func (e *Engine) copyContent(ctx context.Context, containerID, target string, mode, size int64, content io.Reader) error {
 	reader, writer := io.Pipe()
 	go func() {
 		archive := tar.NewWriter(writer)
-		err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: size})
+		err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: int64(len(content))})
 		if err == nil {
-			_, err = io.Copy(archive, content)
+			_, err = io.Copy(archive, bytes.NewReader(content))
 		}
 		err = errors.Join(err, archive.Close())
 		_ = writer.CloseWithError(err)

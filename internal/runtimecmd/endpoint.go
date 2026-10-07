@@ -4,17 +4,30 @@
 package runtimecmd
 
 import (
+	"context"
 	"fmt"
-	"os"
-	"slices"
+	"net"
+	"net/http"
 	"strconv"
 	"strings"
 
+	"connectrpc.com/connect"
+	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
+	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
+func endpointClient() (agentv1connect.RuntimeEndpointServiceClient, *http.Client) {
+	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "unix", runtimeendpoint.ContainerSocketPath)
+	}}
+	client := &http.Client{Transport: transport}
+	return agentv1connect.NewRuntimeEndpointServiceClient(client, "http://runtime-agent"), client
+}
+
 // SetEndpoint adds or replaces a runtime endpoint declaration.
-func SetEndpoint(port uint16, label string, public bool) error {
+func SetEndpoint(ctx context.Context, port uint16, label string, public bool) error {
 	if port == 0 {
 		return fmt.Errorf("endpoint port is invalid")
 	}
@@ -25,80 +38,33 @@ func SetEndpoint(port uint16, label string, public bool) error {
 	if err := runtimeendpoint.ValidateLabel(label); err != nil {
 		return fmt.Errorf("endpoint label is invalid")
 	}
-	id := endpointID(port)
-	manifest, err := readEndpointManifest()
-	if err != nil {
-		return err
-	}
-	manifest.Endpoints = slices.DeleteFunc(manifest.Endpoints, func(endpoint runtimeendpoint.Endpoint) bool {
-		return endpoint.EndpointID == id
-	})
-	manifest.Endpoints = append(manifest.Endpoints, runtimeendpoint.Endpoint{
-		EndpointID:   id,
-		Label:        label,
-		UpstreamPort: int(port),
-		Public:       public,
-	})
-	return writeEndpointManifest(manifest)
+	remote, client := endpointClient()
+	defer client.CloseIdleConnections()
+	_, err := remote.Set(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceSetRequest{
+		ProtocolVersion: 1,
+		Endpoint:        &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Public: public, Port: uint32(port)},
+	}))
+	return err
 }
 
 // DeleteEndpoint removes a runtime endpoint declaration.
-func DeleteEndpoint(port uint16) error {
+func DeleteEndpoint(ctx context.Context, port uint16) error {
 	if port == 0 {
 		return fmt.Errorf("endpoint port is invalid")
 	}
-	id := endpointID(port)
-	manifest, err := readEndpointManifest()
-	if err != nil {
-		return err
-	}
-	manifest.Endpoints = slices.DeleteFunc(manifest.Endpoints, func(endpoint runtimeendpoint.Endpoint) bool {
-		return endpoint.EndpointID == id
-	})
-	return writeEndpointManifest(manifest)
+	remote, client := endpointClient()
+	defer client.CloseIdleConnections()
+	_, err := remote.Delete(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: runtimeendpoint.PortEndpointID(port)}))
+	return err
 }
 
 // ListEndpoints returns the current runtime declarations ordered by port.
-func ListEndpoints() ([]runtimeendpoint.Endpoint, error) {
-	manifest, err := readEndpointManifest()
+func ListEndpoints(ctx context.Context) ([]*codespacev1.RuntimeEndpoint, error) {
+	remote, client := endpointClient()
+	defer client.CloseIdleConnections()
+	response, err := remote.List(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1}))
 	if err != nil {
 		return nil, err
 	}
-	sortEndpoints(manifest.Endpoints)
-	return manifest.Endpoints, nil
-}
-
-func endpointID(port uint16) string {
-	return "port-" + strconv.Itoa(int(port))
-}
-
-func readEndpointManifest() (runtimeendpoint.EndpointManifest, error) {
-	manifest := runtimeendpoint.EndpointManifest{Version: runtimeendpoint.EndpointManifestVersion}
-	if err := readJSON(runtimeendpoint.EndpointManifestPath, &manifest); err != nil && !os.IsNotExist(err) {
-		return manifest, fmt.Errorf("read endpoint manifest: %w", err)
-	}
-	if manifest.Version != runtimeendpoint.EndpointManifestVersion {
-		return manifest, fmt.Errorf("endpoint manifest version %d is invalid", manifest.Version)
-	}
-	return manifest, nil
-}
-
-func writeEndpointManifest(manifest runtimeendpoint.EndpointManifest) error {
-	if len(manifest.Endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
-		return fmt.Errorf("endpoint manifest exceeds limit %d", runtimeendpoint.MaxDeclaredEndpointCount)
-	}
-	sortEndpoints(manifest.Endpoints)
-	return writeJSONAtomic(runtimeendpoint.EndpointManifestPath, manifest)
-}
-
-func sortEndpoints(endpoints []runtimeendpoint.Endpoint) {
-	slices.SortFunc(endpoints, func(a, b runtimeendpoint.Endpoint) int {
-		if a.UpstreamPort < b.UpstreamPort {
-			return -1
-		}
-		if a.UpstreamPort > b.UpstreamPort {
-			return 1
-		}
-		return strings.Compare(a.EndpointID, b.EndpointID)
-	})
+	return response.Msg.Endpoints, nil
 }

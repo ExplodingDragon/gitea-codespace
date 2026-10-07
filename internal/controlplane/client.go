@@ -5,14 +5,21 @@ package controlplane
 
 import (
 	"context"
-	"fmt"
 	"math"
+	"runtime/debug"
 	"strconv"
 
 	"connectrpc.com/connect"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
-	"google.golang.org/protobuf/proto"
 )
+
+// BuildVersion identifies the binary independently of the wire protocol version.
+func BuildVersion() string {
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "development"
+}
 
 const (
 	// ProtocolVersion is the ManagerService protocol implemented by this binary.
@@ -42,16 +49,4 @@ func NewManagerServiceClient(httpClient connect.HTTPClient, baseURL string, mana
 		opts = append(opts, connect.WithReadMaxBytes(maxSize), connect.WithSendMaxBytes(maxSize))
 	}
 	return codespacev1connect.NewManagerServiceClient(httpClient, baseURL, opts...)
-}
-
-// CheckMessageSize verifies a protobuf message before a size-limited RPC.
-func CheckMessageSize(message proto.Message, maxBytes int64) error {
-	if maxBytes <= 0 || message == nil {
-		return nil
-	}
-	size := proto.Size(message)
-	if int64(size) <= maxBytes {
-		return nil
-	}
-	return fmt.Errorf("control plane message size %d exceeds limit %d", size, maxBytes)
 }

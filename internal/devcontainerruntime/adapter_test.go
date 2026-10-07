@@ -22,7 +22,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 			BuildScope:    "scope",
 		},
 	}
-	options, err := BuildCreateOptions(request)
+	options, err := buildCreateOptions(request)
 	if err != nil {
 		t.Fatalf("create options: %v", err)
 	}

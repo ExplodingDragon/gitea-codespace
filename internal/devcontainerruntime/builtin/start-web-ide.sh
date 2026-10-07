@@ -14,8 +14,10 @@ if [[ "${GITEA_WEB_IDE_INITIALIZE:-false}" == true ]]; then
 	cat >"$settings_dir/settings.json"
 fi
 
-pid_file=/var/lib/gitea-codespace/runtime/code-server.pid
-log_file=/var/lib/gitea-codespace/runtime/code-server.log
+runtime_dir="${XDG_RUNTIME_DIR:-$HOME/.cache}/gitea-codespace"
+mkdir -p "$runtime_dir"
+pid_file="$runtime_dir/code-server.pid"
+log_file="$runtime_dir/code-server.log"
 running=false
 if [[ -r "$pid_file" ]]; then
 	pid="$(<"$pid_file")"

@@ -36,18 +36,6 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 	}
 }
 
-func TestCheckMessageSize(t *testing.T) {
-	t.Parallel()
-
-	message := &codespacev1.DeclareManagerRequest{ProtocolVersion: ProtocolVersion}
-	if err := CheckMessageSize(message, 0); err != nil {
-		t.Fatalf("unlimited message size: %v", err)
-	}
-	if err := CheckMessageSize(message, 1); err == nil {
-		t.Fatal("expected message size error")
-	}
-}
-
 type authenticationService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 	managerID     string

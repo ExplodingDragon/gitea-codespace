@@ -5,14 +5,15 @@ package runtimeendpoint
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
 )
 
 const (
-	EndpointManifestPath     = "/var/lib/gitea-codespace/runtime/endpoints.json"
-	EndpointManifestVersion  = 2
+	AgentSocketPath          = "/run/codespace/endpoint.sock"
+	ContainerSocketPath      = "/var/run/gitea-codespace/endpoint.sock"
 	MaxEndpointCount         = 64
 	MaxDeclaredEndpointCount = MaxEndpointCount - 1
 	WorkspaceEndpointID      = "workspace"
@@ -20,18 +21,8 @@ const (
 	WorkspaceEndpointPort    = 13337
 )
 
-// EndpointManifest is the runtime-owned list of ordinary HTTP endpoints published through the Gateway.
-type EndpointManifest struct {
-	Version   int        `json:"version"`
-	Endpoints []Endpoint `json:"endpoints"`
-}
-
-// Endpoint identifies one localhost service in the primary Dev Container.
-type Endpoint struct {
-	EndpointID   string `json:"endpoint_id"`
-	Label        string `json:"label"`
-	UpstreamPort int    `json:"upstream_port"`
-	Public       bool   `json:"public"`
+func PortEndpointID(port uint16) string {
+	return "port-" + strconv.Itoa(int(port))
 }
 
 // ValidateLabel applies the common label constraints used by runtime declarations and Gateway routes.
