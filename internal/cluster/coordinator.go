@@ -348,7 +348,7 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid gateway SSH host key")
 	}
-	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(publicURL.String(), "/"), GatewaySshAddr: gateway.Data["sshAddress"], GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey()), GatewaySshHostKeyUpdatedUnix: hostKey.CreationTimestamp.Unix()}
+	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(publicURL.String(), "/"), GatewaySshAddr: gateway.Data["sshAddress"], GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
 	var accepted []string
 	seen := make(map[string]bool)
 	for _, ref := range site.Spec.Templates {

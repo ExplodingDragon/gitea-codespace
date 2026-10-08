@@ -57,6 +57,68 @@ func (c *ControlClient) recordResult(executionErr error) error {
 	return c.Journal.write("state/report.pb", encoded)
 }
 
+func (c *ControlClient) startExecution(
+	ctx context.Context,
+	response *agentv1.ControlResponse,
+	operation *codespacev1.OperationPayload,
+	runtimeOptions *agentv1.RuntimeOptions,
+	output *Output,
+	wake chan<- struct{},
+) (context.CancelFunc, chan error) {
+	executionResponse := proto.Clone(response).(*agentv1.ControlResponse)
+	executionResponse.Operation = proto.Clone(operation).(*codespacev1.OperationPayload)
+	executionResponse.Runtime = proto.Clone(runtimeOptions).(*agentv1.RuntimeOptions)
+	executionCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	var credentials []string
+	if response.Access != nil {
+		credentials = append(credentials, response.Access.GiteaToken)
+		for _, secret := range response.Access.Secrets {
+			credentials = append(credentials, secret.GetValue())
+		}
+	}
+	output.replacements = NewOutput(output.log, credentials).replacements
+	go func() {
+		executionErr := c.Execute(executionCtx, executionResponse, func(update *agentv1.AgentReport) {
+			c.mu.Lock()
+			if update != nil && update.OperationRversion == c.report.OperationRversion {
+				if update.Boot != nil {
+					c.report.Boot = proto.Clone(update.Boot).(*codespacev1.RuntimeBoot)
+				}
+				if update.Target != nil {
+					c.report.Target = proto.Clone(update.Target).(*agentv1.AccessTarget)
+				}
+				if update.ResourceUsage != nil {
+					c.report.ResourceUsage = proto.Clone(update.ResourceUsage).(*codespacev1.RuntimeResourceUsage)
+				}
+			}
+			c.mu.Unlock()
+			select {
+			case wake <- struct{}{}:
+			default:
+			}
+		}, output.Stdout(), output.Stderr())
+		executionErr = errors.Join(executionErr, executionCtx.Err())
+		if executionErr != nil {
+			_, _ = fmt.Fprintf(output.Stderr(), "Error: %v\n", executionErr)
+		}
+		output.FlushLines()
+		if err := output.Err(); err != nil {
+			slog.Warn("Persist Agent operation output", "error", err)
+		}
+		// Output transport is independent of the execution outcome.
+		drain, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		_ = output.log.Flush(drain, c.Remote)
+		cancelDrain()
+		done <- executionErr
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	}()
+	return cancel, done
+}
+
 // Run retains completed facts until Manager has moved to another operation. A
 // lost result acknowledgement therefore cannot replay a completed create.
 func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
@@ -232,59 +294,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 				return fmt.Errorf("manager did not provide the current operation")
 			} else if finished == nil && operation.OperationRversion != lastStarted && c.snapshot().Result == nil && ((operation.GetCreate() == nil && operation.GetResume() == nil) || response.Access != nil) {
 				lastStarted = operation.OperationRversion
-				executionResponse := proto.Clone(response).(*agentv1.ControlResponse)
-				executionResponse.Operation = proto.Clone(operation).(*codespacev1.OperationPayload)
-				executionResponse.Runtime = proto.Clone(runtimeOptions).(*agentv1.RuntimeOptions)
-				executionCtx, cancel := context.WithCancel(ctx)
-				cancelExecution, finished = cancel, make(chan error, 1)
-				done := finished
-				var credentials []string
-				if response.Access != nil {
-					credentials = append(credentials, response.Access.GiteaToken)
-					for _, secret := range response.Access.Secrets {
-						credentials = append(credentials, secret.GetValue())
-					}
-				}
-				output.replacements = NewOutput(log, credentials).replacements
-				executionOutput := output
-				go func() {
-					executionErr := c.Execute(executionCtx, executionResponse, func(update *agentv1.AgentReport) {
-						c.mu.Lock()
-						if update != nil && update.OperationRversion == c.report.OperationRversion {
-							if update.Boot != nil {
-								c.report.Boot = proto.Clone(update.Boot).(*codespacev1.RuntimeBoot)
-							}
-							if update.Target != nil {
-								c.report.Target = proto.Clone(update.Target).(*agentv1.AccessTarget)
-							}
-							if update.ResourceUsage != nil {
-								c.report.ResourceUsage = proto.Clone(update.ResourceUsage).(*codespacev1.RuntimeResourceUsage)
-							}
-						}
-						c.mu.Unlock()
-						select {
-						case wake <- struct{}{}:
-						default:
-						}
-					}, executionOutput.Stdout(), executionOutput.Stderr())
-					executionErr = errors.Join(executionErr, executionCtx.Err())
-					if executionErr != nil {
-						_, _ = fmt.Fprintf(executionOutput.Stderr(), "Error: %v\n", executionErr)
-					}
-					executionOutput.FlushLines()
-					if err := executionOutput.Err(); err != nil {
-						slog.Warn("Persist Agent operation output", "error", err)
-					}
-					// Output transport is independent of the execution outcome.
-					drain, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-					_ = executionOutput.log.Flush(drain, c.Remote)
-					cancelDrain()
-					done <- executionErr
-					select {
-					case wake <- struct{}{}:
-					default:
-					}
-				}()
+				cancelExecution, finished = c.startExecution(ctx, response, operation, runtimeOptions, output, wake)
 			}
 			if permitErr == nil && cancelExecution != nil {
 				if executionTimer == nil {
