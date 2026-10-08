@@ -30,9 +30,8 @@ var endpointScript []byte
 
 const (
 	// ContainerRuntimeBinary is the in-container path used by endpoint and TCP bridges.
-	ContainerRuntimeBinary     = "/usr/local/libexec/gitea-codespace-runtime"
-	containerEndpointBinary    = "/usr/local/bin/gitea-codespace-endpoint"
-	codeServerFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
+	ContainerRuntimeBinary  = "/usr/local/libexec/gitea-codespace-runtime"
+	containerEndpointBinary = "/usr/local/bin/gitea-codespace-endpoint"
 )
 
 var runtimeMounts = [...]struct {
@@ -56,6 +55,29 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.source, err)
 		}
 	}
+	injected := make([]devcontainer.InjectedFeature, 0, len(request.DevContainer.Features)+1)
+	for _, feature := range request.DevContainer.Features {
+		options := map[string]json.RawMessage{}
+		if len(feature.Options.Raw) != 0 {
+			if err := json.Unmarshal(feature.Options.Raw, &options); err != nil {
+				return containerdocker.CreateOptions{}, fmt.Errorf("decode Dev Container Feature %s options: %w", feature.Reference, err)
+			}
+		}
+		injected = append(injected, devcontainer.InjectedFeature{Reference: strings.TrimSpace(feature.Reference), Origin: "environment template", Options: options})
+	}
+	if webIDE := request.DevContainer.WebIDE; webIDE.Enabled {
+		injected = append(injected, devcontainer.InjectedFeature{
+			Reference: strings.TrimSpace(webIDE.Feature), Origin: "platform Web IDE", InstallOnly: true,
+			Options: map[string]json.RawMessage{
+				"version":            json.RawMessage(strconv.Quote(strings.TrimSpace(webIDE.Version))),
+				"auth":               json.RawMessage(`"none"`),
+				"host":               json.RawMessage(`"0.0.0.0"`),
+				"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
+				"disableTelemetry":   json.RawMessage("true"),
+				"disableUpdateCheck": json.RawMessage("true"),
+			},
+		})
+	}
 	return containerdocker.CreateOptions{
 		OwnerID:          request.CodespaceUUID,
 		Workspace:        request.Workspace,
@@ -65,19 +87,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		LocalEnvironment: request.LocalEnvironment,
 		Secrets:          request.Secrets,
 		Cache:            request.Cache,
-		InjectedFeatures: []devcontainer.InjectedFeature{{
-			Reference:   codeServerFeatureReference,
-			Origin:      "platform",
-			InstallOnly: true,
-			Options: map[string]json.RawMessage{
-				"version":            json.RawMessage(strconv.Quote(request.CodeServerVersion)),
-				"auth":               json.RawMessage(`"none"`),
-				"host":               json.RawMessage(`"0.0.0.0"`),
-				"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
-				"disableTelemetry":   json.RawMessage("true"),
-				"disableUpdateCheck": json.RawMessage("true"),
-			},
-		}},
+		InjectedFeatures: injected,
 		AdditionalMounts: mounts,
 		Labels:           map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
 	}, nil
@@ -101,7 +111,7 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 	return nil
 }
 
-func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, initializeWebIDE bool, stdout, stderr io.Writer) error {
+func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initializeWebIDE bool, stdout, stderr io.Writer) error {
 	if stdout == nil {
 		stdout = io.Discard
 	}
@@ -110,6 +120,9 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	}
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
 		return err
+	}
+	if !configuration.WebIDE.Enabled {
+		return nil
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets, map[string]string{
 		"GITEA_WEB_IDE_INITIALIZE": strconv.FormatBool(initializeWebIDE),
@@ -137,15 +150,22 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
-	if !initializeWebIDE || len(customizations.Extensions) == 0 {
+	if !initializeWebIDE {
 		return nil
 	}
+	extensions := append([]string(nil), customizations.Extensions...)
+	extensions = append(extensions, configuration.WebIDE.Extensions...)
+	seen := make(map[string]struct{}, len(extensions))
 	_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
-	for _, extension := range customizations.Extensions {
+	for _, extension := range extensions {
 		extension = strings.TrimSpace(extension)
 		if extension == "" {
 			return fmt.Errorf("VS Code extension identifier is empty")
 		}
+		if _, exists := seen[extension]; exists {
+			continue
+		}
+		seen[extension] = struct{}{}
 		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
 			_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
 		}

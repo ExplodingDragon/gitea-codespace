@@ -1,8 +1,7 @@
 GO ?= go
 PNPM ?= pnpm
 CONTAINER_TOOL ?= docker
-MANAGER_IMAGE ?= gitea-codespace-manager:local
-RUNTIME_IMAGE ?= gitea-codespace-runtime:local
+CODESPACE_IMAGE ?= gitea-codespace:local
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
 KUBERNETES_RUNTIME_CLASS ?= sysbox-runc
 KUBERNETES_STORAGE_CLASS ?= local-path
@@ -17,12 +16,12 @@ test-kubernetes:
 
 test-kubernetes-runtime:
 	test -f "$(CODESPACE_TEST_DOCKER_ARCHIVE)" || { echo "CODESPACE_TEST_DOCKER_ARCHIVE must point to the exported BusyBox Docker archive"; exit 1; }
-	test -n "$(RUNTIME_IMAGE)" || { echo "RUNTIME_IMAGE must use the manually imported Runtime image"; exit 1; }
-	CODESPACE_TEST_KUBERNETES_RUNTIME=1 CODESPACE_TEST_DOCKER_ARCHIVE="$(CODESPACE_TEST_DOCKER_ARCHIVE)" CODESPACE_TEST_RUNTIME_IMAGE="$(RUNTIME_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EDockerPersistence$$' ./internal/cluster
+	test -n "$(CODESPACE_IMAGE)" || { echo "CODESPACE_IMAGE must use the manually imported platform image"; exit 1; }
+	CODESPACE_TEST_KUBERNETES_RUNTIME=1 CODESPACE_TEST_DOCKER_ARCHIVE="$(CODESPACE_TEST_DOCKER_ARCHIVE)" CODESPACE_TEST_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EDockerPersistence$$' ./internal/cluster
 
 test-kubernetes-agent:
 	$(GO) test -c -tags netgo,osusergo -o bin/agent.test ./internal/agent
-	CODESPACE_TEST_KUBERNETES_AGENT=1 CODESPACE_TEST_RUNTIME_IMAGE="$(RUNTIME_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EAgentProcesses$$' ./internal/cluster
+	CODESPACE_TEST_KUBERNETES_AGENT=1 CODESPACE_TEST_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EAgentProcesses$$' ./internal/cluster
 
 test-kubernetes-components:
 	CODESPACE_TEST_KUBERNETES_COMPONENTS=1 $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EComponentWorkloads$$' ./internal/cluster
@@ -33,8 +32,7 @@ test-kubernetes-ha:
 test-kubernetes-lifecycle:
 	test -n "$(CODESPACE_TEST_GITEA_LISTEN)" || { echo "CODESPACE_TEST_GITEA_LISTEN must be reachable from Runtime Pods"; exit 1; }
 	test -n "$(CODESPACE_TEST_NODE_ADDRESS)" || { echo "CODESPACE_TEST_NODE_ADDRESS must identify a Kubernetes node"; exit 1; }
-	test -n "$(RUNTIME_IMAGE)" || { echo "RUNTIME_IMAGE must use the manually imported digest-pinned Runtime image"; exit 1; }
-	CODESPACE_TEST_KUBERNETES_LIFECYCLE=1 CODESPACE_TEST_RUNTIME_IMAGE="$(RUNTIME_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" CODESPACE_TEST_GITEA_LISTEN="$(CODESPACE_TEST_GITEA_LISTEN)" CODESPACE_TEST_NODE_ADDRESS="$(CODESPACE_TEST_NODE_ADDRESS)" $(GO) test -p 1 -count=1 -timeout 115m -run '^TestKubernetesE2EProductLifecycle$$' ./internal/cluster
+	CODESPACE_TEST_KUBERNETES_LIFECYCLE=1 CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" CODESPACE_TEST_GITEA_LISTEN="$(CODESPACE_TEST_GITEA_LISTEN)" CODESPACE_TEST_NODE_ADDRESS="$(CODESPACE_TEST_NODE_ADDRESS)" $(GO) test -p 1 -count=1 -timeout 115m -run '^TestKubernetesE2EProductLifecycle$$' ./internal/cluster
 
 test-kubernetes-gitea:
 	@test -n "$$CODESPACE_TEST_GITEA_URL" || { echo "CODESPACE_TEST_GITEA_URL is required"; exit 1; }
@@ -42,12 +40,12 @@ test-kubernetes-gitea:
 	@test -n "$$CODESPACE_TEST_GITEA_MANAGER_SECRET" || { echo "CODESPACE_TEST_GITEA_MANAGER_SECRET is required"; exit 1; }
 	CODESPACE_TEST_KUBERNETES_GITEA=1 $(GO) test -p 1 -count=1 -timeout 2m -run '^TestKubernetesE2ERealGiteaHandshake$$' ./internal/cluster
 
-.PHONY: format lint build build-linux images frontend frontend-check admin-dev
+.PHONY: format lint build build-linux images frontend frontend-check admin-dev test-helm
 format:
 	$(GO) fmt ./...
 	$(PNPM) --dir web run format
 
-lint: test-scripts frontend-check
+lint: test-scripts frontend-check test-helm
 	$(GO) vet ./...
 
 build: frontend
@@ -57,8 +55,7 @@ build-linux: frontend
 	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -o bin/gitea-codespace .
 
 images: build-linux
-	$(CONTAINER_TOOL) build -f deploy/Dockerfile.manager -t $(MANAGER_IMAGE) .
-	$(CONTAINER_TOOL) build -f deploy/Dockerfile.runtime -t $(RUNTIME_IMAGE) .
+	$(CONTAINER_TOOL) build -f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
 
 frontend:
 	$(PNPM) --dir web install --frozen-lockfile
@@ -67,6 +64,10 @@ frontend:
 frontend-check:
 	$(PNPM) --dir web run check
 	$(PNPM) --dir web run format:check
+
+test-helm:
+	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
+	helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin >/dev/null
 
 admin-dev:
 	$(PNPM) --dir web run dev

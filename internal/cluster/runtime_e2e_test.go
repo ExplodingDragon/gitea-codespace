@@ -37,11 +37,11 @@ func TestKubernetesE2EDockerPersistence(t *testing.T) {
 	runtimeIsolation := os.Getenv("CODESPACE_TEST_RUNTIME_ISOLATION")
 	runtimeClass := os.Getenv("CODESPACE_TEST_RUNTIME_CLASS")
 	storageClass := os.Getenv("CODESPACE_TEST_STORAGE_CLASS")
-	runtimeImage := os.Getenv("CODESPACE_TEST_RUNTIME_IMAGE")
+	platformImage := os.Getenv("CODESPACE_TEST_PLATFORM_IMAGE")
 	require.Contains(t, []string{"kata", "sysbox"}, runtimeIsolation)
 	require.NotEmpty(t, runtimeClass)
 	require.NotEmpty(t, storageClass)
-	require.NotEmpty(t, runtimeImage)
+	require.NotEmpty(t, platformImage)
 	config, err := ctrl.GetConfig()
 	require.NoError(t, err)
 	c, err := client.New(config, client.Options{Scheme: testScheme(t)})
@@ -73,7 +73,7 @@ func TestKubernetesE2EDockerPersistence(t *testing.T) {
 		Spec: corev1.PodSpec{
 			RuntimeClassName: ptr.To(runtimeClass), AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)),
 			Containers: []corev1.Container{{
-				Name: "docker", Image: runtimeImage, ImagePullPolicy: corev1.PullNever,
+				Name: "docker", Image: platformImage, ImagePullPolicy: corev1.PullNever,
 				Command:      append([]string{"dockerd"}, dockerArguments...),
 				Resources:    corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/var/lib/codespace"}},

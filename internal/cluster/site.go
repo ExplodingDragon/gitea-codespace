@@ -30,15 +30,17 @@ import (
 )
 
 const (
-	SiteUIDLabel    = "codespace.gitea.dev/site-uid"
-	RuntimeUIDLabel = "codespace.gitea.dev/runtime-uid"
-	ComponentLabel  = "app.kubernetes.io/component"
-	SiteFinalizer   = "codespace.gitea.dev/site-cleanup"
+	SiteUIDLabel         = "codespace.gitea.dev/site-uid"
+	RuntimeUIDLabel      = "codespace.gitea.dev/runtime-uid"
+	ComponentLabel       = "app.kubernetes.io/component"
+	SiteFinalizer        = "codespace.gitea.dev/site-cleanup"
+	imagePullSecretLabel = "codespace.gitea.dev/image-pull-secret"
 )
 
 type SiteReconciler struct {
 	Client              client.Client
 	ManagementNamespace string
+	ImagePullSecrets    []string
 	HTTPClient          *http.Client
 }
 
@@ -198,6 +200,43 @@ func (r *SiteReconciler) ensureSiteResources(ctx context.Context, site *api.Gite
 			continue
 		}
 		if err := r.Client.Update(ctx, current); err != nil {
+			return err
+		}
+	}
+	desiredPullSecrets := make(map[string]struct{}, len(r.ImagePullSecrets))
+	for _, name := range r.ImagePullSecrets {
+		desiredPullSecrets[name] = struct{}{}
+		var source corev1.Secret
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.ManagementNamespace, Name: name}, &source); err != nil {
+			return fmt.Errorf("read image pull Secret %s: %w", name, err)
+		}
+		if source.Type != corev1.SecretTypeDockerConfigJson && source.Type != corev1.SecretTypeDockercfg {
+			return fmt.Errorf("image pull Secret %s has unsupported type %s", name, source.Type)
+		}
+		copiedSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
+		_, err := controllerutil.CreateOrUpdate(ctx, r.Client, copiedSecret, func() error {
+			if owner := copiedSecret.Labels[SiteUIDLabel]; owner != "" && owner != string(site.UID) {
+				return fmt.Errorf("image pull Secret %s has another owner", name)
+			}
+			copiedSecret.Labels = map[string]string{SiteUIDLabel: string(site.UID), imagePullSecretLabel: "true"}
+			copiedSecret.Type = source.Type
+			copiedSecret.Data = source.DeepCopy().Data
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+	}
+	var copiedSecrets corev1.SecretList
+	if err := r.Client.List(ctx, &copiedSecrets, client.InNamespace(namespace), client.MatchingLabels{SiteUIDLabel: string(site.UID), imagePullSecretLabel: "true"}); err != nil {
+		return err
+	}
+	for i := range copiedSecrets.Items {
+		copiedSecret := &copiedSecrets.Items[i]
+		if _, wanted := desiredPullSecrets[copiedSecret.Name]; wanted {
+			continue
+		}
+		if err := r.Client.Delete(ctx, copiedSecret, client.Preconditions{UID: &copiedSecret.UID}); err != nil && !apierrors.IsNotFound(err) {
 			return err
 		}
 	}

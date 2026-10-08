@@ -15,7 +15,6 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
-	"reflect"
 	"slices"
 	"sort"
 	"strconv"
@@ -256,24 +255,24 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 		if err != nil {
 			return fmt.Errorf("encode %s Feature %s options: %w", origin, reference, err)
 		}
-		if resolved.Features == nil {
-			resolved.Features = map[string]json.RawMessage{}
-		}
-		if existing, ok := resolved.Features[reference]; ok {
-			if !featureOptionsEqual(existing, featureOptions) {
-				return fmt.Errorf("dev container feature %s conflicts between %s and %s", reference, featureOrigins[reference], origin)
-			}
-			if feature.InstallOnly {
-				resolved.InstallOnlyFeatures[reference] = struct{}{}
-			}
-			continue
-		}
 		featureID, err := featureReferenceID(reference)
 		if err != nil {
 			return err
 		}
 		if existing, ok := featureIDs[featureID]; ok {
-			return fmt.Errorf("dev container feature %s from %s conflicts with %s from %s", reference, origin, existing, featureOrigins[existing])
+			if featureOrigins[existing] != "repository" {
+				return fmt.Errorf("dev container feature %s from %s conflicts with %s from %s", reference, origin, existing, featureOrigins[existing])
+			}
+			featureOptions, err = mergeFeatureOptions(resolved.Features[existing], featureOptions)
+			if err != nil {
+				return fmt.Errorf("merge dev container feature %s from repository and %s: %w", existing, origin, err)
+			}
+			delete(resolved.Features, existing)
+			delete(featureOrigins, existing)
+			delete(resolved.InstallOnlyFeatures, existing)
+		}
+		if resolved.Features == nil {
+			resolved.Features = map[string]json.RawMessage{}
 		}
 		resolved.Features[reference] = featureOptions
 		resolved.InjectedFeatureReferences[reference] = struct{}{}
@@ -286,18 +285,29 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 	return nil
 }
 
-func featureOptionsEqual(left, right json.RawMessage) bool {
-	var leftValue, rightValue any
-	if json.Unmarshal(left, &leftValue) != nil || json.Unmarshal(right, &rightValue) != nil {
-		return false
-	}
-	normalizeEmpty := func(value any) any {
-		if value == nil || value == true {
-			return map[string]any{}
+func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error) {
+	decode := func(raw json.RawMessage) (map[string]json.RawMessage, error) {
+		if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || bytes.Equal(bytes.TrimSpace(raw), []byte("true")) {
+			return map[string]json.RawMessage{}, nil
 		}
-		return value
+		var result map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &result); err != nil || result == nil {
+			return nil, fmt.Errorf("feature options must be an object")
+		}
+		return result, nil
 	}
-	return reflect.DeepEqual(normalizeEmpty(leftValue), normalizeEmpty(rightValue))
+	merged, err := decode(base)
+	if err != nil {
+		return nil, err
+	}
+	values, err := decode(override)
+	if err != nil {
+		return nil, err
+	}
+	for key, value := range values {
+		merged[key] = value
+	}
+	return json.Marshal(merged)
 }
 
 func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, map[string]string, error) {

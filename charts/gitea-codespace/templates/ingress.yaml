@@ -1,0 +1,34 @@
+{{- if .Values.admin.ingress.enabled }}
+{{- if not (hasPrefix "https://" .Values.admin.publicURL) }}{{ fail "admin.publicURL must use HTTPS when the administration Ingress is enabled" }}{{ end }}
+{{- if not .Values.admin.ingress.host }}{{ fail "admin.ingress.host is required when the administration Ingress is enabled" }}{{ end }}
+{{- if not .Values.admin.ingress.tlsSecret }}{{ fail "admin.ingress.tlsSecret is required when the administration Ingress is enabled" }}{{ end }}
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ include "gitea-codespace.fullname" . }}-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitea-codespace.labels" . | nindent 4 }}
+  {{- with .Values.admin.ingress.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.admin.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  tls:
+    - hosts: [{{ .Values.admin.ingress.host | quote }}]
+      secretName: {{ .Values.admin.ingress.tlsSecret }}
+  rules:
+    - host: {{ .Values.admin.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ include "gitea-codespace.fullname" . }}-admin
+                port:
+                  name: http
+{{- end }}

@@ -59,7 +59,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.NoError(t, err)
 	address := listener.Addr().String()
 	require.NoError(t, listener.Close())
-	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://manager.codespace-system.svc:8443", ComponentURL: "https://manager.codespace-system.svc:8445", ComponentImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentityIssuer: "test-issuer", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0", CertificateDirectory: directory}
+	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://manager.codespace-system.svc:8443", ComponentURL: "https://manager.codespace-system.svc:8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentityIssuer: "test-issuer", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0", CertificateDirectory: directory}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() { done <- Run(ctx, config, options) }()
@@ -102,7 +102,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	var sessions corev1.SecretList
 	require.NoError(t, c.List(t.Context(), &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
-	spec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testRuntime()})
+	spec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testEnvironment()})
 	require.NoError(t, err)
 	body, err := json.Marshal(adminWrite{Name: namespace.Name, Spec: spec})
 	require.NoError(t, err)

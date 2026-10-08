@@ -85,7 +85,7 @@ func TestAdminSessionLifecycle(t *testing.T) {
 
 func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testRuntime()}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
 	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, gateway).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 		object.SetUID(types.UID(uuid.NewString()))
@@ -200,6 +200,19 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
 	require.Equal(t, string(gateway.UID), gatewaySecret.Labels[ComponentUIDLabel])
 	require.NotEmpty(t, gatewaySecret.Data["hostKey"])
+	originalGatewaySecret := gatewaySecret.DeepCopy()
+	rotation, err := json.Marshal(adminWrite{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
+	require.NoError(t, err)
+	w := httptest.NewRecorder()
+	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/components/gateway/rotate-ssh-host-key", bytes.NewReader(rotation)))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(gateway), gateway))
+	require.NotEqual(t, originalGatewaySecret.Name, gateway.Data["sshHostKeySecret"])
+	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(originalGatewaySecret), originalGatewaySecret)))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: gateway.Data["sshHostKeySecret"]}, &gatewaySecret))
+	require.True(t, ptr.Deref(gatewaySecret.Immutable, false))
+	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
+	require.NotEqual(t, originalGatewaySecret.Data["hostKey"], gatewaySecret.Data["hostKey"])
 
 	cacheConfig := configpkg.CacheConfig{
 		Name: "Build cache", Enabled: true, Listen: ":5000", PublicURL: "https://cache.example.com", MaxSize: "1GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
@@ -242,6 +255,7 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.NotContains(t, string(encoded), "initial-access")
 	require.NotContains(t, string(encoded), "initial-secret")
 	require.NotContains(t, string(encoded), string(gatewaySecret.Data["hostKey"]))
+	require.NotContains(t, string(encoded), "PRIVATE KEY")
 
 	cacheSpec, err = json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "Updated cache", Cache: &cacheConfig})
 	require.NoError(t, err)

@@ -36,7 +36,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		if err != nil {
 			return nil, err
 		}
-		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, true, stdout, stderr); err != nil {
+		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr); err != nil {
 			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			defer cancel()
 			_ = engine.Delete(cleanup, state)
@@ -48,7 +48,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		if err != nil {
 			return nil, err
 		}
-		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, false, stdout, stderr); err != nil {
+		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr); err != nil {
 			return nil, err
 		}
 		return state, nil

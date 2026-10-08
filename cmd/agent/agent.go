@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -21,6 +22,7 @@ import (
 	"connectrpc.com/connect"
 	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	agentpkg "gitea.dev/codespace/internal/agent"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/transport"
 	"github.com/spf13/cobra"
@@ -63,6 +65,13 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if podUID == "" {
 		return fmt.Errorf("CODESPACE_POD_UID is required")
 	}
+	var devContainer devcontainerruntime.Configuration
+	if err := json.Unmarshal([]byte(os.Getenv("CODESPACE_DEVCONTAINER_CONFIGURATION")), &devContainer); err != nil {
+		return fmt.Errorf("decode CODESPACE_DEVCONTAINER_CONFIGURATION: %w", err)
+	}
+	if err := devContainer.Validate(); err != nil {
+		return fmt.Errorf("CODESPACE_DEVCONTAINER_CONFIGURATION: %w", err)
+	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	if device := strings.TrimSpace(os.Getenv("CODESPACE_DATA_DEVICE")); device != "" {
@@ -98,7 +107,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	}}
 	defer httpClient.CloseIdleConnections()
 	remote := agentv1connect.NewAgentControlServiceClient(httpClient, strings.TrimRight(managerURL, "/"), connect.WithGRPC())
-	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics}
+	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
 	if err != nil {

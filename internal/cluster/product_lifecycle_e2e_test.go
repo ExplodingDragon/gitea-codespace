@@ -341,10 +341,8 @@ func (s *lifecycleRemote) waitFinal(t *testing.T, version int64, operationType c
 
 func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	if os.Getenv("CODESPACE_TEST_KUBERNETES_LIFECYCLE") != "1" {
-		t.Skip("requires the deployed Manager, Runtime image, cert-manager, Sysbox and outbound network access")
+		t.Skip("requires the deployed Manager, cert-manager, a supported RuntimeClass and outbound network access")
 	}
-	runtimeImage := os.Getenv("CODESPACE_TEST_RUNTIME_IMAGE")
-	require.Contains(t, runtimeImage, "@sha256:", "CODESPACE_TEST_RUNTIME_IMAGE must use an imported digest-pinned image")
 	runtimeIsolation := os.Getenv("CODESPACE_TEST_RUNTIME_ISOLATION")
 	runtimeClass := os.Getenv("CODESPACE_TEST_RUNTIME_CLASS")
 	storageClass := os.Getenv("CODESPACE_TEST_STORAGE_CLASS")
@@ -406,8 +404,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		cleanupLifecycleResources(t, c, managementNamespace, siteName, namespace, templateName, gatewayName, cacheName, externalGatewayService)
 	})
 
-	runtimeConfiguration := testRuntime()
-	runtimeConfiguration.Image = runtimeImage
+	runtimeConfiguration := testEnvironment()
 	runtimeConfiguration.Isolation = runtimeIsolation
 	runtimeConfiguration.RuntimeClassName = runtimeClass
 	runtimeConfiguration.StorageClassName = storageClass

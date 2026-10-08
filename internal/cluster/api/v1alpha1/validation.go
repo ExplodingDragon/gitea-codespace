@@ -92,19 +92,12 @@ func (t *EnvironmentTemplate) Validate() error {
 	return ValidateObjectSize(t)
 }
 
-func (r RuntimeConfiguration) Validate() error {
+func (r EnvironmentConfiguration) Validate() error {
 	if r.Isolation != "kata" && r.Isolation != "sysbox" {
 		return fmt.Errorf("runtime isolation must be kata or sysbox")
 	}
 	if len(validation.IsDNS1123Subdomain(r.RuntimeClassName)) != 0 || len(validation.IsDNS1123Subdomain(r.StorageClassName)) != 0 {
 		return fmt.Errorf("runtime and storage class names are required")
-	}
-	image, err := reference.ParseNormalizedNamed(r.Image)
-	if err != nil {
-		return fmt.Errorf("invalid runtime image: %w", err)
-	}
-	if _, ok := image.(reference.Digested); !ok {
-		return fmt.Errorf("runtime image must be pinned by digest")
 	}
 	if r.AccessMode != corev1.ReadWriteOncePod && r.AccessMode != corev1.ReadWriteOnce {
 		return fmt.Errorf("storage access mode must be ReadWriteOncePod or a verified ReadWriteOnce combination")
@@ -130,11 +123,22 @@ func (r RuntimeConfiguration) Validate() error {
 			return fmt.Errorf("runtime %s request and limit must be positive, with request no greater than limit", name)
 		}
 	}
-	if strings.TrimSpace(r.CodeServerVersion) == "" {
-		return fmt.Errorf("runtime requires a code-server version")
-	}
 	if r.GitSSHKeyType != "ed25519" && r.GitSSHKeyType != "rsa-4096" {
 		return fmt.Errorf("git SSH key type must be ed25519 or rsa-4096")
+	}
+	return r.DevContainer.Validate()
+}
+
+func (r RuntimeConfiguration) Validate() error {
+	if err := r.EnvironmentConfiguration.Validate(); err != nil {
+		return err
+	}
+	image, err := reference.ParseNormalizedNamed(r.Image)
+	if err != nil {
+		return fmt.Errorf("invalid platform image: %w", err)
+	}
+	if _, ok := image.(reference.Digested); !ok {
+		return fmt.Errorf("platform image must be pinned by digest")
 	}
 	return nil
 }

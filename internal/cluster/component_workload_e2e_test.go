@@ -25,7 +25,7 @@ import (
 
 func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	if os.Getenv("CODESPACE_TEST_KUBERNETES_COMPONENTS") != "1" {
-		t.Skip("requires the deployed Manager and manually imported component image")
+		t.Skip("requires the deployed Manager and manually imported platform image")
 	}
 	config, err := ctrl.GetConfig()
 	require.NoError(t, err)

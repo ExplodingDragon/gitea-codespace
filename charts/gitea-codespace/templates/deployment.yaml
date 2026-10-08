@@ -1,0 +1,129 @@
+{{- $fullname := include "gitea-codespace.fullname" . -}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ $fullname }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitea-codespace.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  selector:
+    matchLabels:
+      {{- include "gitea-codespace.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- include "gitea-codespace.selectorLabels" . | nindent 8 }}
+      {{- with .Values.podAnnotations }}
+      annotations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+    spec:
+      serviceAccountName: {{ $fullname }}
+      automountServiceAccountToken: true
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      {{- with .Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: manager
+          image: {{ include "gitea-codespace.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - serve
+            - --namespace={{ .Release.Namespace }}
+            - --manager-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8443
+            - --component-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8445
+            - --platform-image={{ include "gitea-codespace.image" . }}
+            - --identity-issuer={{ .Values.identity.clusterIssuer }}
+            - --admin-address=:18080
+            - --admin-public-url={{ .Values.admin.publicURL }}
+            - --admin-token-file=/var/run/codespace/admin/token
+            - --certificate-directory=/var/run/codespace/identity
+            {{- range .Values.image.pullSecrets }}
+            - --image-pull-secret={{ . }}
+            {{- end }}
+            {{- with .Values.gatewayAPI.parent.name }}
+            - --gateway-parent-name={{ . }}
+            {{- end }}
+            {{- with .Values.gatewayAPI.parent.namespace }}
+            - --gateway-parent-namespace={{ . }}
+            {{- end }}
+            {{- with .Values.gatewayAPI.parent.httpListener }}
+            - --gateway-http-listener={{ . }}
+            {{- end }}
+            {{- with .Values.gatewayAPI.parent.sshListener }}
+            - --gateway-ssh-listener={{ . }}
+            {{- end }}
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+          ports:
+            - {name: admin, containerPort: 18080}
+            - {name: agent, containerPort: 8443}
+            - {name: component, containerPort: 8445}
+            - {name: health, containerPort: 8081}
+          readinessProbe:
+            httpGet: {path: /readyz, port: health}
+            periodSeconds: 2
+          livenessProbe:
+            httpGet: {path: /healthz, port: health}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - {name: identity, mountPath: /var/run/codespace/identity, readOnly: true}
+            - {name: admin-token, mountPath: /var/run/codespace/admin, readOnly: true}
+      volumes:
+        - name: identity
+          secret:
+            secretName: {{ $fullname }}-identity
+            defaultMode: 0440
+        - name: admin-token
+          secret:
+            secretName: {{ .Values.admin.tokenSecret.name }}
+            defaultMode: 0440
+            items:
+              - key: {{ .Values.admin.tokenSecret.key }}
+                path: token
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

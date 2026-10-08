@@ -38,7 +38,8 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	cacheKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cache-key", Namespace: namespace, UID: "cache-key-uid", Labels: map[string]string{pendingComponentLabel: cache.Name}}, Data: map[string][]byte{"registryKey": make([]byte, 32), "tokenKey": make([]byte, 32)}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(gateway, gatewayKey, cache, cacheKey).Build()
 	reconciler := &ComponentReconciler{
-		Client: c, ManagementNamespace: namespace, ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", Image: "localhost/codespace@sha256:" + strings.Repeat("a", 64),
+		Client: c, ManagementNamespace: namespace, ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64),
+		ImagePullSecrets:  []string{"registry"},
 		GatewayParentName: "public", GatewayHTTPSectionName: "https", GatewaySSHSectionName: "ssh",
 	}
 
@@ -57,6 +58,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 		require.NotNil(t, deployment.Spec.Template.Spec.AutomountServiceAccountToken)
 		require.False(t, *deployment.Spec.Template.Spec.AutomountServiceAccountToken)
 		require.True(t, *deployment.Spec.Template.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
+		require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, deployment.Spec.Template.Spec.ImagePullSecrets)
 		require.Equal(t, string(component.UID), deployment.Spec.Template.Labels[ComponentUIDLabel])
 		probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
 		if component.Labels[ComponentLabel] == "gateway" {

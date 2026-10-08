@@ -1,3 +1,5 @@
+# Development-only identity issuer. Production clusters should use their
+# existing cert-manager trust hierarchy and set identity.clusterIssuer in Helm.
 apiVersion: cert-manager.io/v1
 kind: ClusterIssuer
 metadata:

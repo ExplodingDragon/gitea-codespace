@@ -60,14 +60,16 @@ export type Resource<T, S = ResourceStatus> = {
 export type Runtime = {
   isolation: string;
   runtimeClassName: string;
-  image: string;
   storageClassName: string;
   storage: {storage: string};
   volumeMode: 'Filesystem' | 'Block';
   accessMode: string;
   resources: {requests: Record<string, string>; limits: Record<string, string>};
   gitSSHKeyType: string;
-  codeServerVersion: string;
+  devContainer: {
+    webIDE: {enabled: boolean; feature?: string; version?: string; extensions?: string[]};
+    features?: {reference: string; options?: Record<string, unknown>}[];
+  };
 };
 
 export type Environment = {

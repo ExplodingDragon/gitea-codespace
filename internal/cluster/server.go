@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -53,13 +52,6 @@ func Run(ctx context.Context, config *rest.Config, options ServerOptions) error 
 	admin, err := NewAdminServer(reader, options.Namespace, options.AdminPublicURL, options.AdminTokenFile)
 	if err != nil {
 		return err
-	}
-	if admin.PublicURL.Scheme == "http" {
-		host, _, err := net.SplitHostPort(options.AdminAddress)
-		address, parseErr := netip.ParseAddr(host)
-		if err != nil || parseErr != nil || !address.IsLoopback() {
-			return fmt.Errorf("HTTP administration must listen on a loopback address")
-		}
 	}
 	tlsConfig, err := (transport.Certificates{Directory: options.CertificateDirectory}).Server(func(identity *url.URL) error {
 		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")

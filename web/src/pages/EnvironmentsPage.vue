@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {onMounted, ref, toRaw} from 'vue';
-import {NAlert, NButton, NForm, NFormItem, NInput, NSelect, useDialog} from 'naive-ui';
-import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
+import {NAlert, NButton, NCheckbox, NDynamicTags, NForm, NFormItem, NInput, NSelect, useDialog} from 'naive-ui';
+import {Pencil, Plus, Trash2, RefreshCw, X} from '@lucide/vue';
 import {request, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import ResourceStatus from '../components/ResourceStatus.vue';
@@ -12,10 +12,16 @@ const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
 const name = ref('');
 const verification = ref('');
+const featureRows = ref<{reference: string; options: string}[]>([]);
 const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
-const dirty = useDirtyForm(() => ({name: name.value, form: form.value, verification: verification.value}));
+const dirty = useDirtyForm(() => ({
+  name: name.value,
+  form: form.value,
+  verification: verification.value,
+  features: featureRows.value,
+}));
 async function load() {
   busy.value = true;
   error.value = '';
@@ -41,16 +47,27 @@ function edit(item?: Resource<Environment>) {
         runtime: {
           isolation: 'kata',
           runtimeClassName: 'kata',
-          image: '',
           storageClassName: '',
           storage: {storage: '20Gi'},
           volumeMode: 'Block',
           accessMode: 'ReadWriteOncePod',
           resources: {requests: {cpu: '1', memory: '1Gi'}, limits: {cpu: '2', memory: '2Gi'}},
           gitSSHKeyType: 'ed25519',
-          codeServerVersion: '',
+          devContainer: {
+            webIDE: {
+              enabled: true,
+              feature: 'ghcr.io/coder/devcontainer-features/code-server:2.0.0',
+              version: '4.121.0',
+              extensions: [],
+            },
+            features: [],
+          },
         },
       };
+  featureRows.value = (form.value.runtime.devContainer.features ?? []).map((feature) => ({
+    reference: feature.reference,
+    options: JSON.stringify(feature.options ?? {}, null, 2),
+  }));
   editing.value = true;
   dirty.saved();
 }
@@ -68,6 +85,16 @@ async function save() {
   busy.value = true;
   error.value = '';
   try {
+    const features = featureRows.value.map((feature) => {
+      const options: unknown = JSON.parse(feature.options || '{}');
+      if (!options || Array.isArray(options) || typeof options !== 'object')
+        throw new Error('Feature options must be a JSON object');
+      return {reference: feature.reference.trim(), options: options as Record<string, unknown>};
+    });
+    form.value!.runtime.devContainer.features = features;
+    if (!form.value!.runtime.devContainer.webIDE.enabled) {
+      form.value!.runtime.devContainer.webIDE = {enabled: false, extensions: []};
+    }
     await request(`environments${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
       name: name.value,
       uid: selected.value?.uid ?? '',
@@ -143,6 +170,7 @@ function remove(item: Resource<Environment>) {
     class="editor"
     @submit.prevent="save"
   >
+    <h2>Runtime and isolation</h2>
     <div class="fields">
       <NFormItem label="Resource name">
         <NInput
@@ -177,13 +205,7 @@ function remove(item: Resource<Environment>) {
         />
       </NFormItem>
     </div>
-    <NFormItem label="Runtime image digest">
-      <NInput
-        v-model:value="form.runtime.image"
-        placeholder="registry.example.com/codespace/runtime@sha256:..."
-        required
-      />
-    </NFormItem>
+    <h2>Storage and resources</h2>
     <div class="fields">
       <NFormItem label="StorageClass">
         <NInput
@@ -248,13 +270,71 @@ function remove(item: Resource<Environment>) {
           required
         />
       </NFormItem>
+    </div>
+    <h2>Dev Container additions</h2>
+    <NFormItem>
+      <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
+        Install and start the platform Web IDE
+      </NCheckbox>
+    </NFormItem>
+    <div
+      v-if="form.runtime.devContainer.webIDE.enabled"
+      class="fields"
+    >
+      <NFormItem label="Web IDE Feature">
+        <NInput
+          v-model:value="form.runtime.devContainer.webIDE.feature"
+          placeholder="ghcr.io/coder/devcontainer-features/code-server:2.0.0"
+          required
+        />
+      </NFormItem>
       <NFormItem label="code-server version">
         <NInput
-          v-model:value="form.runtime.codeServerVersion"
+          v-model:value="form.runtime.devContainer.webIDE.version"
           required
         />
       </NFormItem>
     </div>
+    <NFormItem
+      v-if="form.runtime.devContainer.webIDE.enabled"
+      label="Web IDE extensions"
+    >
+      <NDynamicTags v-model:value="form.runtime.devContainer.webIDE.extensions" />
+    </NFormItem>
+    <h3>Additional Features</h3>
+    <p class="muted">These standard Dev Container Features are applied after the repository configuration.</p>
+    <div
+      v-for="(feature, index) in featureRows"
+      :key="index"
+      class="feature-row"
+    >
+      <NInput
+        v-model:value="feature.reference"
+        placeholder="ghcr.io/devcontainers/features/github-cli:1"
+        aria-label="Feature reference"
+      />
+      <NInput
+        v-model:value="feature.options"
+        type="textarea"
+        :autosize="{minRows: 1, maxRows: 6}"
+        placeholder="{}"
+        aria-label="Feature options"
+      />
+      <NButton
+        aria-label="Remove Feature"
+        title="Remove Feature"
+        @click="featureRows.splice(index, 1)"
+      >
+        <template #icon><X :size="16" /></template>
+      </NButton>
+    </div>
+    <NButton
+      class="add-row"
+      @click="featureRows.push({reference: '', options: '{}'})"
+    >
+      <template #icon><Plus :size="16" /></template>
+      Add Feature
+    </NButton>
     <NFormItem label="Administrator validation reference">
       <NInput
         v-model:value="verification"

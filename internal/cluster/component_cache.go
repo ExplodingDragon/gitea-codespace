@@ -88,7 +88,9 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		}
 		result.Credentials[address] = &agentv1.RegistryCredential{Username: cachepkg.Username, Password: token}
 		digest := sha256.New()
-		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00%d\x00%s\x00", site.UID, create.Repository.RepositoryId, create.GitIdentity.UserId, cs.Spec.Runtime.CodeServerVersion)
+		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00%d\x00", site.UID, create.Repository.RepositoryId, create.GitIdentity.UserId)
+		injection, _ := json.Marshal(cs.Spec.Runtime.DevContainer)
+		_, _ = digest.Write(injection)
 		if create.DevContainer != nil {
 			encoded, _ := json.Marshal(create.DevContainer)
 			_, _ = digest.Write(encoded)

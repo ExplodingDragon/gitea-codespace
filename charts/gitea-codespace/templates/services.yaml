@@ -1,0 +1,40 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitea-codespace.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitea-codespace.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "gitea-codespace.selectorLabels" . | nindent 4 }}
+    codespace.gitea.dev/manager-leader: "true"
+  ports:
+    - name: agent
+      port: 8443
+      targetPort: agent
+    - name: component
+      port: 8445
+      targetPort: component
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "gitea-codespace.fullname" . }}-admin
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitea-codespace.labels" . | nindent 4 }}
+  {{- with .Values.admin.service.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  type: {{ .Values.admin.service.type }}
+  selector:
+    {{- include "gitea-codespace.selectorLabels" . | nindent 4 }}
+    codespace.gitea.dev/manager-leader: "true"
+  ports:
+    - name: http
+      port: {{ .Values.admin.service.port }}
+      targetPort: admin

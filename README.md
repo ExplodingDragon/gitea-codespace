@@ -2,33 +2,28 @@
 
 Gitea Codespace runs isolated, Dev Container-based development environments on
 Kubernetes. This repository contains the Manager, Runtime Agent, Gateway,
-build Cache, administration UI, and the reusable [`devcontainer`](devcontainer)
+Cache, administration UI, Helm chart, and reusable [`devcontainer`](devcontainer)
 Go package.
 
 Gitea owns users, repository permissions, and lifecycle intent. The Manager
-owns Kubernetes resources and runtime execution. Each Runtime Pod uses a
-dedicated Docker daemon under Kata Containers or Sysbox isolation; it receives
-neither a Kubernetes API token nor a host container-runtime socket.
+owns Kubernetes resources and runtime execution. Runtime Pods run a dedicated
+Docker daemon under a verified Kata Containers or Sysbox RuntimeClass; they do
+not receive a Kubernetes API token or the node container-runtime socket.
 
-See the [design repository](https://github.com/ExplodingDragon/gitea-dev) for
-architecture, security boundaries, and deployment requirements.
+The [design repository](https://github.com/ExplodingDragon/gitea-dev) documents
+the architecture, lifecycle, security boundaries, and deployment requirements.
 
 ## Build
 
-Requirements:
-
-- Go 1.26.4 or later;
-- pnpm;
-- a Kubernetes cluster for deployment and integration tests;
-- `kubectl` access that can install the Codespace CRDs.
+The build requires the Go version declared in [`go.mod`](go.mod) and pnpm.
 
 ```sh
 make build
 make generate-kubernetes
 ```
 
-`make build` compiles and embeds the Vue administration UI. Build the Manager
-and Runtime images with:
+`make build` compiles and embeds the Vue administration UI. Build the single
+platform image used by Manager, Agent, Gateway, and Cache with:
 
 ```sh
 make images
@@ -36,48 +31,41 @@ make images
 
 ## Deploy
 
-The supplied deployment resources are:
+The supported deployment source is the
+[`gitea-codespace` Helm chart](charts/gitea-codespace). The target cluster must
+provide cert-manager, the selected `ClusterIssuer`, and a verified
+RuntimeClass/StorageClass pair. Deploy the published platform image by digest.
 
-- [`deploy/crds`](deploy/crds) for the custom resource definitions;
-- [`deploy/identity.yaml`](deploy/identity.yaml) for an example internal
-  certificate issuer;
-- [`deploy/manager.yaml`](deploy/manager.yaml) for Manager RBAC, Deployment,
-  Services, network policy, and leader routing;
-- [`deploy/Dockerfile.manager`](deploy/Dockerfile.manager) and
-  [`deploy/Dockerfile.runtime`](deploy/Dockerfile.runtime) for release images.
-
-Before applying them, configure digest-pinned images, the administration URL,
-the administrator token Secret, and the identity issuer. The cluster also needs
-at least one verified RuntimeClass and StorageClass pair.
+The administration Service defaults to `ClusterIP`. After installation, open
+the UI locally without publishing another cluster endpoint:
 
 ```sh
-kubectl apply -f deploy/crds
-kubectl apply -f deploy/identity.yaml
-kubectl apply -f deploy/manager.yaml
+kubectl -n codespace-system port-forward service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-For local development against an existing cluster:
+Use the administration UI to configure Gitea sites, environment templates,
+Gateways, and Caches. Secret values are write-only. Template changes apply to
+new environments; existing Codespaces resume with their stored runtime input.
+
+## Local development
+
+Run a Manager against the Kubernetes context in the default kubeconfig:
 
 ```sh
 ./bin/gitea-codespace serve \
-  --kubeconfig "$HOME/.kube/config" \
   --admin-token-file /path/to/admin-token \
-  --certificate-directory /path/to/projected/identity
+  --certificate-directory /path/to/projected/identity \
+  --platform-image registry.example.com/gitea/codespace@sha256:IMAGE_DIGEST
 ```
 
 The identity directory contains `tls.crt`, `tls.key`, and `ca.crt`. The local
-administration page defaults to <http://127.0.0.1:18080>. A remote page requires
-HTTPS and an explicit `--admin-public-url`.
-
-Use the administration UI to create Gitea sites, environment templates,
-Gateways, and Caches. Secret values are write-only. Template changes apply to
-new environments; existing Codespaces retain the inputs needed to resume their
-persistent data.
+administration URL is <http://127.0.0.1:18080>. Use HTTPS and an explicit
+`--admin-public-url` when the page is published remotely.
 
 ## Test
 
-Run formatting, static checks, unit tests, and frontend checks through the
-project Makefile:
+Run the standard formatting, lint, unit, frontend, and Helm checks through the
+Makefile:
 
 ```sh
 make format
@@ -85,8 +73,7 @@ make lint
 make test
 ```
 
-Kubernetes integration targets use the current kubeconfig and create isolated
-test resources:
+Kubernetes checks use the current kubeconfig and isolated test resources:
 
 ```sh
 make test-kubernetes
@@ -94,10 +81,9 @@ make test-kubernetes-components
 make test-kubernetes-ha
 ```
 
-Runtime and product lifecycle tests additionally require a digest-pinned
-Runtime image imported into the cluster, a verified RuntimeClass/StorageClass
-pair, and network addresses reachable from Runtime Pods. The Makefile validates
-their required variables before running:
+The Runtime, Agent, real-Gitea, and complete lifecycle targets require the
+variables checked by each Make target, including a digest-pinned platform image
+available to the cluster and reachable Gitea/network addresses:
 
 ```sh
 make test-kubernetes-runtime
@@ -106,8 +92,7 @@ make test-kubernetes-gitea
 make test-kubernetes-lifecycle
 ```
 
-Run the independent Dev Container interoperability suite with a native Docker
-daemon:
+Run Dev Container interoperability against a native Docker daemon with:
 
 ```sh
 make test-devcontainer-e2e-required

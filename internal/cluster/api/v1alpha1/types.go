@@ -4,6 +4,7 @@
 package v1alpha1
 
 import (
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -101,16 +102,15 @@ type EnvironmentTemplateSpec struct {
 	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]{1,64}$`
 	Tag string `json:"tag"`
 	// +kubebuilder:validation:MaxLength=255
-	Description string               `json:"description,omitempty"`
-	Runtime     RuntimeConfiguration `json:"runtime"`
+	Description string                   `json:"description,omitempty"`
+	Runtime     EnvironmentConfiguration `json:"runtime"`
 }
 
-// RuntimeConfiguration is fixed at creation so template edits cannot change recovery.
-type RuntimeConfiguration struct {
+// EnvironmentConfiguration defines administrator-selected runtime behavior.
+type EnvironmentConfiguration struct {
 	// +kubebuilder:validation:Enum=kata;sysbox
 	Isolation        string                      `json:"isolation"`
 	RuntimeClassName string                      `json:"runtimeClassName"`
-	Image            string                      `json:"image"`
 	StorageClassName string                      `json:"storageClassName"`
 	Storage          corev1.ResourceList         `json:"storage"`
 	Resources        corev1.ResourceRequirements `json:"resources"`
@@ -121,8 +121,15 @@ type RuntimeConfiguration struct {
 	// +kubebuilder:validation:Enum=ReadWriteOncePod;ReadWriteOnce
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode"`
 	// +kubebuilder:validation:Enum=ed25519;rsa-4096
-	GitSSHKeyType     string `json:"gitSSHKeyType"`
-	CodeServerVersion string `json:"codeServerVersion"`
+	GitSSHKeyType string                            `json:"gitSSHKeyType"`
+	DevContainer  devcontainerruntime.Configuration `json:"devContainer"`
+}
+
+// RuntimeConfiguration is fixed at creation so template and release edits do
+// not change recovery behavior for an existing Codespace.
+type RuntimeConfiguration struct {
+	EnvironmentConfiguration `json:",inline"`
+	Image                    string `json:"image"`
 }
 
 type EnvironmentTemplateStatus struct {

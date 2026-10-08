@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -36,6 +37,7 @@ type RuntimeReconciler struct {
 	ManagementNamespace string
 	ManagerURL          string
 	IdentityIssuer      string
+	ImagePullSecrets    []string
 }
 
 func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -122,7 +124,11 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 			}
 			return r.condition(ctx, &cs, "RecoveryRequired", fmt.Errorf("previous runtime Pod disappeared; verify its writer stopped before replacing it"))
 		}
-		pod = *runtimePod(&cs, r.ManagerURL)
+		created, err := runtimePod(&cs, r.ManagerURL, r.ImagePullSecrets)
+		if err != nil {
+			return r.condition(ctx, &cs, "InvalidRuntimeConfiguration", err)
+		}
+		pod = *created
 		if err := r.Client.Create(ctx, &pod); err != nil {
 			return r.condition(ctx, &cs, "PodUnavailable", err)
 		}
@@ -227,8 +233,12 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 	return nil
 }
 
-func runtimePod(cs *api.Codespace, managerURL string) *corev1.Pod {
+func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*corev1.Pod, error) {
 	runtime := cs.Spec.Runtime
+	devContainer, err := json.Marshal(runtime.DevContainer)
+	if err != nil {
+		return nil, fmt.Errorf("encode Dev Container injection configuration: %w", err)
+	}
 	volumeMounts := []corev1.VolumeMount{{Name: "ephemeral", MountPath: "/run/codespace"}, {Name: "identity", MountPath: "/run/identity", ReadOnly: true}}
 	var volumeDevices []corev1.VolumeDevice
 	var dataDevice string
@@ -242,7 +252,8 @@ func runtimePod(cs *api.Codespace, managerURL string) *corev1.Pod {
 		ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: cs.Namespace, Finalizers: []string{WriterFinalizer}, Labels: map[string]string{SiteUIDLabel: string(cs.Spec.Site.UID), RuntimeUIDLabel: string(cs.UID), ComponentLabel: "runtime"}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}},
 		Spec: corev1.PodSpec{
 			RuntimeClassName: &runtime.RuntimeClassName, ServiceAccountName: "codespace", AutomountServiceAccountToken: ptr.To(false),
-			RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)), EnableServiceLinks: ptr.To(false),
+			ImagePullSecrets: localObjectReferences(pullSecrets),
+			RestartPolicy:    corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)), EnableServiceLinks: ptr.To(false),
 			Volumes: []corev1.Volume{
 				{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: cs.Status.Volume.Name}}},
 				{Name: "ephemeral", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: ptr.To(resource.MustParse("64Mi"))}}},
@@ -260,6 +271,7 @@ func runtimePod(cs *api.Codespace, managerURL string) *corev1.Pod {
 					{Name: "CODESPACE_RESOURCE_UID", Value: string(cs.UID)},
 					{Name: "CODESPACE_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 					{Name: "CODESPACE_DATA_DEVICE", Value: dataDevice},
+					{Name: "CODESPACE_DEVCONTAINER_CONFIGURATION", Value: string(devContainer)},
 				},
 				VolumeMounts:  volumeMounts,
 				VolumeDevices: volumeDevices,
@@ -272,7 +284,7 @@ func runtimePod(cs *api.Codespace, managerURL string) *corev1.Pod {
 		pod.Spec.HostUsers = ptr.To(false)
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
 	}
-	return pod
+	return pod, nil
 }
 
 func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespace, pod *corev1.Pod) error {

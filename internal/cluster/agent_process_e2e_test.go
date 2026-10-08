@@ -30,8 +30,8 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 	require.NoError(t, err)
 	_, err = os.Stat(binary)
 	require.NoError(t, err)
-	runtimeImage := os.Getenv("CODESPACE_TEST_RUNTIME_IMAGE")
-	require.NotEmpty(t, runtimeImage, "CODESPACE_TEST_RUNTIME_IMAGE must name the manually imported Runtime image")
+	platformImage := os.Getenv("CODESPACE_TEST_PLATFORM_IMAGE")
+	require.NotEmpty(t, platformImage, "CODESPACE_TEST_PLATFORM_IMAGE must name the manually imported platform image")
 	runtimeIsolation := os.Getenv("CODESPACE_TEST_RUNTIME_ISOLATION")
 	runtimeClass := os.Getenv("CODESPACE_TEST_RUNTIME_CLASS")
 	storageClass := os.Getenv("CODESPACE_TEST_STORAGE_CLASS")
@@ -64,7 +64,7 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 		Spec: corev1.PodSpec{
 			RuntimeClassName: ptr.To(runtimeClass), AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
-				Name: "runtime", Image: runtimeImage, ImagePullPolicy: corev1.PullNever,
+				Name: "runtime", Image: platformImage, ImagePullPolicy: corev1.PullNever,
 				Command:      []string{"sleep", "3600"},
 				Resources:    corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
 				VolumeMounts: []corev1.VolumeMount{{Name: "data", MountPath: "/var/lib/codespace"}},

@@ -38,7 +38,8 @@ type ComponentReconciler struct {
 	ManagementNamespace    string
 	ManagerURL             string
 	IdentityIssuer         string
-	Image                  string
+	PlatformImage          string
+	ImagePullSecrets       []string
 	GatewayParentName      string
 	GatewayParentNamespace string
 	GatewayHTTPSectionName string
@@ -104,8 +105,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 			return ctrl.Result{}, err
 		}
 	}
-	if component.UID == "" || r.Image == "" {
-		return ctrl.Result{}, fmt.Errorf("component UID and image are required")
+	if component.UID == "" || r.PlatformImage == "" {
+		return ctrl.Result{}, fmt.Errorf("component UID and platform image are required")
 	}
 	if err := bindComponentCredential(ctx, r.Client, &component); err != nil {
 		return ctrl.Result{}, fmt.Errorf("bind component credential: %w", err)
@@ -354,7 +355,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			args = append(args, "--id", component.Name)
 		}
 		container := corev1.Container{
-			Name: role, Image: r.Image, ImagePullPolicy: corev1.PullIfNotPresent, Args: args,
+			Name: role, Image: r.PlatformImage, ImagePullPolicy: corev1.PullIfNotPresent, Args: args,
 			Env:             []corev1.EnvVar{{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL}, {Name: "GITEA_CODESPACE_CERTIFICATE_DIRECTORY", Value: "/var/run/codespace/identity"}},
 			Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}},
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
@@ -411,12 +412,21 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 		}
 		deployment.Spec.Template = corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), TerminationGracePeriodSeconds: ptr.To(int64(30)),
-			SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-			Containers:      []corev1.Container{container}, Volumes: volumes,
+			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets),
+			SecurityContext:  &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+			Containers:       []corev1.Container{container}, Volumes: volumes,
 		}}
 		return nil
 	})
 	return err
+}
+
+func localObjectReferences(names []string) []corev1.LocalObjectReference {
+	references := make([]corev1.LocalObjectReference, len(names))
+	for i, name := range names {
+		references[i].Name = name
+	}
+	return references
 }
 
 func (r *ComponentReconciler) reconcileNetworkPolicy(ctx context.Context, component *corev1.ConfigMap, role string, ports []int32) error {

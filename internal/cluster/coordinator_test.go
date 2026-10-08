@@ -161,7 +161,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	site.Status.NamespaceUID, site.Status.CanonicalURL = "namespace-uid", server.URL
 	site.Status.Conditions = []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionTrue, Reason: "IdentityVerified", ObservedGeneration: 1}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testRuntime()}, Status: api.EnvironmentTemplateStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1}}}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}, Status: api.EnvironmentTemplateStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1}}}}
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	block, err := ssh.MarshalPrivateKey(private, "")
@@ -175,7 +175,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 			object.SetUID(types.UID(uuid.NewString()))
 			return c.Create(ctx, object, opts...)
 		}}).Build()
-	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace}}
+	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace, PlatformImage: testRuntime().Image}}
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = log.IntoContext(ctx, testr.New(t))
 	done := make(chan struct{})

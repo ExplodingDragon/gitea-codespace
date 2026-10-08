@@ -36,7 +36,8 @@ type ManagerOptions struct {
 	Namespace              string
 	ManagerURL             string
 	ComponentURL           string
-	ComponentImage         string
+	PlatformImage          string
+	ImagePullSecrets       []string
 	IdentityIssuer         string
 	HealthAddress          string
 	GatewayParentName      string
@@ -140,15 +141,6 @@ func (l *Leadership) updateLeaderPod(ctx context.Context, name string, selected 
 	})
 }
 
-func (l *Leadership) Check(_ *http.Request) error {
-	l.mu.RLock()
-	defer l.mu.RUnlock()
-	if l.ctx == nil || l.ctx.Err() != nil {
-		return fmt.Errorf("manager is not the active leader")
-	}
-	return nil
-}
-
 func (l *Leadership) Handler(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		l.mu.RLock()
@@ -167,15 +159,25 @@ func (l *Leadership) Handler(next http.Handler) http.Handler {
 }
 
 func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
-	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.ComponentImage == "" || options.IdentityIssuer == "" {
-		return nil, fmt.Errorf("management namespace, Manager and component URLs, component image and identity issuer are required")
+	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.PlatformImage == "" || options.IdentityIssuer == "" {
+		return nil, fmt.Errorf("management namespace, Manager and component URLs, platform image and identity issuer are required")
 	}
-	componentImage, err := reference.ParseNormalizedNamed(options.ComponentImage)
+	platformImage, err := reference.ParseNormalizedNamed(options.PlatformImage)
 	if err != nil {
-		return nil, fmt.Errorf("invalid component image: %w", err)
+		return nil, fmt.Errorf("invalid platform image: %w", err)
 	}
-	if _, ok := componentImage.(reference.Digested); !ok {
-		return nil, fmt.Errorf("component image must be pinned by digest")
+	if _, ok := platformImage.(reference.Digested); !ok {
+		return nil, fmt.Errorf("platform image must be pinned by digest")
+	}
+	seenPullSecrets := make(map[string]struct{}, len(options.ImagePullSecrets))
+	for _, name := range options.ImagePullSecrets {
+		if len(validation.IsDNS1123Subdomain(name)) != 0 {
+			return nil, fmt.Errorf("image pull Secret %q is not a valid Kubernetes name", name)
+		}
+		if _, exists := seenPullSecrets[name]; exists {
+			return nil, fmt.Errorf("image pull Secret %q is duplicated", name)
+		}
+		seenPullSecrets[name] = struct{}{}
 	}
 	for name, address := range map[string]string{"Agent": options.ManagerURL, "component": options.ComponentURL} {
 		endpoint, err := url.Parse(address)
@@ -235,7 +237,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := mgr.AddHealthzCheck("process", healthz.Ping); err != nil {
 		return nil, err
 	}
-	if err := mgr.AddReadyzCheck("leader", leadership.Check); err != nil {
+	if err := mgr.AddReadyzCheck("process", healthz.Ping); err != nil {
 		return nil, err
 	}
 	// Controllers use live reads for ownership checks; Watch still drives work queues.
@@ -290,16 +292,16 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, GatewayChanges: gatewayChanges, CacheChanges: gatewayChanges}
 	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components}
-	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace}, Changes: siteChanges}); err != nil {
+	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {
 		return nil, err
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.EnvironmentTemplate{}).Complete(&TemplateReconciler{Client: liveClient}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, IdentityIssuer: options.IdentityIssuer}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, IdentityIssuer: options.IdentityIssuer, ImagePullSecrets: options.ImagePullSecrets}); err != nil {
 		return nil, err
 	}
 	componentController := ctrl.NewControllerManagedBy(mgr).For(&corev1.ConfigMap{}).Owns(&appsv1.Deployment{})
@@ -311,7 +313,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		}
 	}
 	if err := componentController.Complete(&ComponentReconciler{
-		Client: liveClient, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, IdentityIssuer: options.IdentityIssuer, Image: options.ComponentImage,
+		Client: liveClient, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, IdentityIssuer: options.IdentityIssuer, PlatformImage: options.PlatformImage, ImagePullSecrets: options.ImagePullSecrets,
 		GatewayParentName: options.GatewayParentName, GatewayParentNamespace: options.GatewayParentNamespace,
 		GatewayHTTPSectionName: options.GatewayHTTPSectionName, GatewaySSHSectionName: options.GatewaySSHSectionName,
 	}); err != nil {

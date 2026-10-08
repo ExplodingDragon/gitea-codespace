@@ -26,7 +26,7 @@ func testQuota(site *api.GiteaSite, namespace string) *corev1.ResourceQuota {
 func TestSiteCapacity(t *testing.T) {
 	site := testSite("example", "site-uid")
 	quota := testQuota(site, "codespace-example")
-	small := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "small", Runtime: testRuntime()}}
+	small := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "small", Runtime: testEnvironment()}}
 	large := small.DeepCopy()
 	large.Name, large.UID, large.Spec.Tag = "large", "large-uid", "large"
 	large.Spec.Runtime.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")

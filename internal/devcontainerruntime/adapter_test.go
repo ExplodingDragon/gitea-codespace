@@ -13,15 +13,17 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	t.Parallel()
 
 	request := Request{
-		CodespaceUUID:     "11111111-2222-4333-8444-555555555555",
-		Workspace:         "/workspaces/project",
-		Source:            devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
-		CodeServerVersion: "4.121.0",
+		CodespaceUUID: "11111111-2222-4333-8444-555555555555",
+		Workspace:     "/workspaces/project",
+		Source:        devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
+		DevContainer:  DefaultConfiguration(),
 		Cache: devcontainer.CacheOptions{
 			BuildRegistry: "https://registry.example.com/cache",
 			BuildScope:    "scope",
 		},
 	}
+	request.DevContainer.WebIDE.Feature = " " + request.DevContainer.WebIDE.Feature + " "
+	request.DevContainer.WebIDE.Version = " 4.121.0 "
 	options, err := buildCreateOptions(request)
 	if err != nil {
 		t.Fatalf("create options: %v", err)
@@ -29,7 +31,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if options.OwnerID != request.CodespaceUUID || options.AllowedPathRoot != request.Workspace {
 		t.Fatalf("Codespace identity policy = owner %q, root %q", options.OwnerID, options.AllowedPathRoot)
 	}
-	if len(options.InjectedFeatures) != 1 || options.InjectedFeatures[0].Reference != codeServerFeatureReference {
+	if len(options.InjectedFeatures) != 1 || options.InjectedFeatures[0].Reference != defaultWebIDEFeature {
 		t.Fatal("platform Web IDE Feature is missing")
 	}
 	if !options.InjectedFeatures[0].InstallOnly {

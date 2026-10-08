@@ -217,7 +217,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream *connect.BidiSt
 		}
 		if request.AcceptedOperationRversion != cs.Spec.Operation.Version {
 			response.Operation = operation
-			response.Runtime = &agentv1.RuntimeOptions{GitSshKeyType: cs.Spec.Runtime.GitSSHKeyType, CodeServerVersion: cs.Spec.Runtime.CodeServerVersion}
+			response.Runtime = &agentv1.RuntimeOptions{GitSshKeyType: cs.Spec.Runtime.GitSSHKeyType}
 			if s.Caches != nil && operation.GetCreate() != nil {
 				response.Runtime.Cache, err = s.Caches.runtimeCache(ctx, cs, operation)
 				if err != nil {

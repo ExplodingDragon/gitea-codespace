@@ -12,4 +12,4 @@ RUN apk add --no-cache \
 COPY --chmod=0555 bin/gitea-codespace /usr/local/bin/gitea-codespace
 
 ENTRYPOINT ["/usr/local/bin/gitea-codespace"]
-CMD ["agent"]
+CMD ["serve"]

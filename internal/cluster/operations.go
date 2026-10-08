@@ -32,6 +32,7 @@ type Operations struct {
 	Samples             *ResourceSamples
 	Activity            *RuntimeActivityTracker
 	ManagementNamespace string
+	PlatformImage       string
 }
 
 // Accept persists identity and inputs before binding or granting execution.
@@ -117,7 +118,10 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		}
 		cs = api.Codespace{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}, Finalizers: []string{RuntimeFinalizer}},
-			Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Spec.Tag, Runtime: selected.Spec.Runtime},
+			Spec: api.CodespaceSpec{
+				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Spec.Tag,
+				Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: selected.Spec.Runtime, Image: o.PlatformImage},
+			},
 		}
 		if cs.Spec.RuntimeUUID == "" {
 			cs.Spec.RuntimeUUID = uuid.NewString()

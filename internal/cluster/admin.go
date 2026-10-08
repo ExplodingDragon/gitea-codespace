@@ -93,6 +93,10 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 		s.confirmRuntimeWriterStopped(w, r, parts[1], parts[2])
 		return
 	}
+	if len(parts) == 3 && parts[0] == "components" && parts[2] == "rotate-ssh-host-key" {
+		s.rotateGatewayHostKey(w, r, parts[1])
+		return
+	}
 	if len(parts) > 2 || len(parts) == 0 {
 		http.NotFound(w, r)
 		return
@@ -186,6 +190,57 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		adminError(w, err)
 		return
+	}
+	adminJSON(w, http.StatusOK, map[string]string{"name": name})
+}
+
+func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost || len(validation.IsDNS1123Subdomain(name)) != 0 {
+		http.NotFound(w, r)
+		return
+	}
+	var body adminWrite
+	if !adminDecode(w, r, &body) {
+		return
+	}
+	var component corev1.ConfigMap
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &component); err != nil {
+		adminError(w, err)
+		return
+	}
+	if body.Name != name || body.UID == "" || body.ResourceVersion == "" || component.UID != body.UID || component.ResourceVersion != body.ResourceVersion || !component.DeletionTimestamp.IsZero() {
+		adminJSON(w, http.StatusConflict, map[string]string{"error": "component changed; reload before rotating its SSH host key"})
+		return
+	}
+	if component.Labels[ComponentLabel] != "gateway" {
+		adminJSON(w, http.StatusBadRequest, map[string]string{"error": "only Gateway components have an SSH host key"})
+		return
+	}
+	oldSecretName, oldSecretUID := component.Data["sshHostKeySecret"], types.UID(component.Data["sshHostKeySecretUID"])
+	secret, err := newGatewayHostKeySecret(component.Name, component.Namespace)
+	if err != nil {
+		adminError(w, err)
+		return
+	}
+	if err := s.Client.Create(r.Context(), secret); err != nil {
+		adminError(w, err)
+		return
+	}
+	component.Data["sshHostKeySecret"], component.Data["sshHostKeySecretUID"] = secret.Name, string(secret.UID)
+	if err := s.Client.Update(r.Context(), &component); err != nil {
+		adminError(w, err)
+		return
+	}
+	if err := bindComponentCredential(r.Context(), s.Client, &component); err != nil {
+		adminError(w, err)
+		return
+	}
+	if oldSecretName != "" && oldSecretUID != "" {
+		oldSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: oldSecretName, Namespace: component.Namespace}}
+		if err := s.Client.Delete(r.Context(), oldSecret, client.Preconditions{UID: &oldSecretUID}); err != nil && !apierrors.IsNotFound(err) {
+			adminError(w, err)
+			return
+		}
 	}
 	adminJSON(w, http.StatusOK, map[string]string{"name": name})
 }
@@ -530,15 +585,10 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 		data["maxInflightPerSession"] = strconv.Itoa(spec.Gateway.Limits.MaxInflightPerSession)
 		data["maxChannelsPerSSHConnection"] = strconv.Itoa(spec.Gateway.SSH.MaxChannelsPerConnection)
 		if creating {
-			_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+			secret, err = newGatewayHostKeySecret(component.Name, s.Namespace)
 			if err != nil {
 				return err
 			}
-			encodedKey, err := x509.MarshalPKCS8PrivateKey(privateKey)
-			if err != nil {
-				return err
-			}
-			secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{GenerateName: component.Name + "-ssh-", Namespace: s.Namespace, Labels: map[string]string{pendingComponentLabel: component.Name}}, Immutable: ptr.To(true), Data: map[string][]byte{"hostKey": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encodedKey})}}
 		}
 	case "cache":
 		if spec.Cache == nil || spec.Gateway != nil {
@@ -626,6 +676,22 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 		return nil
 	}
 	return bindComponentCredential(ctx, s.Client, component)
+}
+
+func newGatewayHostKeySecret(component, namespace string) (*corev1.Secret, error) {
+	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	encoded, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return nil, err
+	}
+	return &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: component + "-ssh-", Namespace: namespace, Labels: map[string]string{pendingComponentLabel: component}},
+		Immutable:  ptr.To(true),
+		Data:       map[string][]byte{"hostKey": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})},
+	}, nil
 }
 
 func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) error {

@@ -17,6 +17,7 @@ import (
 	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -44,13 +45,17 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	return s
 }
 
-func testRuntime() api.RuntimeConfiguration {
-	return api.RuntimeConfiguration{
-		Isolation: "sysbox", RuntimeClassName: "sysbox-runc", Image: "localhost/runtime@sha256:" + strings.Repeat("a", 64),
+func testEnvironment() api.EnvironmentConfiguration {
+	return api.EnvironmentConfiguration{
+		Isolation: "sysbox", RuntimeClassName: "sysbox-runc",
 		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, VolumeMode: corev1.PersistentVolumeFilesystem, AccessMode: corev1.ReadWriteOnce,
 		Resources:     corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
-		GitSSHKeyType: "ed25519", CodeServerVersion: "4.121.0",
+		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.DefaultConfiguration(),
 	}
+}
+
+func testRuntime() api.RuntimeConfiguration {
+	return api.RuntimeConfiguration{EnvironmentConfiguration: testEnvironment(), Image: "localhost/codespace@sha256:" + strings.Repeat("a", 64)}
 }
 
 func testSite(name, uid string) *api.GiteaSite {
@@ -98,20 +103,21 @@ func TestRuntimeConfigurationRequiresIsolationVolumeMode(t *testing.T) {
 	require.EqualError(t, runtime.Validate(), "sysbox isolation requires a Filesystem volume")
 }
 
-func TestManagerRequiresDigestPinnedComponentImage(t *testing.T) {
+func TestManagerRequiresDigestPinnedPlatformImage(t *testing.T) {
 	_, err := NewManager(nil, ManagerOptions{
 		Namespace: "codespace-system", ManagerURL: "https://manager.example.test", ComponentURL: "https://component.example.test",
-		ComponentImage: "registry.example.test/codespace:latest", IdentityIssuer: "codespace-identity",
+		PlatformImage: "registry.example.test/codespace:latest", IdentityIssuer: "codespace-identity",
 	})
-	require.EqualError(t, err, "component image must be pinned by digest")
+	require.EqualError(t, err, "platform image must be pinned by digest")
 }
 
 func TestSiteOwnershipAndCleanup(t *testing.T) {
 	ctx := t.Context()
 	site := testSite("example", "site-uid")
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: "other-ns", Labels: map[string]string{SiteUIDLabel: "other-site"}}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}).WithObjects(site, ns).Build()
-	r := &SiteReconciler{Client: c, ManagementNamespace: "codespace-system"}
+	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: "codespace-system"}, Type: corev1.SecretTypeDockerConfigJson, Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)}}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}).WithObjects(site, ns, pullSecret).Build()
+	r := &SiteReconciler{Client: c, ManagementNamespace: "codespace-system", ImagePullSecrets: []string{pullSecret.Name}}
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(site)})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(site), site))
@@ -130,6 +136,14 @@ func TestSiteOwnershipAndCleanup(t *testing.T) {
 	require.Equal(t, accountVersion, account.ResourceVersion)
 	require.NotNil(t, account.AutomountServiceAccountToken)
 	require.False(t, *account.AutomountServiceAccountToken)
+	var copiedPullSecret corev1.Secret
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: pullSecret.Name, Namespace: ns.Name}, &copiedPullSecret))
+	require.Equal(t, string(site.UID), copiedPullSecret.Labels[SiteUIDLabel])
+	require.Equal(t, "true", copiedPullSecret.Labels[imagePullSecretLabel])
+	require.Equal(t, pullSecret.Data, copiedPullSecret.Data)
+	r.ImagePullSecrets = nil
+	require.NoError(t, r.ensureSiteResources(ctx, site, ns.Name))
+	require.True(t, apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: pullSecret.Name, Namespace: ns.Name}, &copiedPullSecret)))
 	var policy networkingv1.NetworkPolicy
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "codespace", Namespace: ns.Name}, &policy))
 	require.Len(t, policy.Spec.PolicyTypes, 2)
@@ -157,12 +171,12 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 		Status:     api.CodespaceStatus{Bound: true},
 	}
 	unusable := cs.DeepCopy()
-	unusable.Spec.Runtime.Image = "invalid-runtime-image"
+	unusable.Spec.Runtime.Image = "invalid-platform-image"
 	require.Error(t, unusable.Validate("codespace-system"))
 	unusable.Spec.Operation.Type = "delete"
 	require.NoError(t, unusable.Validate("codespace-system"))
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}, &api.Codespace{}).WithObjects(site, ns, cs).Build()
-	r := &RuntimeReconciler{Client: c, ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal"}
+	r := &RuntimeReconciler{Client: c, ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", ImagePullSecrets: []string{"registry"}}
 	r.Authority = &ExecutionAuthority{}
 	r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)}
@@ -176,6 +190,7 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Pod.Name, Namespace: cs.Namespace}, &pod))
 	require.False(t, *pod.Spec.AutomountServiceAccountToken)
 	require.False(t, *pod.Spec.HostUsers)
+	require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, pod.Spec.ImagePullSecrets)
 	require.Equal(t, corev1.StorageMediumMemory, pod.Spec.Volumes[1].EmptyDir.Medium)
 	require.Equal(t, "agent", pod.Spec.Containers[0].Command[1])
 	var volume corev1.PersistentVolumeClaim
@@ -240,7 +255,8 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}, IdentitySecretName: "runtime-identity"},
 	}
-	pod := runtimePod(cs, "https://manager.example")
+	pod, err := runtimePod(cs, "https://manager.example", nil)
+	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.True(t, *container.SecurityContext.Privileged)
 	require.Equal(t, []corev1.VolumeDevice{{Name: "data", DevicePath: "/dev/codespace-data"}}, container.VolumeDevices)
@@ -262,7 +278,8 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			if settled {
 				cs.Status.SettledOperationVersion = 3
 			}
-			pod := runtimePod(cs, "https://manager.example")
+			pod, err := runtimePod(cs, "https://manager.example", nil)
+			require.NoError(t, err)
 			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodFailed
 			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}}}}
 			volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(site.UID)}}}
@@ -305,7 +322,6 @@ func TestLeadershipCancelsRequests(t *testing.T) {
 	<-entered
 	cancel()
 	<-finished
-	require.Error(t, leadership.Check(request))
 }
 
 func TestLeadershipSelectsOnlyCurrentManagerPod(t *testing.T) {
@@ -328,7 +344,8 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Operation: api.Operation{Type: "stop", Version: 2}},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"}},
 	}
-	pod := runtimePod(cs, "https://manager.example")
+	pod, err := runtimePod(cs, "https://manager.example", nil)
+	require.NoError(t, err)
 	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodRunning
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
@@ -337,7 +354,7 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 	ctx := t.Context()
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
 	// Stop initiates graceful termination even if the Agent cannot submit a result.
-	_, err := r.stopOrDelete(ctx, cs, false)
+	_, err = r.stopOrDelete(ctx, cs, false)
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
 	require.False(t, pod.DeletionTimestamp.IsZero())

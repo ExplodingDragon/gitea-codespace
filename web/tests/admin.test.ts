@@ -83,6 +83,7 @@ test('native resource editing preserves identity and write-only credentials', as
   let signedIn = false;
   let lastWrite: {managerSecret?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
   let recoveryWrite: Record<string, string> = {};
+  let rotationWrite: Record<string, string> = {};
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request();
     const path = new URL(request.url()).pathname.replace('/api/admin/', '');
@@ -123,6 +124,8 @@ test('native resource editing preserves identity and write-only credentials', as
       recoveryWrite = body;
       await route.fulfill({status: 204});
       return;
+    } else if (kind === 'components' && action === 'rotate-ssh-host-key') {
+      rotationWrite = body;
     } else if (kind === 'environments') {
       environments.push({
         name: body.name,
@@ -163,11 +166,16 @@ test('native resource editing preserves identity and write-only credentials', as
       .getByRole('textbox');
   await field('Resource name').fill('standard');
   await field('Tag').fill('standard');
-  await field('Runtime image digest').fill(`registry.example.com/runtime@sha256:${'a'.repeat(64)}`);
   await field('StorageClass').fill('storage');
   await field('code-server version').fill('4.121.0');
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
+  expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
+    enabled: true,
+    feature: 'ghcr.io/coder/devcontainer-features/code-server:2.0.0',
+    version: '4.121.0',
+    extensions: [],
+  });
   await page.getByRole('link', {name: 'Gitea sites', exact: true}).click();
   await page.getByRole('button', {name: 'Add site'}).click();
   await field('Resource name').fill('production');
@@ -209,6 +217,9 @@ test('native resource editing preserves identity and write-only credentials', as
   await page.getByRole('link', {name: 'Components', exact: true}).click();
   await expect(page.getByRole('cell', {name: 'https://workspace.example.com'})).toBeVisible();
   await expect(page.getByText('Available', {exact: true})).toBeVisible();
+  await page.getByRole('button', {name: 'Rotate SSH host key', exact: true}).click();
+  await page.getByRole('button', {name: 'Rotate key', exact: true}).click();
+  await expect.poll(() => rotationWrite).toEqual({name: 'gateway', uid: 'gateway-uid', resourceVersion: '1'});
   await page.getByRole('button', {name: 'Edit component', exact: true}).click();
   await expect(field('Public HTTPS URL')).toHaveValue('https://workspace.example.com');
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();

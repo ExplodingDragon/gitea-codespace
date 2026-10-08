@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
-import {Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
+import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
 import {request, type Component, type ComponentStatus, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 
@@ -160,6 +160,26 @@ function remove(item: Resource<Component, ComponentStatus>) {
     onPositiveClick: async () => {
       try {
         await request(`components/${item.name}`, 'DELETE', {
+          name: item.name,
+          uid: item.uid,
+          resourceVersion: item.resourceVersion,
+        });
+        await load();
+      } catch (e) {
+        error.value = (e as Error).message;
+      }
+    },
+  });
+}
+function rotateHostKey(item: Resource<Component, ComponentStatus>) {
+  dialog.warning({
+    title: `Rotate the SSH host key for ${item.spec.displayName}?`,
+    content: 'SSH access is temporarily unavailable while the Gateway publishes its new host key.',
+    positiveText: 'Rotate key',
+    negativeText: 'Cancel',
+    onPositiveClick: async () => {
+      try {
+        await request(`components/${item.name}/rotate-ssh-host-key`, 'POST', {
           name: item.name,
           uid: item.uid,
           resourceVersion: item.resourceVersion,
@@ -518,6 +538,15 @@ function remove(item: Resource<Component, ComponentStatus>) {
           </td>
           <td>
             <div class="actions">
+              <NButton
+                v-if="item.spec.gateway"
+                aria-label="Rotate SSH host key"
+                title="Rotate SSH host key"
+                :disabled="item.deleting"
+                @click="rotateHostKey(item)"
+              >
+                <template #icon><KeyRound :size="16" /></template>
+              </NButton>
               <NButton
                 aria-label="Edit component"
                 title="Edit component"

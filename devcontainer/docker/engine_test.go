@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -195,42 +196,30 @@ func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
 	}
 }
 
-func TestMergeInjectedFeaturesRejectsConflicts(t *testing.T) {
+func TestMergeInjectedFeaturesOverridesRepositoryFeature(t *testing.T) {
 	t.Parallel()
 
 	resolved := &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
 		"ghcr.io/example/features/tool:1": json.RawMessage(`{"version":"1"}`),
 	}}}
 	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
-		Reference: "ghcr.io/example/features/tool:1",
-		Origin:    "user",
-		Options:   map[string]json.RawMessage{"version": json.RawMessage(`"2"`)},
-	}}); err == nil {
-		t.Fatal("expected repository and user Feature conflict")
-	}
-
-	resolved = &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
-		"ghcr.io/example/features/tool:1": json.RawMessage(`{"version":"1"}`),
-	}}}
-	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
-		Reference: "ghcr.io/example/features/tool:1",
-		Origin:    "user",
-		Options:   map[string]json.RawMessage{"version": json.RawMessage(`"1"`)},
-	}}); err != nil {
-		t.Fatalf("deduplicate matching Feature: %v", err)
-	}
-	if len(resolved.InjectedFeatureReferences) != 0 {
-		t.Fatalf("repository-owned matching Feature marked as injected: %#v", resolved.InjectedFeatureReferences)
-	}
-
-	resolved = &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
-		"ghcr.io/example/features/tool:1": json.RawMessage(`{}`),
-	}}}
-	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
 		Reference: "ghcr.io/example/features/tool:2",
-		Origin:    "platform",
-	}}); err == nil {
-		t.Fatal("expected conflicting versions of the same Feature to fail")
+		Origin:    "user",
+		Options:   map[string]json.RawMessage{"channel": json.RawMessage(`"stable"`)},
+	}}); err != nil {
+		t.Fatalf("override repository Feature: %v", err)
+	}
+	if _, exists := resolved.Features["ghcr.io/example/features/tool:1"]; exists {
+		t.Fatal("repository Feature was not replaced")
+	}
+	want := `{"version":"1","channel":"stable"}`
+	got := resolved.Features["ghcr.io/example/features/tool:2"]
+	var gotOptions, wantOptions map[string]any
+	if json.Unmarshal(got, &gotOptions) != nil || json.Unmarshal([]byte(want), &wantOptions) != nil || !maps.Equal(gotOptions, wantOptions) {
+		t.Fatalf("merged Feature options = %s, want %s", got, want)
+	}
+	if _, exists := resolved.InjectedFeatureReferences["ghcr.io/example/features/tool:2"]; !exists {
+		t.Fatal("administrator Feature is not recorded as injected")
 	}
 }
 

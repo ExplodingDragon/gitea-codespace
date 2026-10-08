@@ -1,0 +1,22 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "gitea-codespace.fullname" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "gitea-codespace.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "gitea-codespace.fullname" . }}-identity
+  issuerRef:
+    group: cert-manager.io
+    kind: ClusterIssuer
+    name: {{ .Values.identity.clusterIssuer }}
+  uris:
+    - {{ printf "spiffe://codespace/manager/%s" .Release.Namespace | quote }}
+  dnsNames:
+    - {{ printf "%s.%s.svc" (include "gitea-codespace.fullname" .) .Release.Namespace }}
+  usages: ["server auth", "client auth"]
+  privateKey:
+    algorithm: ECDSA
+    size: 256
+    rotationPolicy: Always

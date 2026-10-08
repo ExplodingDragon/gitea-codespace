@@ -38,6 +38,7 @@ type Runtime struct {
 	PodUID          string
 	DockerDirectory string
 	Diagnostics     io.Writer
+	DevContainer    devcontainerruntime.Configuration
 
 	dockerMu        sync.Mutex
 	mu              sync.RWMutex
@@ -215,7 +216,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		Version: devcontainerruntime.FormatVersion, Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
-		Secrets: secrets, Cache: cache, CodeServerVersion: response.Runtime.CodeServerVersion,
+		Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
 	})
 	if err != nil {
 		return err
@@ -257,7 +258,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Version: devcontainerruntime.FormatVersion, Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
-		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, Secrets: secrets,
+		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, Secrets: secrets, DevContainer: r.DevContainer,
 	})
 	if err != nil {
 		return err

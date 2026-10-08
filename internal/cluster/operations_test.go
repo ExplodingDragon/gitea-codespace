@@ -51,14 +51,14 @@ func TestOperationBindingRecovery(t *testing.T) {
 	site := testSite("example", "site-uid")
 	site.Status.NamespaceUID = "namespace-uid"
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testRuntime()}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
 	meta.SetStatusCondition(&template.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}).WithObjects(template, namespace).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 			object.SetUID("runtime-uid")
 			return c.Create(ctx, object, opts...)
 		}}).Build()
-	o := Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system"}
+	o := Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system", PlatformImage: testRuntime().Image}
 	key := types.NamespacedName{Namespace: "codespace-example", Name: "codespace-1"}
 	var allocated string
 	attempts := 0

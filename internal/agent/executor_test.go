@@ -31,7 +31,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 		return j.write("state/environment.json", data)
 	}))
 	executor := &Executor{Journal: j, PodUID: "new-pod", Stdout: io.Discard, Stderr: io.Discard}
-	request := devcontainerruntime.Request{Version: devcontainerruntime.FormatVersion, Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", CodeServerVersion: "4.121.0"}
+	request := devcontainerruntime.Request{Version: devcontainerruntime.FormatVersion, Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", DevContainer: devcontainerruntime.DefaultConfiguration()}
 	recovered, err := executor.Apply(t.Context(), request)
 	require.NoError(t, err)
 	want, err := json.Marshal(state)
