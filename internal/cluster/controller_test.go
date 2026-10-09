@@ -50,7 +50,7 @@ func testEnvironment() api.EnvironmentConfiguration {
 		Isolation: "sysbox", RuntimeClassName: "sysbox-runc",
 		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, VolumeMode: corev1.PersistentVolumeFilesystem, AccessMode: corev1.ReadWriteOnce,
 		Resources:     corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
-		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.DefaultConfiguration(),
+		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.Configuration{},
 	}
 }
 

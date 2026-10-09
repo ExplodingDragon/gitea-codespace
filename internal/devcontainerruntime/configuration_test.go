@@ -16,7 +16,7 @@ func TestConfigurationValidation(t *testing.T) {
 		configuration Configuration
 		wantError     string
 	}{
-		{name: "default", configuration: DefaultConfiguration()},
+		{name: "disabled", configuration: Configuration{}},
 		{
 			name: "duplicate feature identity",
 			configuration: Configuration{Features: []InjectedFeature{

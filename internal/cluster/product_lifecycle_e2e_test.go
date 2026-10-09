@@ -29,7 +29,7 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	configpkg "gitea.dev/codespace/internal/config"
-	"github.com/google/uuid"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -41,7 +41,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -340,19 +339,11 @@ func (s *lifecycleRemote) waitFinal(t *testing.T, version int64, operationType c
 }
 
 func TestKubernetesE2EProductLifecycle(t *testing.T) {
-	if os.Getenv("CODESPACE_TEST_KUBERNETES_LIFECYCLE") != "1" {
-		t.Skip("requires the deployed Manager, cert-manager, a supported RuntimeClass and outbound network access")
-	}
-	runtimeIsolation := os.Getenv("CODESPACE_TEST_RUNTIME_ISOLATION")
-	runtimeClass := os.Getenv("CODESPACE_TEST_RUNTIME_CLASS")
-	storageClass := os.Getenv("CODESPACE_TEST_STORAGE_CLASS")
-	require.Contains(t, []string{"kata", "sysbox"}, runtimeIsolation)
-	require.NotEmpty(t, runtimeClass)
-	require.NotEmpty(t, storageClass)
-	listenAddress := os.Getenv("CODESPACE_TEST_GITEA_LISTEN")
-	nodeAddress := os.Getenv("CODESPACE_TEST_NODE_ADDRESS")
-	require.NotEmpty(t, listenAddress, "CODESPACE_TEST_GITEA_LISTEN must be reachable from Runtime Pods")
-	require.NotEmpty(t, net.ParseIP(nodeAddress), "CODESPACE_TEST_NODE_ADDRESS must be a Kubernetes node IP")
+	requireE2E(t)
+	runtime := requireE2ERuntime(t)
+	listenAddress := requireE2EEnvironment(t, "CODESPACE_E2E_GITEA_LISTEN")
+	nodeAddress := requireE2EEnvironment(t, "CODESPACE_E2E_NODE_ADDRESS")
+	require.NotEmpty(t, net.ParseIP(nodeAddress), "CODESPACE_E2E_NODE_ADDRESS must be a Kubernetes node IP")
 
 	listener, err := net.Listen("tcp4", listenAddress)
 	require.NoError(t, err)
@@ -385,18 +376,16 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		_ = server.Shutdown(shutdown)
-		require.ErrorIs(t, <-serveDone, http.ErrServerClosed)
+		if err := <-serveDone; !errors.Is(err, http.ErrServerClosed) {
+			t.Errorf("stop lifecycle Gitea fixture: %v", err)
+		}
 	})
 
-	config, err := ctrl.GetConfig()
-	require.NoError(t, err)
-	c, err := client.New(config, client.Options{Scheme: testScheme(t)})
-	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Minute)
-	defer cancel()
-	const managementNamespace = "codespace-system"
+	cluster := newE2ECluster(t, 100*time.Minute)
+	c, ctx := cluster.Client, cluster.ctx
+	managementNamespace := cluster.managementNamespace
 	admin := &AdminServer{Client: c, Namespace: managementNamespace}
-	suffix := strings.ReplaceAll(uuid.NewString()[:8], "-", "")
+	suffix := cluster.runID
 	templateName, gatewayName, cacheName, siteName := "e2e-env-"+suffix, "e2e-gateway-"+suffix, "e2e-cache-"+suffix, "e2e-site-"+suffix
 	namespace := "codespace-" + siteName
 	externalGatewayService := "e2e-gateway-nodeport-" + suffix
@@ -405,16 +394,24 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	})
 
 	runtimeConfiguration := testEnvironment()
-	runtimeConfiguration.Isolation = runtimeIsolation
-	runtimeConfiguration.RuntimeClassName = runtimeClass
-	runtimeConfiguration.StorageClassName = storageClass
-	if runtimeIsolation == "kata" {
+	runtimeConfiguration.Isolation = runtime.isolation
+	runtimeConfiguration.RuntimeClassName = runtime.runtimeClass
+	runtimeConfiguration.StorageClassName = runtime.storageClass
+	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
+		WebIDE: devcontainerruntime.WebIDEConfiguration{
+			Enabled: true,
+			Feature: "ghcr.io/coder/devcontainer-features/code-server:2.0.0",
+			Version: "4.121.0",
+		},
+		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
+	}
+	if runtime.isolation == "kata" {
 		runtimeConfiguration.VolumeMode = corev1.PersistentVolumeBlock
 		runtimeConfiguration.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
 	}
 	templateSpec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration})
 	require.NoError(t, err)
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveTemplate(ctx, template, adminWrite{Name: templateName, Spec: templateSpec, Verification: "product lifecycle E2E"}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(template), template) == nil && meta.IsStatusConditionTrue(template.Status.Conditions, "Ready")
@@ -425,7 +422,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	gatewayConfig.SSH.PublicAddr = gatewayName + ".test:22"
 	gatewaySpec, err := json.Marshal(adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig})
 	require.NoError(t, err)
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: gatewayName}}
+	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveComponent(ctx, gateway, adminWrite{Name: gatewayName, Spec: gatewaySpec}, true))
 
 	cacheConfig := configpkg.CacheConfig{
@@ -438,12 +435,12 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	}
 	cacheSpec, err := json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "Lifecycle E2E cache", Cache: &cacheConfig})
 	require.NoError(t, err)
-	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cacheName}}
+	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveComponent(ctx, cache, adminWrite{Name: cacheName, Spec: cacheSpec}, true))
 
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: gatewayName}, gateway))
 	nodePortService := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{Name: externalGatewayService, Namespace: managementNamespace},
+		ObjectMeta: metav1.ObjectMeta{Name: externalGatewayService, Namespace: managementNamespace, Labels: map[string]string{e2eRunLabel: cluster.runID}},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: map[string]string{ComponentLabel: "gateway", ComponentUIDLabel: string(gateway.UID)},
@@ -486,7 +483,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	}, ManagerID: "1"}
 	encodedSite, err := json.Marshal(siteSpec)
 	require.NoError(t, err)
-	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName}}
+	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveSite(ctx, site, adminWrite{Name: siteName, Spec: encodedSite, ManagerSecret: strings.Repeat("e2e-site-secret-", 3)}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(site), site) == nil && meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") && site.Status.CanonicalURL == remote.baseURL

@@ -20,9 +20,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	agentpkg "gitea.dev/codespace/internal/agent"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/transport"
 	"github.com/spf13/cobra"

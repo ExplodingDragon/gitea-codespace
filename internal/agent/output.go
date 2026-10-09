@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 )
 
 const maxOutputLineBytes = 32 * 1024

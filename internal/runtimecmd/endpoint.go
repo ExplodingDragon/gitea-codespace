@@ -12,9 +12,9 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 

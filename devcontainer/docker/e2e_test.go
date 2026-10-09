@@ -6,7 +6,9 @@ package docker
 import (
 	"bytes"
 	"context"
+	"embed"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -19,21 +21,36 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
+// testdataFS keeps the real-container fixtures available when the compiled test
+// binary is copied into a Kubernetes Runtime Pod.
+//
+//go:embed all:testdata
+var testdataFS embed.FS
+
+func copyE2EFixture(t *testing.T, destination, name string) {
+	t.Helper()
+	fixture, err := fs.Sub(testdataFS, "testdata/"+name)
+	if err != nil {
+		t.Fatalf("open %s fixture: %v", name, err)
+	}
+	if err := os.CopyFS(destination, fixture); err != nil {
+		t.Fatalf("copy %s fixture: %v", name, err)
+	}
+}
+
 // TestDockerE2EOfficialInterop follows the reference CLI's real-container test
 // pattern: create from official assets, inspect behavior inside the primary
 // container, then stop and resume the same environment.
 func TestDockerE2EOfficialInterop(t *testing.T) {
-	if os.Getenv("DEVCONTAINER_E2E") != "1" {
-		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	if os.Getenv("CODESPACE_E2E") != "1" {
+		t.Skip("run make test-e2e to verify Dev Container interoperability")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 
 	workspace := t.TempDir()
-	if err := os.CopyFS(workspace, os.DirFS("testdata/official-interop")); err != nil {
-		t.Fatalf("copy official interoperability fixture: %v", err)
-	}
+	copyE2EFixture(t, workspace, "official-interop")
 
 	var output bytes.Buffer
 	engine, err := New(ctx, &output, &output)
@@ -98,16 +115,14 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 }
 
 func TestDockerE2EImageSource(t *testing.T) {
-	if os.Getenv("DEVCONTAINER_E2E") != "1" {
-		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	if os.Getenv("CODESPACE_E2E") != "1" {
+		t.Skip("run make test-e2e to verify Dev Container interoperability")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	workspace := t.TempDir()
-	if err := os.CopyFS(workspace, os.DirFS("testdata/image-source")); err != nil {
-		t.Fatalf("copy image-source fixture: %v", err)
-	}
+	copyE2EFixture(t, workspace, "image-source")
 
 	var output bytes.Buffer
 	engine, err := New(ctx, &output, &output)
@@ -158,16 +173,14 @@ func TestDockerE2EImageSource(t *testing.T) {
 }
 
 func TestDockerE2EBuildSource(t *testing.T) {
-	if os.Getenv("DEVCONTAINER_E2E") != "1" {
-		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	if os.Getenv("CODESPACE_E2E") != "1" {
+		t.Skip("run make test-e2e to verify Dev Container interoperability")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
 	workspace := t.TempDir()
-	if err := os.CopyFS(workspace, os.DirFS("testdata/build-source")); err != nil {
-		t.Fatalf("copy build-source fixture: %v", err)
-	}
+	copyE2EFixture(t, workspace, "build-source")
 	var output bytes.Buffer
 	engine, err := New(ctx, &output, &output)
 	if err != nil {
@@ -196,8 +209,8 @@ func TestDockerE2EBuildSource(t *testing.T) {
 }
 
 func TestDockerE2EDockerInDockerFeature(t *testing.T) {
-	if os.Getenv("DEVCONTAINER_E2E") != "1" {
-		t.Skip("Docker E2E is disabled; run make test-devcontainer-e2e-required")
+	if os.Getenv("CODESPACE_E2E") != "1" {
+		t.Skip("run make test-e2e to verify Dev Container interoperability")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)

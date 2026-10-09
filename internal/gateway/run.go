@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	componentv1 "gitea.dev/codespace-proto-go/component/v1"
-	"gitea.dev/codespace-proto-go/component/v1/componentv1connect"
 	configpkg "gitea.dev/codespace/internal/config"
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"

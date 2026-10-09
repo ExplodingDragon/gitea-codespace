@@ -10,9 +10,9 @@ import (
 	"fmt"
 	"time"
 
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
 	"gitea.dev/codespace/internal/accessticket"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"

@@ -1,0 +1,10 @@
+version: v1
+plugins:
+  - name: go
+    out: .
+    opt:
+      - module=gitea.dev/codespace
+  - name: connect-go
+    out: .
+    opt:
+      - module=gitea.dev/codespace

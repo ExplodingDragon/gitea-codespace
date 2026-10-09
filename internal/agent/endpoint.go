@@ -12,8 +12,8 @@ import (
 	"strings"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/proto"
 )
@@ -39,22 +39,22 @@ func (s *RuntimeEndpointServer) Set(_ context.Context, request *connect.Request[
 	if request.Msg.ProtocolVersion != 1 || request.Msg.Endpoint == nil || s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid runtime endpoint request"))
 	}
-	endpoints, err := s.Runtime.setEndpoint(request.Msg.Endpoint)
+	_, err := s.Runtime.setEndpoint(request.Msg.Endpoint)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewResponse(&agentv1.RuntimeEndpointServiceSetResponse{Endpoints: endpoints}), nil
+	return connect.NewResponse(&agentv1.RuntimeEndpointServiceSetResponse{}), nil
 }
 
 func (s *RuntimeEndpointServer) Delete(_ context.Context, request *connect.Request[agentv1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[agentv1.RuntimeEndpointServiceDeleteResponse], error) {
 	if request.Msg.ProtocolVersion != 1 || s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid runtime endpoint request"))
 	}
-	endpoints, err := s.Runtime.deleteEndpoint(request.Msg.EndpointId)
+	_, err := s.Runtime.deleteEndpoint(request.Msg.EndpointId)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, err)
 	}
-	return connect.NewResponse(&agentv1.RuntimeEndpointServiceDeleteResponse{Endpoints: endpoints}), nil
+	return connect.NewResponse(&agentv1.RuntimeEndpointServiceDeleteResponse{}), nil
 }
 
 func (r *Runtime) TargetChanges() <-chan struct{} {

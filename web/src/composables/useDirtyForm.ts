@@ -10,15 +10,15 @@ export function useDirtyForm(value: () => unknown) {
   };
   window.addEventListener('beforeunload', beforeUnload);
   onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
-  const confirmLeave = () => !dirty.value || window.confirm('Discard unsaved changes?');
-  onBeforeRouteLeave(confirmLeave);
-  onBeforeRouteUpdate(confirmLeave);
+  const confirmDiscard = () => !dirty.value || window.confirm('Discard unsaved changes?');
+  onBeforeRouteLeave(confirmDiscard);
+  onBeforeRouteUpdate(confirmDiscard);
   return {
-    dirty,
-    reset: () => {
+    confirmDiscard,
+    endTracking: () => {
       initial.value = '';
     },
-    saved: () => {
+    beginTracking: () => {
       initial.value = current.value;
     },
   };

@@ -1,0 +1,207 @@
+syntax = "proto3";
+
+package component.v1;
+
+import "agent/v1/service.proto";
+
+option go_package = "gitea.dev/codespace/internal/rpc/component/v1;componentv1";
+
+// ComponentService is the typed control API used by Gateway and Cache.
+service ComponentService {
+  // GatewayControl publishes Gateway activity and streams its current configuration and routes.
+  rpc GatewayControl(stream GatewayControlRequest) returns (stream GatewayControlResponse);
+
+  // AuthorizeGateway delegates one user authorization decision to its Gitea site.
+  rpc AuthorizeGateway(AuthorizeGatewayRequest) returns (AuthorizeGatewayResponse);
+
+  // IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
+  rpc IssueAgentAccess(IssueAgentAccessRequest) returns (IssueAgentAccessResponse);
+
+  // CacheControl publishes cache health and streams configuration and cleanup grants.
+  rpc CacheControl(stream CacheControlRequest) returns (stream CacheControlResponse);
+}
+
+message GatewayControlRequest {
+  uint32 protocol_version = 1;
+  string session_id = 2;
+  uint64 sequence = 3;
+  map<string, int64> active_sessions = 4;
+}
+
+message GatewayControlResponse {
+  uint32 protocol_version = 1;
+  uint64 sequence = 2;
+  int64 permit_valid_for_milliseconds = 3;
+  string cursor = 4;
+  bool snapshot = 5;
+  GatewayConfigurationSnapshot config = 6;
+  repeated GatewayRuntimeRoute runtimes = 7;
+}
+
+message GatewayConfigurationSnapshot {
+  string http_listen = 1;
+  string public_url = 2;
+  string ssh_listen = 3;
+  string ssh_public_address = 4;
+  int64 session_ttl_milliseconds = 5;
+  int64 session_idle_timeout_milliseconds = 6;
+  int64 revalidate_interval_milliseconds = 7;
+  int32 max_sessions_per_codespace = 8;
+  int32 max_sessions_per_user = 9;
+  int32 max_inflight = 10;
+  int32 max_inflight_per_session = 11;
+  int32 max_channels_per_ssh_connection = 12;
+}
+
+message GatewayRuntimeRoute {
+  string site_uid = 1;
+  string resource_uid = 2;
+  string runtime_uuid = 3;
+  string pod_uid = 4;
+  string agent_address = 5;
+  int64 target_version = 6;
+  repeated GatewayEndpoint endpoints = 7;
+  string gitea_web_url = 8;
+}
+
+message GatewayEndpoint {
+  string endpoint_id = 1;
+  string label = 2;
+  bool public = 3;
+}
+
+message AuthorizeGatewayRequest {
+  uint32 protocol_version = 1;
+  oneof request {
+    OpenCodeAuthorization open_code = 2;
+    PublicEndpointAuthorization public_endpoint = 3;
+    SSHPublicKeyAuthorization ssh_public_key = 4;
+    EndpointSessionAuthorization endpoint_session = 5;
+    SSHSessionAuthorization ssh_session = 6;
+  }
+}
+
+message OpenCodeAuthorization {
+  // code is the one-time authorization code issued by Gitea.
+  string code = 1;
+  // runtime_uuid and endpoint_id are parsed from the canonical Gateway host.
+  string runtime_uuid = 2;
+  string endpoint_id = 3;
+}
+
+message PublicEndpointAuthorization {
+  string runtime_uuid = 1;
+  string endpoint_id = 2;
+}
+
+message SSHPublicKeyAuthorization {
+  string runtime_uuid = 1;
+  bytes public_key = 2;
+}
+
+message EndpointSessionAuthorization {
+  int64 user_id = 1;
+  string runtime_uuid = 2;
+  string endpoint_id = 3;
+}
+
+message SSHSessionAuthorization {
+  int64 user_id = 1;
+  string runtime_uuid = 2;
+}
+
+message AuthorizeGatewayResponse {
+  bool allowed = 1;
+  string denied_category = 2;
+  int64 user_id = 3;
+  string runtime_uuid = 4;
+  string endpoint_id = 5;
+}
+
+message IssueAgentAccessRequest {
+  uint32 protocol_version = 1;
+  string runtime_uuid = 2;
+  agent.v1.AccessCapability capability = 3;
+  string endpoint_id = 4;
+}
+
+message IssueAgentAccessResponse {
+  GatewayRuntimeRoute runtime = 1;
+  string ticket = 2;
+}
+
+message CacheControlRequest {
+  uint32 protocol_version = 1;
+  string cache_id = 2;
+  string session_id = 3;
+  uint64 sequence = 4;
+  CacheStatus status = 5;
+  oneof maintenance {
+    CacheGCRequest begin_gc = 6;
+    CacheGCComplete complete_gc = 7;
+  }
+}
+
+message CacheControlResponse {
+  uint32 protocol_version = 1;
+  uint64 sequence = 2;
+  int64 permit_valid_for_milliseconds = 3;
+  CacheConfiguration config = 4;
+  CacheGCGrant gc_grant = 5;
+}
+
+message CacheConfiguration {
+  string id = 1;
+  string name = 2;
+  int64 revision = 3;
+  bool enabled = 4;
+  string listen = 5;
+  string public_url = 6;
+  CacheStorageConfiguration storage = 7;
+  string max_size = 8;
+  int64 max_age_milliseconds = 9;
+  int64 gc_interval_milliseconds = 10;
+  map<string, CacheUpstreamConfiguration> upstreams = 11;
+}
+
+message CacheStorageConfiguration {
+  string driver = 1;
+  string path = 2;
+  string min_free_space = 3;
+  CacheS3Configuration s3 = 4;
+}
+
+message CacheS3Configuration {
+  string endpoint = 1;
+  string region = 2;
+  string bucket = 3;
+  string prefix = 4;
+  bool force_path_style = 5;
+}
+
+message CacheUpstreamConfiguration {
+  repeated string allow = 1;
+}
+
+message CacheStatus {
+  string public_url = 1;
+  int64 config_revision = 2;
+  int64 cache_bytes = 3;
+  int64 mirror_bytes = 4;
+  int64 scanned_at_unix_milliseconds = 5;
+  int64 last_cleanup_unix_milliseconds = 6;
+  string cleanup_result = 7;
+}
+
+message CacheGCGrant {
+  string cache_id = 1;
+  string id = 2;
+  int64 config_revision = 3;
+  int64 expires_at_unix_milliseconds = 4;
+}
+
+message CacheGCRequest {}
+
+message CacheGCComplete {
+  string grant_id = 1;
+}

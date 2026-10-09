@@ -12,11 +12,16 @@ import (
 func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	t.Parallel()
 
+	const webIDEFeature = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
 	request := Request{
 		CodespaceUUID: "11111111-2222-4333-8444-555555555555",
 		Workspace:     "/workspaces/project",
 		Source:        devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
-		DevContainer:  DefaultConfiguration(),
+		DevContainer: Configuration{WebIDE: WebIDEConfiguration{
+			Enabled: true,
+			Feature: webIDEFeature,
+			Version: "4.121.0",
+		}},
 		Cache: devcontainer.CacheOptions{
 			BuildRegistry: "https://registry.example.com/cache",
 			BuildScope:    "scope",
@@ -31,7 +36,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if options.OwnerID != request.CodespaceUUID || options.AllowedPathRoot != request.Workspace {
 		t.Fatalf("Codespace identity policy = owner %q, root %q", options.OwnerID, options.AllowedPathRoot)
 	}
-	if len(options.InjectedFeatures) != 1 || options.InjectedFeatures[0].Reference != defaultWebIDEFeature {
+	if len(options.InjectedFeatures) != 1 || options.InjectedFeatures[0].Reference != webIDEFeature {
 		t.Fatal("platform Web IDE Feature is missing")
 	}
 	if !options.InjectedFeatures[0].InstallOnly {

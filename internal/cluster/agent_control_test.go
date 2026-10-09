@@ -17,11 +17,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/encoding/protojson"
 	corev1 "k8s.io/api/core/v1"

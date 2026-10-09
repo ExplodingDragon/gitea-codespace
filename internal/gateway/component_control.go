@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	componentv1 "gitea.dev/codespace-proto-go/component/v1"
-	"gitea.dev/codespace-proto-go/component/v1/componentv1connect"
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 )
 
 // ComponentControlPlane delegates Gitea authorization to Manager, which owns

@@ -7,9 +7,9 @@ import (
 	"fmt"
 	"time"
 
-	componentv1 "gitea.dev/codespace-proto-go/component/v1"
 	cachepkg "gitea.dev/codespace/internal/cache"
 	configpkg "gitea.dev/codespace/internal/config"
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 )
 
 func CacheConfigToProto(config configpkg.CacheConfig) *componentv1.CacheConfiguration {

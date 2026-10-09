@@ -20,31 +20,18 @@ import (
 	"time"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/google/uuid"
+	"github.com/go-logr/logr"
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 func TestKubernetesE2EManagerServing(t *testing.T) {
-	if os.Getenv("CODESPACE_TEST_KUBERNETES") != "1" {
-		t.Skip("requires the test cluster and installed CRDs")
-	}
-	config, err := ctrl.GetConfig()
-	require.NoError(t, err)
-	c, err := client.New(config, client.Options{Scheme: testScheme(t)})
-	require.NoError(t, err)
-	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "manager-" + uuid.NewString()}}
-	require.NoError(t, c.Create(t.Context(), namespace))
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-		defer cancel()
-		require.NoError(t, client.IgnoreNotFound(c.Delete(ctx, namespace, client.Preconditions{UID: &namespace.UID})))
-	})
+	cluster := newE2ECluster(t, 2*time.Minute)
+	namespace := cluster.createNamespace(t, "manager-e2e")
 	directory := t.TempDir()
 	fixture := httptest.NewTLSServer(http.NotFoundHandler())
 	key, err := x509.MarshalPKCS8PrivateKey(fixture.TLS.Certificates[0].PrivateKey)
@@ -59,15 +46,19 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.NoError(t, err)
 	address := listener.Addr().String()
 	require.NoError(t, listener.Close())
-	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://manager.codespace-system.svc:8443", ComponentURL: "https://manager.codespace-system.svc:8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentityIssuer: "test-issuer", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0", CertificateDirectory: directory}
+	managerHost := "manager." + namespace.Name + ".svc"
+	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentityIssuer: "test-issuer", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0", CertificateDirectory: directory}
+	log.SetLogger(logr.Discard())
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
-	go func() { done <- Run(ctx, config, options) }()
+	go func() { done <- Run(ctx, cluster.config, options) }()
 	t.Cleanup(func() {
 		cancel()
 		select {
 		case err := <-done:
-			require.NoError(t, err)
+			if err != nil {
+				t.Errorf("stop E2E Manager: %v", err)
+			}
 		case <-time.After(20 * time.Second):
 			t.Error("Manager did not stop")
 		}
@@ -83,7 +74,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 		return response.StatusCode == http.StatusUnauthorized
 	}, 45*time.Second, 100*time.Millisecond)
 	var lease coordinationv1.Lease
-	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: namespace.Name, Name: "codespace-manager"}, &lease))
+	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Namespace: namespace.Name, Name: "codespace-manager"}, &lease))
 	require.NotNil(t, lease.Spec.HolderIdentity)
 	require.NotEmpty(t, *lease.Spec.HolderIdentity)
 	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, options.AdminPublicURL+"/api/admin/login", strings.NewReader(`{"token":"`+token+`"}`))
@@ -100,7 +91,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	cookies := response.Cookies()
 	require.Len(t, cookies, 1)
 	var sessions corev1.SecretList
-	require.NoError(t, c.List(t.Context(), &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
+	require.NoError(t, cluster.List(cluster.ctx, &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
 	spec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testEnvironment()})
 	require.NoError(t, err)
@@ -118,14 +109,16 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.NoError(t, response.Body.Close())
 	require.Equal(t, http.StatusOK, response.StatusCode, string(data))
 	var template api.EnvironmentTemplate
-	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Name: namespace.Name}, &template))
+	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Name: namespace.Name}, &template))
 	t.Cleanup(func() {
 		ctx, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
-		require.NoError(t, client.IgnoreNotFound(c.Delete(ctx, &template, client.Preconditions{UID: &template.UID})))
+		if err := client.IgnoreNotFound(cluster.Delete(ctx, &template, client.Preconditions{UID: &template.UID})); err != nil {
+			t.Errorf("delete E2E environment template: %v", err)
+		}
 	})
 	require.Equal(t, "e2e", template.Spec.Tag)
 	require.Eventually(t, func() bool {
-		return c.Get(t.Context(), client.ObjectKeyFromObject(&template), &template) == nil && len(template.Status.Conditions) != 0
+		return cluster.Get(cluster.ctx, client.ObjectKeyFromObject(&template), &template) == nil && len(template.Status.Conditions) != 0
 	}, 10*time.Second, 100*time.Millisecond)
 }

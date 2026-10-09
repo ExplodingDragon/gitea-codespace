@@ -75,13 +75,13 @@ function edit(site?: Resource<Site>) {
   form.value.caches ||= [];
   form.value.upstreams ||= [];
   editing.value = true;
-  dirty.saved();
+  dirty.beginTracking();
 }
 function close() {
-  if (dirty.dirty.value && !window.confirm('Discard unsaved changes?')) return;
+  if (!dirty.confirmDiscard()) return;
   editing.value = false;
   secret.value = '';
-  dirty.reset();
+  dirty.endTracking();
 }
 async function save() {
   busy.value = true;
@@ -96,7 +96,7 @@ async function save() {
     });
     secret.value = '';
     editing.value = false;
-    dirty.reset();
+    dirty.endTracking();
     await load();
   } catch (e) {
     error.value = (e as Error).message;

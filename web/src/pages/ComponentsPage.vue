@@ -103,7 +103,7 @@ function edit(item?: Resource<Component, ComponentStatus>) {
     allow: config.allow.join('\n'),
   }));
   editing.value = true;
-  dirty.saved();
+  dirty.beginTracking();
 }
 function setRole(role: 'gateway' | 'cache') {
   const displayName = form.value?.displayName ?? '';
@@ -112,9 +112,9 @@ function setRole(role: 'gateway' | 'cache') {
   upstreams.value = [];
 }
 function close() {
-  if (dirty.dirty.value && !window.confirm('Discard unsaved changes?')) return;
+  if (!dirty.confirmDiscard()) return;
   editing.value = false;
-  dirty.reset();
+  dirty.endTracking();
 }
 async function save() {
   busy.value = true;
@@ -143,7 +143,7 @@ async function save() {
       s3SecretKey: s3SecretKey.value,
     });
     editing.value = false;
-    dirty.reset();
+    dirty.endTracking();
     await load();
   } catch (e) {
     error.value = (e as Error).message;

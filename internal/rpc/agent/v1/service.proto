@@ -1,0 +1,225 @@
+syntax = "proto3";
+
+package agent.v1;
+
+import "codespace/v1/types.proto";
+
+option go_package = "gitea.dev/codespace/internal/rpc/agent/v1;agentv1";
+
+// AgentControlService runs on the elected Manager, behind Pod-bound mTLS.
+service AgentControlService {
+  // Control resumes a session by reporting facts before accepting new execution.
+  rpc Control(stream ControlRequest) returns (stream ControlResponse);
+  // UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
+  rpc UploadLogs(UploadLogsRequest) returns (UploadLogsResponse);
+}
+
+// AgentAccessService runs on the Runtime Pod, reached directly by Gateway.
+service AgentAccessService {
+  // Access requires an accepted opening frame before transferring user data.
+  rpc Access(stream AccessRequest) returns (stream AccessResponse);
+}
+
+// RuntimeEndpointService runs on the Runtime Pod's private Unix socket.
+service RuntimeEndpointService {
+  // List returns the HTTP endpoints currently published by this runtime.
+  rpc List(RuntimeEndpointServiceListRequest) returns (RuntimeEndpointServiceListResponse);
+  // Set adds or replaces one endpoint and durably publishes the new target.
+  rpc Set(RuntimeEndpointServiceSetRequest) returns (RuntimeEndpointServiceSetResponse);
+  // Delete removes one endpoint and durably publishes the new target.
+  rpc Delete(RuntimeEndpointServiceDeleteRequest) returns (RuntimeEndpointServiceDeleteResponse);
+}
+
+message RuntimeEndpointServiceListRequest {
+  uint32 protocol_version = 1;
+}
+
+message RuntimeEndpointServiceListResponse {
+  repeated codespace.v1.RuntimeEndpoint endpoints = 1;
+}
+
+message RuntimeEndpointServiceSetRequest {
+  uint32 protocol_version = 1;
+  codespace.v1.RuntimeEndpoint endpoint = 2;
+}
+
+message RuntimeEndpointServiceSetResponse {}
+
+message RuntimeEndpointServiceDeleteRequest {
+  uint32 protocol_version = 1;
+  string endpoint_id = 2;
+}
+
+message RuntimeEndpointServiceDeleteResponse {}
+
+message ControlRequest {
+  uint32 protocol_version = 1;
+  // Fresh per connection; stale session replies cannot renew execution.
+  string session_id = 2;
+  // Strictly increasing within this control session.
+  uint64 sequence = 3;
+  AgentReport report = 4;
+  // accepted_operation_rversion is the operation payload retained by this Agent process.
+  int64 accepted_operation_rversion = 5;
+}
+
+message AgentReport {
+  int64 operation_rversion = 1;
+  bytes git_ssh_public_key = 2;
+  OperationResult result = 3;
+  AccessTarget target = 4;
+  codespace.v1.RuntimeBoot boot = 5;
+  codespace.v1.RuntimeResourceUsage resource_usage = 6;
+}
+
+message OperationResult {
+  int64 operation_rversion = 1;
+  codespace.v1.FinalStatus status = 2;
+  string message = 3;
+}
+
+message ControlResponse {
+  string session_id = 1;
+  uint64 sequence = 2;
+  // Measured from the caller's request send time, not reply receipt time.
+  int64 permit_valid_for_milliseconds = 3;
+  codespace.v1.OperationPayload operation = 4;
+  codespace.v1.RuntimeAccessBundle access = 5;
+  // A durable Manager result permits Agent to retire this pending result.
+  int64 acknowledged_result_version = 6;
+  bool cancel_execution = 7;
+  // Pinned platform options, applied before the Docker daemon starts.
+  RuntimeOptions runtime = 8;
+  // Ed25519 verification key for Manager-issued, limited access tickets.
+  bytes access_verification_key = 9;
+  // operation_rversion identifies the operation covered by this execution permit.
+  int64 operation_rversion = 10;
+}
+
+message RuntimeOptions {
+  string git_ssh_key_type = 1;
+  // cache contains one Manager-authorized registry endpoint for this runtime.
+  RuntimeCache cache = 2;
+}
+
+message RuntimeCache {
+  string build_registry = 1;
+  string build_scope = 2;
+  map<string, string> mirrors = 3;
+  map<string, RegistryCredential> credentials = 4;
+}
+
+message RegistryCredential {
+  string username = 1;
+  string password = 2;
+}
+
+message AccessTarget {
+  int64 version = 1;
+  string primary_container_id = 2;
+  repeated EndpointTarget endpoints = 3;
+  bool ready = 4;
+}
+
+message EndpointTarget {
+  codespace.v1.RuntimeEndpoint endpoint = 1;
+  string container_id = 2;
+  uint32 port = 3;
+}
+
+message UploadLogsRequest {
+  uint32 protocol_version = 1;
+  int64 operation_rversion = 2;
+  int64 offset = 3;
+  repeated codespace.v1.LogLine lines = 4;
+}
+
+message UploadLogsResponse {
+  // When closed, this repeats the requested offset without acknowledging the batch.
+  int64 next_offset = 1;
+  // A closed or truncated Gitea operation no longer accepts additional logs.
+  bool closed = 2;
+}
+
+message AccessRequest {
+  uint32 protocol_version = 1;
+  oneof frame {
+    OpenAccess open = 2;
+    bytes stdin = 3;
+    TerminalSize resize = 4;
+    int32 signal = 5;
+    bool stdin_eof = 6;
+  }
+}
+
+message OpenAccess {
+  // Signed by Manager; binds site, Runtime, Pod, target version and capability.
+  string ticket = 1;
+  oneof capability {
+    Terminal terminal = 2;
+    Command command = 3;
+    SFTP sftp = 4;
+    Endpoint endpoint = 5;
+    LoopbackTCP tcp = 6;
+  }
+}
+
+// AccessCapability identifies the single operation authorized by a ticket.
+enum AccessCapability {
+  ACCESS_CAPABILITY_UNSPECIFIED = 0;
+  ACCESS_CAPABILITY_TERMINAL = 1;
+  ACCESS_CAPABILITY_COMMAND = 2;
+  ACCESS_CAPABILITY_SFTP = 3;
+  ACCESS_CAPABILITY_ENDPOINT = 4;
+  ACCESS_CAPABILITY_LOOPBACK_TCP = 5;
+}
+
+// AccessTicketClaims is signed by Manager and verified by the current Agent.
+message AccessTicketClaims {
+  uint32 protocol_version = 1;
+  string site_uid = 2;
+  string resource_uid = 3;
+  string runtime_uuid = 4;
+  string pod_uid = 5;
+  int64 target_version = 6;
+  AccessCapability capability = 7;
+  string endpoint_id = 8;
+  int64 expires_unix = 9;
+  bytes nonce = 10;
+}
+
+message Terminal {
+  string term = 1;
+  TerminalSize size = 2;
+}
+
+message TerminalSize {
+  uint32 columns = 1;
+  uint32 rows = 2;
+}
+
+message Command {
+  // SSH exec commands are evaluated by the selected user's login shell.
+  string command = 1;
+  // terminal is present when the SSH exec request allocated a PTY.
+  Terminal terminal = 2;
+}
+
+message SFTP {}
+
+message Endpoint {
+  string endpoint_id = 1;
+}
+
+message LoopbackTCP {
+  uint32 port = 1;
+}
+
+message AccessResponse {
+  oneof frame {
+    bool accepted = 1;
+    bytes stdout = 2;
+    bytes stderr = 3;
+    int32 exit_status = 4;
+  }
+}

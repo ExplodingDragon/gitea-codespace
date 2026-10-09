@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"math"
 	"net/http"
 	"strconv"
@@ -342,7 +343,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			if role != "gateway" && role != "cache" {
 				continue
 			}
-			spec, err := s.componentSpec(ctx, &item)
+			spec, err := componentSpecFromConfigMap(&item)
 			if err != nil {
 				return nil, err
 			}
@@ -459,10 +460,13 @@ func decodeAdminSpec(raw json.RawMessage, target any) error {
 	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
 		return apierrors.NewBadRequest("resource specification must be a JSON object")
 	}
-	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(target); err != nil {
 		return apierrors.NewBadRequest("invalid resource specification")
+	}
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return apierrors.NewBadRequest("resource specification must contain one JSON object")
 	}
 	return nil
 }
@@ -524,7 +528,7 @@ func (s *AdminServer) saveTemplate(ctx context.Context, template *api.Environmen
 	return nil
 }
 
-func (s *AdminServer) componentSpec(ctx context.Context, component *corev1.ConfigMap) (adminComponentSpec, error) {
+func componentSpecFromConfigMap(component *corev1.ConfigMap) (adminComponentSpec, error) {
 	role := component.Labels[ComponentLabel]
 	spec := adminComponentSpec{Role: role, DisplayName: component.Data["displayName"]}
 	switch role {
@@ -535,13 +539,16 @@ func (s *AdminServer) componentSpec(ctx context.Context, component *corev1.Confi
 		}
 		spec.Gateway = &gateway
 	case "cache":
-		material, err := (&ComponentServer{Client: s.Client, ManagementNamespace: s.Namespace}).cacheMaterial(ctx, component)
-		if err != nil {
-			return adminComponentSpec{}, err
+		var cache configpkg.CacheConfig
+		if err := json.Unmarshal([]byte(component.Data["config"]), &cache); err != nil {
+			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration", component.Name)
 		}
-		material.config.Storage.S3.AccessKey = ""
-		material.config.Storage.S3.SecretKey = ""
-		spec.Cache = &material.config
+		cache.Storage.S3.AccessKey = ""
+		cache.Storage.S3.SecretKey = ""
+		if err := cache.Validate(); err != nil {
+			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration: %w", component.Name, err)
+		}
+		spec.Cache = &cache
 	default:
 		return adminComponentSpec{}, fmt.Errorf("component %s has an invalid role", component.Name)
 	}

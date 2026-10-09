@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/stretchr/testify/require"
 )
 

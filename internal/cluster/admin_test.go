@@ -83,6 +83,15 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	require.Empty(t, secrets.Items)
 }
 
+func TestDecodeAdminSpecRequiresOneObject(t *testing.T) {
+	var value struct {
+		Name string `json:"name"`
+	}
+	require.NoError(t, decodeAdminSpec(json.RawMessage(`{"name":"value"}`), &value))
+	require.Equal(t, "value", value.Name)
+	require.Error(t, decodeAdminSpec(json.RawMessage(`{"name":"value"} {"name":"other"}`), &value))
+}
+
 func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}

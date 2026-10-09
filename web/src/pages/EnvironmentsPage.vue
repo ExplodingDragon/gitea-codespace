@@ -69,12 +69,12 @@ function edit(item?: Resource<Environment>) {
     options: JSON.stringify(feature.options ?? {}, null, 2),
   }));
   editing.value = true;
-  dirty.saved();
+  dirty.beginTracking();
 }
 function close() {
-  if (dirty.dirty.value && !window.confirm('Discard unsaved changes?')) return;
+  if (!dirty.confirmDiscard()) return;
   editing.value = false;
-  dirty.reset();
+  dirty.endTracking();
 }
 function setIsolation(value: string) {
   if (!form.value) return;
@@ -103,7 +103,7 @@ async function save() {
       verification: verification.value,
     });
     editing.value = false;
-    dirty.reset();
+    dirty.endTracking();
     await load();
   } catch (e) {
     error.value = (e as Error).message;

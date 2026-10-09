@@ -15,10 +15,10 @@ import (
 	"sync"
 	"time"
 
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/proto"
 )

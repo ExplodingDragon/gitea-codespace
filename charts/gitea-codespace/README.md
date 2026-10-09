@@ -14,12 +14,14 @@ objects configured through the administration UI.
 - at least one verified Kata Containers or Sysbox RuntimeClass and compatible
   StorageClass before an environment template is enabled.
 
-The chart references existing RuntimeClasses; it does not change the node
-container runtime. Install Kata using its
+The chart references existing RuntimeClasses and leaves node configuration to
+the cluster operator. Install Kata using its
 [installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md),
 or install Sysbox on a dedicated node pool using its
 [Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Verify the chosen runtime, storage, and platform image with a real Pod first.
+The broader isolation, storage, network, and recovery requirements are defined
+in the [deployment design](../../../src/deployment-requirements.md).
 
 ## Install
 
@@ -66,12 +68,12 @@ Leaving the parent name empty keeps public route creation under the cluster
 operator's control. This is useful when the ingress implementation does not
 support TCPRoute or uses an external provisioning workflow.
 
-## Values and validation
+## Configuration and validation
 
-[`values.yaml`](values.yaml) contains defaults and
-[`values.schema.json`](values.schema.json) is the authoritative value schema.
-Render and validate the chart through the repository Makefile:
+[`values.yaml`](values.yaml) contains defaults. [`values.schema.json`](values.schema.json)
+is the authoritative list of supported values and validation rules. Render and
+validate the chart through the repository Makefile:
 
 ```sh
-make test-helm
+make helm-check
 ```

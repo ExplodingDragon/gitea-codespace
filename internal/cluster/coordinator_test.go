@@ -15,10 +15,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/go-logr/logr/testr"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"

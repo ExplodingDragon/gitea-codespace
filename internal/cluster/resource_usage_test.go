@@ -7,9 +7,9 @@ import (
 	"testing"
 	"time"
 
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/stretchr/testify/require"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"

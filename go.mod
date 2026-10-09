@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	connectrpc.com/connect v1.20.0
-	gitea.dev/codespace-proto-go v0.0.0-20261008155322-5b416106de03
+	gitea.dev/codespace-proto-go v0.0.0-20261009114814-ddc78012a301
 	github.com/compose-spec/compose-go/v2 v2.9.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/distribution/distribution/v3 v3.1.1

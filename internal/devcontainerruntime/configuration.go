@@ -13,10 +13,7 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
-const (
-	defaultWebIDEFeature = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
-	maxInjectedFeatures  = 32
-)
+const maxInjectedFeatures = 32
 
 // Configuration defines administrator-owned additions to a repository's Dev
 // Container configuration. It is copied into the Codespace runtime snapshot.
@@ -37,11 +34,6 @@ type WebIDEConfiguration struct {
 type InjectedFeature struct {
 	Reference string               `json:"reference"`
 	Options   apiextensionsv1.JSON `json:"options,omitempty"`
-}
-
-// DefaultConfiguration returns the administration UI defaults for new templates.
-func DefaultConfiguration() Configuration {
-	return Configuration{WebIDE: WebIDEConfiguration{Enabled: true, Feature: defaultWebIDEFeature, Version: "4.121.0"}}
 }
 
 // Validate checks that the configuration can be merged deterministically.

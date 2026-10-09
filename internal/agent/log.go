@@ -16,9 +16,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"golang.org/x/sys/unix"
 	"google.golang.org/protobuf/proto"
 )

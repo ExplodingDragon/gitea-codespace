@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	componentv1 "gitea.dev/codespace-proto-go/component/v1"
-	"gitea.dev/codespace-proto-go/component/v1/componentv1connect"
 	cachepkg "gitea.dev/codespace/internal/cache"
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"github.com/google/uuid"
 )
 

@@ -30,8 +30,8 @@ func TestRuntimeNetworkHasUsableMTU(t *testing.T) {
 
 // Run this binary with unshare --pid --fork --mount-proc in the isolated test
 // Runtime Pod. The ordinary Go test process must not act as a host subreaper.
-func TestAgentPID1Supervision(t *testing.T) {
-	if os.Getenv("CODESPACE_TEST_AGENT_PROCESS") != "1" {
+func TestAgentE2EPID1Supervision(t *testing.T) {
+	if os.Getenv("CODESPACE_E2E") != "1" {
 		t.Skip("requires an isolated Runtime Pod PID namespace")
 	}
 	require.Equal(t, 1, os.Getpid())
@@ -80,8 +80,8 @@ while :; do sleep 0.05; done`, "worker", ready, stopped, orphan}, os.Stdin, os.S
 	require.Equal(t, "stopped", string(data))
 }
 
-func TestAgentDockerSupervision(t *testing.T) {
-	if os.Getenv("CODESPACE_TEST_AGENT_DOCKER") != "1" {
+func TestAgentE2EDockerSupervision(t *testing.T) {
+	if os.Getenv("CODESPACE_E2E") != "1" {
 		t.Skip("requires a dedicated Sysbox or Kata Runtime Pod")
 	}
 	require.NoError(t, os.MkdirAll("/run/codespace", 0o700))

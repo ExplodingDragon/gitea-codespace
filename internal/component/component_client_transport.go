@@ -13,7 +13,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	"gitea.dev/codespace-proto-go/component/v1/componentv1connect"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"gitea.dev/codespace/internal/transport"
 )
 

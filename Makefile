@@ -1,51 +1,64 @@
 GO ?= go
 PNPM ?= pnpm
 CONTAINER_TOOL ?= docker
+GO_BIN ?= $(shell bin="$$($(GO) env GOBIN)"; if test -n "$$bin"; then printf "%s" "$$bin"; else printf "%s/bin" "$$($(GO) env GOPATH)"; fi)
+BUF ?= $(GO_BIN)/buf
 CODESPACE_IMAGE ?= gitea-codespace:local
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
 KUBERNETES_RUNTIME_CLASS ?= sysbox-runc
 KUBERNETES_STORAGE_CLASS ?= local-path
 CONTROLLER_GEN_VERSION := v0.21.0
+BUF_VERSION := v1.8.0
+PROTOC_GEN_GO_VERSION := v1.36.11
+PROTOC_GEN_CONNECT_GO_VERSION := v1.20.0
 
-.PHONY: generate-kubernetes test-kubernetes test-kubernetes-runtime test-kubernetes-agent test-kubernetes-components test-kubernetes-ha test-kubernetes-lifecycle test-kubernetes-gitea
+define prepare-proto-workspace
+mkdir -p .tmp; \
+work="$$(mktemp -d .tmp/proto-work.XXXXXX)"; \
+trap 'rm -rf "$$work"; rmdir .tmp 2>/dev/null || true' EXIT; \
+mkdir -p "$$work/agent/v1" "$$work/component/v1" "$$work/codespace/v1"; \
+cp internal/rpc/agent/v1/service.proto "$$work/agent/v1/service.proto"; \
+cp internal/rpc/component/v1/service.proto "$$work/component/v1/service.proto"; \
+proto_module="$$($(GO) list -m -f '{{.Dir}}' gitea.dev/codespace-proto-go)"; \
+cp "$$proto_module/proto/codespace/v1/types.proto" "$$work/codespace/v1/types.proto";
+endef
+
+.PHONY: generate-kubernetes
 generate-kubernetes:
 	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths=./internal/cluster/api/... output:crd:artifacts:config=deploy/crds
 
-test-kubernetes:
-	CODESPACE_TEST_KUBERNETES=1 $(GO) test -p 1 -count=1 -timeout 5m ./internal/cluster/...
+.PHONY: install-proto proto-format proto-generate proto-check format lint build build-linux images frontend frontend-check admin-dev helm-check scripts-check
+install-proto:
+	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
+	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
+	$(GO) install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
 
-test-kubernetes-runtime:
-	test -f "$(CODESPACE_TEST_DOCKER_ARCHIVE)" || { echo "CODESPACE_TEST_DOCKER_ARCHIVE must point to the exported BusyBox Docker archive"; exit 1; }
-	test -n "$(CODESPACE_IMAGE)" || { echo "CODESPACE_IMAGE must use the manually imported platform image"; exit 1; }
-	CODESPACE_TEST_KUBERNETES_RUNTIME=1 CODESPACE_TEST_DOCKER_ARCHIVE="$(CODESPACE_TEST_DOCKER_ARCHIVE)" CODESPACE_TEST_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EDockerPersistence$$' ./internal/cluster
+proto-format:
+	$(BUF) format internal/rpc/agent/v1/service.proto -w
+	$(BUF) format internal/rpc/component/v1/service.proto -w
 
-test-kubernetes-agent:
-	$(GO) test -c -tags netgo,osusergo -o bin/agent.test ./internal/agent
-	CODESPACE_TEST_KUBERNETES_AGENT=1 CODESPACE_TEST_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EAgentProcesses$$' ./internal/cluster
+proto-generate:
+	@$(prepare-proto-workspace) \
+	PATH="$(GO_BIN):$$PATH" $(BUF) generate "$$work" --template buf.gen.yaml \
+		--path "$$work/agent/v1/service.proto" --path "$$work/component/v1/service.proto"
 
-test-kubernetes-components:
-	CODESPACE_TEST_KUBERNETES_COMPONENTS=1 $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EComponentWorkloads$$' ./internal/cluster
+proto-check:
+	@$(prepare-proto-workspace) \
+	$(BUF) lint "$$work" --path "$$work/agent/v1/service.proto" --path "$$work/component/v1/service.proto"; \
+	$(BUF) format "$$work" --diff --exit-code --path "$$work/agent/v1/service.proto" --path "$$work/component/v1/service.proto"; \
+	PATH="$(GO_BIN):$$PATH" $(BUF) generate "$$work" --template buf.gen.yaml --output "$$work/generated" \
+		--path "$$work/agent/v1/service.proto" --path "$$work/component/v1/service.proto"; \
+	diff -u internal/rpc/agent/v1/service.pb.go "$$work/generated/internal/rpc/agent/v1/service.pb.go"; \
+	diff -u internal/rpc/agent/v1/agentv1connect/service.connect.go "$$work/generated/internal/rpc/agent/v1/agentv1connect/service.connect.go"; \
+	diff -u internal/rpc/component/v1/service.pb.go "$$work/generated/internal/rpc/component/v1/service.pb.go"; \
+	diff -u internal/rpc/component/v1/componentv1connect/service.connect.go "$$work/generated/internal/rpc/component/v1/componentv1connect/service.connect.go"
 
-test-kubernetes-ha:
-	CODESPACE_TEST_KUBERNETES_HA=1 $(GO) test -p 1 -count=1 -timeout 5m -run '^TestKubernetesE2EManagerFailover$$' ./internal/cluster
-
-test-kubernetes-lifecycle:
-	test -n "$(CODESPACE_TEST_GITEA_LISTEN)" || { echo "CODESPACE_TEST_GITEA_LISTEN must be reachable from Runtime Pods"; exit 1; }
-	test -n "$(CODESPACE_TEST_NODE_ADDRESS)" || { echo "CODESPACE_TEST_NODE_ADDRESS must identify a Kubernetes node"; exit 1; }
-	CODESPACE_TEST_KUBERNETES_LIFECYCLE=1 CODESPACE_TEST_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" CODESPACE_TEST_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" CODESPACE_TEST_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" CODESPACE_TEST_GITEA_LISTEN="$(CODESPACE_TEST_GITEA_LISTEN)" CODESPACE_TEST_NODE_ADDRESS="$(CODESPACE_TEST_NODE_ADDRESS)" $(GO) test -p 1 -count=1 -timeout 115m -run '^TestKubernetesE2EProductLifecycle$$' ./internal/cluster
-
-test-kubernetes-gitea:
-	@test -n "$$CODESPACE_TEST_GITEA_URL" || { echo "CODESPACE_TEST_GITEA_URL is required"; exit 1; }
-	@test -n "$$CODESPACE_TEST_GITEA_MANAGER_ID" || { echo "CODESPACE_TEST_GITEA_MANAGER_ID is required"; exit 1; }
-	@test -n "$$CODESPACE_TEST_GITEA_MANAGER_SECRET" || { echo "CODESPACE_TEST_GITEA_MANAGER_SECRET is required"; exit 1; }
-	CODESPACE_TEST_KUBERNETES_GITEA=1 $(GO) test -p 1 -count=1 -timeout 2m -run '^TestKubernetesE2ERealGiteaHandshake$$' ./internal/cluster
-
-.PHONY: format lint build build-linux images frontend frontend-check admin-dev test-helm
 format:
 	$(GO) fmt ./...
+	$(MAKE) proto-format
 	$(PNPM) --dir web run format
 
-lint: test-scripts frontend-check test-helm
+lint: proto-check scripts-check frontend-check helm-check
 	$(GO) vet ./...
 
 build: frontend
@@ -65,7 +78,7 @@ frontend-check:
 	$(PNPM) --dir web run check
 	$(PNPM) --dir web run format:check
 
-test-helm:
+helm-check:
 	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
 	helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin >/dev/null
 
@@ -73,27 +86,24 @@ admin-dev:
 	$(PNPM) --dir web run dev
 
 .PHONY: test
-test: test-scripts
+test: scripts-check
 	$(GO) test -p 1 -skip 'Test.*E2E' ./...
 
-.PHONY: test-scripts
-test-scripts:
+scripts-check:
 	bash -n internal/devcontainerruntime/builtin/configure-git.sh
 	bash -n internal/devcontainerruntime/builtin/start-web-ide.sh
+	bash -n tests/e2e/run.sh
 	sh -n devcontainer/docker/builtin/update-user.sh
 
 .PHONY: test-smoke
 test-smoke:
 	$(GO) test -p 1 -count=1 ./internal/accessticket ./internal/agent ./internal/cache ./internal/cluster ./internal/gateway ./internal/transport
 
-.PHONY: test-devcontainer-e2e-required
-test-devcontainer-e2e-required:
-	DEVCONTAINER_E2E=1 $(GO) test -p 1 -count=1 -timeout 30m -run 'TestDockerE2E' ./devcontainer/docker
-
-.PHONY: test-cache-s3
-test-cache-s3:
-	test -n "$(CODESPACE_TEST_S3_BUCKET)" || { echo "CODESPACE_TEST_S3_BUCKET is required"; exit 1; }
-	$(GO) test -p 1 -count=1 -timeout 5m -run '^TestCacheS3E2E$$' ./internal/cache
-
 .PHONY: test-e2e
-test-e2e: test-kubernetes test-kubernetes-agent test-kubernetes-components test-kubernetes-ha test-kubernetes-gitea test-kubernetes-lifecycle
+test-e2e:
+	GO="$(GO)" \
+	CODESPACE_E2E_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" \
+	CODESPACE_E2E_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" \
+	CODESPACE_E2E_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" \
+	CODESPACE_E2E_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" \
+	tests/e2e/run.sh

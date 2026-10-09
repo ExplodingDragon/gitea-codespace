@@ -16,11 +16,11 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/encoding/protojson"
 	"k8s.io/apimachinery/pkg/api/equality"

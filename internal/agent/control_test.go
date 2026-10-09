@@ -13,9 +13,9 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"

@@ -16,10 +16,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
-	agentv1 "gitea.dev/codespace-proto-go/agent/v1"
-	"gitea.dev/codespace-proto-go/agent/v1/agentv1connect"
-	componentv1 "gitea.dev/codespace-proto-go/component/v1"
-	"gitea.dev/codespace-proto-go/component/v1/componentv1connect"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"gitea.dev/codespace/internal/transport"
 )
 
@@ -42,7 +42,6 @@ type agentClient struct {
 }
 
 type agentAccessStream struct {
-	ctx    context.Context
 	cancel context.CancelFunc
 	stream *connect.BidiStreamForClient[agentv1.AccessRequest, agentv1.AccessResponse]
 	mu     sync.Mutex
@@ -81,7 +80,7 @@ func (b *AgentBackend) open(ctx context.Context, runtimeUUID string, capability 
 		}
 		return nil, err
 	}
-	return &agentAccessStream{ctx: streamCtx, cancel: cancel, stream: stream}, nil
+	return &agentAccessStream{cancel: cancel, stream: stream}, nil
 }
 
 func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agentClient, error) {
@@ -149,9 +148,9 @@ func (s *agentAccessStream) send(frame *agentv1.AccessRequest) error {
 }
 
 func (s *agentAccessStream) close() error {
+	s.cancel()
 	requestErr := s.stream.CloseRequest()
 	responseErr := s.stream.CloseResponse()
-	s.cancel()
 	if errors.Is(requestErr, io.EOF) || errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, net.ErrClosed) {
 		requestErr = nil
 	}
@@ -257,10 +256,9 @@ func (s *agentCommandSession) Wait() error  { return <-s.done }
 func (s *agentCommandSession) Close() error { return s.access.close() }
 
 type agentConn struct {
+	reader net.Conn
+	writer net.Conn
 	access *agentAccessStream
-	reader *io.PipeReader
-	writer *io.PipeWriter
-	input  *agentInput
 	once   sync.Once
 }
 
@@ -269,29 +267,36 @@ func (b *AgentBackend) openStream(ctx context.Context, runtimeUUID string, capab
 	if err != nil {
 		return nil, err
 	}
-	reader, writer := io.Pipe()
-	conn := &agentConn{access: access, reader: reader, writer: writer, input: &agentInput{access: access}}
+	reader, responseBridge := net.Pipe()
+	writer, requestBridge := net.Pipe()
+	conn := &agentConn{reader: reader, writer: writer, access: access}
 	go func() {
-		defer func() { _ = writer.Close() }()
+		defer func() { _ = responseBridge.Close() }()
+		defer func() { _ = requestBridge.Close() }()
+		defer access.cancel()
 		for {
 			response, err := access.stream.Receive()
 			if err != nil {
-				_ = writer.CloseWithError(err)
 				return
 			}
 			switch frame := response.Frame.(type) {
 			case *agentv1.AccessResponse_Stdout:
-				_, err = writer.Write(frame.Stdout)
+				_, err = responseBridge.Write(frame.Stdout)
 			case *agentv1.AccessResponse_Stderr:
-				_, err = writer.Write(frame.Stderr)
+				_, err = responseBridge.Write(frame.Stderr)
 			case *agentv1.AccessResponse_ExitStatus:
 				return
 			}
 			if err != nil {
-				_ = writer.CloseWithError(err)
 				return
 			}
 		}
+	}()
+	go func() {
+		input := &agentInput{access: access}
+		_, _ = io.Copy(input, requestBridge)
+		_ = input.Close()
+		_ = requestBridge.Close()
 	}()
 	return conn, nil
 }
@@ -309,18 +314,30 @@ func (b *AgentBackend) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, e
 }
 
 func (c *agentConn) Read(value []byte) (int, error)  { return c.reader.Read(value) }
-func (c *agentConn) Write(value []byte) (int, error) { return c.input.Write(value) }
-func (c *agentConn) CloseWrite() error               { return c.input.Close() }
+func (c *agentConn) Write(value []byte) (int, error) { return c.writer.Write(value) }
+func (c *agentConn) CloseWrite() error               { return c.writer.Close() }
+
 func (c *agentConn) Close() error {
 	var err error
-	c.once.Do(func() { err = errors.Join(c.input.Close(), c.reader.Close(), c.writer.Close(), c.access.close()) })
+	c.once.Do(func() {
+		err = errors.Join(c.reader.Close(), c.writer.Close(), c.access.close())
+	})
 	return err
 }
-func (c *agentConn) LocalAddr() net.Addr              { return agentAddress("gateway") }
-func (c *agentConn) RemoteAddr() net.Addr             { return agentAddress("runtime-agent") }
-func (c *agentConn) SetDeadline(time.Time) error      { return nil }
-func (c *agentConn) SetReadDeadline(time.Time) error  { return nil }
-func (c *agentConn) SetWriteDeadline(time.Time) error { return nil }
+func (c *agentConn) LocalAddr() net.Addr  { return agentAddress("gateway") }
+func (c *agentConn) RemoteAddr() net.Addr { return agentAddress("runtime-agent") }
+
+func (c *agentConn) SetDeadline(deadline time.Time) error {
+	return errors.Join(c.SetReadDeadline(deadline), c.SetWriteDeadline(deadline))
+}
+
+func (c *agentConn) SetReadDeadline(deadline time.Time) error {
+	return c.reader.SetReadDeadline(deadline)
+}
+
+func (c *agentConn) SetWriteDeadline(deadline time.Time) error {
+	return c.writer.SetWriteDeadline(deadline)
+}
 
 type agentAddress string
 
