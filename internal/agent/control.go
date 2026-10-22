@@ -170,7 +170,15 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 	for ctx.Err() == nil {
 		permit.Reconnect()
 		sessionCtx, cancelSession := context.WithCancel(ctx)
-		stream := c.Remote.Control(sessionCtx)
+		stream, err := c.Remote.Control(sessionCtx)
+		if err != nil {
+			cancelSession()
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Second):
+			}
+			continue
+		}
 		for sessionCtx.Err() == nil {
 			if refreshMetrics && c.Sample != nil {
 				c.mu.Lock()
@@ -340,8 +348,8 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 			}
 		}
 		cancelSession()
-		_ = stream.CloseRequest()
-		_ = stream.CloseResponse()
+		_ = stream.CloseSend()
+		_ = stream.Close()
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Second):

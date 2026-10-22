@@ -12,7 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"gitea.dev/codespace/internal/transport"
 )
@@ -52,6 +53,6 @@ func NewComponentRPCClient() (componentv1connect.ComponentServiceClient, *http.C
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	baseURL := strings.TrimRight(address, "/")
-	client := componentv1connect.NewComponentServiceClient(httpClient, baseURL, connect.WithGRPC())
+	client := componentv1connect.NewComponentServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithGRPC())))
 	return client, httpClient, nil
 }

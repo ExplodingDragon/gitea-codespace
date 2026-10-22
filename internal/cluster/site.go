@@ -11,10 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/controlplane"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -85,9 +84,7 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if credential.UID != site.Spec.Credential.UID || credential.Labels[SiteUIDLabel] != string(site.UID) || len(credential.Data["managerSecret"]) == 0 {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("site credential ownership or value is invalid"))
 	}
-	check := connect.NewRequest(&codespacev1.CheckManagerRequest{ProtocolVersion: 1})
-	check.Header().Set("x-codespace-manager-id", fmt.Sprint(site.Spec.ManagerID))
-	check.Header().Set("x-codespace-manager-secret", string(credential.Data["managerSecret"]))
+	check := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
 	httpClient := r.HTTPClient
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 15 * time.Second}
@@ -95,11 +92,12 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	// Manager credentials in custom headers must never follow redirects.
 	rpcClient := *httpClient
 	rpcClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := codespacev1connect.NewManagerServiceClient(&rpcClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace").CheckManager(ctx, check)
+	remote := controlplane.NewManagerServiceClient(&rpcClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(credential.Data["managerSecret"]), api.MaxObjectBytes)
+	response, err := remote.CheckManager(ctx, check)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))
 	}
-	canonical := strings.TrimRight(response.Msg.GiteaWebUrl, "/")
+	canonical := strings.TrimRight(response.GiteaWebUrl, "/")
 	canonicalURL, err := url.Parse(canonical)
 	if err != nil || (canonicalURL.Scheme != "https" && canonicalURL.Scheme != "http") || canonicalURL.Hostname() == "" || canonicalURL.User != nil || canonicalURL.RawQuery != "" || canonicalURL.Fragment != "" {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea returned an invalid canonical URL"))

@@ -9,7 +9,6 @@ import (
 	"os"
 	"testing"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -22,9 +21,9 @@ type logRemote struct {
 	upload func(context.Context, *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error)
 }
 
-func (r *logRemote) UploadLogs(ctx context.Context, request *connect.Request[agentv1.UploadLogsRequest]) (*connect.Response[agentv1.UploadLogsResponse], error) {
-	response, err := r.upload(ctx, request.Msg)
-	return connect.NewResponse(response), err
+func (r *logRemote) UploadLogs(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+	response, err := r.upload(ctx, request)
+	return response, err
 }
 
 func TestOperationLogReplayAndClosure(t *testing.T) {

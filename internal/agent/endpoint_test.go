@@ -10,7 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -50,8 +51,12 @@ func TestRuntimeEndpointServiceOverUnixSocket(t *testing.T) {
 	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, journal.Close()) })
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterRuntimeEndpointServiceHandler(rpcServer, &RuntimeEndpointServer{Runtime: &Runtime{Journal: journal}})
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	path := "/" + agentv1connect.RuntimeEndpointServiceName + "/"
 
-	path, handler := agentv1connect.NewRuntimeEndpointServiceHandler(&RuntimeEndpointServer{Runtime: &Runtime{Journal: journal}})
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := &http.Server{Handler: mux}
@@ -68,17 +73,17 @@ func TestRuntimeEndpointServiceOverUnixSocket(t *testing.T) {
 	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "unix", socket)
 	}}
-	client := agentv1connect.NewRuntimeEndpointServiceClient(&http.Client{Transport: transport}, "http://runtime-agent")
+	client := agentv1connect.NewRuntimeEndpointServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, "http://runtime-agent")))
 	t.Cleanup(transport.CloseIdleConnections)
 
-	_, err = client.Set(t.Context(), connect.NewRequest(&agentv1.RuntimeEndpointServiceSetRequest{ProtocolVersion: 1, Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Port: 8080}}))
+	_, err = client.Set(t.Context(), &agentv1.RuntimeEndpointServiceSetRequest{ProtocolVersion: 1, Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Port: 8080}})
 	require.NoError(t, err)
-	listed, err := client.List(t.Context(), connect.NewRequest(&agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1}))
+	listed, err := client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
 	require.NoError(t, err)
-	require.Len(t, listed.Msg.Endpoints, 1)
-	_, err = client.Delete(t.Context(), connect.NewRequest(&agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: "port-8080"}))
+	require.Len(t, listed.Endpoints, 1)
+	_, err = client.Delete(t.Context(), &agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: "port-8080"})
 	require.NoError(t, err)
-	listed, err = client.List(t.Context(), connect.NewRequest(&agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1}))
+	listed, err = client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
 	require.NoError(t, err)
-	require.Empty(t, listed.Msg.Endpoints)
+	require.Empty(t, listed.Endpoints)
 }

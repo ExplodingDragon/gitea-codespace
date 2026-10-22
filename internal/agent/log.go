@@ -15,7 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -230,14 +229,14 @@ func (l *OperationLog) Flush(ctx context.Context, remote agentv1connect.AgentCon
 			return fmt.Errorf("operation log batch identity changed")
 		}
 		batch.Offset = checkpoint.Offset
-		response, err := remote.UploadLogs(ctx, connect.NewRequest(batch))
+		response, err := remote.UploadLogs(ctx, batch)
 		if err != nil {
 			return err
 		}
-		if response.Msg.NextOffset < checkpoint.Offset || (!response.Msg.Closed && response.Msg.NextOffset == checkpoint.Offset) || (response.Msg.Closed && response.Msg.NextOffset != checkpoint.Offset) {
+		if response.NextOffset < checkpoint.Offset || (!response.Closed && response.NextOffset == checkpoint.Offset) || (response.Closed && response.NextOffset != checkpoint.Offset) {
 			return fmt.Errorf("invalid operation log acknowledgement")
 		}
-		next := logCheckpoint{Position: checkpoint.Position + 4 + size, Offset: response.Msg.NextOffset, Closed: response.Msg.Closed}
+		next := logCheckpoint{Position: checkpoint.Position + 4 + size, Offset: response.NextOffset, Closed: response.Closed}
 		data, err = json.Marshal(next)
 		if err != nil {
 			return err

@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	cachepkg "gitea.dev/codespace/internal/cache"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -21,6 +21,7 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"github.com/google/uuid"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -125,7 +126,7 @@ func (s *ComponentServer) cacheByUID(ctx context.Context, uid string) (*cacheMat
 			return s.cacheMaterial(ctx, component)
 		}
 	}
-	return nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("cache component identity is no longer configured"))
+	return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 }
 
 func (s *ComponentServer) cacheByReference(ctx context.Context, reference api.ResourceReference) (*cacheMaterial, error) {
@@ -175,7 +176,7 @@ func (s *ComponentServer) cacheForRequest(ctx context.Context, cacheID string) (
 		return componentIdentity{}, nil, err
 	}
 	if cacheID != material.component.Name {
-		return componentIdentity{}, nil, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("cache identity does not allow this resource"))
+		return componentIdentity{}, nil, connect.NewError(connect.CodePermissionDenied, "cache identity does not allow this resource")
 	}
 	return identity, material, nil
 }
@@ -196,7 +197,7 @@ func (s *ComponentServer) claimCache(ctx context.Context, identity componentIden
 	} else if err == nil {
 		active := lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second))
 		if active {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("cache storage already has an active writer"))
+			return nil, connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
 		}
 		lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
 		lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
@@ -213,7 +214,7 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 	}
 	holder := strings.Split(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
 	if lease.Labels[ComponentUIDLabel] != identity.UID || len(holder) != 4 || holder[0] != identity.UID || holder[1] != identity.Instance || holder[2] != sessionID {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cache owner lease is no longer current"))
+		return connect.NewError(connect.CodeFailedPrecondition, "cache owner lease is no longer current")
 	}
 	now := metav1.NowMicro()
 	lease.Spec.HolderIdentity = ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision))
@@ -250,7 +251,7 @@ func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentId
 		}
 		active := current.Spec.RenewTime != nil && time.Now().Before(current.Spec.RenewTime.Add(time.Duration(ptr.Deref(current.Spec.LeaseDurationSeconds, 0))*time.Second))
 		if active {
-			return nil, connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("cache cleanup is already active"))
+			return nil, connect.NewError(connect.CodeResourceExhausted, "cache cleanup is already active")
 		}
 		current.Labels, current.OwnerReferences, current.Spec = lease.Labels, lease.OwnerReferences, lease.Spec
 		if err := s.Client.Update(ctx, &current); err != nil {
@@ -268,18 +269,18 @@ func (s *ComponentServer) completeCacheGC(ctx context.Context, identity componen
 		return err
 	}
 	if lease.Labels[ComponentUIDLabel] != identity.UID || ptr.Deref(lease.Spec.HolderIdentity, "") != sessionID+"/"+grantID {
-		return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cache cleanup grant is no longer current"))
+		return connect.NewError(connect.CodeFailedPrecondition, "cache cleanup grant is no longer current")
 	}
 	return client.IgnoreNotFound(s.Client.Delete(ctx, &lease, client.Preconditions{UID: &lease.UID, ResourceVersion: &lease.ResourceVersion}))
 }
 
-func (s *ComponentServer) CacheControl(ctx context.Context, stream *connect.BidiStream[componentv1.CacheControlRequest, componentv1.CacheControlResponse]) error {
+func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1connect.ComponentServiceCacheControlServerStream) error {
 	first, err := stream.Receive()
 	if err != nil {
 		return err
 	}
 	if first.ProtocolVersion != 1 || first.CacheId == "" || first.SessionId == "" || first.Sequence == 0 {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cache control identity is invalid"))
+		return connect.NewError(connect.CodeInvalidArgument, "cache control identity is invalid")
 	}
 	identity, material, err := s.cacheForRequest(ctx, first.CacheId)
 	if err != nil {
@@ -339,7 +340,7 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream *connect.Bidi
 		}
 		select {
 		case <-ctx.Done():
-			return connect.NewError(connect.CodeCanceled, ctx.Err())
+			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
 		case err := <-receiveErrors:
 			if err == io.EOF {
 				return nil
@@ -347,12 +348,12 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream *connect.Bidi
 			return err
 		case request := <-requests:
 			if request.ProtocolVersion != 1 || request.CacheId != first.CacheId || request.SessionId != first.SessionId || request.Sequence <= sequence {
-				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("cache control sequence is invalid"))
+				return connect.NewError(connect.CodeInvalidArgument, "cache control sequence is invalid")
 			}
 			sequence = request.Sequence
 			_, material, err = s.cacheForRequest(ctx, first.CacheId)
 			if err != nil || s.renewCache(ctx, identity, material, first.SessionId, request.Status) != nil {
-				return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("cache owner lease is no longer current"))
+				return connect.NewError(connect.CodeFailedPrecondition, "cache owner lease is no longer current")
 			}
 			response := &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds()}
 			switch maintenance := request.Maintenance.(type) {

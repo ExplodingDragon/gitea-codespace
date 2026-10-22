@@ -11,7 +11,8 @@ import (
 	"strconv"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -23,7 +24,7 @@ func endpointClient() (agentv1connect.RuntimeEndpointServiceClient, *http.Client
 		return (&net.Dialer{}).DialContext(ctx, "unix", runtimeendpoint.ContainerSocketPath)
 	}}
 	client := &http.Client{Transport: transport}
-	return agentv1connect.NewRuntimeEndpointServiceClient(client, "http://runtime-agent"), client
+	return agentv1connect.NewRuntimeEndpointServiceClient(connect.NewClient(connecthttp.NewTransport(client, "http://runtime-agent"))), client
 }
 
 // SetEndpoint adds or replaces a runtime endpoint declaration.
@@ -40,10 +41,10 @@ func SetEndpoint(ctx context.Context, port uint16, label string, public bool) er
 	}
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
-	_, err := remote.Set(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceSetRequest{
+	_, err := remote.Set(ctx, &agentv1.RuntimeEndpointServiceSetRequest{
 		ProtocolVersion: 1,
 		Endpoint:        &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Public: public, Port: uint32(port)},
-	}))
+	})
 	return err
 }
 
@@ -54,7 +55,7 @@ func DeleteEndpoint(ctx context.Context, port uint16) error {
 	}
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
-	_, err := remote.Delete(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: runtimeendpoint.PortEndpointID(port)}))
+	_, err := remote.Delete(ctx, &agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: runtimeendpoint.PortEndpointID(port)})
 	return err
 }
 
@@ -62,9 +63,9 @@ func DeleteEndpoint(ctx context.Context, port uint16) error {
 func ListEndpoints(ctx context.Context) ([]*codespacev1.RuntimeEndpoint, error) {
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
-	response, err := remote.List(ctx, connect.NewRequest(&agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1}))
+	response, err := remote.List(ctx, &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
 	if err != nil {
 		return nil, err
 	}
-	return response.Msg.Endpoints, nil
+	return response.Endpoints, nil
 }

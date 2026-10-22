@@ -14,7 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -47,26 +48,26 @@ type coordinatorRemote struct {
 	idleStop     func(*codespacev1.RequestIdleStopRequest) *codespacev1.RequestIdleStopResponse
 }
 
-func (s *coordinatorRemote) RequestIdleStop(_ context.Context, request *connect.Request[codespacev1.RequestIdleStopRequest]) (*connect.Response[codespacev1.RequestIdleStopResponse], error) {
-	return connect.NewResponse(s.idleStop(request.Msg)), nil
+func (s *coordinatorRemote) RequestIdleStop(_ context.Context, request *codespacev1.RequestIdleStopRequest) (*codespacev1.RequestIdleStopResponse, error) {
+	return s.idleStop(request), nil
 }
 
-func (s *coordinatorRemote) DeclareManager(_ context.Context, request *connect.Request[codespacev1.DeclareManagerRequest]) (*connect.Response[codespacev1.DeclareManagerResponse], error) {
+func (s *coordinatorRemote) DeclareManager(_ context.Context, request *codespacev1.DeclareManagerRequest) (*codespacev1.DeclareManagerResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.declarations = append(s.declarations, request.Msg.ManagerRuntimeState)
-	return connect.NewResponse(&codespacev1.DeclareManagerResponse{HeartbeatIntervalMilliseconds: 10000, RuntimeMetadataRefreshIntervalMilliseconds: 1000, ControlPlaneMaxMessageSizeBytes: api.MaxObjectBytes, GiteaWebUrl: s.url}), nil
+	s.declarations = append(s.declarations, request.ManagerRuntimeState)
+	return &codespacev1.DeclareManagerResponse{HeartbeatIntervalMilliseconds: 10000, RuntimeMetadataRefreshIntervalMilliseconds: 1000, ControlPlaneMaxMessageSizeBytes: api.MaxObjectBytes, GiteaWebUrl: s.url}, nil
 }
 
-func (s *coordinatorRemote) ReportInstances(_ context.Context, request *connect.Request[codespacev1.ReportInstancesRequest]) (*connect.Response[codespacev1.ReportInstancesResponse], error) {
+func (s *coordinatorRemote) ReportInstances(_ context.Context, request *codespacev1.ReportInstancesRequest) (*codespacev1.ReportInstancesResponse, error) {
 	if s.inventory != nil {
-		s.inventory(request.Msg)
+		s.inventory(request)
 	}
 	response := &codespacev1.ReportInstancesResponse{}
-	for _, instance := range request.Msg.Instances {
+	for _, instance := range request.Instances {
 		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{RuntimeUuid: instance.RuntimeUuid})
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
 func TestInventoryMissingPodRetainsRuntime(t *testing.T) {
@@ -112,22 +113,22 @@ func TestCoordinatorRequestsIdleStopAfterObservedInactivity(t *testing.T) {
 	require.Equal(t, 1, requests)
 }
 
-func (s *coordinatorRemote) FetchOperations(_ context.Context, request *connect.Request[codespacev1.FetchOperationsRequest]) (*connect.Response[codespacev1.FetchOperationsResponse], error) {
+func (s *coordinatorRemote) FetchOperations(_ context.Context, request *codespacev1.FetchOperationsRequest) (*codespacev1.FetchOperationsResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	response := &codespacev1.FetchOperationsResponse{}
-	if !s.claimed && request.Msg.StartupCapacityAvailable > 0 {
+	if !s.claimed && request.StartupCapacityAvailable > 0 {
 		s.claimed = true
 		response.Operations = []*codespacev1.OperationPayload{{CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard", RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}}
 	}
-	if s.finalized && !s.stopping && request.Msg.CleanupCapacityAvailable > 0 {
+	if s.finalized && !s.stopping && request.CleanupCapacityAvailable > 0 {
 		s.stopping = true
 		response.Operations = append(response.Operations, &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: s.runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
 	}
-	for _, observed := range request.Msg.ObservedOperations {
+	for _, observed := range request.ObservedOperations {
 		response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 60000})
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
 func TestSiteCoordinatorLifecycle(t *testing.T) {
@@ -145,7 +146,12 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 		remote.finalized = true
 		return &codespacev1.FinalizeOperationResponse{}, nil
 	}
-	path, handler := codespacev1connect.NewManagerServiceHandler(remote)
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, remote)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+
 	mux := http.NewServeMux()
 	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", handler))
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

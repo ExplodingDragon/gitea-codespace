@@ -24,7 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -108,36 +109,36 @@ func (s *lifecycleRemote) setRuntimeSettings(settings *codespacev1.EffectiveCode
 	s.interactionGeneration = settings.InteractionGeneration
 }
 
-func (s *lifecycleRemote) CheckManager(_ context.Context, request *connect.Request[codespacev1.CheckManagerRequest]) (*connect.Response[codespacev1.CheckManagerResponse], error) {
-	if request.Msg.ProtocolVersion != 1 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("unsupported protocol"))
+func (s *lifecycleRemote) CheckManager(_ context.Context, request *codespacev1.CheckManagerRequest) (*codespacev1.CheckManagerResponse, error) {
+	if request.ProtocolVersion != 1 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported protocol")
 	}
-	return connect.NewResponse(&codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL, ManagerName: "Kubernetes lifecycle E2E"}), nil
+	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL, ManagerName: "Kubernetes lifecycle E2E"}, nil
 }
 
-func (s *lifecycleRemote) DeclareManager(_ context.Context, request *connect.Request[codespacev1.DeclareManagerRequest]) (*connect.Response[codespacev1.DeclareManagerResponse], error) {
-	if request.Msg.ProtocolVersion != 1 || len(request.Msg.Environments) != 1 || request.Msg.Environments[0].Tag != "standard" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid declaration"))
+func (s *lifecycleRemote) DeclareManager(_ context.Context, request *codespacev1.DeclareManagerRequest) (*codespacev1.DeclareManagerResponse, error) {
+	if request.ProtocolVersion != 1 || len(request.Environments) != 1 || request.Environments[0].Tag != "standard" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid declaration")
 	}
 	s.mu.Lock()
-	if request.Msg.ManagerRuntimeState == codespacev1.ManagerRuntimeState_MANAGER_RUNTIME_STATE_ONLINE && !s.onlineObserved {
+	if request.ManagerRuntimeState == codespacev1.ManagerRuntimeState_MANAGER_RUNTIME_STATE_ONLINE && !s.onlineObserved {
 		s.onlineObserved = true
 		close(s.managerOnline)
 	}
 	s.mu.Unlock()
-	return connect.NewResponse(&codespacev1.DeclareManagerResponse{
+	return &codespacev1.DeclareManagerResponse{
 		HeartbeatIntervalMilliseconds:              1000,
 		RuntimeMetadataRefreshIntervalMilliseconds: 1000,
 		ControlPlaneMaxMessageSizeBytes:            api.MaxObjectBytes,
 		GiteaWebUrl:                                s.baseURL,
-	}), nil
+	}, nil
 }
 
-func (s *lifecycleRemote) FetchOperations(_ context.Context, request *connect.Request[codespacev1.FetchOperationsRequest]) (*connect.Response[codespacev1.FetchOperationsResponse], error) {
+func (s *lifecycleRemote) FetchOperations(_ context.Context, request *codespacev1.FetchOperationsRequest) (*codespacev1.FetchOperationsResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	response := &codespacev1.FetchOperationsResponse{}
-	for _, observed := range request.Msg.ObservedOperations {
+	for _, observed := range request.ObservedOperations {
 		if s.operation != nil && observed.RuntimeUuid == s.operation.RuntimeUuid && observed.OperationRversion == s.operation.OperationRversion {
 			response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{
 				RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 60000,
@@ -145,117 +146,117 @@ func (s *lifecycleRemote) FetchOperations(_ context.Context, request *connect.Re
 		}
 	}
 	if s.operation == nil || s.delivered {
-		return connect.NewResponse(response), nil
+		return response, nil
 	}
 	startup := s.operation.GetCreate() != nil || s.operation.GetResume() != nil
-	if startup && request.Msg.StartupCapacityAvailable <= 0 || !startup && request.Msg.CleanupCapacityAvailable <= 0 {
-		return connect.NewResponse(response), nil
+	if startup && request.StartupCapacityAvailable <= 0 || !startup && request.CleanupCapacityAvailable <= 0 {
+		return response, nil
 	}
 	if create := s.operation.GetCreate(); create != nil {
 		accepted := false
-		for _, tag := range request.Msg.AcceptedCreateTags {
+		for _, tag := range request.AcceptedCreateTags {
 			accepted = accepted || tag == create.EnvironmentTag
 		}
 		if !accepted {
-			return connect.NewResponse(response), nil
+			return response, nil
 		}
 	}
 	response.Operations = []*codespacev1.OperationPayload{s.operation}
 	s.delivered = true
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
-func (s *lifecycleRemote) BindRuntimeIdentity(_ context.Context, request *connect.Request[codespacev1.BindRuntimeIdentityRequest]) (*connect.Response[codespacev1.BindRuntimeIdentityResponse], error) {
-	if request.Msg.ProtocolVersion != 1 || request.Msg.CodespaceId != 1 || request.Msg.OperationRversion != 1 || request.Msg.RuntimeUuid == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid runtime binding"))
+func (s *lifecycleRemote) BindRuntimeIdentity(_ context.Context, request *codespacev1.BindRuntimeIdentityRequest) (*codespacev1.BindRuntimeIdentityResponse, error) {
+	if request.ProtocolVersion != 1 || request.CodespaceId != 1 || request.OperationRversion != 1 || request.RuntimeUuid == "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime binding")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.runtimeUUID != "" && s.runtimeUUID != request.Msg.RuntimeUuid {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("runtime identity changed"))
+	if s.runtimeUUID != "" && s.runtimeUUID != request.RuntimeUuid {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime identity changed")
 	}
-	s.runtimeUUID = request.Msg.RuntimeUuid
+	s.runtimeUUID = request.RuntimeUuid
 	if s.operation != nil {
-		s.operation.RuntimeUuid = request.Msg.RuntimeUuid
+		s.operation.RuntimeUuid = request.RuntimeUuid
 	}
-	return connect.NewResponse(&codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: request.Msg.RuntimeUuid}), nil
+	return &codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: request.RuntimeUuid}, nil
 }
 
-func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *connect.Request[codespacev1.FinalizeOperationRequest]) (*connect.Response[codespacev1.FinalizeOperationResponse], error) {
+func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
 	s.mu.Lock()
-	if s.operation == nil || request.Msg.RuntimeUuid != s.runtimeUUID || request.Msg.OperationRversion != s.operation.OperationRversion || request.Msg.OperationRversion <= s.lastFinalized {
+	if s.operation == nil || request.RuntimeUuid != s.runtimeUUID || request.OperationRversion != s.operation.OperationRversion || request.OperationRversion <= s.lastFinalized {
 		s.mu.Unlock()
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("operation identity changed"))
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "operation identity changed")
 	}
-	s.lastFinalized = request.Msg.OperationRversion
+	s.lastFinalized = request.OperationRversion
 	s.operation = nil
 	s.delivered = false
 	s.mu.Unlock()
-	s.finalized <- request.Msg
-	return connect.NewResponse(&codespacev1.FinalizeOperationResponse{}), nil
+	s.finalized <- request
+	return &codespacev1.FinalizeOperationResponse{}, nil
 }
 
-func (s *lifecycleRemote) UpdateLog(_ context.Context, request *connect.Request[codespacev1.UpdateLogRequest]) (*connect.Response[codespacev1.UpdateLogResponse], error) {
+func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion != 1 || request.Msg.RuntimeUuid != s.runtimeUUID || request.Msg.Offset != s.logOffsets[request.Msg.OperationRversion] || len(request.Msg.Lines) == 0 {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("log offset changed"))
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.Offset != s.logOffsets[request.OperationRversion] || len(request.Lines) == 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "log offset changed")
 	}
-	s.logOffsets[request.Msg.OperationRversion] += int64(len(request.Msg.Lines))
-	for _, line := range request.Msg.Lines {
-		s.logs[request.Msg.OperationRversion] = append(s.logs[request.Msg.OperationRversion], line.Message)
+	s.logOffsets[request.OperationRversion] += int64(len(request.Lines))
+	for _, line := range request.Lines {
+		s.logs[request.OperationRversion] = append(s.logs[request.OperationRversion], line.Message)
 	}
-	return connect.NewResponse(&codespacev1.UpdateLogResponse{NextOffset: s.logOffsets[request.Msg.OperationRversion]}), nil
+	return &codespacev1.UpdateLogResponse{NextOffset: s.logOffsets[request.OperationRversion]}, nil
 }
 
-func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *connect.Request[codespacev1.ReportRuntimeMetadataRequest]) (*connect.Response[codespacev1.ReportRuntimeMetadataResponse], error) {
+func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *codespacev1.ReportRuntimeMetadataRequest) (*codespacev1.ReportRuntimeMetadataResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion != 1 || request.Msg.RuntimeUuid != s.runtimeUUID || request.Msg.MetadataGeneration <= 0 || request.Msg.Metadata == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid runtime metadata"))
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.MetadataGeneration <= 0 || request.Metadata == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime metadata")
 	}
-	s.metadata = request.Msg.Metadata
-	return connect.NewResponse(&codespacev1.ReportRuntimeMetadataResponse{}), nil
+	s.metadata = request.Metadata
+	return &codespacev1.ReportRuntimeMetadataResponse{}, nil
 }
 
-func (s *lifecycleRemote) RequestRuntimeAccess(_ context.Context, request *connect.Request[codespacev1.RequestRuntimeAccessRequest]) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
+func (s *lifecycleRemote) RequestRuntimeAccess(_ context.Context, request *codespacev1.RequestRuntimeAccessRequest) (*codespacev1.RequestRuntimeAccessResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion != 1 || request.Msg.RuntimeUuid != s.runtimeUUID || request.Msg.OperationRversion <= 0 || len(request.Msg.GetGitSshKey().GetPublicKey()) == 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid runtime access request"))
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.OperationRversion <= 0 || len(request.GetGitSshKey().GetPublicKey()) == 0 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime access request")
 	}
-	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{
+	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{
 		GiteaToken: "e2e-runtime-token", GiteaServerUrl: s.baseURL,
 		Secrets:     []*codespacev1.RuntimeSecretEnvironmentVariable{{Name: "E2E_SECRET", Value: "e2e-secret-value"}},
 		GitSshTrust: &codespacev1.GitSSHTrust{},
-	}}), nil
+	}}, nil
 }
 
-func (s *lifecycleRemote) RequestIdleStop(_ context.Context, request *connect.Request[codespacev1.RequestIdleStopRequest]) (*connect.Response[codespacev1.RequestIdleStopResponse], error) {
+func (s *lifecycleRemote) RequestIdleStop(_ context.Context, request *codespacev1.RequestIdleStopRequest) (*codespacev1.RequestIdleStopResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	observed := request.Msg.ObservedSettings
-	if request.Msg.ProtocolVersion != 1 || request.Msg.RuntimeUuid != s.runtimeUUID || observed == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, errors.New("invalid idle stop request"))
+	observed := request.ObservedSettings
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || observed == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid idle stop request")
 	}
 	if observed.AutoStopEnabled != s.runtimeSettings.autoStopEnabled || observed.IdleTimeoutSeconds != s.runtimeSettings.idleTimeoutSeconds || observed.InteractionGeneration != s.runtimeSettings.interactionGeneration {
 		settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: s.runtimeSettings.autoStopEnabled, IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration}
-		return connect.NewResponse(&codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}}}), nil
+		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}}}, nil
 	}
 	if s.operation == nil {
 		s.operation = &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: s.runtimeUUID, OperationRversion: s.lastFinalized + 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}}
 		s.delivered = false
 	}
-	return connect.NewResponse(&codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: s.operation.OperationRversion}}}), nil
+	return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: s.operation.OperationRversion}}}, nil
 }
 
-func (s *lifecycleRemote) ReportInstances(_ context.Context, request *connect.Request[codespacev1.ReportInstancesRequest]) (*connect.Response[codespacev1.ReportInstancesResponse], error) {
+func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev1.ReportInstancesRequest) (*codespacev1.ReportInstancesResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	response := &codespacev1.ReportInstancesResponse{}
-	for _, instance := range request.Msg.Instances {
+	for _, instance := range request.Instances {
 		if instance.RuntimeUuid != s.runtimeUUID {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, errors.New("unknown runtime inventory"))
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "unknown runtime inventory")
 		}
 		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{
 			RuntimeUuid:              instance.RuntimeUuid,
@@ -263,53 +264,53 @@ func (s *lifecycleRemote) ReportInstances(_ context.Context, request *connect.Re
 			CurrentOperationRversion: max(s.lastFinalized, instance.ObservedOperationRversion),
 		})
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
-func (s *lifecycleRemote) ValidateOpenToken(_ context.Context, request *connect.Request[codespacev1.ValidateOpenTokenRequest]) (*connect.Response[codespacev1.ValidateOpenTokenResponse], error) {
+func (s *lifecycleRemote) ValidateOpenToken(_ context.Context, request *codespacev1.ValidateOpenTokenRequest) (*codespacev1.ValidateOpenTokenResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion != 1 || request.Msg.Code != "lifecycle-e2e" || s.runtimeUUID == "" {
-		return connect.NewResponse(&codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}), nil
+	if request.ProtocolVersion != 1 || request.Code != "lifecycle-e2e" || s.runtimeUUID == "" {
+		return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}, nil
 	}
-	return connect.NewResponse(&codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: &codespacev1.OpenTokenBinding{
+	return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: &codespacev1.OpenTokenBinding{
 		UserId: 1, RuntimeUuid: s.runtimeUUID, EndpointId: "workspace", InteractionGeneration: s.interactionGeneration,
-	}}}), nil
+	}}}, nil
 }
 
-func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *connect.Request[codespacev1.RevalidateGatewaySessionRequest]) (*connect.Response[codespacev1.RevalidateGatewaySessionResponse], error) {
+func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *codespacev1.RevalidateGatewaySessionRequest) (*codespacev1.RevalidateGatewaySessionResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	endpoint := request.Msg.GetEndpoint()
-	sshSession := request.Msg.GetSsh()
+	endpoint := request.GetEndpoint()
+	sshSession := request.GetSsh()
 	endpointAllowed := endpoint != nil && endpoint.UserId == 1 && endpoint.RuntimeUuid == s.runtimeUUID && endpoint.EndpointId == "workspace"
 	sshAllowed := sshSession != nil && sshSession.UserId == 1 && sshSession.RuntimeUuid == s.runtimeUUID
-	if request.Msg.ProtocolVersion != 1 || (!endpointAllowed && !sshAllowed) {
-		return connect.NewResponse(&codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_session"}}}), nil
+	if request.ProtocolVersion != 1 || (!endpointAllowed && !sshAllowed) {
+		return &codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_session"}}}, nil
 	}
-	return connect.NewResponse(&codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Allowed{Allowed: &codespacev1.SessionAllowed{}}}), nil
+	return &codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Allowed{Allowed: &codespacev1.SessionAllowed{}}}, nil
 }
 
-func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *connect.Request[codespacev1.ValidatePublicEndpointRequest]) (*connect.Response[codespacev1.ValidatePublicEndpointResponse], error) {
+func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *codespacev1.ValidatePublicEndpointRequest) (*codespacev1.ValidatePublicEndpointResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion == 1 && request.Msg.RuntimeUuid == s.runtimeUUID && s.metadata != nil {
+	if request.ProtocolVersion == 1 && request.RuntimeUuid == s.runtimeUUID && s.metadata != nil {
 		for _, endpoint := range s.metadata.Endpoints {
-			if endpoint.EndpointId == request.Msg.EndpointId && endpoint.Public {
-				return connect.NewResponse(&codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{Allowed: &codespacev1.PublicEndpointAllowed{}}}), nil
+			if endpoint.EndpointId == request.EndpointId && endpoint.Public {
+				return &codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{Allowed: &codespacev1.PublicEndpointAllowed{}}}, nil
 			}
 		}
 	}
-	return connect.NewResponse(&codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "endpoint_unavailable"}}}), nil
+	return &codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "endpoint_unavailable"}}}, nil
 }
 
-func (s *lifecycleRemote) VerifySSHPublicKey(_ context.Context, request *connect.Request[codespacev1.VerifySSHPublicKeyRequest]) (*connect.Response[codespacev1.VerifySSHPublicKeyResponse], error) {
+func (s *lifecycleRemote) VerifySSHPublicKey(_ context.Context, request *codespacev1.VerifySSHPublicKeyRequest) (*codespacev1.VerifySSHPublicKeyResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.Msg.ProtocolVersion != 1 || request.Msg.RuntimeUuid != s.runtimeUUID || !bytes.Equal(request.Msg.PublicKey, s.sshPublicKey) {
-		return connect.NewResponse(&codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_key"}}}), nil
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || !bytes.Equal(request.PublicKey, s.sshPublicKey) {
+		return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_key"}}}, nil
 	}
-	return connect.NewResponse(&codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{Allowed: &codespacev1.SSHAuthBinding{UserId: 1, InteractionGeneration: s.interactionGeneration}}}), nil
+	return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{Allowed: &codespacev1.SSHAuthBinding{UserId: 1, InteractionGeneration: s.interactionGeneration}}}, nil
 }
 
 func (s *lifecycleRemote) waitFinal(t *testing.T, version int64, operationType codespacev1.OperationType, timeout time.Duration) {
@@ -359,7 +360,12 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	remote.sshPublicKey = sshSigner.PublicKey().Marshal()
 	repositoryDirectory, commit := lifecycleGitRepository(t)
-	path, handler := codespacev1connect.NewManagerServiceHandler(remote)
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, remote)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+
 	mux := http.NewServeMux()
 	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", handler))
 	mux.Handle("/repo.git/", http.StripPrefix("/repo.git/", http.FileServer(http.Dir(repositoryDirectory))))

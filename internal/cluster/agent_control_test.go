@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,7 +15,9 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	"connectrpc.com/connect/v2/connectproto"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -123,9 +124,10 @@ func TestAgentControlRecovery(t *testing.T) {
 	httpServer.EnableHTTP2 = true
 	httpServer.StartTLS()
 	defer httpServer.Close()
-	remote := agentv1connect.NewAgentControlServiceClient(httpServer.Client(), httpServer.URL, connect.WithGRPC())
-	stream := remote.Control(t.Context())
-	defer func() { require.NoError(t, stream.CloseResponse()) }()
+	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL, connecthttp.WithGRPC())))
+	stream, err := remote.Control(t.Context())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, stream.Close()) }()
 	require.NoError(t, stream.Send(&agentv1.ControlRequest{
 		ProtocolVersion: 1, SessionId: "reconnected", Sequence: 1,
 		Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}},
@@ -137,11 +139,16 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.NotNil(t, cs.Status.Result)
 	require.True(t, cs.Status.Result.Succeeded)
-	require.NoError(t, stream.CloseRequest())
+	require.NoError(t, stream.CloseSend())
 
 	access := &runtimeAccessTestServer{t: t}
 	giteaMux := http.NewServeMux()
-	path, giteaHandler := codespacev1connect.NewManagerServiceHandler(access)
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, access)
+	giteaHandler := http.NewServeMux()
+	connecthttp.Mount(giteaHandler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+
 	giteaMux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", giteaHandler))
 	gitea := httptest.NewServer(giteaMux)
 	defer gitea.Close()
@@ -160,8 +167,9 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.Update(t.Context(), cs))
 	server.Authority.Grant(cs.UID, 4, time.Now().Add(time.Minute))
-	startup := remote.Control(t.Context())
-	defer func() { require.NoError(t, startup.CloseResponse()) }()
+	startup, err := remote.Control(t.Context())
+	require.NoError(t, err)
+	defer func() { require.NoError(t, startup.Close()) }()
 	require.NoError(t, startup.Send(&agentv1.ControlRequest{ProtocolVersion: 1, SessionId: "new-pod", Sequence: 1, Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}}}))
 	response, err = startup.Receive()
 	require.NoError(t, err)
@@ -179,21 +187,21 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.Equal(t, "runtime-token", response.Access.GiteaToken)
 	require.Positive(t, response.PermitValidForMilliseconds)
 	require.False(t, response.CancelExecution)
-	require.NoError(t, startup.CloseRequest())
+	require.NoError(t, startup.CloseSend())
 	for _, category := range []string{"ok", "log_size_exceeded", "stale_operation", "codespace_not_found", "offset_conflict", "unavailable"} {
 		t.Run(category, func(t *testing.T) {
-			reply, err := remote.UploadLogs(t.Context(), connect.NewRequest(&agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Offset: 10, Lines: []*codespacev1.LogLine{{Message: category}}}))
+			reply, err := remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Offset: 10, Lines: []*codespacev1.LogLine{{Message: category}}})
 			switch category {
 			case "ok":
 				require.NoError(t, err)
-				require.EqualValues(t, 20, reply.Msg.NextOffset)
-				require.False(t, reply.Msg.Closed)
+				require.EqualValues(t, 20, reply.NextOffset)
+				require.False(t, reply.Closed)
 			case "offset_conflict", "unavailable":
 				require.Error(t, err)
 			default:
 				require.NoError(t, err)
-				require.EqualValues(t, 10, reply.Msg.NextOffset)
-				require.True(t, reply.Msg.Closed)
+				require.EqualValues(t, 10, reply.NextOffset)
+				require.True(t, reply.Closed)
 			}
 		})
 	}
@@ -204,21 +212,22 @@ type runtimeAccessTestServer struct {
 	t *testing.T
 }
 
-func (s *runtimeAccessTestServer) RequestRuntimeAccess(_ context.Context, request *connect.Request[codespacev1.RequestRuntimeAccessRequest]) (*connect.Response[codespacev1.RequestRuntimeAccessResponse], error) {
-	require.Equal(s.t, "test-manager-secret", request.Header().Get("x-codespace-manager-secret"))
-	require.Equal(s.t, []byte("public-key"), request.Msg.GitSshKey.PublicKey)
-	return connect.NewResponse(&codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{GiteaToken: "runtime-token"}}), nil
+func (s *runtimeAccessTestServer) RequestRuntimeAccess(ctx context.Context, request *codespacev1.RequestRuntimeAccessRequest) (*codespacev1.RequestRuntimeAccessResponse, error) {
+	info, _ := connect.CallInfoForServerContext(ctx)
+	require.Equal(s.t, "test-manager-secret", info.RequestHeader().Get("x-codespace-manager-secret"))
+	require.Equal(s.t, []byte("public-key"), request.GitSshKey.PublicKey)
+	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{GiteaToken: "runtime-token"}}, nil
 }
 
-func (s *runtimeAccessTestServer) UpdateLog(_ context.Context, request *connect.Request[codespacev1.UpdateLogRequest]) (*connect.Response[codespacev1.UpdateLogResponse], error) {
-	category := request.Msg.Lines[0].Message
+func (s *runtimeAccessTestServer) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
+	category := request.Lines[0].Message
 	if category == "ok" {
-		return connect.NewResponse(&codespacev1.UpdateLogResponse{NextOffset: 20}), nil
+		return &codespacev1.UpdateLogResponse{NextOffset: 20}, nil
 	}
-	err := connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("%s", category))
-	detail, detailErr := connect.NewErrorDetail(&codespacev1.FailureDetail{Category: category})
+	err := connect.Errorf(connect.CodeFailedPrecondition, "%s", category)
+	detail, detailErr := connectproto.NewErrorDetail(&codespacev1.FailureDetail{Category: category})
 	require.NoError(s.t, detailErr)
-	err.AddDetail(detail)
+	err = err.WithDetail(detail)
 	return nil, err
 }
 

@@ -15,7 +15,8 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
@@ -69,13 +70,17 @@ type ComponentServer struct {
 }
 
 func (s *ComponentServer) Handler() (string, http.Handler) {
-	return componentv1connect.NewComponentServiceHandler(s, connect.WithReadMaxBytes(api.MaxObjectBytes), connect.WithSendMaxBytes(api.MaxObjectBytes))
+	rpcServer := connect.NewServer()
+	componentv1connect.RegisterComponentServiceHandler(rpcServer, s)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, rpcServer, connecthttp.WithReadMaxBytes(api.MaxObjectBytes), connecthttp.WithSendMaxBytes(api.MaxObjectBytes))
+	return "/" + componentv1connect.ComponentServiceName + "/", mux
 }
 
 func componentIdentityFromContext(ctx context.Context, role string) (componentIdentity, error) {
 	identity, ok := ctx.Value(componentIdentityContextKey{}).(componentIdentity)
 	if !ok || identity.Role != role || identity.UID == "" || identity.Instance == "" {
-		return componentIdentity{}, connect.NewError(connect.CodePermissionDenied, fmt.Errorf("component identity is not authorized for %s", role))
+		return componentIdentity{}, connect.Errorf(connect.CodePermissionDenied, "component identity is not authorized for %s", role)
 	}
 	return identity, nil
 }
@@ -98,7 +103,7 @@ func (s *ComponentServer) gatewayConfig(ctx context.Context, identity componentI
 		}
 	}
 	if component == nil {
-		return nil, "", connect.NewError(connect.CodePermissionDenied, fmt.Errorf("gateway component identity is no longer configured"))
+		return nil, "", connect.NewError(connect.CodePermissionDenied, "gateway component identity is no longer configured")
 	}
 	value := func(name, fallback string) string {
 		if strings.TrimSpace(component.Data[name]) != "" {
@@ -238,7 +243,7 @@ func (s *ComponentServer) route(ctx context.Context, cs *api.Codespace) (*compon
 	return route, nil
 }
 
-func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.BidiStream[componentv1.GatewayControlRequest, componentv1.GatewayControlResponse]) error {
+func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1connect.ComponentServiceGatewayControlServerStream) error {
 	identity, err := componentIdentityFromContext(ctx, "gateway")
 	if err != nil {
 		return err
@@ -248,7 +253,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.Bi
 		return err
 	}
 	if first.ProtocolVersion != 1 || strings.TrimSpace(first.SessionId) == "" || first.Sequence == 0 {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway control identity is invalid"))
+		return connect.NewError(connect.CodeInvalidArgument, "gateway control identity is invalid")
 	}
 	session := identity.Instance + "/" + first.SessionId
 	if err := s.replaceGatewayActivity(ctx, identity, session, first.ActiveSessions); err != nil {
@@ -292,7 +297,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.Bi
 		if sendSnapshot {
 			snapshot, err := s.gatewaySnapshot(ctx, identity)
 			if err != nil {
-				return connect.NewError(connect.CodeUnavailable, err)
+				return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 			}
 			if snapshot.Cursor != cursor {
 				snapshot.Sequence = sequence
@@ -306,7 +311,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.Bi
 		}
 		select {
 		case <-ctx.Done():
-			return connect.NewError(connect.CodeCanceled, ctx.Err())
+			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
 		case err := <-receiveErrors:
 			if err == io.EOF {
 				return nil
@@ -314,7 +319,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.Bi
 			return err
 		case request := <-requests:
 			if request.ProtocolVersion != 1 || request.SessionId != first.SessionId || request.Sequence <= sequence {
-				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway control sequence is invalid"))
+				return connect.NewError(connect.CodeInvalidArgument, "gateway control sequence is invalid")
 			}
 			if err := s.replaceGatewayActivity(ctx, identity, session, request.ActiveSessions); err != nil {
 				return err
@@ -335,15 +340,15 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream *connect.Bi
 func (s *ComponentServer) replaceGatewayActivity(ctx context.Context, identity componentIdentity, session string, counts map[string]int64) error {
 	for runtimeUUID, count := range counts {
 		if count < 0 {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway activity count is invalid"))
+			return connect.NewError(connect.CodeInvalidArgument, "gateway activity count is invalid")
 		}
 		if _, _, err := s.runtimeForGateway(ctx, identity, runtimeUUID); err != nil {
-			return connect.NewError(connect.CodeFailedPrecondition, fmt.Errorf("gateway activity contains a stale Runtime"))
+			return connect.NewError(connect.CodeFailedPrecondition, "gateway activity contains a stale Runtime")
 		}
 	}
 	if s.Activity != nil {
 		if err := s.Activity.ReplaceGateway(identity.UID, session, counts, false, time.Now()); err != nil {
-			return connect.NewError(connect.CodeInvalidArgument, err)
+			return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 	}
 	return nil
@@ -358,7 +363,7 @@ func (s *ComponentServer) runtimeForGateway(ctx context.Context, identity compon
 		return nil, nil, err
 	}
 	if len(rows.Items) != 1 {
-		return nil, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("runtime is not available"))
+		return nil, nil, connect.NewError(connect.CodeNotFound, "runtime is not available")
 	}
 	cs := &rows.Items[0]
 	indexedUID := cs.UID
@@ -366,33 +371,33 @@ func (s *ComponentServer) runtimeForGateway(ctx context.Context, identity compon
 		return nil, nil, err
 	}
 	if cs.UID != indexedUID || cs.Spec.RuntimeUUID != runtimeUUID || !cs.DeletionTimestamp.IsZero() {
-		return nil, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("runtime is not available"))
+		return nil, nil, connect.NewError(connect.CodeNotFound, "runtime is not available")
 	}
 	var site api.GiteaSite
 	if err := s.Client.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
 		return nil, nil, err
 	}
 	if site.UID != cs.Spec.Site.UID || !site.Spec.Enabled || string(site.Spec.Gateway.UID) != identity.UID || !site.DeletionTimestamp.IsZero() {
-		return nil, nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("runtime is not available"))
+		return nil, nil, connect.NewError(connect.CodeNotFound, "runtime is not available")
 	}
 	return cs, &site, nil
 }
 
-func gatewayDenied(category string) *connect.Response[componentv1.AuthorizeGatewayResponse] {
-	return connect.NewResponse(&componentv1.AuthorizeGatewayResponse{DeniedCategory: category})
+func gatewayDenied(category string) *componentv1.AuthorizeGatewayResponse {
+	return &componentv1.AuthorizeGatewayResponse{DeniedCategory: category}
 }
 
-func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *connect.Request[componentv1.AuthorizeGatewayRequest]) (*connect.Response[componentv1.AuthorizeGatewayResponse], error) {
+func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *componentv1.AuthorizeGatewayRequest) (*componentv1.AuthorizeGatewayResponse, error) {
 	identity, err := componentIdentityFromContext(ctx, "gateway")
 	if err != nil {
 		return nil, err
 	}
-	if request.Msg.ProtocolVersion != 1 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("unsupported component protocol version"))
+	if request.ProtocolVersion != 1 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported component protocol version")
 	}
-	if open := request.Msg.GetOpenCode(); open != nil {
+	if open := request.GetOpenCode(); open != nil {
 		if strings.TrimSpace(open.Code) == "" || strings.TrimSpace(open.RuntimeUuid) == "" || strings.TrimSpace(open.EndpointId) == "" {
-			return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("open code target is incomplete"))
+			return nil, connect.NewError(connect.CodeInvalidArgument, "open code target is incomplete")
 		}
 		_, site, err := s.runtimeForGateway(ctx, identity, open.RuntimeUuid)
 		if err != nil {
@@ -400,28 +405,28 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *connect
 		}
 		remote, err := siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		result, err := remote.ValidateOpenToken(ctx, connect.NewRequest(&codespacev1.ValidateOpenTokenRequest{ProtocolVersion: 1, Code: open.Code}))
+		result, err := remote.ValidateOpenToken(ctx, &codespacev1.ValidateOpenTokenRequest{ProtocolVersion: 1, Code: open.Code})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		if allowed := result.Msg.GetAllowed(); allowed != nil {
+		if allowed := result.GetAllowed(); allowed != nil {
 			if allowed.RuntimeUuid != open.RuntimeUuid || allowed.EndpointId != open.EndpointId {
 				return gatewayDenied("target_mismatch"), nil
 			}
 			if s.Activity != nil {
 				s.Activity.ObserveInteraction(string(site.UID), allowed.RuntimeUuid, allowed.InteractionGeneration, time.Now())
 			}
-			return connect.NewResponse(&componentv1.AuthorizeGatewayResponse{Allowed: true, UserId: allowed.UserId, RuntimeUuid: allowed.RuntimeUuid, EndpointId: allowed.EndpointId}), nil
+			return &componentv1.AuthorizeGatewayResponse{Allowed: true, UserId: allowed.UserId, RuntimeUuid: allowed.RuntimeUuid, EndpointId: allowed.EndpointId}, nil
 		}
-		if denied := result.Msg.GetDenied(); denied != nil {
+		if denied := result.GetDenied(); denied != nil {
 			return gatewayDenied(denied.Category), nil
 		}
-		return nil, connect.NewError(connect.CodeInternal, fmt.Errorf("gitea returned an invalid open authorization outcome"))
+		return nil, connect.NewError(connect.CodeInternal, "gitea returned an invalid open authorization outcome")
 	}
 	var runtimeUUID string
-	switch value := request.Msg.Request.(type) {
+	switch value := request.Request.(type) {
 	case *componentv1.AuthorizeGatewayRequest_PublicEndpoint:
 		runtimeUUID = value.PublicEndpoint.RuntimeUuid
 	case *componentv1.AuthorizeGatewayRequest_SshPublicKey:
@@ -431,7 +436,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *connect
 	case *componentv1.AuthorizeGatewayRequest_SshSession:
 		runtimeUUID = value.SshSession.RuntimeUuid
 	default:
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("gateway authorization request is missing"))
+		return nil, connect.NewError(connect.CodeInvalidArgument, "gateway authorization request is missing")
 	}
 	_, site, err := s.runtimeForGateway(ctx, identity, runtimeUUID)
 	if err != nil {
@@ -439,85 +444,85 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *connect
 	}
 	remote, err := siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeUnavailable, err)
+		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
 	response := &componentv1.AuthorizeGatewayResponse{RuntimeUuid: runtimeUUID}
-	switch value := request.Msg.Request.(type) {
+	switch value := request.Request.(type) {
 	case *componentv1.AuthorizeGatewayRequest_PublicEndpoint:
-		result, err := remote.ValidatePublicEndpoint(ctx, connect.NewRequest(&codespacev1.ValidatePublicEndpointRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, EndpointId: value.PublicEndpoint.EndpointId}))
+		result, err := remote.ValidatePublicEndpoint(ctx, &codespacev1.ValidatePublicEndpointRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, EndpointId: value.PublicEndpoint.EndpointId})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		response.Allowed, response.EndpointId = result.Msg.GetAllowed() != nil, value.PublicEndpoint.EndpointId
-		if denied := result.Msg.GetDenied(); denied != nil {
+		response.Allowed, response.EndpointId = result.GetAllowed() != nil, value.PublicEndpoint.EndpointId
+		if denied := result.GetDenied(); denied != nil {
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_SshPublicKey:
-		result, err := remote.VerifySSHPublicKey(ctx, connect.NewRequest(&codespacev1.VerifySSHPublicKeyRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, PublicKey: value.SshPublicKey.PublicKey}))
+		result, err := remote.VerifySSHPublicKey(ctx, &codespacev1.VerifySSHPublicKeyRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, PublicKey: value.SshPublicKey.PublicKey})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		if allowed := result.Msg.GetAllowed(); allowed != nil {
+		if allowed := result.GetAllowed(); allowed != nil {
 			response.Allowed, response.UserId = true, allowed.UserId
 			if s.Activity != nil {
 				s.Activity.ObserveInteraction(string(site.UID), runtimeUUID, allowed.InteractionGeneration, time.Now())
 			}
 		}
-		if denied := result.Msg.GetDenied(); denied != nil {
+		if denied := result.GetDenied(); denied != nil {
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_EndpointSession:
-		result, err := remote.RevalidateGatewaySession(ctx, connect.NewRequest(&codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{Endpoint: &codespacev1.EndpointSessionBinding{UserId: value.EndpointSession.UserId, RuntimeUuid: runtimeUUID, EndpointId: value.EndpointSession.EndpointId}}}))
+		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{Endpoint: &codespacev1.EndpointSessionBinding{UserId: value.EndpointSession.UserId, RuntimeUuid: runtimeUUID, EndpointId: value.EndpointSession.EndpointId}}})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		response.Allowed, response.UserId, response.EndpointId = result.Msg.GetAllowed() != nil, value.EndpointSession.UserId, value.EndpointSession.EndpointId
-		if denied := result.Msg.GetDenied(); denied != nil {
+		response.Allowed, response.UserId, response.EndpointId = result.GetAllowed() != nil, value.EndpointSession.UserId, value.EndpointSession.EndpointId
+		if denied := result.GetDenied(); denied != nil {
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_SshSession:
-		result, err := remote.RevalidateGatewaySession(ctx, connect.NewRequest(&codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{Ssh: &codespacev1.SSHSessionBinding{UserId: value.SshSession.UserId, RuntimeUuid: runtimeUUID}}}))
+		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{Ssh: &codespacev1.SSHSessionBinding{UserId: value.SshSession.UserId, RuntimeUuid: runtimeUUID}}})
 		if err != nil {
-			return nil, connect.NewError(connect.CodeUnavailable, err)
+			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		response.Allowed, response.UserId = result.Msg.GetAllowed() != nil, value.SshSession.UserId
-		if denied := result.Msg.GetDenied(); denied != nil {
+		response.Allowed, response.UserId = result.GetAllowed() != nil, value.SshSession.UserId
+		if denied := result.GetDenied(); denied != nil {
 			response.DeniedCategory = denied.Category
 		}
 	}
-	return connect.NewResponse(response), nil
+	return response, nil
 }
 
-func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *connect.Request[componentv1.IssueAgentAccessRequest]) (*connect.Response[componentv1.IssueAgentAccessResponse], error) {
+func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *componentv1.IssueAgentAccessRequest) (*componentv1.IssueAgentAccessResponse, error) {
 	identity, err := componentIdentityFromContext(ctx, "gateway")
 	if err != nil {
 		return nil, err
 	}
-	if request.Msg.ProtocolVersion != 1 || request.Msg.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("agent access request is invalid"))
+	if request.ProtocolVersion != 1 || request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "agent access request is invalid")
 	}
-	cs, _, err := s.runtimeForGateway(ctx, identity, request.Msg.RuntimeUuid)
+	cs, _, err := s.runtimeForGateway(ctx, identity, request.RuntimeUuid)
 	if err != nil {
 		return nil, err
 	}
-	if request.Msg.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT {
+	if request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT {
 		found := false
 		for _, endpoint := range cs.Status.Target.Endpoints {
-			found = found || endpoint.ID == request.Msg.EndpointId
+			found = found || endpoint.ID == request.EndpointId
 		}
 		if !found {
-			return nil, connect.NewError(connect.CodeNotFound, fmt.Errorf("endpoint is not available"))
+			return nil, connect.NewError(connect.CodeNotFound, "endpoint is not available")
 		}
-	} else if request.Msg.EndpointId != "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("endpoint is only valid for endpoint access"))
+	} else if request.EndpointId != "" {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "endpoint is only valid for endpoint access")
 	}
 	route, err := s.route(ctx, cs)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	ticket, err := s.Tickets.Issue(cs, request.Msg.Capability, request.Msg.EndpointId, time.Minute)
+	ticket, err := s.Tickets.Issue(cs, request.Capability, request.EndpointId, time.Minute)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err)
+		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&componentv1.IssueAgentAccessResponse{Runtime: route, Ticket: ticket}), nil
+	return &componentv1.IssueAgentAccessResponse{Runtime: route, Ticket: ticket}, nil
 }

@@ -9,7 +9,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
@@ -18,16 +19,21 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 	t.Parallel()
 
 	service := &authenticationService{}
-	path, handler := codespacev1connect.NewManagerServiceHandler(service)
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+
 	mux := http.NewServeMux()
 	mux.Handle(path, handler)
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
 	client := NewManagerServiceClient(server.Client(), server.URL, 42, "manager-secret", 1024)
-	_, err := client.DeclareManager(t.Context(), connect.NewRequest(&codespacev1.DeclareManagerRequest{
+	_, err := client.DeclareManager(t.Context(), &codespacev1.DeclareManagerRequest{
 		ProtocolVersion: ProtocolVersion,
-	}))
+	})
 	if err != nil {
 		t.Fatalf("declare manager: %v", err)
 	}
@@ -43,10 +49,11 @@ type authenticationService struct {
 }
 
 func (s *authenticationService) DeclareManager(
-	_ context.Context,
-	request *connect.Request[codespacev1.DeclareManagerRequest],
-) (*connect.Response[codespacev1.DeclareManagerResponse], error) {
-	s.managerID = request.Header().Get(ManagerIDHeader)
-	s.managerSecret = request.Header().Get(ManagerSecretHeader)
-	return connect.NewResponse(&codespacev1.DeclareManagerResponse{}), nil
+	ctx context.Context,
+	_ *codespacev1.DeclareManagerRequest,
+) (*codespacev1.DeclareManagerResponse, error) {
+	info, _ := connect.CallInfoForServerContext(ctx)
+	s.managerID = info.RequestHeader().Get(ManagerIDHeader)
+	s.managerSecret = info.RequestHeader().Get(ManagerSecretHeader)
+	return &codespacev1.DeclareManagerResponse{}, nil
 }

@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -24,37 +24,37 @@ type RuntimeEndpointServer struct {
 	Runtime *Runtime
 }
 
-func (s *RuntimeEndpointServer) List(_ context.Context, request *connect.Request[agentv1.RuntimeEndpointServiceListRequest]) (*connect.Response[agentv1.RuntimeEndpointServiceListResponse], error) {
-	if request.Msg.ProtocolVersion != 1 || s.Runtime == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid runtime endpoint request"))
+func (s *RuntimeEndpointServer) List(_ context.Context, request *agentv1.RuntimeEndpointServiceListRequest) (*agentv1.RuntimeEndpointServiceListResponse, error) {
+	if request.ProtocolVersion != 1 || s.Runtime == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
 	endpoints, err := s.Runtime.listEndpoints()
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInternal, err)
+		return nil, connect.NewError(connect.CodeInternal, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&agentv1.RuntimeEndpointServiceListResponse{Endpoints: endpoints}), nil
+	return &agentv1.RuntimeEndpointServiceListResponse{Endpoints: endpoints}, nil
 }
 
-func (s *RuntimeEndpointServer) Set(_ context.Context, request *connect.Request[agentv1.RuntimeEndpointServiceSetRequest]) (*connect.Response[agentv1.RuntimeEndpointServiceSetResponse], error) {
-	if request.Msg.ProtocolVersion != 1 || request.Msg.Endpoint == nil || s.Runtime == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid runtime endpoint request"))
+func (s *RuntimeEndpointServer) Set(_ context.Context, request *agentv1.RuntimeEndpointServiceSetRequest) (*agentv1.RuntimeEndpointServiceSetResponse, error) {
+	if request.ProtocolVersion != 1 || request.Endpoint == nil || s.Runtime == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
-	_, err := s.Runtime.setEndpoint(request.Msg.Endpoint)
+	_, err := s.Runtime.setEndpoint(request.Endpoint)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&agentv1.RuntimeEndpointServiceSetResponse{}), nil
+	return &agentv1.RuntimeEndpointServiceSetResponse{}, nil
 }
 
-func (s *RuntimeEndpointServer) Delete(_ context.Context, request *connect.Request[agentv1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[agentv1.RuntimeEndpointServiceDeleteResponse], error) {
-	if request.Msg.ProtocolVersion != 1 || s.Runtime == nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("invalid runtime endpoint request"))
+func (s *RuntimeEndpointServer) Delete(_ context.Context, request *agentv1.RuntimeEndpointServiceDeleteRequest) (*agentv1.RuntimeEndpointServiceDeleteResponse, error) {
+	if request.ProtocolVersion != 1 || s.Runtime == nil {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
-	_, err := s.Runtime.deleteEndpoint(request.Msg.EndpointId)
+	_, err := s.Runtime.deleteEndpoint(request.EndpointId)
 	if err != nil {
-		return nil, connect.NewError(connect.CodeInvalidArgument, err)
+		return nil, connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 	}
-	return connect.NewResponse(&agentv1.RuntimeEndpointServiceDeleteResponse{}), nil
+	return &agentv1.RuntimeEndpointServiceDeleteResponse{}, nil
 }
 
 func (r *Runtime) TargetChanges() <-chan struct{} {

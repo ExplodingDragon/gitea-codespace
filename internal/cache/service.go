@@ -13,7 +13,7 @@ import (
 	"net/http"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
 )
 
 var ErrCacheServiceBusy = errors.New("another cache service is active")

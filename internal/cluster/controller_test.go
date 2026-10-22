@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
@@ -455,7 +454,7 @@ func TestGiteaCredentialRedirect(t *testing.T) {
 	control := &AgentControlServer{Client: c, ManagementNamespace: secret.Namespace}
 	remote, err := control.gitea(t.Context(), &api.Codespace{Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}}})
 	require.NoError(t, err)
-	request := connect.NewRequest(&codespacev1.CheckManagerRequest{ProtocolVersion: 1})
+	request := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
 	_, err = remote.CheckManager(t.Context(), request)
 	require.Error(t, err)
 	require.Zero(t, forwarded.Load())

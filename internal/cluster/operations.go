@@ -9,7 +9,6 @@ import (
 	"strings"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -209,11 +208,11 @@ func (o *Operations) bind(ctx context.Context, cs *api.Codespace, remote codespa
 	if cs.Spec.Operation.Type != "create" || !cs.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("unbound runtime has no create operation")
 	}
-	response, err := remote.BindRuntimeIdentity(ctx, connect.NewRequest(&codespacev1.BindRuntimeIdentityRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version}))
+	response, err := remote.BindRuntimeIdentity(ctx, &codespacev1.BindRuntimeIdentityRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version})
 	if err != nil {
 		return fmt.Errorf("bind persisted runtime identity: %w", err)
 	}
-	if response.Msg.RuntimeUuid != cs.Spec.RuntimeUUID {
+	if response.RuntimeUuid != cs.Spec.RuntimeUUID {
 		return fmt.Errorf("gitea binding conflicts with persisted runtime identity")
 	}
 	cs.Status.Bound = true
@@ -243,7 +242,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 				return fmt.Errorf("build runtime metadata: %w", err)
 			}
 			metadata.ResourceUsage = o.Samples.Load(cs)
-			_, err = remote.ReportRuntimeMetadata(ctx, connect.NewRequest(&codespacev1.ReportRuntimeMetadataRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata}))
+			_, err = remote.ReportRuntimeMetadata(ctx, &codespacev1.ReportRuntimeMetadataRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata})
 			if err != nil {
 				return err
 			}
@@ -284,13 +283,13 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if result.Succeeded {
 		status = codespacev1.FinalStatus_FINAL_STATUS_DONE
 	}
-	response, err := remote.FinalizeOperation(ctx, connect.NewRequest(&codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: result.Version, OperationType: operationType, Status: status}))
+	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: result.Version, OperationType: operationType, Status: status})
 	if err != nil {
 		return err
 	}
 	o.Authority.Revoke(cs.UID)
 	cs.Status.SettledOperationVersion = result.Version
-	if response.Msg.ResourceAbsent {
+	if response.ResourceAbsent {
 		// Only a complete inventory response authorizes cleanup of an absent resource.
 		cs.Status.RecoveryAction = "stop"
 		cs.Status.Target = nil

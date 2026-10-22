@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"time"
 
-	"connectrpc.com/connect"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 )
@@ -26,14 +25,14 @@ func (c *ComponentControlPlane) authorize(ctx context.Context, payload *componen
 	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 	payload.ProtocolVersion = 1
-	response, err := c.Client.AuthorizeGateway(callCtx, connect.NewRequest(payload))
+	response, err := c.Client.AuthorizeGateway(callCtx, payload)
 	if err != nil {
 		return nil, err
 	}
-	if response.Msg.Allowed == (response.Msg.DeniedCategory != "") {
+	if response.Allowed == (response.DeniedCategory != "") {
 		return nil, fmt.Errorf("manager returned an invalid Gateway authorization outcome")
 	}
-	return response.Msg, nil
+	return response, nil
 }
 
 func (c *ComponentControlPlane) ValidateOpenToken(ctx context.Context, code, runtimeUUID, endpointID string) (gatewayOpenTokenDecision, error) {

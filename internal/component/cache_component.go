@@ -22,8 +22,8 @@ const componentProtocolVersion uint32 = 1
 type cacheControlStream interface {
 	Send(*componentv1.CacheControlRequest) error
 	Receive() (*componentv1.CacheControlResponse, error)
-	CloseRequest() error
-	CloseResponse() error
+	CloseSend() error
+	Close() error
 }
 
 // CacheComponentClient multiplexes configuration, ownership heartbeats, and
@@ -80,7 +80,11 @@ func (c *CacheComponentClient) start(ctx context.Context, id string) error {
 		c.mu.Unlock()
 		return fmt.Errorf("read cache token key: %w", err)
 	}
-	stream := c.Client.CacheControl(ctx)
+	stream, err := c.Client.CacheControl(ctx)
+	if err != nil {
+		c.mu.Unlock()
+		return err
+	}
 	c.stream, c.cacheID, c.sessionID = stream, id, uuid.NewString()
 	c.sequence, c.config, c.streamErr = 1, cachepkg.ControlConfig{RegistryKey: string(registryKey), TokenKey: append([]byte(nil), tokenKey...)}, nil
 	c.ready = make(chan struct{})
@@ -227,8 +231,8 @@ func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) err
 	c.stream = nil
 	c.failLocked(context.Canceled)
 	c.mu.Unlock()
-	err := stream.CloseRequest()
-	_ = stream.CloseResponse()
+	err := stream.CloseSend()
+	_ = stream.Close()
 	return err
 }
 

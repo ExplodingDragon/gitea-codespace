@@ -15,7 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
@@ -43,7 +44,7 @@ type agentClient struct {
 
 type agentAccessStream struct {
 	cancel context.CancelFunc
-	stream *connect.BidiStreamForClient[agentv1.AccessRequest, agentv1.AccessResponse]
+	stream agentv1connect.AgentAccessServiceAccessClientStream
 	mu     sync.Mutex
 }
 
@@ -52,13 +53,13 @@ func (b *AgentBackend) open(ctx context.Context, runtimeUUID string, capability 
 		return nil, fmt.Errorf("agent backend is unavailable")
 	}
 	issueCtx, cancelIssue := context.WithTimeout(ctx, 10*time.Second)
-	response, err := b.Manager.IssueAgentAccess(issueCtx, connect.NewRequest(&componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, Capability: capability, EndpointId: endpointID}))
+	response, err := b.Manager.IssueAgentAccess(issueCtx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, Capability: capability, EndpointId: endpointID})
 	cancelIssue()
 	if err != nil {
 		return nil, err
 	}
-	route := response.Msg.Runtime
-	if route == nil || route.RuntimeUuid != runtimeUUID || route.SiteUid == "" || route.ResourceUid == "" || route.PodUid == "" || route.AgentAddress == "" || response.Msg.Ticket == "" {
+	route := response.Runtime
+	if route == nil || route.RuntimeUuid != runtimeUUID || route.SiteUid == "" || route.ResourceUid == "" || route.PodUid == "" || route.AgentAddress == "" || response.Ticket == "" {
 		return nil, fmt.Errorf("manager returned an incomplete Agent target")
 	}
 	client, err := b.clientFor(route)
@@ -66,8 +67,12 @@ func (b *AgentBackend) open(ctx context.Context, runtimeUUID string, capability 
 		return nil, err
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	stream := client.access.Access(streamCtx)
-	open.Ticket = response.Msg.Ticket
+	stream, err := client.access.Access(streamCtx)
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	open.Ticket = response.Ticket
 	if err := stream.Send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Open{Open: open}}); err != nil {
 		cancel()
 		return nil, err
@@ -115,7 +120,7 @@ func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 	client := &agentClient{
 		address: route.AgentAddress, siteUID: route.SiteUid, resourceUID: route.ResourceUid,
 		transport: httpTransport,
-		access:    agentv1connect.NewAgentAccessServiceClient(httpClient, "https://"+route.AgentAddress, connect.WithGRPC()),
+		access:    agentv1connect.NewAgentAccessServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "https://"+route.AgentAddress, connecthttp.WithGRPC()))),
 	}
 	b.clients[route.PodUid] = client
 	return client, nil
@@ -149,8 +154,8 @@ func (s *agentAccessStream) send(frame *agentv1.AccessRequest) error {
 
 func (s *agentAccessStream) close() error {
 	s.cancel()
-	requestErr := s.stream.CloseRequest()
-	responseErr := s.stream.CloseResponse()
+	requestErr := s.stream.CloseSend()
+	responseErr := s.stream.Close()
 	if errors.Is(requestErr, io.EOF) || errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, net.ErrClosed) {
 		requestErr = nil
 	}

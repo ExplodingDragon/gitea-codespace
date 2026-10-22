@@ -5,20 +5,11 @@
 package agentv1connect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "gitea.dev/codespace/internal/rpc/agent/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// AgentControlServiceName is the fully-qualified name of the AgentControlService service.
@@ -29,331 +20,455 @@ const (
 	RuntimeEndpointServiceName = "agent.v1.RuntimeEndpointService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// AgentControlServiceControlProcedure is the fully-qualified name of the AgentControlService's
-	// Control RPC.
+	// AgentControlServiceControlProcedure is the procedure name of the AgentControlService's Control
+	// RPC.
 	AgentControlServiceControlProcedure = "/agent.v1.AgentControlService/Control"
-	// AgentControlServiceUploadLogsProcedure is the fully-qualified name of the AgentControlService's
+	// AgentControlServiceUploadLogsProcedure is the procedure name of the AgentControlService's
 	// UploadLogs RPC.
 	AgentControlServiceUploadLogsProcedure = "/agent.v1.AgentControlService/UploadLogs"
-	// AgentAccessServiceAccessProcedure is the fully-qualified name of the AgentAccessService's Access
-	// RPC.
+	// AgentAccessServiceAccessProcedure is the procedure name of the AgentAccessService's Access RPC.
 	AgentAccessServiceAccessProcedure = "/agent.v1.AgentAccessService/Access"
-	// RuntimeEndpointServiceListProcedure is the fully-qualified name of the RuntimeEndpointService's
-	// List RPC.
+	// RuntimeEndpointServiceListProcedure is the procedure name of the RuntimeEndpointService's List
+	// RPC.
 	RuntimeEndpointServiceListProcedure = "/agent.v1.RuntimeEndpointService/List"
-	// RuntimeEndpointServiceSetProcedure is the fully-qualified name of the RuntimeEndpointService's
-	// Set RPC.
+	// RuntimeEndpointServiceSetProcedure is the procedure name of the RuntimeEndpointService's Set RPC.
 	RuntimeEndpointServiceSetProcedure = "/agent.v1.RuntimeEndpointService/Set"
-	// RuntimeEndpointServiceDeleteProcedure is the fully-qualified name of the RuntimeEndpointService's
+	// RuntimeEndpointServiceDeleteProcedure is the procedure name of the RuntimeEndpointService's
 	// Delete RPC.
 	RuntimeEndpointServiceDeleteProcedure = "/agent.v1.RuntimeEndpointService/Delete"
+)
+
+var (
+	agentControlServiceControlSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods().ByName("Control"),
+			Procedure:  AgentControlServiceControlProcedure,
+		}
+	})
+	agentControlServiceUploadLogsSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods().ByName("UploadLogs"),
+			Procedure:  AgentControlServiceUploadLogsProcedure,
+		}
+	})
 )
 
 // AgentControlServiceClient is a client for the agent.v1.AgentControlService service.
 type AgentControlServiceClient interface {
 	// Control resumes a session by reporting facts before accepting new execution.
-	Control(context.Context) *connect.BidiStreamForClient[v1.ControlRequest, v1.ControlResponse]
+	Control(context.Context) (AgentControlServiceControlClientStream, error)
 	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
-	UploadLogs(context.Context, *connect.Request[v1.UploadLogsRequest]) (*connect.Response[v1.UploadLogsResponse], error)
+	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
 }
 
-// NewAgentControlServiceClient constructs a client for the agent.v1.AgentControlService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewAgentControlServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentControlServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	agentControlServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods()
-	return &agentControlServiceClient{
-		control: connect.NewClient[v1.ControlRequest, v1.ControlResponse](
-			httpClient,
-			baseURL+AgentControlServiceControlProcedure,
-			connect.WithSchema(agentControlServiceMethods.ByName("Control")),
-			connect.WithClientOptions(opts...),
-		),
-		uploadLogs: connect.NewClient[v1.UploadLogsRequest, v1.UploadLogsResponse](
-			httpClient,
-			baseURL+AgentControlServiceUploadLogsProcedure,
-			connect.WithSchema(agentControlServiceMethods.ByName("UploadLogs")),
-			connect.WithClientOptions(opts...),
-		),
+// NewAgentControlServiceClient constructs a client for the agent.v1.AgentControlService service.
+// Multiple service clients may share a single connect.Client.
+func NewAgentControlServiceClient(client *connect.Client) AgentControlServiceClient {
+	return &agentControlServiceClient{client: client}
+}
+
+// AgentControlServiceControlClientStream is the client stream for the AgentControlService's Control
+// RPC.
+type AgentControlServiceControlClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s AgentControlServiceControlClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s AgentControlServiceControlClientStream) Send(req *v1.ControlRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseSend closes the request side of the stream.
+func (s AgentControlServiceControlClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s AgentControlServiceControlClientStream) Receive() (*v1.ControlResponse, error) {
+	var res v1.ControlResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// agentControlServiceClient implements AgentControlServiceClient.
-type agentControlServiceClient struct {
-	control    *connect.Client[v1.ControlRequest, v1.ControlResponse]
-	uploadLogs *connect.Client[v1.UploadLogsRequest, v1.UploadLogsResponse]
-}
-
-// Control calls agent.v1.AgentControlService.Control.
-func (c *agentControlServiceClient) Control(ctx context.Context) *connect.BidiStreamForClient[v1.ControlRequest, v1.ControlResponse] {
-	return c.control.CallBidiStream(ctx)
-}
-
-// UploadLogs calls agent.v1.AgentControlService.UploadLogs.
-func (c *agentControlServiceClient) UploadLogs(ctx context.Context, req *connect.Request[v1.UploadLogsRequest]) (*connect.Response[v1.UploadLogsResponse], error) {
-	return c.uploadLogs.CallUnary(ctx, req)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s AgentControlServiceControlClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // AgentControlServiceHandler is an implementation of the agent.v1.AgentControlService service.
 type AgentControlServiceHandler interface {
 	// Control resumes a session by reporting facts before accepting new execution.
-	Control(context.Context, *connect.BidiStream[v1.ControlRequest, v1.ControlResponse]) error
+	Control(context.Context, AgentControlServiceControlServerStream) error
 	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
-	UploadLogs(context.Context, *connect.Request[v1.UploadLogsRequest]) (*connect.Response[v1.UploadLogsResponse], error)
+	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
 }
 
-// NewAgentControlServiceHandler builds an HTTP handler from the service implementation. It returns
-// the path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewAgentControlServiceHandler(svc AgentControlServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	agentControlServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods()
-	agentControlServiceControlHandler := connect.NewBidiStreamHandler(
-		AgentControlServiceControlProcedure,
-		svc.Control,
-		connect.WithSchema(agentControlServiceMethods.ByName("Control")),
-		connect.WithHandlerOptions(opts...),
+// RegisterAgentControlServiceHandler registers svc as the agent.v1.AgentControlService
+// implementation on server.
+func RegisterAgentControlServiceHandler(server *connect.Server, svc AgentControlServiceHandler) {
+	adapter := agentControlServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: agentControlServiceControlSpec(), Handler: adapter.control},
+		connect.Method{Spec: agentControlServiceUploadLogsSpec(), Handler: adapter.uploadLogs},
 	)
-	agentControlServiceUploadLogsHandler := connect.NewUnaryHandler(
-		AgentControlServiceUploadLogsProcedure,
-		svc.UploadLogs,
-		connect.WithSchema(agentControlServiceMethods.ByName("UploadLogs")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/agent.v1.AgentControlService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case AgentControlServiceControlProcedure:
-			agentControlServiceControlHandler.ServeHTTP(w, r)
-		case AgentControlServiceUploadLogsProcedure:
-			agentControlServiceUploadLogsHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// AgentControlServiceControlServerStream is the server stream for the AgentControlService's Control
+// RPC.
+type AgentControlServiceControlServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s AgentControlServiceControlServerStream) Receive() (*v1.ControlRequest, error) {
+	var req v1.ControlRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s AgentControlServiceControlServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s AgentControlServiceControlServerStream) Send(res *v1.ControlResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedAgentControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedAgentControlServiceHandler struct{}
 
-func (UnimplementedAgentControlServiceHandler) Control(context.Context, *connect.BidiStream[v1.ControlRequest, v1.ControlResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.AgentControlService.Control is not implemented"))
+func (UnimplementedAgentControlServiceHandler) Control(context.Context, AgentControlServiceControlServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.Control is not implemented")
 }
 
-func (UnimplementedAgentControlServiceHandler) UploadLogs(context.Context, *connect.Request[v1.UploadLogsRequest]) (*connect.Response[v1.UploadLogsResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.AgentControlService.UploadLogs is not implemented"))
+func (UnimplementedAgentControlServiceHandler) UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.UploadLogs is not implemented")
 }
+
+type agentControlServiceClient struct {
+	client *connect.Client
+}
+
+func (c *agentControlServiceClient) Control(ctx context.Context) (AgentControlServiceControlClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, agentControlServiceControlSpec())
+	if err != nil {
+		return AgentControlServiceControlClientStream{}, err
+	}
+	return AgentControlServiceControlClientStream{stream: stream}, nil
+}
+
+func (c *agentControlServiceClient) UploadLogs(ctx context.Context, req *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error) {
+	var res v1.UploadLogsResponse
+	if err := c.client.CallUnary(ctx, agentControlServiceUploadLogsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type agentControlServiceHandler struct{ svc AgentControlServiceHandler }
+
+func (h agentControlServiceHandler) control(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.Control(ctx, AgentControlServiceControlServerStream{stream: stream})
+}
+
+func (h agentControlServiceHandler) uploadLogs(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.UploadLogsRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.UploadLogs(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	agentAccessServiceAccessSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("AgentAccessService").Methods().ByName("Access"),
+			Procedure:  AgentAccessServiceAccessProcedure,
+		}
+	})
+)
 
 // AgentAccessServiceClient is a client for the agent.v1.AgentAccessService service.
 type AgentAccessServiceClient interface {
 	// Access requires an accepted opening frame before transferring user data.
-	Access(context.Context) *connect.BidiStreamForClient[v1.AccessRequest, v1.AccessResponse]
+	Access(context.Context) (AgentAccessServiceAccessClientStream, error)
 }
 
-// NewAgentAccessServiceClient constructs a client for the agent.v1.AgentAccessService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewAgentAccessServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) AgentAccessServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	agentAccessServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("AgentAccessService").Methods()
-	return &agentAccessServiceClient{
-		access: connect.NewClient[v1.AccessRequest, v1.AccessResponse](
-			httpClient,
-			baseURL+AgentAccessServiceAccessProcedure,
-			connect.WithSchema(agentAccessServiceMethods.ByName("Access")),
-			connect.WithClientOptions(opts...),
-		),
+// NewAgentAccessServiceClient constructs a client for the agent.v1.AgentAccessService service.
+// Multiple service clients may share a single connect.Client.
+func NewAgentAccessServiceClient(client *connect.Client) AgentAccessServiceClient {
+	return &agentAccessServiceClient{client: client}
+}
+
+// AgentAccessServiceAccessClientStream is the client stream for the AgentAccessService's Access
+// RPC.
+type AgentAccessServiceAccessClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s AgentAccessServiceAccessClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s AgentAccessServiceAccessClientStream) Send(req *v1.AccessRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseSend closes the request side of the stream.
+func (s AgentAccessServiceAccessClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s AgentAccessServiceAccessClientStream) Receive() (*v1.AccessResponse, error) {
+	var res v1.AccessResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// agentAccessServiceClient implements AgentAccessServiceClient.
-type agentAccessServiceClient struct {
-	access *connect.Client[v1.AccessRequest, v1.AccessResponse]
-}
-
-// Access calls agent.v1.AgentAccessService.Access.
-func (c *agentAccessServiceClient) Access(ctx context.Context) *connect.BidiStreamForClient[v1.AccessRequest, v1.AccessResponse] {
-	return c.access.CallBidiStream(ctx)
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s AgentAccessServiceAccessClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // AgentAccessServiceHandler is an implementation of the agent.v1.AgentAccessService service.
 type AgentAccessServiceHandler interface {
 	// Access requires an accepted opening frame before transferring user data.
-	Access(context.Context, *connect.BidiStream[v1.AccessRequest, v1.AccessResponse]) error
+	Access(context.Context, AgentAccessServiceAccessServerStream) error
 }
 
-// NewAgentAccessServiceHandler builds an HTTP handler from the service implementation. It returns
-// the path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewAgentAccessServiceHandler(svc AgentAccessServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	agentAccessServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("AgentAccessService").Methods()
-	agentAccessServiceAccessHandler := connect.NewBidiStreamHandler(
-		AgentAccessServiceAccessProcedure,
-		svc.Access,
-		connect.WithSchema(agentAccessServiceMethods.ByName("Access")),
-		connect.WithHandlerOptions(opts...),
+// RegisterAgentAccessServiceHandler registers svc as the agent.v1.AgentAccessService implementation
+// on server.
+func RegisterAgentAccessServiceHandler(server *connect.Server, svc AgentAccessServiceHandler) {
+	adapter := agentAccessServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: agentAccessServiceAccessSpec(), Handler: adapter.access},
 	)
-	return "/agent.v1.AgentAccessService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case AgentAccessServiceAccessProcedure:
-			agentAccessServiceAccessHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// AgentAccessServiceAccessServerStream is the server stream for the AgentAccessService's Access
+// RPC.
+type AgentAccessServiceAccessServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s AgentAccessServiceAccessServerStream) Receive() (*v1.AccessRequest, error) {
+	var req v1.AccessRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s AgentAccessServiceAccessServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s AgentAccessServiceAccessServerStream) Send(res *v1.AccessResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedAgentAccessServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedAgentAccessServiceHandler struct{}
 
-func (UnimplementedAgentAccessServiceHandler) Access(context.Context, *connect.BidiStream[v1.AccessRequest, v1.AccessResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.AgentAccessService.Access is not implemented"))
+func (UnimplementedAgentAccessServiceHandler) Access(context.Context, AgentAccessServiceAccessServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentAccessService.Access is not implemented")
 }
+
+type agentAccessServiceClient struct {
+	client *connect.Client
+}
+
+func (c *agentAccessServiceClient) Access(ctx context.Context) (AgentAccessServiceAccessClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, agentAccessServiceAccessSpec())
+	if err != nil {
+		return AgentAccessServiceAccessClientStream{}, err
+	}
+	return AgentAccessServiceAccessClientStream{stream: stream}, nil
+}
+
+type agentAccessServiceHandler struct{ svc AgentAccessServiceHandler }
+
+func (h agentAccessServiceHandler) access(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.Access(ctx, AgentAccessServiceAccessServerStream{stream: stream})
+}
+
+var (
+	runtimeEndpointServiceListSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("RuntimeEndpointService").Methods().ByName("List"),
+			Procedure:  RuntimeEndpointServiceListProcedure,
+		}
+	})
+	runtimeEndpointServiceSetSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("RuntimeEndpointService").Methods().ByName("Set"),
+			Procedure:  RuntimeEndpointServiceSetProcedure,
+		}
+	})
+	runtimeEndpointServiceDeleteSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("RuntimeEndpointService").Methods().ByName("Delete"),
+			Procedure:  RuntimeEndpointServiceDeleteProcedure,
+		}
+	})
+)
 
 // RuntimeEndpointServiceClient is a client for the agent.v1.RuntimeEndpointService service.
 type RuntimeEndpointServiceClient interface {
 	// List returns the HTTP endpoints currently published by this runtime.
-	List(context.Context, *connect.Request[v1.RuntimeEndpointServiceListRequest]) (*connect.Response[v1.RuntimeEndpointServiceListResponse], error)
+	List(context.Context, *v1.RuntimeEndpointServiceListRequest) (*v1.RuntimeEndpointServiceListResponse, error)
 	// Set adds or replaces one endpoint and durably publishes the new target.
-	Set(context.Context, *connect.Request[v1.RuntimeEndpointServiceSetRequest]) (*connect.Response[v1.RuntimeEndpointServiceSetResponse], error)
+	Set(context.Context, *v1.RuntimeEndpointServiceSetRequest) (*v1.RuntimeEndpointServiceSetResponse, error)
 	// Delete removes one endpoint and durably publishes the new target.
-	Delete(context.Context, *connect.Request[v1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[v1.RuntimeEndpointServiceDeleteResponse], error)
+	Delete(context.Context, *v1.RuntimeEndpointServiceDeleteRequest) (*v1.RuntimeEndpointServiceDeleteResponse, error)
 }
 
 // NewRuntimeEndpointServiceClient constructs a client for the agent.v1.RuntimeEndpointService
-// service. By default, it uses the Connect protocol with the binary Protobuf Codec, asks for
-// gzipped responses, and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply
-// the connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewRuntimeEndpointServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) RuntimeEndpointServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	runtimeEndpointServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("RuntimeEndpointService").Methods()
-	return &runtimeEndpointServiceClient{
-		list: connect.NewClient[v1.RuntimeEndpointServiceListRequest, v1.RuntimeEndpointServiceListResponse](
-			httpClient,
-			baseURL+RuntimeEndpointServiceListProcedure,
-			connect.WithSchema(runtimeEndpointServiceMethods.ByName("List")),
-			connect.WithClientOptions(opts...),
-		),
-		set: connect.NewClient[v1.RuntimeEndpointServiceSetRequest, v1.RuntimeEndpointServiceSetResponse](
-			httpClient,
-			baseURL+RuntimeEndpointServiceSetProcedure,
-			connect.WithSchema(runtimeEndpointServiceMethods.ByName("Set")),
-			connect.WithClientOptions(opts...),
-		),
-		delete: connect.NewClient[v1.RuntimeEndpointServiceDeleteRequest, v1.RuntimeEndpointServiceDeleteResponse](
-			httpClient,
-			baseURL+RuntimeEndpointServiceDeleteProcedure,
-			connect.WithSchema(runtimeEndpointServiceMethods.ByName("Delete")),
-			connect.WithClientOptions(opts...),
-		),
-	}
-}
-
-// runtimeEndpointServiceClient implements RuntimeEndpointServiceClient.
-type runtimeEndpointServiceClient struct {
-	list   *connect.Client[v1.RuntimeEndpointServiceListRequest, v1.RuntimeEndpointServiceListResponse]
-	set    *connect.Client[v1.RuntimeEndpointServiceSetRequest, v1.RuntimeEndpointServiceSetResponse]
-	delete *connect.Client[v1.RuntimeEndpointServiceDeleteRequest, v1.RuntimeEndpointServiceDeleteResponse]
-}
-
-// List calls agent.v1.RuntimeEndpointService.List.
-func (c *runtimeEndpointServiceClient) List(ctx context.Context, req *connect.Request[v1.RuntimeEndpointServiceListRequest]) (*connect.Response[v1.RuntimeEndpointServiceListResponse], error) {
-	return c.list.CallUnary(ctx, req)
-}
-
-// Set calls agent.v1.RuntimeEndpointService.Set.
-func (c *runtimeEndpointServiceClient) Set(ctx context.Context, req *connect.Request[v1.RuntimeEndpointServiceSetRequest]) (*connect.Response[v1.RuntimeEndpointServiceSetResponse], error) {
-	return c.set.CallUnary(ctx, req)
-}
-
-// Delete calls agent.v1.RuntimeEndpointService.Delete.
-func (c *runtimeEndpointServiceClient) Delete(ctx context.Context, req *connect.Request[v1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[v1.RuntimeEndpointServiceDeleteResponse], error) {
-	return c.delete.CallUnary(ctx, req)
+// service. Multiple service clients may share a single connect.Client.
+func NewRuntimeEndpointServiceClient(client *connect.Client) RuntimeEndpointServiceClient {
+	return &runtimeEndpointServiceClient{client: client}
 }
 
 // RuntimeEndpointServiceHandler is an implementation of the agent.v1.RuntimeEndpointService
 // service.
 type RuntimeEndpointServiceHandler interface {
 	// List returns the HTTP endpoints currently published by this runtime.
-	List(context.Context, *connect.Request[v1.RuntimeEndpointServiceListRequest]) (*connect.Response[v1.RuntimeEndpointServiceListResponse], error)
+	List(context.Context, *v1.RuntimeEndpointServiceListRequest) (*v1.RuntimeEndpointServiceListResponse, error)
 	// Set adds or replaces one endpoint and durably publishes the new target.
-	Set(context.Context, *connect.Request[v1.RuntimeEndpointServiceSetRequest]) (*connect.Response[v1.RuntimeEndpointServiceSetResponse], error)
+	Set(context.Context, *v1.RuntimeEndpointServiceSetRequest) (*v1.RuntimeEndpointServiceSetResponse, error)
 	// Delete removes one endpoint and durably publishes the new target.
-	Delete(context.Context, *connect.Request[v1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[v1.RuntimeEndpointServiceDeleteResponse], error)
+	Delete(context.Context, *v1.RuntimeEndpointServiceDeleteRequest) (*v1.RuntimeEndpointServiceDeleteResponse, error)
 }
 
-// NewRuntimeEndpointServiceHandler builds an HTTP handler from the service implementation. It
-// returns the path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewRuntimeEndpointServiceHandler(svc RuntimeEndpointServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	runtimeEndpointServiceMethods := v1.File_agent_v1_service_proto.Services().ByName("RuntimeEndpointService").Methods()
-	runtimeEndpointServiceListHandler := connect.NewUnaryHandler(
-		RuntimeEndpointServiceListProcedure,
-		svc.List,
-		connect.WithSchema(runtimeEndpointServiceMethods.ByName("List")),
-		connect.WithHandlerOptions(opts...),
+// RegisterRuntimeEndpointServiceHandler registers svc as the agent.v1.RuntimeEndpointService
+// implementation on server.
+func RegisterRuntimeEndpointServiceHandler(server *connect.Server, svc RuntimeEndpointServiceHandler) {
+	adapter := runtimeEndpointServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: runtimeEndpointServiceListSpec(), Handler: adapter.list},
+		connect.Method{Spec: runtimeEndpointServiceSetSpec(), Handler: adapter.set},
+		connect.Method{Spec: runtimeEndpointServiceDeleteSpec(), Handler: adapter.delete},
 	)
-	runtimeEndpointServiceSetHandler := connect.NewUnaryHandler(
-		RuntimeEndpointServiceSetProcedure,
-		svc.Set,
-		connect.WithSchema(runtimeEndpointServiceMethods.ByName("Set")),
-		connect.WithHandlerOptions(opts...),
-	)
-	runtimeEndpointServiceDeleteHandler := connect.NewUnaryHandler(
-		RuntimeEndpointServiceDeleteProcedure,
-		svc.Delete,
-		connect.WithSchema(runtimeEndpointServiceMethods.ByName("Delete")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/agent.v1.RuntimeEndpointService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case RuntimeEndpointServiceListProcedure:
-			runtimeEndpointServiceListHandler.ServeHTTP(w, r)
-		case RuntimeEndpointServiceSetProcedure:
-			runtimeEndpointServiceSetHandler.ServeHTTP(w, r)
-		case RuntimeEndpointServiceDeleteProcedure:
-			runtimeEndpointServiceDeleteHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
 }
 
 // UnimplementedRuntimeEndpointServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedRuntimeEndpointServiceHandler struct{}
 
-func (UnimplementedRuntimeEndpointServiceHandler) List(context.Context, *connect.Request[v1.RuntimeEndpointServiceListRequest]) (*connect.Response[v1.RuntimeEndpointServiceListResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.RuntimeEndpointService.List is not implemented"))
+func (UnimplementedRuntimeEndpointServiceHandler) List(context.Context, *v1.RuntimeEndpointServiceListRequest) (*v1.RuntimeEndpointServiceListResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.RuntimeEndpointService.List is not implemented")
 }
 
-func (UnimplementedRuntimeEndpointServiceHandler) Set(context.Context, *connect.Request[v1.RuntimeEndpointServiceSetRequest]) (*connect.Response[v1.RuntimeEndpointServiceSetResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.RuntimeEndpointService.Set is not implemented"))
+func (UnimplementedRuntimeEndpointServiceHandler) Set(context.Context, *v1.RuntimeEndpointServiceSetRequest) (*v1.RuntimeEndpointServiceSetResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.RuntimeEndpointService.Set is not implemented")
 }
 
-func (UnimplementedRuntimeEndpointServiceHandler) Delete(context.Context, *connect.Request[v1.RuntimeEndpointServiceDeleteRequest]) (*connect.Response[v1.RuntimeEndpointServiceDeleteResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("agent.v1.RuntimeEndpointService.Delete is not implemented"))
+func (UnimplementedRuntimeEndpointServiceHandler) Delete(context.Context, *v1.RuntimeEndpointServiceDeleteRequest) (*v1.RuntimeEndpointServiceDeleteResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.RuntimeEndpointService.Delete is not implemented")
+}
+
+type runtimeEndpointServiceClient struct {
+	client *connect.Client
+}
+
+func (c *runtimeEndpointServiceClient) List(ctx context.Context, req *v1.RuntimeEndpointServiceListRequest) (*v1.RuntimeEndpointServiceListResponse, error) {
+	var res v1.RuntimeEndpointServiceListResponse
+	if err := c.client.CallUnary(ctx, runtimeEndpointServiceListSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runtimeEndpointServiceClient) Set(ctx context.Context, req *v1.RuntimeEndpointServiceSetRequest) (*v1.RuntimeEndpointServiceSetResponse, error) {
+	var res v1.RuntimeEndpointServiceSetResponse
+	if err := c.client.CallUnary(ctx, runtimeEndpointServiceSetSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *runtimeEndpointServiceClient) Delete(ctx context.Context, req *v1.RuntimeEndpointServiceDeleteRequest) (*v1.RuntimeEndpointServiceDeleteResponse, error) {
+	var res v1.RuntimeEndpointServiceDeleteResponse
+	if err := c.client.CallUnary(ctx, runtimeEndpointServiceDeleteSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type runtimeEndpointServiceHandler struct{ svc RuntimeEndpointServiceHandler }
+
+func (h runtimeEndpointServiceHandler) list(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RuntimeEndpointServiceListRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.List(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runtimeEndpointServiceHandler) set(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RuntimeEndpointServiceSetRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Set(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h runtimeEndpointServiceHandler) delete(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RuntimeEndpointServiceDeleteRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Delete(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
 }

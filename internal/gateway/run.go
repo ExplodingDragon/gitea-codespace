@@ -40,15 +40,22 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 	}()
 	for ctx.Err() == nil {
 		streamCtx, cancelStream := context.WithCancel(ctx)
-		stream := client.GatewayControl(streamCtx)
+		stream, err := client.GatewayControl(streamCtx)
+		if err != nil {
+			cancelStream()
+			if !waitGatewayReconnect(ctx, runtime) {
+				break
+			}
+			continue
+		}
 		sendActivity := func() error {
 			sequence++
 			return stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: sessionID, Sequence: sequence, ActiveSessions: gatewayActivity(runtime)})
 		}
 		if err := sendActivity(); err != nil {
 			cancelStream()
-			_ = stream.CloseRequest()
-			_ = stream.CloseResponse()
+			_ = stream.CloseSend()
+			_ = stream.Close()
 			if !waitGatewayReconnect(ctx, runtime) {
 				break
 			}
@@ -145,8 +152,8 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 			}
 		}
 		cancelStream()
-		_ = stream.CloseRequest()
-		_ = stream.CloseResponse()
+		_ = stream.CloseSend()
+		_ = stream.Close()
 		if terminalErr != nil {
 			return terminalErr
 		}

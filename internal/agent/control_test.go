@@ -5,14 +5,15 @@ package agent
 
 import (
 	"context"
-	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -23,17 +24,17 @@ import (
 
 type controlService struct {
 	agentv1connect.UnimplementedAgentControlServiceHandler
-	control func(context.Context, *connect.BidiStream[agentv1.ControlRequest, agentv1.ControlResponse]) error
-	upload  func(context.Context, *connect.Request[agentv1.UploadLogsRequest]) (*connect.Response[agentv1.UploadLogsResponse], error)
+	control func(context.Context, agentv1connect.AgentControlServiceControlServerStream) error
+	upload  func(context.Context, *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error)
 }
 
-func (s controlService) Control(ctx context.Context, stream *connect.BidiStream[agentv1.ControlRequest, agentv1.ControlResponse]) error {
+func (s controlService) Control(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 	return s.control(ctx, stream)
 }
 
-func (s controlService) UploadLogs(ctx context.Context, request *connect.Request[agentv1.UploadLogsRequest]) (*connect.Response[agentv1.UploadLogsResponse], error) {
+func (s controlService) UploadLogs(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
 	if s.upload == nil {
-		return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("log upload is not configured by this test"))
+		return nil, connect.NewError(connect.CodeUnimplemented, "log upload is not configured by this test")
 	}
 	return s.upload(ctx, request)
 }
@@ -46,7 +47,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	resultReceived := make(chan struct{}, 8)
 	uploaded := make(chan *agentv1.UploadLogsRequest, 8)
 	operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, LogOffset: 120, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
-	service := controlService{control: func(ctx context.Context, stream *connect.BidiStream[agentv1.ControlRequest, agentv1.ControlResponse]) error {
+	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
 			request, err := stream.Receive()
 			if err != nil {
@@ -62,7 +63,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 				results.Add(1)
 				resultReceived <- struct{}{}
 				// A real HTTP/2 disconnect after recording the result loses its ack.
-				return connect.NewError(connect.CodeUnavailable, fmt.Errorf("reply lost"))
+				return connect.NewError(connect.CodeUnavailable, "reply lost")
 			}
 			if len(request.Report.GitSshPublicKey) == 0 {
 				response.CancelExecution = true
@@ -78,16 +79,20 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 			}
 		}
 	}}
-	service.upload = func(_ context.Context, request *connect.Request[agentv1.UploadLogsRequest]) (*connect.Response[agentv1.UploadLogsResponse], error) {
-		uploaded <- request.Msg
-		return connect.NewResponse(&agentv1.UploadLogsResponse{NextOffset: request.Msg.Offset + 100}), nil
+	service.upload = func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+		uploaded <- request
+		return &agentv1.UploadLogsResponse{NextOffset: request.Offset + 100}, nil
 	}
-	_, handler := agentv1connect.NewAgentControlServiceHandler(service)
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
-	remote := agentv1connect.NewAgentControlServiceClient(server.Client(), server.URL, connect.WithGRPC())
+	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC())))
 	for range 2 {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		client := &ControlClient{Journal: journal, Remote: remote, Execute: func(_ context.Context, response *agentv1.ControlResponse, report func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
@@ -126,7 +131,7 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 	defer func() { require.NoError(t, journal.Close()) }()
 	started := make(chan struct{})
 	canceled := make(chan struct{})
-	service := controlService{control: func(ctx context.Context, stream *connect.BidiStream[agentv1.ControlRequest, agentv1.ControlResponse]) error {
+	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
 			request, err := stream.Receive()
 			if err != nil {
@@ -148,14 +153,18 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 			}
 		}
 	}}
-	_, handler := agentv1connect.NewAgentControlServiceHandler(service)
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(server.Client(), server.URL, connect.WithGRPC()), Execute: func(ctx context.Context, _ *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
+	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))), Execute: func(ctx context.Context, _ *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
 		close(started)
 		<-ctx.Done()
 		close(canceled)
@@ -189,7 +198,7 @@ func TestControlClientDrainsPriorExecutionBeforeNewOperation(t *testing.T) {
 	var overlap atomic.Bool
 	firstCanceled := make(chan struct{})
 	secondFinished := make(chan struct{})
-	service := controlService{control: func(ctx context.Context, stream *connect.BidiStream[agentv1.ControlRequest, agentv1.ControlResponse]) error {
+	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
 			request, err := stream.Receive()
 			if err != nil {
@@ -206,14 +215,18 @@ func TestControlClientDrainsPriorExecutionBeforeNewOperation(t *testing.T) {
 			}
 		}
 	}}
-	_, handler := agentv1connect.NewAgentControlServiceHandler(service)
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+
 	server := httptest.NewUnstartedServer(handler)
 	server.EnableHTTP2 = true
 	server.StartTLS()
 	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(server.Client(), server.URL, connect.WithGRPC()), Execute: func(ctx context.Context, response *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
+	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))), Execute: func(ctx context.Context, response *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
 		if running.Add(1) != 1 {
 			overlap.Store(true)
 		}

@@ -10,7 +10,7 @@ KUBERNETES_STORAGE_CLASS ?= local-path
 CONTROLLER_GEN_VERSION := v0.21.0
 BUF_VERSION := v1.8.0
 PROTOC_GEN_GO_VERSION := v1.36.11
-PROTOC_GEN_CONNECT_GO_VERSION := v1.20.0
+PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
 
 define prepare-proto-workspace
 mkdir -p .tmp; \
@@ -31,7 +31,7 @@ generate-kubernetes:
 install-proto:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
-	$(GO) install connectrpc.com/connect/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
+	$(GO) install connectrpc.com/connect/v2/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
 
 proto-format:
 	$(BUF) format internal/rpc/agent/v1/service.proto -w

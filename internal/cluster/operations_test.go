@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -33,18 +32,18 @@ type operationRemote struct {
 	metadata func(*codespacev1.ReportRuntimeMetadataRequest) error
 }
 
-func (r *operationRemote) BindRuntimeIdentity(_ context.Context, request *connect.Request[codespacev1.BindRuntimeIdentityRequest]) (*connect.Response[codespacev1.BindRuntimeIdentityResponse], error) {
-	response, err := r.bind(request.Msg)
-	return connect.NewResponse(response), err
+func (r *operationRemote) BindRuntimeIdentity(_ context.Context, request *codespacev1.BindRuntimeIdentityRequest) (*codespacev1.BindRuntimeIdentityResponse, error) {
+	response, err := r.bind(request)
+	return response, err
 }
 
-func (r *operationRemote) FinalizeOperation(_ context.Context, request *connect.Request[codespacev1.FinalizeOperationRequest]) (*connect.Response[codespacev1.FinalizeOperationResponse], error) {
-	response, err := r.final(request.Msg)
-	return connect.NewResponse(response), err
+func (r *operationRemote) FinalizeOperation(_ context.Context, request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
+	response, err := r.final(request)
+	return response, err
 }
 
-func (r *operationRemote) ReportRuntimeMetadata(_ context.Context, request *connect.Request[codespacev1.ReportRuntimeMetadataRequest]) (*connect.Response[codespacev1.ReportRuntimeMetadataResponse], error) {
-	return connect.NewResponse(&codespacev1.ReportRuntimeMetadataResponse{}), r.metadata(request.Msg)
+func (r *operationRemote) ReportRuntimeMetadata(_ context.Context, request *codespacev1.ReportRuntimeMetadataRequest) (*codespacev1.ReportRuntimeMetadataResponse, error) {
+	return &codespacev1.ReportRuntimeMetadataResponse{}, r.metadata(request)
 }
 
 func TestOperationBindingRecovery(t *testing.T) {

@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/google/uuid"
@@ -57,8 +56,8 @@ func TestKubernetesE2ERealGiteaHandshake(t *testing.T) {
 	}
 	remote, err := siteManagerClient(cluster.ctx, cluster.Client, cluster.managementNamespace, site)
 	require.NoError(t, err)
-	response, err := remote.CheckManager(cluster.ctx, connect.NewRequest(&codespacev1.CheckManagerRequest{ProtocolVersion: 1}))
+	response, err := remote.CheckManager(cluster.ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: 1})
 	require.NoError(t, err)
-	require.Equal(t, giteaURL, strings.TrimRight(response.Msg.GiteaWebUrl, "/"))
-	require.NotEmpty(t, response.Msg.ManagerName)
+	require.Equal(t, giteaURL, strings.TrimRight(response.GiteaWebUrl, "/"))
+	require.NotEmpty(t, response.ManagerName)
 }

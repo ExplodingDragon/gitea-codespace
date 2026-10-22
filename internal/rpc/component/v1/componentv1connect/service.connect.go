@@ -5,200 +5,321 @@
 package componentv1connect
 
 import (
-	connect "connectrpc.com/connect"
+	connect "connectrpc.com/connect/v2"
 	context "context"
-	errors "errors"
 	v1 "gitea.dev/codespace/internal/rpc/component/v1"
-	http "net/http"
-	strings "strings"
+	sync "sync"
 )
-
-// This is a compile-time assertion to ensure that this generated file and the connect package are
-// compatible. If you get a compiler error that this constant is not defined, this code was
-// generated with a version of connect newer than the one compiled into your binary. You can fix the
-// problem by either regenerating this code with an older version of connect or updating the connect
-// version compiled into your binary.
-const _ = connect.IsAtLeastVersion1_13_0
 
 const (
 	// ComponentServiceName is the fully-qualified name of the ComponentService service.
 	ComponentServiceName = "component.v1.ComponentService"
 )
 
-// These constants are the fully-qualified names of the RPCs defined in this package. They're
-// exposed at runtime as Spec.Procedure and as the final two segments of the HTTP route.
+// These constants are the procedure names of the RPCs defined in this package. They're exposed at
+// runtime as Spec.Procedure and as the final two segments of the HTTP route.
 //
 // Note that these are different from the fully-qualified method names used by
 // google.golang.org/protobuf/reflect/protoreflect. To convert from these constants to
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// ComponentServiceGatewayControlProcedure is the fully-qualified name of the ComponentService's
+	// ComponentServiceGatewayControlProcedure is the procedure name of the ComponentService's
 	// GatewayControl RPC.
 	ComponentServiceGatewayControlProcedure = "/component.v1.ComponentService/GatewayControl"
-	// ComponentServiceAuthorizeGatewayProcedure is the fully-qualified name of the ComponentService's
+	// ComponentServiceAuthorizeGatewayProcedure is the procedure name of the ComponentService's
 	// AuthorizeGateway RPC.
 	ComponentServiceAuthorizeGatewayProcedure = "/component.v1.ComponentService/AuthorizeGateway"
-	// ComponentServiceIssueAgentAccessProcedure is the fully-qualified name of the ComponentService's
+	// ComponentServiceIssueAgentAccessProcedure is the procedure name of the ComponentService's
 	// IssueAgentAccess RPC.
 	ComponentServiceIssueAgentAccessProcedure = "/component.v1.ComponentService/IssueAgentAccess"
-	// ComponentServiceCacheControlProcedure is the fully-qualified name of the ComponentService's
+	// ComponentServiceCacheControlProcedure is the procedure name of the ComponentService's
 	// CacheControl RPC.
 	ComponentServiceCacheControlProcedure = "/component.v1.ComponentService/CacheControl"
+)
+
+var (
+	componentServiceGatewayControlSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("GatewayControl"),
+			Procedure:  ComponentServiceGatewayControlProcedure,
+		}
+	})
+	componentServiceAuthorizeGatewaySpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("AuthorizeGateway"),
+			Procedure:  ComponentServiceAuthorizeGatewayProcedure,
+		}
+	})
+	componentServiceIssueAgentAccessSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("IssueAgentAccess"),
+			Procedure:  ComponentServiceIssueAgentAccessProcedure,
+		}
+	})
+	componentServiceCacheControlSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeBidi,
+			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("CacheControl"),
+			Procedure:  ComponentServiceCacheControlProcedure,
+		}
+	})
 )
 
 // ComponentServiceClient is a client for the component.v1.ComponentService service.
 type ComponentServiceClient interface {
 	// GatewayControl publishes Gateway activity and streams its current configuration and routes.
-	GatewayControl(context.Context) *connect.BidiStreamForClient[v1.GatewayControlRequest, v1.GatewayControlResponse]
+	GatewayControl(context.Context) (ComponentServiceGatewayControlClientStream, error)
 	// AuthorizeGateway delegates one user authorization decision to its Gitea site.
-	AuthorizeGateway(context.Context, *connect.Request[v1.AuthorizeGatewayRequest]) (*connect.Response[v1.AuthorizeGatewayResponse], error)
+	AuthorizeGateway(context.Context, *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error)
 	// IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
-	IssueAgentAccess(context.Context, *connect.Request[v1.IssueAgentAccessRequest]) (*connect.Response[v1.IssueAgentAccessResponse], error)
+	IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error)
 	// CacheControl publishes cache health and streams configuration and cleanup grants.
-	CacheControl(context.Context) *connect.BidiStreamForClient[v1.CacheControlRequest, v1.CacheControlResponse]
+	CacheControl(context.Context) (ComponentServiceCacheControlClientStream, error)
 }
 
-// NewComponentServiceClient constructs a client for the component.v1.ComponentService service. By
-// default, it uses the Connect protocol with the binary Protobuf Codec, asks for gzipped responses,
-// and sends uncompressed requests. To use the gRPC or gRPC-Web protocols, supply the
-// connect.WithGRPC() or connect.WithGRPCWeb() options.
-//
-// The URL supplied here should be the base URL for the Connect or gRPC server (for example,
-// http://api.acme.com or https://acme.com/grpc).
-func NewComponentServiceClient(httpClient connect.HTTPClient, baseURL string, opts ...connect.ClientOption) ComponentServiceClient {
-	baseURL = strings.TrimRight(baseURL, "/")
-	componentServiceMethods := v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods()
-	return &componentServiceClient{
-		gatewayControl: connect.NewClient[v1.GatewayControlRequest, v1.GatewayControlResponse](
-			httpClient,
-			baseURL+ComponentServiceGatewayControlProcedure,
-			connect.WithSchema(componentServiceMethods.ByName("GatewayControl")),
-			connect.WithClientOptions(opts...),
-		),
-		authorizeGateway: connect.NewClient[v1.AuthorizeGatewayRequest, v1.AuthorizeGatewayResponse](
-			httpClient,
-			baseURL+ComponentServiceAuthorizeGatewayProcedure,
-			connect.WithSchema(componentServiceMethods.ByName("AuthorizeGateway")),
-			connect.WithClientOptions(opts...),
-		),
-		issueAgentAccess: connect.NewClient[v1.IssueAgentAccessRequest, v1.IssueAgentAccessResponse](
-			httpClient,
-			baseURL+ComponentServiceIssueAgentAccessProcedure,
-			connect.WithSchema(componentServiceMethods.ByName("IssueAgentAccess")),
-			connect.WithClientOptions(opts...),
-		),
-		cacheControl: connect.NewClient[v1.CacheControlRequest, v1.CacheControlResponse](
-			httpClient,
-			baseURL+ComponentServiceCacheControlProcedure,
-			connect.WithSchema(componentServiceMethods.ByName("CacheControl")),
-			connect.WithClientOptions(opts...),
-		),
+// NewComponentServiceClient constructs a client for the component.v1.ComponentService service.
+// Multiple service clients may share a single connect.Client.
+func NewComponentServiceClient(client *connect.Client) ComponentServiceClient {
+	return &componentServiceClient{client: client}
+}
+
+// ComponentServiceGatewayControlClientStream is the client stream for the ComponentService's
+// GatewayControl RPC.
+type ComponentServiceGatewayControlClientStream struct {
+	stream connect.ClientStream
+}
+
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s ComponentServiceGatewayControlClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a request message to the server.
+func (s ComponentServiceGatewayControlClientStream) Send(req *v1.GatewayControlRequest) error {
+	return s.stream.Send(req)
+}
+
+// CloseSend closes the request side of the stream.
+func (s ComponentServiceGatewayControlClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s ComponentServiceGatewayControlClientStream) Receive() (*v1.GatewayControlResponse, error) {
+	var res v1.GatewayControlResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
 	}
+	return &res, nil
 }
 
-// componentServiceClient implements ComponentServiceClient.
-type componentServiceClient struct {
-	gatewayControl   *connect.Client[v1.GatewayControlRequest, v1.GatewayControlResponse]
-	authorizeGateway *connect.Client[v1.AuthorizeGatewayRequest, v1.AuthorizeGatewayResponse]
-	issueAgentAccess *connect.Client[v1.IssueAgentAccessRequest, v1.IssueAgentAccessResponse]
-	cacheControl     *connect.Client[v1.CacheControlRequest, v1.CacheControlResponse]
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s ComponentServiceGatewayControlClientStream) Close() error {
+	return s.stream.Close()
 }
 
-// GatewayControl calls component.v1.ComponentService.GatewayControl.
-func (c *componentServiceClient) GatewayControl(ctx context.Context) *connect.BidiStreamForClient[v1.GatewayControlRequest, v1.GatewayControlResponse] {
-	return c.gatewayControl.CallBidiStream(ctx)
+// ComponentServiceCacheControlClientStream is the client stream for the ComponentService's
+// CacheControl RPC.
+type ComponentServiceCacheControlClientStream struct {
+	stream connect.ClientStream
 }
 
-// AuthorizeGateway calls component.v1.ComponentService.AuthorizeGateway.
-func (c *componentServiceClient) AuthorizeGateway(ctx context.Context, req *connect.Request[v1.AuthorizeGatewayRequest]) (*connect.Response[v1.AuthorizeGatewayResponse], error) {
-	return c.authorizeGateway.CallUnary(ctx, req)
+// SendHeaders opens the stream and flushes the request headers without a message. The first Send or
+// Receive does this implicitly.
+func (s ComponentServiceCacheControlClientStream) SendHeaders() error {
+	return s.stream.SendHeaders()
 }
 
-// IssueAgentAccess calls component.v1.ComponentService.IssueAgentAccess.
-func (c *componentServiceClient) IssueAgentAccess(ctx context.Context, req *connect.Request[v1.IssueAgentAccessRequest]) (*connect.Response[v1.IssueAgentAccessResponse], error) {
-	return c.issueAgentAccess.CallUnary(ctx, req)
+// Send sends a request message to the server.
+func (s ComponentServiceCacheControlClientStream) Send(req *v1.CacheControlRequest) error {
+	return s.stream.Send(req)
 }
 
-// CacheControl calls component.v1.ComponentService.CacheControl.
-func (c *componentServiceClient) CacheControl(ctx context.Context) *connect.BidiStreamForClient[v1.CacheControlRequest, v1.CacheControlResponse] {
-	return c.cacheControl.CallBidiStream(ctx)
+// CloseSend closes the request side of the stream.
+func (s ComponentServiceCacheControlClientStream) CloseSend() error {
+	return s.stream.CloseSend()
+}
+
+// Receive returns the next response message from the server.
+func (s ComponentServiceCacheControlClientStream) Receive() (*v1.CacheControlResponse, error) {
+	var res v1.CacheControlResponse
+	if err := s.stream.Receive(&res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+// Close releases the stream's resources. It is idempotent and is typically deferred to clean up a
+// stream abandoned before io.EOF.
+func (s ComponentServiceCacheControlClientStream) Close() error {
+	return s.stream.Close()
 }
 
 // ComponentServiceHandler is an implementation of the component.v1.ComponentService service.
 type ComponentServiceHandler interface {
 	// GatewayControl publishes Gateway activity and streams its current configuration and routes.
-	GatewayControl(context.Context, *connect.BidiStream[v1.GatewayControlRequest, v1.GatewayControlResponse]) error
+	GatewayControl(context.Context, ComponentServiceGatewayControlServerStream) error
 	// AuthorizeGateway delegates one user authorization decision to its Gitea site.
-	AuthorizeGateway(context.Context, *connect.Request[v1.AuthorizeGatewayRequest]) (*connect.Response[v1.AuthorizeGatewayResponse], error)
+	AuthorizeGateway(context.Context, *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error)
 	// IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
-	IssueAgentAccess(context.Context, *connect.Request[v1.IssueAgentAccessRequest]) (*connect.Response[v1.IssueAgentAccessResponse], error)
+	IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error)
 	// CacheControl publishes cache health and streams configuration and cleanup grants.
-	CacheControl(context.Context, *connect.BidiStream[v1.CacheControlRequest, v1.CacheControlResponse]) error
+	CacheControl(context.Context, ComponentServiceCacheControlServerStream) error
 }
 
-// NewComponentServiceHandler builds an HTTP handler from the service implementation. It returns the
-// path on which to mount the handler and the handler itself.
-//
-// By default, handlers support the Connect, gRPC, and gRPC-Web protocols with the binary Protobuf
-// and JSON codecs. They also support gzip compression.
-func NewComponentServiceHandler(svc ComponentServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
-	componentServiceMethods := v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods()
-	componentServiceGatewayControlHandler := connect.NewBidiStreamHandler(
-		ComponentServiceGatewayControlProcedure,
-		svc.GatewayControl,
-		connect.WithSchema(componentServiceMethods.ByName("GatewayControl")),
-		connect.WithHandlerOptions(opts...),
+// RegisterComponentServiceHandler registers svc as the component.v1.ComponentService implementation
+// on server.
+func RegisterComponentServiceHandler(server *connect.Server, svc ComponentServiceHandler) {
+	adapter := componentServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: componentServiceGatewayControlSpec(), Handler: adapter.gatewayControl},
+		connect.Method{Spec: componentServiceAuthorizeGatewaySpec(), Handler: adapter.authorizeGateway},
+		connect.Method{Spec: componentServiceIssueAgentAccessSpec(), Handler: adapter.issueAgentAccess},
+		connect.Method{Spec: componentServiceCacheControlSpec(), Handler: adapter.cacheControl},
 	)
-	componentServiceAuthorizeGatewayHandler := connect.NewUnaryHandler(
-		ComponentServiceAuthorizeGatewayProcedure,
-		svc.AuthorizeGateway,
-		connect.WithSchema(componentServiceMethods.ByName("AuthorizeGateway")),
-		connect.WithHandlerOptions(opts...),
-	)
-	componentServiceIssueAgentAccessHandler := connect.NewUnaryHandler(
-		ComponentServiceIssueAgentAccessProcedure,
-		svc.IssueAgentAccess,
-		connect.WithSchema(componentServiceMethods.ByName("IssueAgentAccess")),
-		connect.WithHandlerOptions(opts...),
-	)
-	componentServiceCacheControlHandler := connect.NewBidiStreamHandler(
-		ComponentServiceCacheControlProcedure,
-		svc.CacheControl,
-		connect.WithSchema(componentServiceMethods.ByName("CacheControl")),
-		connect.WithHandlerOptions(opts...),
-	)
-	return "/component.v1.ComponentService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch r.URL.Path {
-		case ComponentServiceGatewayControlProcedure:
-			componentServiceGatewayControlHandler.ServeHTTP(w, r)
-		case ComponentServiceAuthorizeGatewayProcedure:
-			componentServiceAuthorizeGatewayHandler.ServeHTTP(w, r)
-		case ComponentServiceIssueAgentAccessProcedure:
-			componentServiceIssueAgentAccessHandler.ServeHTTP(w, r)
-		case ComponentServiceCacheControlProcedure:
-			componentServiceCacheControlHandler.ServeHTTP(w, r)
-		default:
-			http.NotFound(w, r)
-		}
-	})
+}
+
+// ComponentServiceGatewayControlServerStream is the server stream for the ComponentService's
+// GatewayControl RPC.
+type ComponentServiceGatewayControlServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s ComponentServiceGatewayControlServerStream) Receive() (*v1.GatewayControlRequest, error) {
+	var req v1.GatewayControlRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s ComponentServiceGatewayControlServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s ComponentServiceGatewayControlServerStream) Send(res *v1.GatewayControlResponse) error {
+	return s.stream.Send(res)
+}
+
+// ComponentServiceCacheControlServerStream is the server stream for the ComponentService's
+// CacheControl RPC.
+type ComponentServiceCacheControlServerStream struct {
+	stream connect.ServerStream
+}
+
+// Receive returns the next request message from the client.
+func (s ComponentServiceCacheControlServerStream) Receive() (*v1.CacheControlRequest, error) {
+	var req v1.CacheControlRequest
+	if err := s.stream.Receive(&req); err != nil {
+		return nil, err
+	}
+	return &req, nil
+}
+
+// SendHeaders flushes the response headers without a message. The first Send does this implicitly.
+func (s ComponentServiceCacheControlServerStream) SendHeaders() error {
+	return s.stream.SendHeaders()
+}
+
+// Send sends a response message to the client.
+func (s ComponentServiceCacheControlServerStream) Send(res *v1.CacheControlResponse) error {
+	return s.stream.Send(res)
 }
 
 // UnimplementedComponentServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedComponentServiceHandler struct{}
 
-func (UnimplementedComponentServiceHandler) GatewayControl(context.Context, *connect.BidiStream[v1.GatewayControlRequest, v1.GatewayControlResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("component.v1.ComponentService.GatewayControl is not implemented"))
+func (UnimplementedComponentServiceHandler) GatewayControl(context.Context, ComponentServiceGatewayControlServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.GatewayControl is not implemented")
 }
 
-func (UnimplementedComponentServiceHandler) AuthorizeGateway(context.Context, *connect.Request[v1.AuthorizeGatewayRequest]) (*connect.Response[v1.AuthorizeGatewayResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("component.v1.ComponentService.AuthorizeGateway is not implemented"))
+func (UnimplementedComponentServiceHandler) AuthorizeGateway(context.Context, *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.AuthorizeGateway is not implemented")
 }
 
-func (UnimplementedComponentServiceHandler) IssueAgentAccess(context.Context, *connect.Request[v1.IssueAgentAccessRequest]) (*connect.Response[v1.IssueAgentAccessResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("component.v1.ComponentService.IssueAgentAccess is not implemented"))
+func (UnimplementedComponentServiceHandler) IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.IssueAgentAccess is not implemented")
 }
 
-func (UnimplementedComponentServiceHandler) CacheControl(context.Context, *connect.BidiStream[v1.CacheControlRequest, v1.CacheControlResponse]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("component.v1.ComponentService.CacheControl is not implemented"))
+func (UnimplementedComponentServiceHandler) CacheControl(context.Context, ComponentServiceCacheControlServerStream) error {
+	return connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.CacheControl is not implemented")
+}
+
+type componentServiceClient struct {
+	client *connect.Client
+}
+
+func (c *componentServiceClient) GatewayControl(ctx context.Context) (ComponentServiceGatewayControlClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, componentServiceGatewayControlSpec())
+	if err != nil {
+		return ComponentServiceGatewayControlClientStream{}, err
+	}
+	return ComponentServiceGatewayControlClientStream{stream: stream}, nil
+}
+
+func (c *componentServiceClient) AuthorizeGateway(ctx context.Context, req *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error) {
+	var res v1.AuthorizeGatewayResponse
+	if err := c.client.CallUnary(ctx, componentServiceAuthorizeGatewaySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *componentServiceClient) IssueAgentAccess(ctx context.Context, req *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error) {
+	var res v1.IssueAgentAccessResponse
+	if err := c.client.CallUnary(ctx, componentServiceIssueAgentAccessSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *componentServiceClient) CacheControl(ctx context.Context) (ComponentServiceCacheControlClientStream, error) {
+	stream, err := c.client.CallClientStream(ctx, componentServiceCacheControlSpec())
+	if err != nil {
+		return ComponentServiceCacheControlClientStream{}, err
+	}
+	return ComponentServiceCacheControlClientStream{stream: stream}, nil
+}
+
+type componentServiceHandler struct{ svc ComponentServiceHandler }
+
+func (h componentServiceHandler) gatewayControl(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.GatewayControl(ctx, ComponentServiceGatewayControlServerStream{stream: stream})
+}
+
+func (h componentServiceHandler) authorizeGateway(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.AuthorizeGatewayRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.AuthorizeGateway(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h componentServiceHandler) issueAgentAccess(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.IssueAgentAccessRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.IssueAgentAccess(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h componentServiceHandler) cacheControl(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	return h.svc.CacheControl(ctx, ComponentServiceCacheControlServerStream{stream: stream})
 }

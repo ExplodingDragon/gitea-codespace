@@ -19,7 +19,8 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	agentpkg "gitea.dev/codespace/internal/agent"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -106,7 +107,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second,
 	}}
 	defer httpClient.CloseIdleConnections()
-	remote := agentv1connect.NewAgentControlServiceClient(httpClient, strings.TrimRight(managerURL, "/"), connect.WithGRPC())
+	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, strings.TrimRight(managerURL, "/"), connecthttp.WithGRPC())))
 	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
@@ -153,9 +154,10 @@ func prepareEndpointServer(ctx context.Context, runtime *agentpkg.Runtime) (net.
 		_ = os.Remove(runtimeendpoint.AgentSocketPath)
 		return nil, nil, err
 	}
-	path, handler := agentv1connect.NewRuntimeEndpointServiceHandler(&agentpkg.RuntimeEndpointServer{Runtime: runtime})
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterRuntimeEndpointServiceHandler(rpcServer, &agentpkg.RuntimeEndpointServer{Runtime: runtime})
 	mux := http.NewServeMux()
-	mux.Handle(path, handler)
+	connecthttp.Mount(mux, rpcServer)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 * 1024}
 	return listener, server, nil
 }

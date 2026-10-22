@@ -3,8 +3,8 @@ module gitea.dev/codespace
 go 1.26.4
 
 require (
-	connectrpc.com/connect v1.20.0
-	gitea.dev/codespace-proto-go v0.0.0-20261009114814-ddc78012a301
+	connectrpc.com/connect/v2 v2.0.1
+	gitea.dev/codespace-proto-go v0.0.0-20261022024940-36a27f8539e4
 	github.com/compose-spec/compose-go/v2 v2.9.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/distribution/distribution/v3 v3.1.1

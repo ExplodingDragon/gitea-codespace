@@ -15,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"connectrpc.com/connect"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -253,11 +252,11 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				}
 			}
 			sent := time.Now()
-			response, err := remote.FetchOperations(ctx, connect.NewRequest(request))
+			response, err := remote.FetchOperations(ctx, request)
 			if err != nil {
 				return err
 			}
-			for _, renewal := range response.Msg.RenewedLeases {
+			for _, renewal := range response.RenewedLeases {
 				if renewal == nil || renewal.LeaseValidForMilliseconds <= 0 || renewal.LeaseValidForMilliseconds > int64(24*time.Hour/time.Millisecond) {
 					return fmt.Errorf("invalid operation renewal")
 				}
@@ -267,7 +266,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 					}
 				}
 			}
-			for _, operation := range response.Msg.Operations {
+			for _, operation := range response.Operations {
 				if err := c.Accept(ctx, &site, remote, operation, sent); err != nil {
 					logger.Error(err, "Accept operation")
 				}
@@ -294,11 +293,10 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 }
 
 func declareManager(ctx context.Context, remote codespacev1connect.ManagerServiceClient, request *codespacev1.DeclareManagerRequest, canonicalURL string) (*codespacev1.DeclareManagerResponse, error) {
-	response, err := remote.DeclareManager(ctx, connect.NewRequest(request))
+	message, err := remote.DeclareManager(ctx, request)
 	if err != nil {
 		return nil, err
 	}
-	message := response.Msg
 	if message.HeartbeatIntervalMilliseconds <= 0 || message.RuntimeMetadataRefreshIntervalMilliseconds <= 0 || message.ControlPlaneMaxMessageSizeBytes <= 0 {
 		return nil, fmt.Errorf("gitea declaration returned invalid coordination limits")
 	}
@@ -413,21 +411,21 @@ func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, ro
 		return err
 	}
 	request.InventoryGeneration = site.Status.InventoryGeneration
-	response, err := remote.ReportInstances(ctx, connect.NewRequest(request))
+	response, err := remote.ReportInstances(ctx, request)
 	if err != nil {
 		return err
 	}
-	if len(response.Msg.Results) != len(rows) {
+	if len(response.Results) != len(rows) {
 		return fmt.Errorf("gitea returned an incomplete inventory decision")
 	}
 	seen := make(map[string]bool, len(rows))
-	for _, result := range response.Msg.Results {
+	for _, result := range response.Results {
 		if result == nil || runtimes[result.RuntimeUuid] == nil || seen[result.RuntimeUuid] {
 			return fmt.Errorf("gitea returned an unknown or duplicate inventory identity")
 		}
 		seen[result.RuntimeUuid] = true
 	}
-	for _, result := range response.Msg.Results {
+	for _, result := range response.Results {
 		cs := runtimes[result.RuntimeUuid]
 		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(cs), cs); err != nil {
 			return err
@@ -477,13 +475,13 @@ func (c *SiteCoordinator) requestIdleStops(ctx context.Context, site *api.GiteaS
 		if !ready {
 			continue
 		}
-		response, err := remote.RequestIdleStop(ctx, connect.NewRequest(&codespacev1.RequestIdleStopRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, ObservedSettings: settings}))
+		response, err := remote.RequestIdleStop(ctx, &codespacev1.RequestIdleStopRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, ObservedSettings: settings})
 		if err != nil {
 			c.Activity.IdleStopFailed(cs.Spec.RuntimeUUID, now)
 			log.FromContext(ctx).Error(err, "Request idle stop", "codespace", cs.Name)
 			continue
 		}
-		if err := c.Activity.IdleStopResult(string(site.UID), cs.Spec.RuntimeUUID, response.Msg, now); err != nil {
+		if err := c.Activity.IdleStopResult(string(site.UID), cs.Spec.RuntimeUUID, response, now); err != nil {
 			c.Activity.IdleStopFailed(cs.Spec.RuntimeUUID, now)
 			log.FromContext(ctx).Error(err, "Apply idle stop response", "codespace", cs.Name)
 		}

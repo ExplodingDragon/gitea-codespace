@@ -16,7 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/internal/accessticket"
@@ -41,17 +42,22 @@ type openAuthorizationRemote struct {
 	binding *codespacev1.OpenTokenBinding
 }
 
-func (r *openAuthorizationRemote) ValidateOpenToken(context.Context, *connect.Request[codespacev1.ValidateOpenTokenRequest]) (*connect.Response[codespacev1.ValidateOpenTokenResponse], error) {
+func (r *openAuthorizationRemote) ValidateOpenToken(context.Context, *codespacev1.ValidateOpenTokenRequest) (*codespacev1.ValidateOpenTokenResponse, error) {
 	r.calls++
 	if r.binding == nil {
-		return connect.NewResponse(&codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}), nil
+		return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}, nil
 	}
-	return connect.NewResponse(&codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: r.binding}}), nil
+	return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: r.binding}}, nil
 }
 
 func serveManagerRemote(t *testing.T, remote codespacev1connect.ManagerServiceHandler) *httptest.Server {
 	t.Helper()
-	path, handler := codespacev1connect.NewManagerServiceHandler(remote)
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, remote)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+
 	mux := http.NewServeMux()
 	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", handler))
 	server := httptest.NewServer(mux)
@@ -82,17 +88,17 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Activity: tracker}
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: "gateway-uid", Instance: "gateway-pod"})
 
-	response, err := server.AuthorizeGateway(ctx, connect.NewRequest(&componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}}))
+	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
 	require.NoError(t, err)
-	require.True(t, response.Msg.Allowed)
+	require.True(t, response.Allowed)
 	require.Equal(t, 1, target.calls)
 	require.Zero(t, unrelated.calls)
 
 	target.binding.EndpointId = "other"
-	response, err = server.AuthorizeGateway(ctx, connect.NewRequest(&componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}}))
+	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
 	require.NoError(t, err)
-	require.False(t, response.Msg.Allowed)
-	require.Equal(t, "target_mismatch", response.Msg.DeniedCategory)
+	require.False(t, response.Allowed)
+	require.Equal(t, "target_mismatch", response.DeniedCategory)
 	require.Zero(t, unrelated.calls)
 }
 
@@ -134,9 +140,9 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	require.EqualValues(t, 4, route.TargetVersion)
 	require.NotEmpty(t, snapshot.Cursor)
 
-	issued, err := server.IssueAgentAccess(ctx, connect.NewRequest(&componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"}))
+	issued, err := server.IssueAgentAccess(ctx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"})
 	require.NoError(t, err)
-	claims, err := accessticket.Verify(signingKey.Public().(ed25519.PublicKey), issued.Msg.Ticket, time.Now())
+	claims, err := accessticket.Verify(signingKey.Public().(ed25519.PublicKey), issued.Ticket, time.Now())
 	require.NoError(t, err)
 	require.Equal(t, string(cs.UID), claims.ResourceUid)
 	require.Equal(t, string(pod.UID), claims.PodUid)

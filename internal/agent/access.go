@@ -16,7 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 	"gitea.dev/codespace/internal/accessticket"
@@ -43,15 +44,19 @@ func NewAccessServer(runtime *Runtime) *AccessServer {
 }
 
 func (s *AccessServer) Handler() (string, http.Handler) {
-	return agentv1connect.NewAgentAccessServiceHandler(s, connect.WithReadMaxBytes(256*1024), connect.WithSendMaxBytes(256*1024))
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterAgentAccessServiceHandler(rpcServer, s)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, rpcServer, connecthttp.WithReadMaxBytes(256*1024), connecthttp.WithSendMaxBytes(256*1024))
+	return "/" + agentv1connect.AgentAccessServiceName + "/", mux
 }
 
-func (s *AccessServer) Access(ctx context.Context, stream *connect.BidiStream[agentv1.AccessRequest, agentv1.AccessResponse]) error {
+func (s *AccessServer) Access(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
 	select {
 	case s.sessions <- struct{}{}:
 		defer func() { <-s.sessions }()
 	default:
-		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("agent access session limit reached"))
+		return connect.NewError(connect.CodeResourceExhausted, "agent access session limit reached")
 	}
 	request, err := stream.Receive()
 	if err != nil {
@@ -59,11 +64,11 @@ func (s *AccessServer) Access(ctx context.Context, stream *connect.BidiStream[ag
 	}
 	open := request.GetOpen()
 	if request.ProtocolVersion != 1 || open == nil || open.Ticket == "" {
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("first access frame must open one capability"))
+		return connect.NewError(connect.CodeInvalidArgument, "first access frame must open one capability")
 	}
 	target, state, secrets, capability, endpoint, err := s.Runtime.authorize(open)
 	if err != nil {
-		return connect.NewError(connect.CodePermissionDenied, err)
+		return connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
 	}
 	if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
 		return err
@@ -139,7 +144,7 @@ func accessCapability(open *agentv1.OpenAccess) agentv1.AccessCapability {
 	}
 }
 
-func runAccess(ctx context.Context, stream *connect.BidiStream[agentv1.AccessRequest, agentv1.AccessResponse], state *devcontainer.State, secrets map[string]string, target *agentv1.AccessTarget, capability agentv1.AccessCapability, endpoint *agentv1.EndpointTarget, open *agentv1.OpenAccess) error {
+func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, state *devcontainer.State, secrets map[string]string, target *agentv1.AccessTarget, capability agentv1.AccessCapability, endpoint *agentv1.EndpointTarget, open *agentv1.OpenAccess) error {
 	apiClient, err := client.NewClientWithOpts(client.WithHost(DockerHost), client.WithAPIVersionNegotiation())
 	if err != nil {
 		return err
@@ -164,19 +169,19 @@ func runAccess(ctx context.Context, stream *connect.BidiStream[agentv1.AccessReq
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_TERMINAL:
 		terminal := open.GetTerminal()
 		if terminal == nil || len(terminal.Term) > 64 || strings.ContainsFunc(terminal.Term, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("terminal type is invalid"))
+			return connect.NewError(connect.CodeInvalidArgument, "terminal type is invalid")
 		}
 		interactive = true
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND:
 		requestedCommand := open.GetCommand()
 		value := requestedCommand.GetCommand()
 		if len(value) > 32*1024 || strings.ContainsRune(value, 0) {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("command is invalid"))
+			return connect.NewError(connect.CodeInvalidArgument, "command is invalid")
 		}
 		command = []string{"/bin/sh", "-lc", value}
 		if requestedCommand.Terminal != nil {
 			if requestedCommand.Terminal.Term == "" || len(requestedCommand.Terminal.Term) > 64 || strings.ContainsFunc(requestedCommand.Terminal.Term, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-				return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("terminal type is invalid"))
+				return connect.NewError(connect.CodeInvalidArgument, "terminal type is invalid")
 			}
 			interactive = true
 		}
@@ -188,11 +193,11 @@ func runAccess(ctx context.Context, stream *connect.BidiStream[agentv1.AccessReq
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP:
 		port := open.GetTcp().GetPort()
 		if port == 0 || port > 65535 {
-			return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("loopback TCP port is invalid"))
+			return connect.NewError(connect.CodeInvalidArgument, "loopback TCP port is invalid")
 		}
 		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", fmt.Sprint(port)}
 	default:
-		return connect.NewError(connect.CodeInvalidArgument, fmt.Errorf("access capability is invalid"))
+		return connect.NewError(connect.CodeInvalidArgument, "access capability is invalid")
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
 	terminal := open.GetTerminal()

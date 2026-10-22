@@ -9,7 +9,8 @@ import (
 	"runtime/debug"
 	"strconv"
 
-	"connectrpc.com/connect"
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
 
@@ -31,22 +32,22 @@ const (
 )
 
 // NewManagerServiceClient returns an authenticated ManagerService client.
-func NewManagerServiceClient(httpClient connect.HTTPClient, baseURL string, managerID int64, managerSecret string, maxBytes int64) codespacev1connect.ManagerServiceClient {
-	opts := []connect.ClientOption{
-		connect.WithInterceptors(connect.UnaryInterceptorFunc(func(next connect.UnaryFunc) connect.UnaryFunc {
-			return func(ctx context.Context, request connect.AnyRequest) (connect.AnyResponse, error) {
-				request.Header().Set(ManagerIDHeader, strconv.FormatInt(managerID, 10))
-				request.Header().Set(ManagerSecretHeader, managerSecret)
-				return next(ctx, request)
-			}
-		})),
-	}
+func NewManagerServiceClient(httpClient connecthttp.HTTPClient, baseURL string, managerID int64, managerSecret string, maxBytes int64) codespacev1connect.ManagerServiceClient {
+	var opts []connecthttp.Option
 	if maxBytes > 0 {
 		maxSize := int(maxBytes)
 		if int64(maxSize) != maxBytes {
 			maxSize = math.MaxInt
 		}
-		opts = append(opts, connect.WithReadMaxBytes(maxSize), connect.WithSendMaxBytes(maxSize))
+		opts = append(opts, connecthttp.WithReadMaxBytes(maxSize), connecthttp.WithSendMaxBytes(maxSize))
 	}
-	return codespacev1connect.NewManagerServiceClient(httpClient, baseURL, opts...)
+	client := connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, opts...), func(next connect.ClientFunc) connect.ClientFunc {
+		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
+			info, _ := connect.CallInfoForClientContext(ctx)
+			info.RequestHeader().Set(ManagerIDHeader, strconv.FormatInt(managerID, 10))
+			info.RequestHeader().Set(ManagerSecretHeader, managerSecret)
+			return next(ctx, spec)
+		}
+	})
+	return codespacev1connect.NewManagerServiceClient(client)
 }
