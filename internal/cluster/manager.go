@@ -265,9 +265,11 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 				gatewayChanges.Notify()
 				siteChanges.Notify()
 			},
-			UpdateFunc: func(any, any) {
-				gatewayChanges.Notify()
-				siteChanges.Notify()
+			UpdateFunc: func(previous, current any) {
+				if coordinationUpdateChanged(previous, current) {
+					gatewayChanges.Notify()
+					siteChanges.Notify()
+				}
 			},
 			DeleteFunc: func(any) {
 				gatewayChanges.Notify()
@@ -292,7 +294,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, GatewayChanges: gatewayChanges, CacheChanges: gatewayChanges}
 	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components}
-	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges}); err != nil {
+	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {

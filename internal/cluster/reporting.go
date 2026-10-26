@@ -33,6 +33,28 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 			return
 		case <-ticker.C:
 		}
+		refresh := time.Since(metadataAt) >= time.Duration(interval.Load())
+		var observed api.CodespaceList
+		if err := c.ObservationReader.List(ctx, &observed, client.InNamespace(namespace)); err != nil {
+			if ctx.Err() == nil {
+				logger.Error(err, "Observe runtimes for reporting")
+			}
+			continue
+		}
+		needsReport := false
+		for i := range observed.Items {
+			cs := &observed.Items[i]
+			pending := cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (cs.Status.Result != nil || meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+			if cs.Spec.Site.UID == uid && cs.Status.Bound && (refresh || pending) {
+				needsReport = true
+				break
+			}
+		}
+		if !needsReport {
+			c.Samples.RetainSite(uid, observed.Items)
+			continue
+		}
+		// Cached observations only schedule work; reporting uses current ownership and credentials.
 		var site api.GiteaSite
 		if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, &site); err != nil {
 			if ctx.Err() == nil {
@@ -59,7 +81,6 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 			}
 			continue
 		}
-		refresh := time.Since(metadataAt) >= time.Duration(interval.Load())
 		c.Samples.RetainSite(uid, rows.Items)
 		for i := range rows.Items {
 			cs := &rows.Items[i]

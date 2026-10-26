@@ -29,6 +29,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const RuntimeUUIDIndex = "codespace.gitea.dev/runtime-uuid"
@@ -186,17 +187,16 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 	response := &componentv1.GatewayControlResponse{ProtocolVersion: 1, Snapshot: true, Config: configuration}
 	for i := range runtimes.Items {
 		cs := &runtimes.Items[i]
-		if !allowedSites[cs.Spec.Site.UID] || cs.Status.Target == nil || !cs.Status.Target.Ready || cs.Status.Pod.UID == "" {
+		if !allowedSites[cs.Spec.Site.UID] {
 			continue
 		}
-		route, err := s.route(ctx, cs)
+		route, err := s.route(ctx, s.IdentityIndex, cs, componentUID)
 		if err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
-			}
 			return nil, err
 		}
-		response.Runtimes = append(response.Runtimes, route)
+		if route != nil {
+			response.Runtimes = append(response.Runtimes, route)
+		}
 	}
 	slices.SortFunc(response.Runtimes, func(a, b *componentv1.GatewayRuntimeRoute) int { return strings.Compare(a.RuntimeUuid, b.RuntimeUuid) })
 	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(response)
@@ -207,20 +207,45 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 	return response, nil
 }
 
-func (s *ComponentServer) route(ctx context.Context, cs *api.Codespace) (*componentv1.GatewayRuntimeRoute, error) {
+func (s *ComponentServer) route(ctx context.Context, reader client.Reader, cs *api.Codespace, gatewayUID types.UID) (*componentv1.GatewayRuntimeRoute, error) {
+	if !cs.DeletionTimestamp.IsZero() || !cs.Status.Bound || cs.Status.RecoveryAction != "" || cs.Status.Target == nil || !cs.Status.Target.Ready || cs.Status.Pod.UID == "" {
+		return nil, nil
+	}
+	switch cs.Spec.Operation.Type {
+	case "stop", "delete", "abort_create", "abort_resume":
+		return nil, nil
+	}
+	if result := cs.Status.Result; result != nil && result.Version == cs.Spec.Operation.Version && !result.Succeeded {
+		return nil, nil
+	}
 	var site api.GiteaSite
-	if err := s.IdentityIndex.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	if site.UID != cs.Spec.Site.UID || site.Status.CanonicalURL == "" || !site.DeletionTimestamp.IsZero() {
-		return nil, fmt.Errorf("runtime site identity is not current")
+	if site.UID != cs.Spec.Site.UID {
+		log.FromContext(ctx).Error(fmt.Errorf("runtime site identity changed"), "Reject runtime access target", "codespace", client.ObjectKeyFromObject(cs))
+		return nil, nil
+	}
+	ready := meta.FindStatusCondition(site.Status.Conditions, "InfrastructureReady")
+	if !site.Spec.Enabled || site.Spec.Gateway.UID != gatewayUID || site.Status.CanonicalURL == "" || !site.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != site.Generation {
+		return nil, nil
 	}
 	var pod corev1.Pod
-	if err := s.IdentityIndex.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Pod.Name}, &pod); err != nil {
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Pod.Name}, &pod); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
 		return nil, err
 	}
-	if pod.UID != cs.Status.Pod.UID || !pod.DeletionTimestamp.IsZero() || pod.Status.Phase != corev1.PodRunning || !metav1.IsControlledBy(&pod, cs) {
-		return nil, fmt.Errorf("runtime Pod identity is not current")
+	if pod.UID != cs.Status.Pod.UID || !metav1.IsControlledBy(&pod, cs) {
+		log.FromContext(ctx).Error(fmt.Errorf("runtime Pod identity changed"), "Reject runtime access target", "codespace", client.ObjectKeyFromObject(cs), "pod", pod.Name)
+		return nil, nil
+	}
+	if !pod.DeletionTimestamp.IsZero() || pod.Status.Phase != corev1.PodRunning {
+		return nil, nil
 	}
 	var address string
 	for _, item := range pod.Status.PodIPs {
@@ -233,7 +258,7 @@ func (s *ComponentServer) route(ctx context.Context, cs *api.Codespace) (*compon
 		address = net.JoinHostPort(pod.Status.PodIP, "8444")
 	}
 	if address == "" {
-		return nil, fmt.Errorf("runtime Pod has no routable IP address")
+		return nil, nil
 	}
 	route := &componentv1.GatewayRuntimeRoute{SiteUid: string(cs.Spec.Site.UID), ResourceUid: string(cs.UID), RuntimeUuid: cs.Spec.RuntimeUUID, PodUid: string(pod.UID), AgentAddress: address, TargetVersion: cs.Status.Target.Version, GiteaWebUrl: site.Status.CanonicalURL}
 	for _, endpoint := range cs.Status.Target.Endpoints {
@@ -505,6 +530,14 @@ func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *compone
 	if err != nil {
 		return nil, err
 	}
+	// Tickets use live reads; snapshots may lag a stop or Pod replacement.
+	route, err := s.route(ctx, s.Client, cs, types.UID(identity.UID))
+	if err != nil {
+		return nil, err
+	}
+	if route == nil {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime access target is unavailable")
+	}
 	if request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT {
 		found := false
 		for _, endpoint := range cs.Status.Target.Endpoints {
@@ -515,10 +548,6 @@ func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *compone
 		}
 	} else if request.EndpointId != "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "endpoint is only valid for endpoint access")
-	}
-	route, err := s.route(ctx, cs)
-	if err != nil {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, err.Error()).WithCause(err)
 	}
 	ticket, err := s.Tickets.Issue(cs, request.Capability, request.EndpointId, time.Minute)
 	if err != nil {

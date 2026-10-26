@@ -22,7 +22,6 @@ const componentProtocolVersion uint32 = 1
 type cacheControlStream interface {
 	Send(*componentv1.CacheControlRequest) error
 	Receive() (*componentv1.CacheControlResponse, error)
-	CloseSend() error
 	Close() error
 }
 
@@ -45,6 +44,9 @@ type CacheComponentClient struct {
 }
 
 func (c *CacheComponentClient) failLocked(err error) {
+	if c.stream != nil && c.streamErr == nil {
+		_ = c.stream.Close()
+	}
 	c.streamErr = err
 	for sequence, waiter := range c.waiters {
 		close(waiter)
@@ -90,8 +92,7 @@ func (c *CacheComponentClient) start(ctx context.Context, id string) error {
 	c.ready = make(chan struct{})
 	c.waiters = make(map[uint64]chan *componentv1.CacheControlResponse)
 	if err := stream.Send(&componentv1.CacheControlRequest{ProtocolVersion: componentProtocolVersion, CacheId: id, SessionId: c.sessionID, Sequence: c.sequence}); err != nil {
-		c.streamErr = err
-		close(c.ready)
+		c.failLocked(err)
 		c.mu.Unlock()
 		return err
 	}
@@ -194,10 +195,13 @@ func (c *CacheComponentClient) ClaimCache(ctx context.Context, id string) (cache
 	return cachepkg.Owner{CacheID: id, ID: c.sessionID, ConfigRevision: config.Config.Revision, ExpiresAt: c.permitUntil}, nil
 }
 
-func (c *CacheComponentClient) send(status cachepkg.Status, request *componentv1.CacheControlRequest) (<-chan *componentv1.CacheControlResponse, error) {
+func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status, request *componentv1.CacheControlRequest) (*componentv1.CacheControlResponse, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if c.stream == nil || c.streamErr != nil || !time.Now().Before(c.permitUntil) {
+		c.mu.Unlock()
 		return nil, fmt.Errorf("cache control permit expired")
 	}
 	c.sequence++
@@ -208,16 +212,36 @@ func (c *CacheComponentClient) send(status cachepkg.Status, request *componentv1
 		waiter = make(chan *componentv1.CacheControlResponse, 1)
 		c.waiters[c.sequence] = waiter
 	}
-	if err := c.stream.Send(request); err != nil {
-		delete(c.waiters, c.sequence)
-		c.streamErr = err
+	err := c.stream.Send(request)
+	if err != nil {
+		c.failLocked(err)
+	}
+	c.mu.Unlock()
+	if err != nil || waiter == nil {
 		return nil, err
 	}
-	return waiter, nil
+	defer func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.waiters[request.Sequence] == waiter {
+			delete(c.waiters, request.Sequence)
+		}
+	}()
+	waitCtx, cancel := context.WithTimeout(ctx, ComponentRequestTimeout)
+	defer cancel()
+	select {
+	case <-waitCtx.Done():
+		return nil, waitCtx.Err()
+	case response, ok := <-waiter:
+		if !ok {
+			return nil, fmt.Errorf("cache control closed before maintenance was acknowledged")
+		}
+		return response, nil
+	}
 }
 
-func (c *CacheComponentClient) HeartbeatCache(_ context.Context, _ cachepkg.Owner, status cachepkg.Status) error {
-	_, err := c.send(status, &componentv1.CacheControlRequest{})
+func (c *CacheComponentClient) HeartbeatCache(ctx context.Context, _ cachepkg.Owner, status cachepkg.Status) error {
+	_, err := c.send(ctx, status, &componentv1.CacheControlRequest{})
 	return err
 }
 
@@ -231,29 +255,23 @@ func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) err
 	c.stream = nil
 	c.failLocked(context.Canceled)
 	c.mu.Unlock()
-	err := stream.CloseSend()
-	_ = stream.Close()
-	return err
+	return stream.Close()
 }
 
 func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.Owner) (cachepkg.GCGrant, error) {
-	waiter, err := c.send(cachepkg.Status{ConfigRevision: owner.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
+	response, err := c.send(ctx, cachepkg.Status{ConfigRevision: owner.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
 	if err != nil {
 		return cachepkg.GCGrant{}, err
 	}
-	select {
-	case <-ctx.Done():
-		return cachepkg.GCGrant{}, ctx.Err()
-	case response, ok := <-waiter:
-		if !ok || response == nil || response.GcGrant == nil {
-			return cachepkg.GCGrant{}, fmt.Errorf("manager did not grant cache cleanup")
-		}
-		return cacheGCGrantFromProto(response.GcGrant)
+	grant := response.GcGrant
+	if grant == nil || grant.CacheId == "" || grant.Id == "" {
+		return cachepkg.GCGrant{}, fmt.Errorf("cache GC grant is incomplete")
 	}
+	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
 }
 
-func (c *CacheComponentClient) CompleteCacheGC(_ context.Context, grant cachepkg.GCGrant) error {
-	_, err := c.send(cachepkg.Status{ConfigRevision: grant.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_CompleteGc{CompleteGc: &componentv1.CacheGCComplete{GrantId: grant.ID}}})
+func (c *CacheComponentClient) CompleteCacheGC(ctx context.Context, grant cachepkg.GCGrant) error {
+	_, err := c.send(ctx, cachepkg.Status{ConfigRevision: grant.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_CompleteGc{CompleteGc: &componentv1.CacheGCComplete{GrantId: grant.ID}}})
 	return err
 }
 

@@ -14,10 +14,6 @@ func NewCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 	}
 	command.AddCommand(
-		newApplyCommand(),
-		newCheckCommand(),
-		newExecCommand(),
-		newTCPCommand(),
 		newConnectCommand(),
 		newSFTPCommand(),
 		newEndpointCommand(),

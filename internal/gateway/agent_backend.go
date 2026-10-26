@@ -154,7 +154,9 @@ func (s *agentAccessStream) send(frame *agentv1.AccessRequest) error {
 
 func (s *agentAccessStream) close() error {
 	s.cancel()
+	s.mu.Lock()
 	requestErr := s.stream.CloseSend()
+	s.mu.Unlock()
 	responseErr := s.stream.Close()
 	if errors.Is(requestErr, io.EOF) || errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, net.ErrClosed) {
 		requestErr = nil
@@ -166,11 +168,13 @@ func (s *agentAccessStream) close() error {
 }
 
 type agentCommandSession struct {
-	access *agentAccessStream
-	stdin  *agentInput
-	stdout *io.PipeReader
-	stderr *io.PipeReader
-	done   chan error
+	access   *agentAccessStream
+	stdin    *agentInput
+	stdout   *io.PipeReader
+	stderr   *io.PipeReader
+	done     chan error
+	once     sync.Once
+	closeErr error
 }
 
 type agentInput struct {
@@ -257,8 +261,14 @@ func (s *agentCommandSession) Resize(cols, rows int) error {
 func (s *agentCommandSession) Signal(signal int) error {
 	return s.access.send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Signal{Signal: int32(signal)}})
 }
-func (s *agentCommandSession) Wait() error  { return <-s.done }
-func (s *agentCommandSession) Close() error { return s.access.close() }
+func (s *agentCommandSession) Wait() error { return <-s.done }
+func (s *agentCommandSession) Close() error {
+	s.once.Do(func() {
+		// Canceling the RPC alone cannot unblock a local pipe writer.
+		s.closeErr = errors.Join(s.stdout.Close(), s.stderr.Close(), s.access.close())
+	})
+	return s.closeErr
+}
 
 type agentConn struct {
 	reader net.Conn

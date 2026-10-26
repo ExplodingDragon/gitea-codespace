@@ -65,3 +65,36 @@ func TestRuntimeActivityTrackerAppliesIdleStopOutcomes(t *testing.T) {
 	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(12*time.Second))
 	require.False(t, ready)
 }
+
+func TestRuntimeActivityTrackerSettingsPreserveNewerInteraction(t *testing.T) {
+	for name, fromResponse := range map[string]bool{"settings": false, "idle stop response": true} {
+		t.Run(name, func(t *testing.T) {
+			tracker := &RuntimeActivityTracker{}
+			now := time.Now()
+			tracker.ObserveInteraction("site", "runtime", 3, now)
+			settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 5, InteractionGeneration: 2}
+			if fromResponse {
+				require.NoError(t, tracker.IdleStopResult("site", "runtime", &codespacev1.RequestIdleStopResponse{
+					Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}},
+				}, now))
+			} else {
+				require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, now))
+			}
+			require.NoError(t, tracker.ReplaceGateway("gateway", "pod", nil, false, now))
+			_, ready := tracker.IdleRequest("site", "runtime", "gateway", true, now)
+			require.False(t, ready)
+			_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(5*time.Second))
+			require.False(t, ready)
+
+			settings.InteractionGeneration = 3
+			require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, now.Add(5*time.Second)))
+			require.NoError(t, tracker.ReplaceGateway("gateway", "pod", nil, false, now.Add(5*time.Second)))
+			_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(5*time.Second))
+			require.False(t, ready)
+			require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, now.Add(7*time.Second)))
+			observed, ready := tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(10*time.Second))
+			require.True(t, ready)
+			require.Equal(t, settings, observed)
+		})
+	}
+}

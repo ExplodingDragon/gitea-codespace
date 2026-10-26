@@ -17,65 +17,63 @@ func (s *SSHServer) serveWorkspaceSession(ctx context.Context, channel ssh.Chann
 	if pty.enabled {
 		_ = session.Resize(pty.cols, pty.rows)
 	}
-	stdinDone := make(chan struct{}, 1)
-	stdoutDone := make(chan struct{}, 1)
-	stderrDone := make(chan struct{}, 1)
+	stdinDone := make(chan struct{})
+	stdoutDone := make(chan struct{})
+	stderrDone := make(chan struct{})
 	waitDone := make(chan error, 1)
-	requestsDone := make(chan struct{}, 1)
+	requestsDone := make(chan struct{})
 	go func() {
+		defer close(stdinDone)
 		_ = copyGatewaySSHData(session.Stdin(), channel, activity)
 		_ = session.Stdin().Close()
-		stdinDone <- struct{}{}
 	}()
 	go func() {
+		defer close(stdoutDone)
 		_ = copyGatewaySSHData(channel, session.Stdout(), activity)
-		stdoutDone <- struct{}{}
 	}()
 	go func() {
+		defer close(stderrDone)
 		_ = copyGatewaySSHData(channel.Stderr(), session.Stderr(), activity)
-		stderrDone <- struct{}{}
 	}()
 	go func() {
 		waitDone <- session.Wait()
 	}()
 	go func() {
+		defer close(requestsDone)
 		s.handleWorkspaceSessionRequests(session, requests, pty.enabled, activity)
-		requestsDone <- struct{}{}
 	}()
 
 	select {
 	case <-ctx.Done():
 	case err := <-waitDone:
-		waitGatewaySSHChannelDone(stdoutDone)
-		waitGatewaySSHChannelDone(stderrDone)
+		waitGatewaySSHChannels(ctx, stdoutDone, stderrDone)
 		status := gatewaySSHExitStatus(err)
 		_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{uint32(status)}))
 	case <-requestsDone:
 	}
 	_ = channel.Close()
-	waitGatewaySSHChannelDone(stdinDone)
-	waitGatewaySSHChannelDone(stdoutDone)
-	waitGatewaySSHChannelDone(stderrDone)
+	_ = session.Close()
+	waitGatewaySSHChannels(ctx, stdinDone, stdoutDone, stderrDone)
 }
 
 func (s *SSHServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
-	requestsDone := make(chan struct{}, 1)
+	requestsDone := make(chan struct{})
 	go func() {
+		defer close(requestsDone)
 		s.rejectWorkspaceSessionRequests(requests, activity)
-		requestsDone <- struct{}{}
 	}()
-	clientToBackendDone := make(chan struct{}, 1)
-	backendToClientDone := make(chan struct{}, 1)
+	clientToBackendDone := make(chan struct{})
+	backendToClientDone := make(chan struct{})
 	go func() {
+		defer close(clientToBackendDone)
 		_ = copyGatewaySSHData(conn, channel, activity)
 		if writer, ok := conn.(interface{ CloseWrite() error }); ok {
 			_ = writer.CloseWrite()
 		}
-		clientToBackendDone <- struct{}{}
 	}()
 	go func() {
+		defer close(backendToClientDone)
 		_ = copyGatewaySSHData(channel, conn, activity)
-		backendToClientDone <- struct{}{}
 	}()
 	select {
 	case <-ctx.Done():
@@ -90,8 +88,7 @@ func (s *SSHServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channe
 	}
 	_ = channel.Close()
 	_ = conn.Close()
-	waitGatewaySSHChannelDone(clientToBackendDone)
-	waitGatewaySSHChannelDone(backendToClientDone)
+	waitGatewaySSHChannels(ctx, clientToBackendDone, backendToClientDone)
 }
 
 func (s *SSHServer) handleWorkspaceSessionRequests(session WorkspaceCommandSession, requests <-chan *ssh.Request, ptyEnabled bool, activity chan<- struct{}) {
@@ -128,12 +125,17 @@ func (s *SSHServer) rejectWorkspaceSessionRequests(requests <-chan *ssh.Request,
 	}
 }
 
-func waitGatewaySSHChannelDone(done <-chan struct{}) {
+func waitGatewaySSHChannels(ctx context.Context, channels ...<-chan struct{}) {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	select {
-	case <-done:
-	case <-timer.C:
+	for _, done := range channels {
+		select {
+		case <-done:
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			return
+		}
 	}
 }
 

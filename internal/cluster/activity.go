@@ -52,20 +52,7 @@ func (t *RuntimeActivityTracker) ObserveSettings(siteUID, runtimeUUID string, se
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state := t.runtimeLocked(siteUID, runtimeUUID)
-	if settings.InteractionGeneration < state.interactionGeneration {
-		return nil
-	}
-	changed := !state.hasPolicy || settings.AutoStopEnabled != state.autoStopEnabled || settings.IdleTimeoutSeconds != state.idleTimeoutSeconds || settings.InteractionGeneration != state.interactionGeneration
-	state.autoStopEnabled = settings.AutoStopEnabled
-	state.idleTimeoutSeconds = settings.IdleTimeoutSeconds
-	state.interactionGeneration = settings.InteractionGeneration
-	state.hasPolicy = true
-	if changed || !settings.AutoStopEnabled {
-		state.activityAfter = now
-		state.idleSince = time.Time{}
-		state.retryAt = time.Time{}
-	}
+	t.runtimeLocked(siteUID, runtimeUUID).applySettings(settings, now)
 	return nil
 }
 
@@ -175,17 +162,7 @@ func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeUUID string, res
 		if validateRuntimeSettings(settings) != nil {
 			return fmt.Errorf("idle stop observation is invalid")
 		}
-		if !state.hasPolicy || settings.InteractionGeneration >= state.interactionGeneration {
-			changed := !state.hasPolicy || settings.AutoStopEnabled != state.autoStopEnabled || settings.IdleTimeoutSeconds != state.idleTimeoutSeconds || settings.InteractionGeneration != state.interactionGeneration
-			state.autoStopEnabled = settings.AutoStopEnabled
-			state.idleTimeoutSeconds = settings.IdleTimeoutSeconds
-			state.interactionGeneration = settings.InteractionGeneration
-			state.hasPolicy = true
-			if changed || !settings.AutoStopEnabled {
-				state.activityAfter = now
-				state.idleSince = time.Time{}
-			}
-		}
+		state.applySettings(settings, now)
 		state.retryAt = time.Time{}
 	case *codespacev1.RequestIdleStopResponse_NotApplicable:
 		if outcome.NotApplicable == nil || outcome.NotApplicable.Reason == codespacev1.IdleStopNotApplicableReason_IDLE_STOP_NOT_APPLICABLE_REASON_UNSPECIFIED {
@@ -197,6 +174,22 @@ func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeUUID string, res
 		return fmt.Errorf("idle stop response outcome is missing")
 	}
 	return nil
+}
+
+func (s *runtimeActivity) applySettings(settings *codespacev1.EffectiveCodespaceRuntimeSettings, now time.Time) {
+	if settings.InteractionGeneration < s.interactionGeneration {
+		return
+	}
+	changed := !s.hasPolicy || settings.AutoStopEnabled != s.autoStopEnabled || settings.IdleTimeoutSeconds != s.idleTimeoutSeconds || settings.InteractionGeneration != s.interactionGeneration
+	s.autoStopEnabled = settings.AutoStopEnabled
+	s.idleTimeoutSeconds = settings.IdleTimeoutSeconds
+	s.interactionGeneration = settings.InteractionGeneration
+	s.hasPolicy = true
+	if changed || !settings.AutoStopEnabled {
+		s.activityAfter = now
+		s.idleSince = time.Time{}
+		s.retryAt = time.Time{}
+	}
 }
 
 func validateRuntimeSettings(settings *codespacev1.EffectiveCodespaceRuntimeSettings) error {

@@ -129,8 +129,7 @@ func (s *lifecycleRemote) DeclareManager(_ context.Context, request *codespacev1
 	return &codespacev1.DeclareManagerResponse{
 		HeartbeatIntervalMilliseconds:              1000,
 		RuntimeMetadataRefreshIntervalMilliseconds: 1000,
-		ControlPlaneMaxMessageSizeBytes:            api.MaxObjectBytes,
-		GiteaWebUrl:                                s.baseURL,
+		GiteaWebUrl: s.baseURL,
 	}, nil
 }
 

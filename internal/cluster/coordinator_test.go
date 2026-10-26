@@ -56,7 +56,7 @@ func (s *coordinatorRemote) DeclareManager(_ context.Context, request *codespace
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.declarations = append(s.declarations, request.ManagerRuntimeState)
-	return &codespacev1.DeclareManagerResponse{HeartbeatIntervalMilliseconds: 10000, RuntimeMetadataRefreshIntervalMilliseconds: 1000, ControlPlaneMaxMessageSizeBytes: api.MaxObjectBytes, GiteaWebUrl: s.url}, nil
+	return &codespacev1.DeclareManagerResponse{HeartbeatIntervalMilliseconds: 10000, RuntimeMetadataRefreshIntervalMilliseconds: 1000, GiteaWebUrl: s.url}, nil
 }
 
 func (s *coordinatorRemote) ReportInstances(_ context.Context, request *codespacev1.ReportInstancesRequest) (*codespacev1.ReportInstancesResponse, error) {
@@ -181,7 +181,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 			object.SetUID(types.UID(uuid.NewString()))
 			return c.Create(ctx, object, opts...)
 		}}).Build()
-	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace, PlatformImage: testRuntime().Image}}
+	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace, PlatformImage: testRuntime().Image}, ObservationReader: c}
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = log.IntoContext(ctx, testr.New(t))
 	done := make(chan struct{})

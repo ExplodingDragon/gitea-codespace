@@ -4,90 +4,60 @@
 package devcontainerruntime
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 
 	"gitea.dev/codespace/devcontainer"
 )
 
-// FormatVersion identifies the runtime request and result representation.
-const FormatVersion = 2
-
-// Request carries one lifecycle action from the provisioner into the instance runtime.
+// Request supplies one Agent lifecycle action to the Dev Container executor.
 type Request struct {
-	Version          int                       `json:"version"`
-	Action           string                    `json:"action"`
-	CodespaceUUID    string                    `json:"codespace_uuid"`
-	OperationVersion int64                     `json:"operation_version"`
-	Workspace        string                    `json:"workspace"`
-	Source           devcontainer.Source       `json:"source"`
-	HostUser         devcontainer.HostUser     `json:"host_user"`
-	GitUserName      string                    `json:"git_user_name,omitempty"`
-	GitUserEmail     string                    `json:"git_user_email,omitempty"`
-	LocalEnvironment map[string]string         `json:"local_environment,omitempty"`
-	Secrets          map[string]string         `json:"secrets,omitempty"`
-	DevContainer     Configuration             `json:"dev_container"`
-	Cache            devcontainer.CacheOptions `json:"cache,omitempty"`
-	Environment      *devcontainer.State       `json:"environment,omitempty"`
-}
-
-// Result records either the resulting environment state or a classified failure.
-type Result struct {
-	Version     int                 `json:"version"`
-	Environment *devcontainer.State `json:"environment,omitempty"`
-	Error       string              `json:"error,omitempty"`
-	Recoverable bool                `json:"recoverable,omitempty"`
+	Action           string
+	CodespaceUUID    string
+	OperationVersion int64
+	Workspace        string
+	Source           devcontainer.Source
+	HostUser         devcontainer.HostUser
+	GitUserName      string
+	GitUserEmail     string
+	LocalEnvironment map[string]string
+	Secrets          map[string]string
+	DevContainer     Configuration
+	Cache            devcontainer.CacheOptions
+	Environment      *devcontainer.State
 }
 
 // Validate checks action-specific identity and state requirements.
 func (r Request) Validate() error {
-	if r.Version != FormatVersion {
-		return formatError("runtime request version must be %d", FormatVersion)
-	}
 	if strings.TrimSpace(r.CodespaceUUID) == "" {
-		return formatError("codespace uuid is empty")
+		return fmt.Errorf("codespace uuid is empty")
 	}
 	switch r.Action {
 	case "create":
 		if r.OperationVersion <= 0 || strings.TrimSpace(r.Workspace) == "" {
-			return formatError("create request identity is incomplete")
+			return fmt.Errorf("create request identity is incomplete")
 		}
 		if err := r.DevContainer.Validate(); err != nil {
-			return formatError("invalid Dev Container injection configuration: %v", err)
+			return fmt.Errorf("invalid Dev Container injection configuration: %w", err)
 		}
 		if r.Environment != nil {
-			return formatError("create request contains an existing environment")
+			return fmt.Errorf("create request contains an existing environment")
 		}
 	case "resume", "stop", "inspect":
 		if r.Action != "inspect" && r.OperationVersion <= 0 {
-			return formatError("operation version must be positive")
+			return fmt.Errorf("operation version must be positive")
 		}
 		if r.Environment == nil {
-			return formatError("environment is required for %s", r.Action)
+			return fmt.Errorf("environment is required for %s", r.Action)
 		}
 		if err := r.Environment.Validate(); err != nil {
-			return formatError("%v", err)
+			return err
 		}
 		if r.Environment.OwnerID != r.CodespaceUUID {
-			return formatError("runtime environment does not belong to codespace")
+			return fmt.Errorf("runtime environment does not belong to codespace")
 		}
 	default:
-		return formatError("runtime action %q is invalid", r.Action)
+		return fmt.Errorf("runtime action %q is invalid", r.Action)
 	}
 	return nil
-}
-
-type runtimeFormatError string
-
-func (e runtimeFormatError) Error() string { return string(e) }
-
-// IsFormatError reports whether a request cannot be processed without changing its encoded input.
-func IsFormatError(err error) bool {
-	var target runtimeFormatError
-	return errors.As(err, &target)
-}
-
-func formatError(format string, values ...any) error {
-	return runtimeFormatError(fmt.Sprintf(format, values...))
 }

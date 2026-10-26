@@ -92,7 +92,7 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	// Manager credentials in custom headers must never follow redirects.
 	rpcClient := *httpClient
 	rpcClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	remote := controlplane.NewManagerServiceClient(&rpcClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(credential.Data["managerSecret"]), api.MaxObjectBytes)
+	remote := controlplane.NewManagerServiceClient(&rpcClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(credential.Data["managerSecret"]))
 	response, err := remote.CheckManager(ctx, check)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))

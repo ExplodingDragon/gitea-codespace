@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	connectrpc.com/connect/v2 v2.0.1
-	gitea.dev/codespace-proto-go v0.0.0-20261022024940-36a27f8539e4
+	gitea.dev/codespace-proto-go v0.0.0-20261026073823-bc6dd49616f9
 	github.com/compose-spec/compose-go/v2 v2.9.1
 	github.com/containerd/errdefs v1.0.0
 	github.com/distribution/distribution/v3 v3.1.1
@@ -16,7 +16,6 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/go-logr/logr v1.4.4
 	github.com/google/uuid v1.6.0
-	github.com/moby/term v0.5.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/pkg/sftp v1.13.10
@@ -153,6 +152,7 @@ require (
 	github.com/moby/sys/symlink v0.3.0 // indirect
 	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.1.0 // indirect
+	github.com/moby/term v0.5.2 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
 	github.com/modern-go/reflect2 v1.0.3-0.20250322232337-35a7c28c31ee // indirect
 	github.com/morikuni/aec v1.1.0 // indirect

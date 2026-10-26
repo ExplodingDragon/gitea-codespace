@@ -7,6 +7,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect/v2"
@@ -30,12 +31,16 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 	server := httptest.NewServer(mux)
 	defer server.Close()
 
-	client := NewManagerServiceClient(server.Client(), server.URL, 42, "manager-secret", 1024)
-	_, err := client.DeclareManager(t.Context(), &codespacev1.DeclareManagerRequest{
+	client := NewManagerServiceClient(server.Client(), server.URL, 42, "manager-secret")
+	response, err := client.DeclareManager(t.Context(), &codespacev1.DeclareManagerRequest{
 		ProtocolVersion: ProtocolVersion,
+		Version:         strings.Repeat("a", 2*1024*1024),
 	})
 	if err != nil {
 		t.Fatalf("declare manager: %v", err)
+	}
+	if len(response.GetGiteaWebUrl()) != 2*1024*1024 {
+		t.Fatal("control-plane response was truncated")
 	}
 	if service.managerID != "42" || service.managerSecret != "manager-secret" {
 		t.Fatalf("manager authentication = (%q, %q)", service.managerID, service.managerSecret)
@@ -50,10 +55,10 @@ type authenticationService struct {
 
 func (s *authenticationService) DeclareManager(
 	ctx context.Context,
-	_ *codespacev1.DeclareManagerRequest,
+	request *codespacev1.DeclareManagerRequest,
 ) (*codespacev1.DeclareManagerResponse, error) {
 	info, _ := connect.CallInfoForServerContext(ctx)
 	s.managerID = info.RequestHeader().Get(ManagerIDHeader)
 	s.managerSecret = info.RequestHeader().Get(ManagerSecretHeader)
-	return &codespacev1.DeclareManagerResponse{}, nil
+	return &codespacev1.DeclareManagerResponse{GiteaWebUrl: request.GetVersion()}, nil
 }

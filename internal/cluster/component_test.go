@@ -10,6 +10,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -34,6 +35,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
 type openAuthorizationRemote struct {
@@ -119,6 +121,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "resource-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986"},
 		Status: api.CodespaceStatus{
+			Bound:  true,
 			Pod:    api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"},
 			Target: &api.AgentTarget{Version: 4, Ready: true, PrimaryContainerID: "container", Endpoints: []api.AgentEndpoint{{ID: "workspace", Label: "Workspace", ContainerID: "container", Port: 13337}}},
 		},
@@ -147,6 +150,70 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	require.Equal(t, string(cs.UID), claims.ResourceUid)
 	require.Equal(t, string(pod.UID), claims.PodUid)
 	require.EqualValues(t, cs.Status.Target.Version, claims.TargetVersion)
+
+	request := &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"}
+	current := cs.DeepCopy()
+	current.Status.Target = nil
+	require.NoError(t, c.Update(ctx, current))
+	_, err = server.IssueAgentAccess(ctx, request)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), current))
+	current.Status = cs.Status
+	require.NoError(t, c.Update(ctx, current))
+
+	// A stale index cannot authorize a replacement Pod.
+	require.NoError(t, c.Delete(ctx, pod))
+	replacement := pod.DeepCopy()
+	replacement.ResourceVersion, replacement.UID = "", "replacement-pod"
+	require.NoError(t, c.Create(ctx, replacement))
+	_, err = server.IssueAgentAccess(ctx, request)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+
+	for _, unavailable := range []string{"missing target", "stopping", "missing pod", "replaced pod", "no pod address"} {
+		t.Run(unavailable, func(t *testing.T) {
+			other := cs.DeepCopy()
+			other.Name, other.UID, other.ResourceVersion = "other", "other-resource", ""
+			other.Spec.RuntimeUUID = "044007ce-92b8-43f9-9b5d-5ed6a4dbb005"
+			other.Status.Pod.Name = "other-pod"
+			otherPod := pod.DeepCopy()
+			otherPod.Name, otherPod.ResourceVersion = "other-pod", ""
+			otherPod.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(other, api.GroupVersion.WithKind("Codespace"))}
+			switch unavailable {
+			case "missing target":
+				other.Status.Target = nil
+			case "stopping":
+				other.Spec.Operation.Type = "stop"
+			case "replaced pod":
+				otherPod.UID = "new-pod"
+			case "no pod address":
+				otherPod.Status.PodIP, otherPod.Status.PodIPs = "", nil
+			}
+			require.NoError(t, index.Create(ctx, other))
+			if unavailable != "missing pod" {
+				require.NoError(t, index.Create(ctx, otherPod))
+			}
+			result, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+			require.NoError(t, err)
+			require.Len(t, result.Runtimes, 1)
+			require.Equal(t, cs.Spec.RuntimeUUID, result.Runtimes[0].RuntimeUuid)
+			require.NoError(t, index.Delete(ctx, other))
+			if unavailable != "missing pod" {
+				require.NoError(t, index.Delete(ctx, otherPod))
+			}
+		})
+	}
+
+	server.IdentityIndex = interceptor.NewClient(index, interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*corev1.Pod); ok {
+				return errors.New("apiserver read failed")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	})
+	_, err = server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+	require.ErrorContains(t, err, "apiserver read failed")
+	server.IdentityIndex = index
 
 	require.NoError(t, c.Delete(t.Context(), component))
 	component.ResourceVersion, component.UID = "", types.UID("replacement")

@@ -5,29 +5,10 @@ package runtime
 
 import (
 	"context"
-	"io"
-	"reflect"
 	"testing"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace/internal/runtimecmd"
 )
-
-func TestExecCommandPreservesTargetArguments(t *testing.T) {
-	var got runtimecmd.ExecOptions
-	command := newExecCommandWithRun(func(_ context.Context, options runtimecmd.ExecOptions, _ io.Reader, _, _ io.Writer) error {
-		got = options
-		return nil
-	})
-	command.SetArgs([]string{"--state", "/runtime/state.json", "--interactive", "/bin/tool", "--target", "value"})
-	if err := command.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
-	}
-	wantCommand := []string{"/bin/tool", "--target", "value"}
-	if got.StatePath != "/runtime/state.json" || !got.Interactive || !reflect.DeepEqual(got.Command, wantCommand) {
-		t.Fatalf("ExecOptions = %#v", got)
-	}
-}
 
 func TestEndpointCommandsMapArguments(t *testing.T) {
 	var gotLabel string

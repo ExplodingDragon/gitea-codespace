@@ -44,6 +44,8 @@ make build
 - `make helm-check` validates the chart and rendered resources.
 - `make test-e2e` runs the real Kubernetes product flow.
 
+Use a dedicated test cluster for E2E. Each run installs its own Manager control plane; cluster-scoped GiteaSite and EnvironmentTemplate resources are coordinated by that control plane, so a separate namespace alone does not isolate another Manager installation.
+
 The E2E target requires a digest-pinned `CODESPACE_IMAGE`, the selected `KUBERNETES_RUNTIME_ISOLATION`, `KUBERNETES_RUNTIME_CLASS`, and `KUBERNETES_STORAGE_CLASS`, plus a reachable Gitea Manager credential through the `CODESPACE_E2E_GITEA_*` variables. It validates one isolation mode per run; execute it separately for each supported Kata or Sysbox environment. Successful runs clean their namespace, while failed runs retain diagnostics before cleanup.
 
 ## License

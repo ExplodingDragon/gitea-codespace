@@ -74,7 +74,8 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		if err != nil {
 			return nil, fmt.Errorf("cache listen address is invalid: %w", err)
 		}
-		registryURL := fmt.Sprintf("http://%s.%s.svc:%d", material.component.Name, s.ManagementNamespace, port)
+		registryAddress := fmt.Sprintf("%s.%s.svc:%d", material.component.Name, s.ManagementNamespace, port)
+		registryURL := "http://" + registryAddress
 		result := &agentv1.RuntimeCache{
 			BuildRegistry: registryURL + "/cache/" + namespace,
 			Mirrors:       make(map[string]string, len(material.config.Upstreams)),
@@ -83,11 +84,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		for upstream := range material.config.Upstreams {
 			result.Mirrors[upstream] = registryURL + "/mirror/" + upstream
 		}
-		address := strings.TrimPrefix(registryURL, "http://")
-		if slash := strings.IndexByte(address, '/'); slash >= 0 {
-			address = address[:slash]
-		}
-		result.Credentials[address] = &agentv1.RegistryCredential{Username: cachepkg.Username, Password: token}
+		result.Credentials[registryAddress] = &agentv1.RegistryCredential{Username: cachepkg.Username, Password: token}
 		digest := sha256.New()
 		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00%d\x00", site.UID, create.Repository.RepositoryId, create.GitIdentity.UserId)
 		injection, _ := json.Marshal(cs.Spec.Runtime.DevContainer)
@@ -189,22 +186,20 @@ func (s *ComponentServer) claimCache(ctx context.Context, identity componentIden
 	now := metav1.NowMicro()
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-owner-" + material.component.Name, Namespace: s.ManagementNamespace}}
 	err := s.Client.Get(ctx, client.ObjectKeyFromObject(lease), lease)
-	if apierrors.IsNotFound(err) {
-		lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
-		lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
-		lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision)), LeaseDurationSeconds: ptr.To(int32(cacheOwnerTTL / time.Second)), AcquireTime: &now, RenewTime: &now}
-		err = s.Client.Create(ctx, lease)
-	} else if err == nil {
-		active := lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second))
-		if active {
-			return nil, connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
-		}
-		lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
-		lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
-		lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision)), LeaseDurationSeconds: ptr.To(int32(cacheOwnerTTL / time.Second)), AcquireTime: &now, RenewTime: &now}
-		err = s.Client.Update(ctx, lease)
+	missing := apierrors.IsNotFound(err)
+	if err != nil && !missing {
+		return nil, err
 	}
-	return lease, err
+	if !missing && lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second)) {
+		return nil, connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
+	}
+	lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
+	lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
+	lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision)), LeaseDurationSeconds: ptr.To(int32(cacheOwnerTTL / time.Second)), AcquireTime: &now, RenewTime: &now}
+	if missing {
+		return lease, s.Client.Create(ctx, lease)
+	}
+	return lease, s.Client.Update(ctx, lease)
 }
 
 func (s *ComponentServer) renewCache(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string, status *componentv1.CacheStatus) error {

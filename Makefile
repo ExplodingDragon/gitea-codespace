@@ -97,7 +97,7 @@ scripts-check:
 
 .PHONY: test-smoke
 test-smoke:
-	$(GO) test -p 1 -count=1 ./internal/accessticket ./internal/agent ./internal/cache ./internal/cluster ./internal/gateway ./internal/transport
+	$(GO) test -p 1 -count=1 ./internal/accessticket ./internal/agent ./internal/cache ./internal/cluster ./internal/component ./internal/gateway ./internal/transport
 
 .PHONY: test-e2e
 test-e2e:

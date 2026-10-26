@@ -5,12 +5,12 @@ package controlplane
 
 import (
 	"context"
-	"math"
 	"runtime/debug"
 	"strconv"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
 
@@ -32,16 +32,10 @@ const (
 )
 
 // NewManagerServiceClient returns an authenticated ManagerService client.
-func NewManagerServiceClient(httpClient connecthttp.HTTPClient, baseURL string, managerID int64, managerSecret string, maxBytes int64) codespacev1connect.ManagerServiceClient {
-	var opts []connecthttp.Option
-	if maxBytes > 0 {
-		maxSize := int(maxBytes)
-		if int64(maxSize) != maxBytes {
-			maxSize = math.MaxInt
-		}
-		opts = append(opts, connecthttp.WithReadMaxBytes(maxSize), connecthttp.WithSendMaxBytes(maxSize))
-	}
-	client := connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, opts...), func(next connect.ClientFunc) connect.ClientFunc {
+func NewManagerServiceClient(httpClient connecthttp.HTTPClient, baseURL string, managerID int64, managerSecret string) codespacev1connect.ManagerServiceClient {
+	client := connect.NewClient(connecthttp.NewTransport(httpClient, baseURL,
+		connecthttp.WithReadMaxBytes(codespacev1.ManagerServiceMaxMessageBytes),
+		connecthttp.WithSendMaxBytes(codespacev1.ManagerServiceMaxMessageBytes)), func(next connect.ClientFunc) connect.ClientFunc {
 		return func(ctx context.Context, spec connect.Spec) (connect.ClientStream, error) {
 			info, _ := connect.CallInfoForClientContext(ctx)
 			info.RequestHeader().Set(ManagerIDHeader, strconv.FormatInt(managerID, 10))

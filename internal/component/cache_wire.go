@@ -66,10 +66,3 @@ func cacheStatusToProto(status cachepkg.Status) *componentv1.CacheStatus {
 		LastCleanupUnixMilliseconds: status.LastCleanup.UnixMilli(), CleanupResult: status.CleanupResult,
 	}
 }
-
-func cacheGCGrantFromProto(grant *componentv1.CacheGCGrant) (cachepkg.GCGrant, error) {
-	if grant == nil || grant.CacheId == "" || grant.Id == "" {
-		return cachepkg.GCGrant{}, fmt.Errorf("cache GC grant is incomplete")
-	}
-	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
-}

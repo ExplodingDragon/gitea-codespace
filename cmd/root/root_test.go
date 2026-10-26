@@ -8,10 +8,6 @@ import (
 	"context"
 	"strings"
 	"testing"
-
-	"github.com/spf13/cobra"
-
-	"gitea.dev/codespace/internal/runtimecmd"
 )
 
 func TestHelpShowsOnlyPublicCommands(t *testing.T) {
@@ -35,23 +31,5 @@ func TestUnknownCommandReportsOneError(t *testing.T) {
 	}
 	if count := strings.Count(stderr.String(), "unknown command"); count != 1 {
 		t.Fatalf("unknown command error count = %d, stderr = %q", count, stderr.String())
-	}
-}
-
-func TestRuntimeExitStatus(t *testing.T) {
-	command := &cobra.Command{
-		Use:           "gitea-codespace",
-		SilenceErrors: true,
-		SilenceUsage:  true,
-		RunE: func(_ *cobra.Command, _ []string) error {
-			return &runtimecmd.ExitError{Status: 25}
-		},
-	}
-	var stdout, stderr bytes.Buffer
-	if status := execute(command, context.Background(), nil, strings.NewReader(""), &stdout, &stderr); status != 25 {
-		t.Fatalf("execute() status = %d", status)
-	}
-	if stderr.Len() != 0 {
-		t.Fatalf("execute() stderr = %q", stderr.String())
 	}
 }

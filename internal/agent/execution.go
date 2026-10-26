@@ -93,12 +93,12 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, report)
 	case operation.GetStop() != nil:
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Version: devcontainerruntime.FormatVersion, Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
 		return err
 	case operation.GetDelete() != nil:
 		// Kubernetes removes the Pod before deleting its PVC. If the control
 		// message arrives first, stopping Docker resources shortens shutdown.
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Version: devcontainerruntime.FormatVersion, Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
 		return err
 	default:
 		return fmt.Errorf("runtime operation is not executable by the Agent")
@@ -213,7 +213,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		}
 	}
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
-		Version: devcontainerruntime.FormatVersion, Action: "create", CodespaceUUID: operation.RuntimeUuid,
+		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
 		Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
@@ -257,7 +257,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
-		Version: devcontainerruntime.FormatVersion, Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
+		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
 		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, Secrets: secrets, DevContainer: r.DevContainer,
 	})
 	if err != nil {
