@@ -94,7 +94,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 }
 
 func configureCreate(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
-	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
+	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
 		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
 	}
 	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
@@ -105,7 +105,7 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 		"GITEA_GIT_USER_EMAIL": request.GitUserEmail,
 		"GITEA_WORKSPACE":      state.RemoteWorkdir,
 	}
-	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", configureGitScript}, values, nil); err != nil {
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", configureGitScript}, values, nil); err != nil {
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
 	}
 	return nil
@@ -147,7 +147,7 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		}
 		settingsReader = bytes.NewReader(settings)
 	}
-	if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
 	if !initializeWebIDE {
@@ -166,7 +166,7 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 			continue
 		}
 		seen[extension] = struct{}{}
-		if _, _, err := engine.Exec(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
+		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
 			_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
 		}
 	}

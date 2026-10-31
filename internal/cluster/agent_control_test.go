@@ -205,6 +205,35 @@ func TestAgentControlRecovery(t *testing.T) {
 			}
 		})
 	}
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	cs.Spec.Runtime.VolumeMode = corev1.PersistentVolumeBlock
+	require.NoError(t, c.Update(t.Context(), cs))
+	cs.Status.Volume = api.ObservedResource{Name: "data", UID: "volume-uid"}
+	require.NoError(t, c.Status().Update(t.Context(), cs))
+	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID), RuntimeUIDLabel: string(cs.UID)}}}
+	require.NoError(t, c.Create(t.Context(), volume))
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	require.NoError(t, err)
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	require.Equal(t, "started", cs.Status.VolumeInitialization)
+	for range 2 {
+		_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+		require.NoError(t, err)
+	}
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	require.Equal(t, "ready", cs.Status.VolumeInitialization)
+	cs.Spec.Operation.Type, cs.Spec.Operation.Version = "resume", 5
+	require.NoError(t, c.Update(t.Context(), cs))
+	server.Authority.Grant(cs.UID, 5, time.Now().Add(time.Minute))
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+	require.NoError(t, err)
+	server.Authority.Revoke(cs.UID)
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
 type runtimeAccessTestServer struct {

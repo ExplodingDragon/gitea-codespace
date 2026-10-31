@@ -220,10 +220,13 @@ type CodespaceStatus struct {
 	Pod          ObservedResource `json:"pod,omitempty"`
 	LastNodeName string           `json:"lastNodeName,omitempty"`
 	// StoppedPodUID is recorded from kubelet termination before releasing the Pod finalizer.
-	StoppedPodUID      types.UID        `json:"stoppedPodUID,omitempty"`
-	Volume             ObservedResource `json:"volume,omitempty"`
-	IdentitySecretName string           `json:"identitySecretName,omitempty"`
-	MetadataGeneration int64            `json:"metadataGeneration,omitempty"`
+	StoppedPodUID types.UID        `json:"stoppedPodUID,omitempty"`
+	Volume        ObservedResource `json:"volume,omitempty"`
+	// A started format is never retried when the filesystem is unrecognizable.
+	// +kubebuilder:validation:Enum=started;ready
+	VolumeInitialization string `json:"volumeInitialization,omitempty"`
+	IdentitySecretName   string `json:"identitySecretName,omitempty"`
+	MetadataGeneration   int64  `json:"metadataGeneration,omitempty"`
 	// SettledOperationVersion records Gitea's terminal operation acknowledgement.
 	SettledOperationVersion int64 `json:"settledOperationVersion,omitempty"`
 	// RecoveryAction is an inventory-authorized resource action, not a new Gitea operation.

@@ -93,9 +93,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	var sessions corev1.SecretList
 	require.NoError(t, cluster.List(cluster.ctx, &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
-	spec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testEnvironment()})
-	require.NoError(t, err)
-	body, err := json.Marshal(adminWrite{Name: namespace.Name, Spec: spec})
+	body, err := json.Marshal(adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: namespace.Name}, Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testEnvironment()}})
 	require.NoError(t, err)
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, options.AdminPublicURL+"/api/admin/environments", bytes.NewReader(body))
 	require.NoError(t, err)

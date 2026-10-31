@@ -157,6 +157,9 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		}
 		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
+	if err := r.updateStatus(ctx, &cs); err != nil {
+		return ctrl.Result{}, err
+	}
 	if err := r.ensureIdentity(ctx, &cs, &pod); err != nil {
 		return r.condition(ctx, &cs, "IdentityUnavailable", err)
 	}

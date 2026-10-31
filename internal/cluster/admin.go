@@ -4,7 +4,6 @@
 package cluster
 
 import (
-	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -12,7 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"io"
+	"maps"
 	"math"
 	"net/http"
 	"strconv"
@@ -49,15 +48,29 @@ type adminResource struct {
 	Status          any       `json:"status,omitempty"`
 }
 
-type adminWrite struct {
-	Name            string          `json:"name"`
-	UID             types.UID       `json:"uid"`
-	ResourceVersion string          `json:"resourceVersion"`
-	Spec            json.RawMessage `json:"spec"`
-	ManagerSecret   string          `json:"managerSecret,omitempty"`
-	Verification    string          `json:"verification,omitempty"`
-	S3AccessKey     string          `json:"s3AccessKey,omitempty"`
-	S3SecretKey     string          `json:"s3SecretKey,omitempty"`
+type adminWriteIdentity struct {
+	Name            string    `json:"name"`
+	UID             types.UID `json:"uid"`
+	ResourceVersion string    `json:"resourceVersion"`
+}
+
+type adminSiteWrite struct {
+	adminWriteIdentity
+	Spec          adminSiteSpec `json:"spec"`
+	ManagerSecret string        `json:"managerSecret,omitempty"`
+}
+
+type adminTemplateWrite struct {
+	adminWriteIdentity
+	Spec         api.EnvironmentTemplateSpec `json:"spec"`
+	Verification string                      `json:"verification,omitempty"`
+}
+
+type adminComponentWrite struct {
+	adminWriteIdentity
+	Spec        adminComponentSpec `json:"spec"`
+	S3AccessKey string             `json:"s3AccessKey,omitempty"`
+	S3SecretKey string             `json:"s3SecretKey,omitempty"`
 }
 
 type adminRuntimeRecovery struct {
@@ -90,6 +103,10 @@ type adminComponentStatus struct {
 
 func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/"), "/")
+	if len(parts) == 3 && parts[0] == "runtimes" && r.Method == http.MethodDelete {
+		s.deleteRuntime(w, r, parts[1], parts[2])
+		return
+	}
 	if len(parts) == 4 && parts[0] == "runtimes" && parts[3] == "confirm-writer-stopped" {
 		s.confirmRuntimeWriterStopped(w, r, parts[1], parts[2])
 		return
@@ -131,30 +148,52 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	var body adminWrite
-	if !adminDecode(w, r, &body) {
-		return
+	var identity adminWriteIdentity
+	var object client.Object
+	var save func(context.Context, client.Object, bool) error
+	switch kind {
+	case "sites":
+		var body adminSiteWrite
+		if !adminDecode(w, r, &body) {
+			return
+		}
+		identity = body.adminWriteIdentity
+		object = &api.GiteaSite{}
+		save = func(ctx context.Context, object client.Object, creating bool) error {
+			return s.saveSite(ctx, object.(*api.GiteaSite), body, creating)
+		}
+	case "environments":
+		var body adminTemplateWrite
+		if !adminDecode(w, r, &body) {
+			return
+		}
+		identity = body.adminWriteIdentity
+		object = &api.EnvironmentTemplate{}
+		save = func(ctx context.Context, object client.Object, creating bool) error {
+			return s.saveTemplate(ctx, object.(*api.EnvironmentTemplate), body, creating)
+		}
+	case "components":
+		var body adminComponentWrite
+		if !adminDecode(w, r, &body) {
+			return
+		}
+		identity = body.adminWriteIdentity
+		object = &corev1.ConfigMap{}
+		object.SetNamespace(s.Namespace)
+		save = func(ctx context.Context, object client.Object, creating bool) error {
+			return s.saveComponent(ctx, object.(*corev1.ConfigMap), body, creating)
+		}
 	}
 	if r.Method == http.MethodPost {
-		name = body.Name
-		if body.UID != "" || body.ResourceVersion != "" {
+		name = identity.Name
+		if identity.UID != "" || identity.ResourceVersion != "" {
 			adminJSON(w, http.StatusBadRequest, map[string]string{"error": "new resources must not specify an existing UID or revision"})
 			return
 		}
 	}
-	if len(validation.IsDNS1123Subdomain(name)) != 0 || body.Name != name {
+	if len(validation.IsDNS1123Subdomain(name)) != 0 || identity.Name != name {
 		adminJSON(w, http.StatusBadRequest, map[string]string{"error": "a valid, matching resource name is required"})
 		return
-	}
-	var object client.Object
-	switch kind {
-	case "sites":
-		object = &api.GiteaSite{}
-	case "environments":
-		object = &api.EnvironmentTemplate{}
-	default:
-		object = &corev1.ConfigMap{}
-		object.SetNamespace(s.Namespace)
 	}
 	object.SetName(name)
 	if r.Method != http.MethodPost {
@@ -162,7 +201,7 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 			adminError(w, err)
 			return
 		}
-		if body.UID == "" || body.ResourceVersion == "" || object.GetUID() != body.UID || object.GetResourceVersion() != body.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
+		if identity.UID == "" || identity.ResourceVersion == "" || object.GetUID() != identity.UID || object.GetResourceVersion() != identity.ResourceVersion || !object.GetDeletionTimestamp().IsZero() {
 			adminJSON(w, http.StatusConflict, map[string]string{"error": "resource changed; reload before saving"})
 			return
 		}
@@ -172,22 +211,14 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 			adminJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		if err := s.Client.Delete(r.Context(), object, client.Preconditions{UID: &body.UID, ResourceVersion: &body.ResourceVersion}); err != nil {
+		if err := s.Client.Delete(r.Context(), object, client.Preconditions{UID: &identity.UID, ResourceVersion: &identity.ResourceVersion}); err != nil {
 			adminError(w, err)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	var err error
-	switch current := object.(type) {
-	case *api.GiteaSite:
-		err = s.saveSite(r.Context(), current, body, r.Method == http.MethodPost)
-	case *api.EnvironmentTemplate:
-		err = s.saveTemplate(r.Context(), current, body, r.Method == http.MethodPost)
-	case *corev1.ConfigMap:
-		err = s.saveComponent(r.Context(), current, body, r.Method == http.MethodPost)
-	}
+	err := save(r.Context(), object, r.Method == http.MethodPost)
 	if err != nil {
 		adminError(w, err)
 		return
@@ -200,7 +231,7 @@ func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Reques
 		http.NotFound(w, r)
 		return
 	}
-	var body adminWrite
+	var body adminWriteIdentity
 	if !adminDecode(w, r, &body) {
 		return
 	}
@@ -244,6 +275,43 @@ func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	adminJSON(w, http.StatusOK, map[string]string{"name": name})
+}
+
+func (s *AdminServer) deleteRuntime(w http.ResponseWriter, r *http.Request, namespace, name string) {
+	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(name)) != 0 {
+		http.NotFound(w, r)
+		return
+	}
+	var body adminRuntimeRecovery
+	if !adminDecode(w, r, &body) {
+		return
+	}
+	var runtime api.Codespace
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: name}, &runtime); err != nil {
+		adminError(w, err)
+		return
+	}
+	if body.UID == "" || body.ResourceVersion == "" || runtime.UID != body.UID || runtime.ResourceVersion != body.ResourceVersion || runtime.Status.Pod.UID != body.PodUID {
+		adminJSON(w, http.StatusConflict, map[string]string{"error": "runtime identity changed; reload before deleting"})
+		return
+	}
+	var site api.GiteaSite
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Name: runtime.Spec.Site.Name}, &site); err != nil {
+		adminError(w, err)
+		return
+	}
+	expectedNamespace, err := api.SiteNamespace(site.Name, s.Namespace)
+	if err != nil || site.UID != runtime.Spec.Site.UID || expectedNamespace != namespace || site.Spec.Enabled {
+		adminJSON(w, http.StatusConflict, map[string]string{"error": "disable the owning site before cleaning up its runtime data"})
+		return
+	}
+	runtime.Status.RecoveryAction = "delete"
+	runtime.Status.Target = nil
+	if err := s.Client.Status().Update(r.Context(), &runtime); err != nil {
+		adminError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusAccepted)
 }
 
 func (s *AdminServer) confirmRuntimeWriterStopped(w http.ResponseWriter, r *http.Request, namespace, name string) {
@@ -398,17 +466,13 @@ func (s *AdminServer) componentStatus(ctx context.Context, component *corev1.Con
 	return status, nil
 }
 
-func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body adminWrite, creating bool) error {
+func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body adminSiteWrite, creating bool) error {
 	previous := site.DeepCopy()
-	var spec adminSiteSpec
-	if err := decodeAdminSpec(body.Spec, &spec); err != nil {
-		return err
-	}
-	managerID, err := strconv.ParseInt(spec.ManagerID, 10, 64)
+	managerID, err := strconv.ParseInt(body.Spec.ManagerID, 10, 64)
 	if err != nil || managerID <= 0 {
 		return apierrors.NewBadRequest("Manager ID must be a positive integer")
 	}
-	site.Spec = spec.GiteaSiteSpec
+	site.Spec = body.Spec.GiteaSiteSpec
 	site.Spec.ManagerID = managerID
 	if !creating && (site.Spec.ManagerID != previous.Spec.ManagerID || site.Spec.Credential != previous.Spec.Credential) {
 		return apierrors.NewBadRequest("Manager identity and credential references are managed by the server")
@@ -456,21 +520,6 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 	return nil
 }
 
-func decodeAdminSpec(raw json.RawMessage, target any) error {
-	if trimmed := bytes.TrimSpace(raw); len(trimmed) == 0 || trimmed[0] != '{' {
-		return apierrors.NewBadRequest("resource specification must be a JSON object")
-	}
-	decoder := json.NewDecoder(bytes.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(target); err != nil {
-		return apierrors.NewBadRequest("invalid resource specification")
-	}
-	if err := decoder.Decode(new(any)); err != io.EOF {
-		return apierrors.NewBadRequest("resource specification must contain one JSON object")
-	}
-	return nil
-}
-
 func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSite) error {
 	seen := make(map[types.UID]bool)
 	for _, ref := range site.Spec.Templates {
@@ -500,12 +549,8 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 	return nil
 }
 
-func (s *AdminServer) saveTemplate(ctx context.Context, template *api.EnvironmentTemplate, body adminWrite, creating bool) error {
-	var spec api.EnvironmentTemplateSpec
-	if err := decodeAdminSpec(body.Spec, &spec); err != nil {
-		return err
-	}
-	template.Spec = spec
+func (s *AdminServer) saveTemplate(ctx context.Context, template *api.EnvironmentTemplate, body adminTemplateWrite, creating bool) error {
+	template.Spec = body.Spec
 	if err := template.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
@@ -533,21 +578,18 @@ func componentSpecFromConfigMap(component *corev1.ConfigMap) (adminComponentSpec
 	spec := adminComponentSpec{Role: role, DisplayName: component.Data["displayName"]}
 	switch role {
 	case "gateway":
-		var gateway configpkg.GatewayConfig
-		if err := json.Unmarshal([]byte(component.Data["config"]), &gateway); err != nil {
-			return adminComponentSpec{}, fmt.Errorf("gateway %s has invalid configuration", component.Name)
+		gateway, err := gatewayComponentConfig(component)
+		if err != nil {
+			return adminComponentSpec{}, fmt.Errorf("gateway %s has invalid configuration: %w", component.Name, err)
 		}
 		spec.Gateway = &gateway
 	case "cache":
-		var cache configpkg.CacheConfig
-		if err := json.Unmarshal([]byte(component.Data["config"]), &cache); err != nil {
-			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration", component.Name)
+		cache, err := cacheComponentConfig(component)
+		if err != nil {
+			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration: %w", component.Name, err)
 		}
 		cache.Storage.S3.AccessKey = ""
 		cache.Storage.S3.SecretKey = ""
-		if err := cache.Validate(); err != nil {
-			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration: %w", component.Name, err)
-		}
 		spec.Cache = &cache
 	default:
 		return adminComponentSpec{}, fmt.Errorf("component %s has an invalid role", component.Name)
@@ -555,11 +597,8 @@ func componentSpecFromConfigMap(component *corev1.ConfigMap) (adminComponentSpec
 	return spec, nil
 }
 
-func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.ConfigMap, body adminWrite, creating bool) error {
-	var spec adminComponentSpec
-	if err := decodeAdminSpec(body.Spec, &spec); err != nil {
-		return err
-	}
+func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.ConfigMap, body adminComponentWrite, creating bool) error {
+	spec := body.Spec
 	if spec.Role != "gateway" && spec.Role != "cache" || strings.TrimSpace(spec.DisplayName) == "" || len(spec.DisplayName) > 100 {
 		return apierrors.NewBadRequest("component requires a role and display name")
 	}
@@ -581,16 +620,6 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 			return err
 		}
 		data["config"] = string(encoded)
-		data["url"], data["sshAddress"] = spec.Gateway.HTTP.PublicURL, spec.Gateway.SSH.PublicAddr
-		data["httpListen"], data["sshListen"] = spec.Gateway.HTTP.Listen, spec.Gateway.SSH.Listen
-		data["sessionTTLMilliseconds"] = strconv.FormatInt(time.Duration(spec.Gateway.Sessions.TTL).Milliseconds(), 10)
-		data["sessionIdleTimeoutMilliseconds"] = strconv.FormatInt(time.Duration(spec.Gateway.Sessions.IdleTimeout).Milliseconds(), 10)
-		data["revalidateIntervalMilliseconds"] = strconv.FormatInt(time.Duration(spec.Gateway.Sessions.RevalidateInterval).Milliseconds(), 10)
-		data["maxSessionsPerCodespace"] = strconv.Itoa(spec.Gateway.Sessions.MaxPerCodespace)
-		data["maxSessionsPerUser"] = strconv.Itoa(spec.Gateway.Sessions.MaxPerUser)
-		data["maxInflight"] = strconv.Itoa(spec.Gateway.Limits.MaxInflightTotal)
-		data["maxInflightPerSession"] = strconv.Itoa(spec.Gateway.Limits.MaxInflightPerSession)
-		data["maxChannelsPerSSHConnection"] = strconv.Itoa(spec.Gateway.SSH.MaxChannelsPerConnection)
 		if creating {
 			secret, err = newGatewayHostKeySecret(component.Name, s.Namespace)
 			if err != nil {
@@ -603,8 +632,8 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 		}
 		revision := int64(1)
 		if !creating {
-			var current configpkg.CacheConfig
-			if err := json.Unmarshal([]byte(component.Data["config"]), &current); err != nil || current.Revision < 1 || current.Revision == math.MaxInt64 {
+			current, err := cacheComponentConfig(component)
+			if err != nil || current.Revision == math.MaxInt64 {
 				return apierrors.NewBadRequest("stored Cache configuration revision is invalid")
 			}
 			revision = current.Revision + 1
@@ -625,7 +654,7 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 		if err != nil {
 			return err
 		}
-		data["config"], data["url"] = string(encoded), spec.Cache.PublicURL
+		data["config"] = string(encoded)
 		if creating {
 			registryKey, tokenKey := make([]byte, 32), make([]byte, 32)
 			if _, err := rand.Read(registryKey); err != nil {
@@ -672,9 +701,7 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 				delete(component.Data, key)
 			}
 		}
-		for key, value := range data {
-			component.Data[key] = value
-		}
+		maps.Copy(component.Data, data)
 		if err := s.Client.Update(ctx, component); err != nil {
 			return err
 		}
@@ -728,7 +755,7 @@ func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) e
 			return fmt.Errorf("could not verify site runtimes")
 		}
 		if len(runtimes.Items) != 0 {
-			return fmt.Errorf("delete the site's Codespaces in Gitea first")
+			return fmt.Errorf("delete the site's Codespaces in Gitea or clean up its runtime data here before deleting the site")
 		}
 	case *corev1.ConfigMap:
 		role := current.Labels[ComponentLabel]
@@ -747,6 +774,23 @@ func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) e
 				if role == "cache" && reference.UID == current.UID {
 					return fmt.Errorf("cache is selected by site %s", site.Name)
 				}
+			}
+		}
+		if role == "cache" {
+			spec, err := componentSpecFromConfigMap(current)
+			if err != nil || spec.Cache == nil {
+				return fmt.Errorf("could not verify the cache configuration")
+			}
+			if spec.Cache.Enabled {
+				return fmt.Errorf("disable the cache before deleting it")
+			}
+			var lease coordinationv1.Lease
+			err = s.Client.Get(ctx, types.NamespacedName{Namespace: current.Namespace, Name: "cache-owner-" + current.Name}, &lease)
+			if err != nil && !apierrors.IsNotFound(err) {
+				return fmt.Errorf("could not verify the cache writer lease")
+			}
+			if err == nil && lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second)) {
+				return fmt.Errorf("disable the cache and wait for its active writer lease to expire before deleting it")
 			}
 		}
 	}

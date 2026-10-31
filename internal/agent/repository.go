@@ -27,7 +27,7 @@ func repositoryWorkspace(repository *codespacev1.RepositoryCheckout) (string, er
 	return filepath.Join(workspaceRoot, parts[1]), nil
 }
 
-func cloneRepository(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, stdout, stderr io.Writer) error {
+func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, stdout, stderr io.Writer) error {
 	target, err := repositoryWorkspace(repository)
 	if err != nil {
 		return err
@@ -39,14 +39,19 @@ func cloneRepository(ctx context.Context, operation *codespacev1.OperationPayloa
 		return err
 	}
 	if _, err := os.Stat(target); err == nil {
-		return fmt.Errorf("workspace path already exists")
+		if err := verifyWorkspace(ctx, owner, target, repository.CommitSha); err != nil {
+			return fmt.Errorf("existing workspace: %w", err)
+		}
+		for _, cloneURL := range repositoryCloneURLs(repository) {
+			if cloneURL != "" {
+				return configureRepositoryCredentials(ctx, owner, target, cloneURL)
+			}
+		}
+		return fmt.Errorf("repository clone URL is missing")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	urls := []string{strings.TrimSpace(repository.CloneHttpUrl), strings.TrimSpace(repository.CloneSshUrl)}
-	if repository.PreferredProtocol == codespacev1.GitProtocol_GIT_PROTOCOL_SSH {
-		urls[0], urls[1] = urls[1], urls[0]
-	}
+	urls := repositoryCloneURLs(repository)
 	var failures []error
 	for index, cloneURL := range urls {
 		if cloneURL == "" || (index == 1 && cloneURL == urls[0]) {
@@ -76,6 +81,14 @@ func cloneRepository(ctx context.Context, operation *codespacev1.OperationPayloa
 		return nil
 	}
 	return fmt.Errorf("clone repository: %w", errors.Join(failures...))
+}
+
+func repositoryCloneURLs(repository *codespacev1.RepositoryCheckout) []string {
+	urls := []string{strings.TrimSpace(repository.CloneHttpUrl), strings.TrimSpace(repository.CloneSshUrl)}
+	if repository.PreferredProtocol == codespacev1.GitProtocol_GIT_PROTOCOL_SSH {
+		urls[0], urls[1] = urls[1], urls[0]
+	}
+	return urls
 }
 
 func configureRepositoryCredentials(ctx context.Context, owner devcontainer.HostUser, directory, cloneURL string) error {

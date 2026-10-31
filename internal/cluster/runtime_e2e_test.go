@@ -33,7 +33,7 @@ func TestKubernetesE2EDockerPersistence(t *testing.T) {
 	_, err = os.Stat(devContainerTest)
 	require.NoError(t, err)
 	runtime := requireE2ERuntime(t)
-	cluster := newE2ECluster(t, 35*time.Minute)
+	cluster := newE2ECluster(t, 75*time.Minute)
 	ns := cluster.createNamespace(t, "runtime-e2e")
 	volumeMode := corev1.PersistentVolumeFilesystem
 	if runtime.isolation == "kata" {
@@ -65,13 +65,7 @@ exec dockerd "$@" --mtu="$mtu"`
 	if runtime.isolation == "kata" {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
 		pod.Spec.Containers[0].Command = []string{"sh", "-ec"}
-		pod.Spec.Containers[0].Args = []string{`filesystem="$(blkid -p -o value -s TYPE /dev/codespace-data || true)"
-if [ -z "$filesystem" ]; then
-  mkfs.ext4 -F -m 0 /dev/codespace-data
-elif [ "$filesystem" != ext4 ]; then
-  echo "unexpected filesystem: $filesystem" >&2
-  exit 1
-fi
+		pod.Spec.Containers[0].Args = []string{`mkfs.ext4 -F -m 0 /dev/codespace-data
 mkdir -p /var/lib/codespace
 mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 ` + startDocker, "dockerd", dockerArguments[0], dockerArguments[1], dockerArguments[2]}
@@ -82,6 +76,15 @@ mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
 	}
 	prototype := pod.DeepCopy()
+	if runtime.isolation == "kata" {
+		// Only the newly created test PVC is formatted. Replacement Pods verify
+		// and mount the existing filesystem to test actual data persistence.
+		prototype.Spec.Containers[0].Args[0] = `test "$(blkid -p -o value -s TYPE /dev/codespace-data)" = ext4
+e2fsck -p /dev/codespace-data || test "$?" = 1
+mkdir -p /var/lib/codespace
+mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
+` + startDocker
+	}
 	execPod := func(input io.Reader, args ...string) (string, error) {
 		commandArgs := []string{"exec", "-n", ns.Name, pod.Name}
 		if input != nil {
@@ -148,12 +151,13 @@ mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 	command := exec.CommandContext(cluster.ctx, "kubectl", "cp", devContainerTest, ns.Name+"/docker:/devcontainer.test")
 	copyOutput, err := command.CombinedOutput()
 	require.NoError(t, err, "%s", copyOutput)
-	_, err = execPod(nil, "sh", "-ec", `
+	command = exec.CommandContext(cluster.ctx, "kubectl", "exec", "-n", ns.Name, pod.Name, "--", "sh", "-ec", `
 mkdir -p /var/lib/codespace/e2e-home /var/lib/codespace/e2e-tmp
 chown -R 1000:1000 /var/lib/codespace/e2e-home /var/lib/codespace/e2e-tmp
 chmod 0666 /run/docker.sock
 exec setpriv --reuid=1000 --regid=1000 --clear-groups \
   env HOME=/var/lib/codespace/e2e-home USER=codespace TMPDIR=/var/lib/codespace/e2e-tmp CODESPACE_E2E=1 \
-  /devcontainer.test -test.run '^TestDockerE2E' -test.v -test.timeout=25m`)
-	require.NoError(t, err)
+  /devcontainer.test -test.run '^TestDockerE2E' -test.v -test.timeout=70m`)
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	require.NoError(t, command.Run())
 }

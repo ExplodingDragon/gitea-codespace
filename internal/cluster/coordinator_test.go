@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -19,6 +20,7 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/go-logr/logr/testr"
 	"github.com/google/uuid"
@@ -172,7 +174,12 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	block, err := ssh.MarshalPrivateKey(private, "")
 	require.NoError(t, err)
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{"url": "https://workspace.example", "sshAddress": "workspace.example:2222", "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid"}}
+	gatewayConfig := configpkg.DefaultGatewayConfig()
+	gatewayConfig.HTTP.PublicURL = "https://workspace.example"
+	gatewayConfig.SSH.PublicAddr = "workspace.example:2222"
+	gatewayJSON, err := json.Marshal(gatewayConfig)
+	require.NoError(t, err)
+	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{"config": string(gatewayJSON), "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid"}}
 	hostKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: gateway.Namespace, UID: "gateway-key-uid", CreationTimestamp: metav1.Now(), Labels: map[string]string{ComponentUIDLabel: string(gateway.UID)}}, Data: map[string][]byte{"hostKey": pem.EncodeToMemory(block)}}
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "site-credential", Namespace: gateway.Namespace, UID: "credential-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-secret")}}
 	quota := testQuota(site, ns.Name)

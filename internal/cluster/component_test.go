@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,7 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"github.com/stretchr/testify/require"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -110,8 +112,13 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	encoded, err := x509.MarshalPKCS8PrivateKey(hostPrivate)
 	require.NoError(t, err)
 	hostKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
+	gatewayConfig := configpkg.DefaultGatewayConfig()
+	gatewayConfig.HTTP.PublicURL = "https://workspace.example"
+	gatewayConfig.SSH.PublicAddr = "workspace.example:2222"
+	gatewayJSON, err := json.Marshal(gatewayConfig)
+	require.NoError(t, err)
 	component := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{
-		"url": "https://workspace.example", "sshAddress": "workspace.example:2222", "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid",
+		"config": string(gatewayJSON), "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid",
 	}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: component.Namespace, UID: "gateway-key-uid", Labels: map[string]string{ComponentUIDLabel: string(component.UID)}}, Data: map[string][]byte{"hostKey": hostKey}}
 	site := testSite("example", "site-uid")
@@ -129,6 +136,9 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: cs.Namespace, UID: cs.Status.Pod.UID, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.1.2.3", PodIPs: []corev1.PodIP{{IP: "10.1.2.3"}}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs, pod).Build()
 	index := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs, pod).
+		WithIndex(&corev1.ConfigMap{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).
+		WithIndex(&api.GiteaSite{}, SiteGatewayUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.GiteaSite).Spec.Gateway.UID)} }).
+		WithIndex(&api.Codespace{}, RuntimeSiteUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.Codespace).Spec.Site.UID)} }).
 		WithIndex(&api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string { return []string{object.(*api.Codespace).Spec.RuntimeUUID} }).Build()
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
@@ -247,7 +257,8 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{
 		Site: api.ResourceReference{Name: site.Name, UID: site.UID}, Runtime: testRuntime(),
 	}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs).
+		WithIndex(&corev1.ConfigMap{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).Build()
 	server := &ComponentServer{Client: c, ManagementNamespace: namespace}
 	cacheContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: string(component.UID), Instance: "cache-pod"})
 
@@ -256,22 +267,29 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.EqualValues(t, cacheConfig.Revision, material.config.Revision)
 
 	const sessionID = "11111111-1111-4111-8111-111111111111"
-	_, err = server.claimCache(cacheContext, identity, material, sessionID)
+	material.config.Enabled = false
+	err = server.claimCache(cacheContext, identity, material, sessionID)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
+	material.config.Enabled = true
+	err = server.claimCache(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
 	var ownerLease coordinationv1.Lease
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "cache-owner-" + component.Name}, &ownerLease))
 	require.True(t, metav1.IsControlledBy(&ownerLease, component))
-	_, err = server.claimCache(cacheContext, identity, material, "22222222-2222-4222-8222-222222222222")
+	err = server.claimCache(cacheContext, identity, material, "22222222-2222-4222-8222-222222222222")
 	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 	err = server.renewCache(cacheContext, identity, material, sessionID, &componentv1.CacheStatus{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"})
 	require.NoError(t, err)
+	material.config.Enabled = false
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.renewCache(cacheContext, identity, material, sessionID, nil)))
+	material.config.Enabled = true
 
 	operation := &codespacev1.OperationPayload{Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{
 		Repository: &codespacev1.RepositoryCheckout{RepositoryId: 7}, GitIdentity: &codespacev1.GitIdentity{UserId: 9},
 	}}}
 	runtimeCache, err := server.runtimeCache(ctx, cs, operation)
 	require.NoError(t, err)
-	cacheNamespace := cachepkg.Namespace(secret.Data["registryKey"], site.Spec.ManagerID, 7, 9)
+	cacheNamespace := cachepkg.Namespace(secret.Data["registryKey"], string(site.UID), 7, 9)
 	require.Equal(t, "http://cache.codespace-system.svc:5000/cache/"+cacheNamespace, runtimeCache.BuildRegistry)
 	credential := runtimeCache.Credentials["cache.codespace-system.svc:5000"]
 	require.NotNil(t, credential)
@@ -291,17 +309,44 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	wrongContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: "other-cache", Instance: "cache-pod"})
 	_, _, err = server.cacheForRequest(wrongContext, component.Name)
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
-	server.releaseCache(cacheContext, identity, component.Name, sessionID)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))
+	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	ownerLease.Spec.RenewTime = &expired
+	require.NoError(t, c.Update(ctx, &ownerLease))
 	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
 	require.NoError(t, err)
 	require.Nil(t, runtimeCache)
-	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
-	ownerLease = coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-owner-" + component.Name, Namespace: namespace, Labels: map[string]string{ComponentUIDLabel: "deleted-component"}}, Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To("deleted/component/owner/1"), LeaseDurationSeconds: ptr.To(int32(1)), RenewTime: &expired}}
-	require.NoError(t, c.Create(ctx, &ownerLease))
-	_, err = server.claimCache(cacheContext, identity, material, sessionID)
+	ownerLease.Labels[ComponentUIDLabel] = "deleted-component"
+	ownerLease.Spec.HolderIdentity = ptr.To("deleted/component/owner/1")
+	require.NoError(t, c.Update(ctx, &ownerLease))
+	err = server.claimCache(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))
 	require.Equal(t, string(component.UID), ownerLease.Labels[ComponentUIDLabel])
 	require.True(t, metav1.IsControlledBy(&ownerLease, component))
-	server.releaseCache(cacheContext, identity, component.Name, sessionID)
+	ownerLease.Spec.RenewTime = &expired
+	require.NoError(t, c.Update(ctx, &ownerLease))
+	rpcServer := connect.NewServer()
+	componentv1connect.RegisterComponentServiceHandler(rpcServer, server)
+	mux := http.NewServeMux()
+	connecthttp.Mount(mux, rpcServer)
+	httpServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mux.ServeHTTP(w, r.WithContext(contextWithComponent(r.Context(), identity)))
+	}))
+	httpServer.EnableHTTP2 = true
+	httpServer.StartTLS()
+	defer httpServer.Close()
+	remote := componentv1connect.NewComponentServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL, connecthttp.WithGRPC())))
+	stream, err := remote.CacheControl(ctx)
+	require.NoError(t, err)
+	defer func() { _ = stream.Close() }()
+	require.NoError(t, stream.Send(&componentv1.CacheControlRequest{ProtocolVersion: 1, CacheId: component.Name, SessionId: "stream", Sequence: 1}))
+	response, err := stream.Receive()
+	require.NoError(t, err)
+	require.Positive(t, response.PermitValidForMilliseconds)
+	require.NoError(t, stream.CloseSend())
+	_, err = stream.Receive()
+	require.ErrorIs(t, err, io.EOF)
+	err = server.claimCache(cacheContext, identity, material, "replacement")
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 }

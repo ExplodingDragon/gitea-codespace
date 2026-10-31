@@ -4,7 +4,6 @@
 package cache
 
 import (
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -14,7 +13,7 @@ import (
 const AuthenticationTTL = 30 * time.Second
 const cacheAuthenticationCapacity = 1024
 
-func (c *registryCache) verifyToken(ctx context.Context, value string) (Session, error) {
+func (c *registryCache) verifyToken(value string) (Session, error) {
 	if len(value) < 26 || len(value) > 512 || len(c.tokenKey) < 32 {
 		return Session{}, errors.New("cache registry session is invalid")
 	}

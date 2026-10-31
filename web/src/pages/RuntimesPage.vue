@@ -9,6 +9,36 @@ const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
 
+function deleteRuntime(item: Resource<RuntimeInstance>) {
+  dialog.warning({
+    title: 'Delete runtime data',
+    content:
+      'Disable the owning site first. This permanently removes the environment and its stored data after the previous runtime has stopped.',
+    positiveText: 'Delete',
+    negativeText: 'Cancel',
+    async onPositiveClick() {
+      busy.value = true;
+      error.value = '';
+      try {
+        await request(
+          `runtimes/${encodeURIComponent(item.namespace ?? '')}/${encodeURIComponent(item.name)}`,
+          'DELETE',
+          {
+            uid: item.uid,
+            resourceVersion: item.resourceVersion,
+            podUID: item.status?.pod?.uid,
+          },
+        );
+        await load();
+      } catch (e) {
+        error.value = (e as Error).message;
+      } finally {
+        busy.value = false;
+      }
+    },
+  });
+}
+
 function recoveryRequired(item: Resource<RuntimeInstance>) {
   return item.status?.conditions?.some(
     (condition) =>
@@ -77,7 +107,7 @@ onMounted(load);
     {{ error }}
   </NAlert>
   <div class="table-scroll">
-    <table>
+    <table class="runtime-table">
       <thead>
         <tr>
           <th>Codespace</th>
@@ -110,14 +140,24 @@ onMounted(load);
             <p class="muted">{{ item.status?.pod?.name }}</p>
           </td>
           <td class="runtime-actions">
-            <NButton
-              v-if="recoveryRequired(item)"
-              size="small"
-              :disabled="busy"
-              @click="confirmWriterStopped(item)"
-            >
-              Confirm stopped
-            </NButton>
+            <div class="actions">
+              <NButton
+                v-if="recoveryRequired(item)"
+                size="small"
+                :disabled="busy"
+                @click="confirmWriterStopped(item)"
+              >
+                Confirm stopped
+              </NButton>
+              <NButton
+                size="small"
+                type="error"
+                :disabled="busy || item.deleting"
+                @click="deleteRuntime(item)"
+              >
+                Delete data
+              </NButton>
+            </div>
           </td>
         </tr>
         <tr v-if="!items.length">

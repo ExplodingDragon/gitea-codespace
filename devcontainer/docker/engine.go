@@ -193,7 +193,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var primaryService string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, workspaceFolder, labels, options.HostUser)
+		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser)
 	} else {
 		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser)
 	}
@@ -496,7 +496,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	return arguments, nil
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string

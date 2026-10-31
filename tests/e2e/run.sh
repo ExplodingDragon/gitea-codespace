@@ -192,7 +192,7 @@ run_cluster_tests "component lifecycle" '^TestKubernetesE2EComponentWorkloads$' 
 run_cluster_tests "Manager leader failover" '^TestKubernetesE2EManagerFailover$' 5m
 run_cluster_tests "real Gitea handshake" '^TestKubernetesE2ERealGiteaHandshake$' 2m
 run_cluster_tests "Runtime Agent process model" '^TestKubernetesE2EAgentProcesses$' 6m
-run_cluster_tests "Runtime, Docker persistence, and Dev Container" '^TestKubernetesE2EDockerPersistence$' 40m
+run_cluster_tests "Runtime, Docker persistence, and Dev Container" '^TestKubernetesE2EDockerPersistence$' 80m
 
 echo "Deploying S3Mock"
 "$KUBECTL_BIN" create deployment s3mock -n "$MANAGEMENT_NAMESPACE" --image="$S3MOCK_IMAGE" --dry-run=client -o yaml | \

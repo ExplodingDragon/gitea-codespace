@@ -6,6 +6,7 @@ package agent
 import (
 	"context"
 	"crypto/ed25519"
+	"errors"
 	"fmt"
 	"io"
 	"maps"
@@ -51,7 +52,16 @@ type Runtime struct {
 	docker          *DockerDaemon
 }
 
-func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse, update func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
+func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse, update func(*agentv1.AgentReport), stdout, stderr io.Writer) (returnErr error) {
+	defer func() {
+		if ctx.Err() != nil {
+			r.mu.Lock()
+			r.target = nil
+			r.mu.Unlock()
+			// Closing attach does not terminate Docker exec; stop this writer before reporting cancellation.
+			returnErr = errors.Join(returnErr, ctx.Err(), r.Close())
+		}
+	}()
 	if r.Journal == nil || r.PodUID == "" || response == nil || response.Operation == nil || response.Runtime == nil {
 		return fmt.Errorf("runtime execution input is incomplete")
 	}
@@ -177,13 +187,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	err = r.Journal.RunStage(ctx, operation.OperationRversion, "prepare-workspace", func(ctx context.Context) error {
-		return cloneRepository(ctx, operation, payload.Repository, hostUser, stdout, stderr)
-	})
-	if err == nil {
-		err = verifyWorkspace(ctx, hostUser, workspace, payload.Repository.CommitSha)
-	}
-	if err != nil {
+	if err := ensureWorkspace(ctx, operation, payload.Repository, hostUser, stdout, stderr); err != nil {
 		return err
 	}
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)

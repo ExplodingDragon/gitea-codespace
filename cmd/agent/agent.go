@@ -23,6 +23,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	agentpkg "gitea.dev/codespace/internal/agent"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/transport"
@@ -75,8 +76,28 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Client(func(identity *url.URL) error {
+		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
+		if len(parts) != 2 || parts[0] != "manager" || parts[1] == "" {
+			return fmt.Errorf("manager identity is invalid")
+		}
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+	httpClient := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second,
+	}}
+	defer httpClient.CloseIdleConnections()
+	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, strings.TrimRight(managerURL, "/"), connecthttp.WithGRPC())))
 	if device := strings.TrimSpace(os.Getenv("CODESPACE_DATA_DEVICE")); device != "" {
-		unmount, err := agentpkg.MountDataVolume(ctx, device, "/var/lib/codespace")
+		unmount, err := agentpkg.MountDataVolume(ctx, device, "/var/lib/codespace", func(ctx context.Context, initialized bool) error {
+			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
+			defer cancel()
+			_, err := remote.PrepareVolume(attempt, &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: initialized})
+			return err
+		})
 		if err != nil {
 			return err
 		}
@@ -93,21 +114,6 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err := os.Setenv("DOCKER_HOST", agentpkg.DockerHost); err != nil {
 		return err
 	}
-	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Client(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 2 || parts[0] != "manager" || parts[1] == "" {
-			return fmt.Errorf("manager identity is invalid")
-		}
-		return nil
-	})
-	if err != nil {
-		return err
-	}
-	httpClient := &http.Client{Transport: &http.Transport{
-		TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second,
-	}}
-	defer httpClient.CloseIdleConnections()
-	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, strings.TrimRight(managerURL, "/"), connecthttp.WithGRPC())))
 	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)

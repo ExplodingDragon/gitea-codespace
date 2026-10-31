@@ -42,7 +42,7 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 	if stage == "resume" {
 		stage += "/" + e.PodUID
 	}
-	err := e.Journal.RunStage(ctx, request.OperationVersion, stage, func(ctx context.Context) error {
+	err := e.Journal.RunOnce(ctx, request.OperationVersion, stage, func(ctx context.Context) error {
 		state, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
 		if err != nil {
 			return err

@@ -9,7 +9,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -414,10 +413,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		runtimeConfiguration.VolumeMode = corev1.PersistentVolumeBlock
 		runtimeConfiguration.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
 	}
-	templateSpec, err := json.Marshal(api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration})
-	require.NoError(t, err)
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveTemplate(ctx, template, adminWrite{Name: templateName, Spec: templateSpec, Verification: "product lifecycle E2E"}, true))
+	require.NoError(t, admin.saveTemplate(ctx, template, adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: templateName}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration}, Verification: "product lifecycle E2E"}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(template), template) == nil && meta.IsStatusConditionTrue(template.Status.Conditions, "Ready")
 	}, time.Minute, time.Second)
@@ -425,10 +422,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	gatewayConfig := configpkg.DefaultGatewayConfig()
 	gatewayConfig.HTTP.PublicURL = "http://" + gatewayName + ".test"
 	gatewayConfig.SSH.PublicAddr = gatewayName + ".test:22"
-	gatewaySpec, err := json.Marshal(adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig})
-	require.NoError(t, err)
 	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveComponent(ctx, gateway, adminWrite{Name: gatewayName, Spec: gatewaySpec}, true))
+	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig}}, true))
 
 	cacheConfig := configpkg.CacheConfig{
 		Enabled: true, Listen: ":5000", PublicURL: "http://" + cacheName + ".test", MaxSize: "4GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
@@ -438,10 +433,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 			"ghcr.io":   {Allow: []string{"coder/devcontainer-features/code-server*", "devcontainers/features/common-utils*"}},
 		},
 	}
-	cacheSpec, err := json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "Lifecycle E2E cache", Cache: &cacheConfig})
-	require.NoError(t, err)
 	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveComponent(ctx, cache, adminWrite{Name: cacheName, Spec: cacheSpec}, true))
+	require.NoError(t, admin.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cacheName}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Lifecycle E2E cache", Cache: &cacheConfig}}, true))
 
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: gatewayName}, gateway))
 	nodePortService := &corev1.Service{
@@ -461,9 +454,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NotZero(t, nodePortService.Spec.Ports[1].NodePort)
 	gatewayConfig.HTTP.PublicURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
 	gatewayConfig.SSH.PublicAddr = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
-	gatewaySpec, err = json.Marshal(adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig})
-	require.NoError(t, err)
-	require.NoError(t, admin.saveComponent(ctx, gateway, adminWrite{Name: gatewayName, Spec: gatewaySpec}, false))
+	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig}}, false))
 
 	for _, name := range []string{gatewayName, cacheName} {
 		require.Eventually(t, func() bool {
@@ -486,10 +477,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		Quota: quota, ContainerLimits: corev1.LimitRangeItem{Type: corev1.LimitTypeContainer},
 		Upstreams: []api.NetworkDestination{{CIDR: host + "/32", Ports: []int32{int32(port)}}, {CIDR: "0.0.0.0/0", Ports: []int32{80, 443}}},
 	}, ManagerID: "1"}
-	encodedSite, err := json.Marshal(siteSpec)
-	require.NoError(t, err)
 	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveSite(ctx, site, adminWrite{Name: siteName, Spec: encodedSite, ManagerSecret: strings.Repeat("e2e-site-secret-", 3)}, true))
+	require.NoError(t, admin.saveSite(ctx, site, adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: siteName}, Spec: siteSpec, ManagerSecret: strings.Repeat("e2e-site-secret-", 3)}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(site), site) == nil && meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") && site.Status.CanonicalURL == remote.baseURL
 	}, 2*time.Minute, time.Second)

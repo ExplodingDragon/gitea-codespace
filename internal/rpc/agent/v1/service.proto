@@ -8,11 +8,21 @@ option go_package = "gitea.dev/codespace/internal/rpc/agent/v1;agentv1";
 
 // AgentControlService runs on the elected Manager, behind Pod-bound mTLS.
 service AgentControlService {
+  // PrepareVolume consumes first-format authorization or confirms a checked filesystem.
+  rpc PrepareVolume(PrepareVolumeRequest) returns (PrepareVolumeResponse);
   // Control resumes a session by reporting facts before accepting new execution.
   rpc Control(stream ControlRequest) returns (stream ControlResponse);
   // UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
   rpc UploadLogs(UploadLogsRequest) returns (UploadLogsResponse);
 }
+
+message PrepareVolumeRequest {
+  uint32 protocol_version = 1;
+  // initialized confirms that ext4 was checked and mounted successfully.
+  bool initialized = 2;
+}
+
+message PrepareVolumeResponse {}
 
 // AgentAccessService runs on the Runtime Pod, reached directly by Gateway.
 service AgentAccessService {

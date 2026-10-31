@@ -1209,12 +1209,14 @@ func (*CacheControlRequest_BeginGc) isCacheControlRequest_Maintenance() {}
 func (*CacheControlRequest_CompleteGc) isCacheControlRequest_Maintenance() {}
 
 type CacheControlResponse struct {
-	state                      protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion            uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Sequence                   uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	PermitValidForMilliseconds int64                  `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
-	Config                     *CacheConfiguration    `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
-	GcGrant                    *CacheGCGrant          `protobuf:"bytes,5,opt,name=gc_grant,json=gcGrant,proto3" json:"gc_grant,omitempty"`
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Sequence        uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	// A positive value acknowledges lease renewal, measured from request send time.
+	// Configuration-only updates use zero and do not extend permission.
+	PermitValidForMilliseconds int64               `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
+	Config                     *CacheConfiguration `protobuf:"bytes,4,opt,name=config,proto3" json:"config,omitempty"`
+	GcGrant                    *CacheGCGrant       `protobuf:"bytes,5,opt,name=gc_grant,json=gcGrant,proto3" json:"gc_grant,omitempty"`
 	unknownFields              protoimpl.UnknownFields
 	sizeCache                  protoimpl.SizeCache
 }

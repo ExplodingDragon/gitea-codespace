@@ -28,6 +28,9 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
+	// AgentControlServicePrepareVolumeProcedure is the procedure name of the AgentControlService's
+	// PrepareVolume RPC.
+	AgentControlServicePrepareVolumeProcedure = "/agent.v1.AgentControlService/PrepareVolume"
 	// AgentControlServiceControlProcedure is the procedure name of the AgentControlService's Control
 	// RPC.
 	AgentControlServiceControlProcedure = "/agent.v1.AgentControlService/Control"
@@ -47,6 +50,13 @@ const (
 )
 
 var (
+	agentControlServicePrepareVolumeSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods().ByName("PrepareVolume"),
+			Procedure:  AgentControlServicePrepareVolumeProcedure,
+		}
+	})
 	agentControlServiceControlSpec = sync.OnceValue(func() connect.Spec {
 		return connect.Spec{
 			StreamType: connect.StreamTypeBidi,
@@ -65,6 +75,8 @@ var (
 
 // AgentControlServiceClient is a client for the agent.v1.AgentControlService service.
 type AgentControlServiceClient interface {
+	// PrepareVolume consumes first-format authorization or confirms a checked filesystem.
+	PrepareVolume(context.Context, *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error)
 	// Control resumes a session by reporting facts before accepting new execution.
 	Control(context.Context) (AgentControlServiceControlClientStream, error)
 	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
@@ -116,6 +128,8 @@ func (s AgentControlServiceControlClientStream) Close() error {
 
 // AgentControlServiceHandler is an implementation of the agent.v1.AgentControlService service.
 type AgentControlServiceHandler interface {
+	// PrepareVolume consumes first-format authorization or confirms a checked filesystem.
+	PrepareVolume(context.Context, *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error)
 	// Control resumes a session by reporting facts before accepting new execution.
 	Control(context.Context, AgentControlServiceControlServerStream) error
 	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
@@ -127,6 +141,7 @@ type AgentControlServiceHandler interface {
 func RegisterAgentControlServiceHandler(server *connect.Server, svc AgentControlServiceHandler) {
 	adapter := agentControlServiceHandler{svc: svc}
 	server.Register(
+		connect.Method{Spec: agentControlServicePrepareVolumeSpec(), Handler: adapter.prepareVolume},
 		connect.Method{Spec: agentControlServiceControlSpec(), Handler: adapter.control},
 		connect.Method{Spec: agentControlServiceUploadLogsSpec(), Handler: adapter.uploadLogs},
 	)
@@ -160,6 +175,10 @@ func (s AgentControlServiceControlServerStream) Send(res *v1.ControlResponse) er
 // UnimplementedAgentControlServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedAgentControlServiceHandler struct{}
 
+func (UnimplementedAgentControlServiceHandler) PrepareVolume(context.Context, *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.PrepareVolume is not implemented")
+}
+
 func (UnimplementedAgentControlServiceHandler) Control(context.Context, AgentControlServiceControlServerStream) error {
 	return connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.Control is not implemented")
 }
@@ -170,6 +189,14 @@ func (UnimplementedAgentControlServiceHandler) UploadLogs(context.Context, *v1.U
 
 type agentControlServiceClient struct {
 	client *connect.Client
+}
+
+func (c *agentControlServiceClient) PrepareVolume(ctx context.Context, req *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error) {
+	var res v1.PrepareVolumeResponse
+	if err := c.client.CallUnary(ctx, agentControlServicePrepareVolumeSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
 }
 
 func (c *agentControlServiceClient) Control(ctx context.Context) (AgentControlServiceControlClientStream, error) {
@@ -189,6 +216,18 @@ func (c *agentControlServiceClient) UploadLogs(ctx context.Context, req *v1.Uplo
 }
 
 type agentControlServiceHandler struct{ svc AgentControlServiceHandler }
+
+func (h agentControlServiceHandler) prepareVolume(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.PrepareVolumeRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.PrepareVolume(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
 
 func (h agentControlServiceHandler) control(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
 	return h.svc.Control(ctx, AgentControlServiceControlServerStream{stream: stream})

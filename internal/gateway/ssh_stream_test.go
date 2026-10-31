@@ -55,9 +55,9 @@ func (streamTestSession) Wait() error             { return &WorkspaceCommandExit
 func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		input, writer := io.Pipe()
-		defer writer.Close()
+		defer func() { _ = writer.Close() }()
 		channel := &streamTestChannel{input: input, requests: make(chan *ssh.Request)}
-		defer channel.Close()
+		defer func() { _ = channel.Close() }()
 		done := make(chan struct{})
 		go func() {
 			defer close(done)

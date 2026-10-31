@@ -5,7 +5,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"testing"
 	"time"
 
@@ -31,21 +30,17 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	gatewayConfig := configpkg.DefaultGatewayConfig()
 	gatewayConfig.HTTP.PublicURL = "https://gateway-" + suffix + ".example.test"
 	gatewayConfig.SSH.PublicAddr = "gateway-" + suffix + ".example.test:22"
-	gatewaySpec, err := json.Marshal(adminComponentSpec{Role: "gateway", DisplayName: "E2E gateway", Gateway: &gatewayConfig})
-	require.NoError(t, err)
 	gateway := &corev1.ConfigMap{}
 	gateway.Name = "gateway-" + suffix
-	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminWrite{Name: gateway.Name, Spec: gatewaySpec}, true))
+	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "E2E gateway", Gateway: &gatewayConfig}}, true))
 
 	cacheConfig := configpkg.CacheConfig{
 		Enabled: true, Listen: ":5000", PublicURL: "http://cache-" + suffix + ".example.test", MaxSize: "512MiB",
 		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/codespace-cache"},
 	}
-	cacheSpec, err := json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "E2E cache", Cache: &cacheConfig})
-	require.NoError(t, err)
 	cache := &corev1.ConfigMap{}
 	cache.Name = "cache-" + suffix
-	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminWrite{Name: cache.Name, Spec: cacheSpec}, true))
+	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: adminComponentSpec{Role: "cache", DisplayName: "E2E cache", Cache: &cacheConfig}}, true))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()

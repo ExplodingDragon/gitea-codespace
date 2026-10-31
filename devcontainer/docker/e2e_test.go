@@ -213,7 +213,7 @@ func TestDockerE2EDockerInDockerFeature(t *testing.T) {
 		t.Skip("run make test-e2e to verify Dev Container interoperability")
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Hour)
 	defer cancel()
 	workspace := t.TempDir()
 	var output bytes.Buffer

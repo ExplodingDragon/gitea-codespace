@@ -154,7 +154,10 @@ async function save() {
 function remove(item: Resource<Component, ComponentStatus>) {
   dialog.warning({
     title: `Delete ${item.spec.displayName}?`,
-    content: 'Sites must stop referencing this component before it can be deleted.',
+    content:
+      item.spec.role === 'cache'
+        ? 'Remove site references, disable the cache, and wait for its writer lease to expire before deleting it.'
+        : 'Sites must stop referencing this component before it can be deleted.',
     positiveText: 'Delete',
     negativeText: 'Cancel',
     onPositiveClick: async () => {
