@@ -6,10 +6,7 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
-	"net/url"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -327,14 +324,9 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 	if gateway.UID != site.Spec.Gateway.UID || gateway.Labels[ComponentLabel] != "gateway" || !gateway.DeletionTimestamp.IsZero() {
 		return nil, nil, fmt.Errorf("gateway identity changed")
 	}
-	publicURL, err := url.Parse(gateway.Data["url"])
-	if err != nil || publicURL.Hostname() == "" || (publicURL.Scheme != "http" && publicURL.Scheme != "https") || publicURL.User != nil || publicURL.RawQuery != "" || publicURL.Fragment != "" || (publicURL.Path != "" && publicURL.Path != "/") {
-		return nil, nil, fmt.Errorf("invalid gateway public URL")
-	}
-	host, port, err := net.SplitHostPort(gateway.Data["sshAddress"])
-	portNumber, portErr := strconv.Atoi(port)
-	if err != nil || portErr != nil || host == "" || portNumber < 1 || portNumber > 65535 {
-		return nil, nil, fmt.Errorf("invalid gateway SSH address")
+	gatewayConfig, err := gatewayComponentConfig(&gateway)
+	if err != nil {
+		return nil, nil, err
 	}
 	var hostKey corev1.Secret
 	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: gateway.Data["sshHostKeySecret"]}, &hostKey); err != nil {
@@ -347,7 +339,7 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid gateway SSH host key")
 	}
-	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(publicURL.String(), "/"), GatewaySshAddr: gateway.Data["sshAddress"], GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
+	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(gatewayConfig.HTTP.PublicURL, "/"), GatewaySshAddr: gatewayConfig.SSH.PublicAddr, GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
 	var accepted []string
 	seen := make(map[string]bool)
 	for _, ref := range site.Spec.Templates {

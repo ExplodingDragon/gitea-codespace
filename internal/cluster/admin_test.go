@@ -83,15 +83,6 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	require.Empty(t, secrets.Items)
 }
 
-func TestDecodeAdminSpecRequiresOneObject(t *testing.T) {
-	var value struct {
-		Name string `json:"name"`
-	}
-	require.NoError(t, decodeAdminSpec(json.RawMessage(`{"name":"value"}`), &value))
-	require.Equal(t, "value", value.Name)
-	require.Error(t, decodeAdminSpec(json.RawMessage(`{"name":"value"} {"name":"other"}`), &value))
-}
-
 func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
@@ -105,9 +96,7 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	site := testSite("example", "")
 	site.ResourceVersion, site.Spec.Credential = "", api.ResourceReference{}
 	spec := adminSiteSpec{GiteaSiteSpec: site.Spec, ManagerID: "9007199254740993"}
-	raw, err := json.Marshal(spec)
-	require.NoError(t, err)
-	input := adminWrite{Name: site.Name, Spec: raw, ManagerSecret: strings.Repeat("secret", 8)}
+	input := adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: site.Name}, Spec: spec, ManagerSecret: strings.Repeat("secret", 8)}
 	require.NoError(t, server.saveSite(ctx, site, input, true))
 	require.EqualValues(t, 9007199254740993, site.Spec.ManagerID)
 	var credential corev1.Secret
@@ -118,9 +107,7 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	oldRevision := site.ResourceVersion
 	spec.GiteaSiteSpec = site.Spec
 	spec.DisplayName = "Updated site"
-	raw, err = json.Marshal(spec)
-	require.NoError(t, err)
-	input.UID, input.ResourceVersion, input.Spec, input.ManagerSecret = site.UID, site.ResourceVersion, raw, strings.Repeat("updated", 8)
+	input.UID, input.ResourceVersion, input.Spec, input.ManagerSecret = site.UID, site.ResourceVersion, spec, strings.Repeat("updated", 8)
 	encoded, err := json.Marshal(input)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
@@ -188,6 +175,35 @@ func TestAdminConfirmsMissingRuntimeWriterByExactIdentity(t *testing.T) {
 	require.Equal(t, http.StatusConflict, w.Code)
 }
 
+func TestAdminDeletesRuntimeOnlyAfterDisablingSite(t *testing.T) {
+	site := testSite("example", "site-uid")
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true}},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, cs).Build()
+	s := &AdminServer{Client: c, Namespace: "codespace-system"}
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	body, err := json.Marshal(adminRuntimeRecovery{UID: cs.UID, ResourceVersion: cs.ResourceVersion, PodUID: cs.Status.Pod.UID})
+	require.NoError(t, err)
+	remove := func() *httptest.ResponseRecorder {
+		w := httptest.NewRecorder()
+		s.resources(w, httptest.NewRequest(http.MethodDelete, "/api/admin/runtimes/"+cs.Namespace+"/"+cs.Name, bytes.NewReader(body)))
+		return w
+	}
+	require.Equal(t, http.StatusConflict, remove().Code)
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(site), site))
+	site.Spec.Enabled = false
+	require.NoError(t, c.Update(t.Context(), site))
+	w := remove()
+	require.Equal(t, http.StatusAccepted, w.Code, w.Body.String())
+	require.Equal(t, http.StatusConflict, remove().Code)
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	require.Equal(t, "delete", cs.Status.RecoveryAction)
+	require.Nil(t, cs.Status.Target)
+}
+
 func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	ctx := t.Context()
 	namespace := "codespace-system"
@@ -200,17 +216,15 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	server := &AdminServer{Client: c, Namespace: namespace}
 
 	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gatewaySpec, err := json.Marshal(adminComponentSpec{Role: "gateway", DisplayName: "Primary gateway", Gateway: &gatewayConfig})
-	require.NoError(t, err)
 	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway"}}
-	require.NoError(t, server.saveComponent(ctx, gateway, adminWrite{Name: gateway.Name, Spec: gatewaySpec}, true))
+	require.NoError(t, server.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Primary gateway", Gateway: &gatewayConfig}}, true))
 	var gatewaySecret corev1.Secret
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: gateway.Data["sshHostKeySecret"]}, &gatewaySecret))
 	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
 	require.Equal(t, string(gateway.UID), gatewaySecret.Labels[ComponentUIDLabel])
 	require.NotEmpty(t, gatewaySecret.Data["hostKey"])
 	originalGatewaySecret := gatewaySecret.DeepCopy()
-	rotation, err := json.Marshal(adminWrite{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
+	rotation, err := json.Marshal(adminWriteIdentity{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
 	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/components/gateway/rotate-ssh-host-key", bytes.NewReader(rotation)))
@@ -227,10 +241,8 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 		Name: "Build cache", Enabled: true, Listen: ":5000", PublicURL: "https://cache.example.com", MaxSize: "1GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
 		Storage: configpkg.CacheStorageConfig{Driver: "s3", S3: configpkg.CacheS3Config{Endpoint: "https://s3.example.com", Region: "test", Bucket: "codespace"}},
 	}
-	cacheSpec, err := json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "Build cache", Cache: &cacheConfig})
-	require.NoError(t, err)
 	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cache"}}
-	require.NoError(t, server.saveComponent(ctx, cache, adminWrite{Name: cache.Name, Spec: cacheSpec, S3AccessKey: "initial-access", S3SecretKey: "initial-secret"}, true))
+	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Build cache", Cache: &cacheConfig}, S3AccessKey: "initial-access", S3SecretKey: "initial-secret"}, true))
 	var persisted configpkg.CacheConfig
 	require.NoError(t, json.Unmarshal([]byte(cache.Data["config"]), &persisted))
 	require.EqualValues(t, 1, persisted.Revision)
@@ -265,10 +277,20 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.NotContains(t, string(encoded), "initial-secret")
 	require.NotContains(t, string(encoded), string(gatewaySecret.Data["hostKey"]))
 	require.NotContains(t, string(encoded), "PRIVATE KEY")
-
-	cacheSpec, err = json.Marshal(adminComponentSpec{Role: "cache", DisplayName: "Updated cache", Cache: &cacheConfig})
+	require.ErrorContains(t, server.checkDeletion(ctx, cache), "disable the cache")
+	disabled := cache.DeepCopy()
+	disabledConfig := persisted
+	disabledConfig.Enabled = false
+	disabledJSON, err := json.Marshal(disabledConfig)
 	require.NoError(t, err)
-	require.NoError(t, server.saveComponent(ctx, cache, adminWrite{Name: cache.Name, UID: cache.UID, ResourceVersion: cache.ResourceVersion, Spec: cacheSpec, S3AccessKey: "rotated-access", S3SecretKey: "rotated-secret"}, false))
+	disabled.Data["config"] = string(disabledJSON)
+	require.ErrorContains(t, server.checkDeletion(ctx, disabled), "active writer lease")
+	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	cacheLease.Spec.RenewTime = &expired
+	require.NoError(t, c.Update(ctx, cacheLease))
+	require.NoError(t, server.checkDeletion(ctx, disabled))
+
+	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name, UID: cache.UID, ResourceVersion: cache.ResourceVersion}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Updated cache", Cache: &cacheConfig}, S3AccessKey: "rotated-access", S3SecretKey: "rotated-secret"}, false))
 	require.NoError(t, json.Unmarshal([]byte(cache.Data["config"]), &persisted))
 	require.EqualValues(t, 2, persisted.Revision)
 	require.NotEqual(t, original.Name, cache.Data["secretName"])

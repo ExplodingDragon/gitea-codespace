@@ -5,7 +5,6 @@ package cluster
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net"
 	"net/url"
@@ -108,6 +107,21 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	if component.UID == "" || r.PlatformImage == "" {
 		return ctrl.Result{}, fmt.Errorf("component UID and platform image are required")
 	}
+	var gatewayConfig *configpkg.GatewayConfig
+	var cacheConfig *configpkg.CacheConfig
+	if role == "gateway" {
+		config, err := gatewayComponentConfig(&component)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		gatewayConfig = &config
+	} else {
+		config, err := cacheComponentConfig(&component)
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		cacheConfig = &config
+	}
 	if err := bindComponentCredential(ctx, r.Client, &component); err != nil {
 		return ctrl.Result{}, fmt.Errorf("bind component credential: %w", err)
 	}
@@ -115,26 +129,20 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	if err := r.reconcileCertificate(ctx, &component, role, identitySecret); err != nil {
 		return ctrl.Result{}, err
 	}
-	ports, err := r.reconcileService(ctx, &component, role)
+	ports, err := r.reconcileService(ctx, &component, role, gatewayConfig, cacheConfig)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
-	if role == "cache" {
-		var config configpkg.CacheConfig
-		if err := json.Unmarshal([]byte(component.Data["config"]), &config); err != nil {
-			return ctrl.Result{}, fmt.Errorf("decode Cache configuration: %w", err)
-		}
-		if config.Storage.Driver == "filesystem" {
-			if err := r.reconcileCacheVolume(ctx, &component, config.MaxSize); err != nil {
-				return ctrl.Result{}, err
-			}
+	if cacheConfig != nil && cacheConfig.Storage.Driver == "filesystem" {
+		if err := r.reconcileCacheVolume(ctx, &component, cacheConfig.MaxSize); err != nil {
+			return ctrl.Result{}, err
 		}
 	}
-	if err := r.reconcileDeployment(ctx, &component, role, identitySecret, ports); err != nil {
+	if err := r.reconcileDeployment(ctx, &component, role, identitySecret, ports, cacheConfig); err != nil {
 		return ctrl.Result{}, err
 	}
 	if role == "gateway" && r.GatewayParentName != "" {
-		if err := r.reconcileGatewayRoutes(ctx, &component, ports); err != nil {
+		if err := r.reconcileGatewayRoutes(ctx, &component, ports, gatewayConfig); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
@@ -151,11 +159,11 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	return ctrl.Result{}, nil
 }
 
-func (r *ComponentReconciler) reconcileGatewayRoutes(ctx context.Context, component *corev1.ConfigMap, ports []int32) error {
+func (r *ComponentReconciler) reconcileGatewayRoutes(ctx context.Context, component *corev1.ConfigMap, ports []int32, config *configpkg.GatewayConfig) error {
 	if len(ports) != 2 {
 		return fmt.Errorf("gateway routes require HTTP and SSH Service ports")
 	}
-	publicURL, err := url.Parse(component.Data["url"])
+	publicURL, err := url.Parse(config.HTTP.PublicURL)
 	if err != nil || publicURL.Hostname() == "" {
 		return fmt.Errorf("gateway public URL is invalid")
 	}
@@ -277,26 +285,22 @@ func componentListenPort(value string) (int32, error) {
 	return int32(port), nil
 }
 
-func (r *ComponentReconciler) reconcileService(ctx context.Context, component *corev1.ConfigMap, role string) ([]int32, error) {
+func (r *ComponentReconciler) reconcileService(ctx context.Context, component *corev1.ConfigMap, role string, gateway *configpkg.GatewayConfig, cache *configpkg.CacheConfig) ([]int32, error) {
 	ports := []corev1.ServicePort{}
 	var containerPorts []int32
 	if role == "gateway" {
-		httpPort, err := componentListenPort(component.Data["httpListen"])
+		httpPort, err := componentListenPort(gateway.HTTP.Listen)
 		if err != nil {
 			return nil, fmt.Errorf("gateway HTTP listen address: %w", err)
 		}
-		sshPort, err := componentListenPort(component.Data["sshListen"])
+		sshPort, err := componentListenPort(gateway.SSH.Listen)
 		if err != nil {
 			return nil, fmt.Errorf("gateway SSH listen address: %w", err)
 		}
 		containerPorts = []int32{httpPort, sshPort}
 		ports = []corev1.ServicePort{{Name: "http", Port: httpPort, TargetPort: intstr.FromInt32(httpPort)}, {Name: "ssh", Port: sshPort, TargetPort: intstr.FromInt32(sshPort)}}
 	} else {
-		var config configpkg.CacheConfig
-		if err := json.Unmarshal([]byte(component.Data["config"]), &config); err != nil {
-			return nil, fmt.Errorf("decode Cache configuration: %w", err)
-		}
-		port, err := componentListenPort(config.Listen)
+		port, err := componentListenPort(cache.Listen)
 		if err != nil {
 			return nil, fmt.Errorf("cache listen address: %w", err)
 		}
@@ -340,7 +344,7 @@ func (r *ComponentReconciler) reconcileCacheVolume(ctx context.Context, componen
 	return err
 }
 
-func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component *corev1.ConfigMap, role, identitySecret string, ports []int32) error {
+func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component *corev1.ConfigMap, role, identitySecret string, ports []int32, cache *configpkg.CacheConfig) error {
 	labels := map[string]string{"app.kubernetes.io/name": "codespace", ComponentLabel: role, ComponentUIDLabel: string(component.UID)}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: component.Namespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
@@ -391,22 +395,18 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 				Items: []corev1.KeyToPath{{Key: "hostKey", Path: "ssh-host-key"}},
 			}}})
 		} else {
-			var config configpkg.CacheConfig
-			if err := json.Unmarshal([]byte(component.Data["config"]), &config); err != nil {
-				return err
-			}
 			secretName := component.Data["secretName"]
 			if secretName == "" {
 				return fmt.Errorf("cache Secret is required")
 			}
 			items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
-			if config.Storage.Driver == "s3" {
+			if cache.Storage.Driver == "s3" {
 				items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})
 			}
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true})
 			volumes = append(volumes, corev1.Volume{Name: "cache-secret", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: secretName, DefaultMode: ptr.To(int32(0o440)), Items: items}}})
-			if config.Storage.Driver == "filesystem" {
-				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "storage", MountPath: config.Storage.Path})
+			if cache.Storage.Driver == "filesystem" {
+				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "storage", MountPath: cache.Storage.Path})
 				volumes = append(volumes, corev1.Volume{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: component.Name}}})
 			}
 		}

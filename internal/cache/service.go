@@ -121,6 +121,8 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	if err != nil {
 		return err
 	}
+	permitTimer := time.AfterFunc(time.Until(owner.ExpiresAt), cancel)
+	defer permitTimer.Stop()
 	defer func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -132,6 +134,9 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	}
 	defer func() { resultErr = errors.Join(resultErr, cache.Close()) }()
 	cache.owner = owner
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	listener, err := cache.OpenListener()
 	if err != nil {
 		return err
@@ -144,6 +149,8 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	}
 	server.BaseContext = func(_ net.Listener) context.Context { return ctx }
 	defer func() { _ = server.Close() }()
+	stopServer := context.AfterFunc(ctx, func() { _ = server.Close() })
+	defer stopServer()
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
 	maintenanceDone := make(chan struct{})
@@ -178,7 +185,8 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 		cache.cleanupMu.Lock()
 		status.LastCleanup, status.CleanupResult = cache.lastCleanup, cache.cleanupResult
 		cache.cleanupMu.Unlock()
-		if heartbeatErr := control.HeartbeatCache(ctx, owner, status); heartbeatErr != nil {
+		deadline, heartbeatErr := control.HeartbeatCache(ctx, owner, status)
+		if heartbeatErr != nil {
 			resultErr = heartbeatErr
 			// Stop maintenance before waiting for it below. A failed heartbeat
 			// means Manager may have already assigned this cache to another
@@ -186,6 +194,12 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 			cancel()
 			break
 		}
+		if ctx.Err() != nil || !time.Now().Before(deadline) {
+			resultErr = fmt.Errorf("cache execution permit expired")
+			cancel()
+			break
+		}
+		permitTimer.Reset(time.Until(deadline))
 		select {
 		case <-ctx.Done():
 			running = false

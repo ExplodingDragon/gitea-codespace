@@ -118,7 +118,7 @@ func TestAgentTCPHalfCloseReceivesResponse(t *testing.T) {
 	defer cancel()
 	conn, err := backend.OpenWorkspaceTCP(ctx, "runtime", 8000)
 	require.NoError(t, err)
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	_, err = conn.Write([]byte("hello"))
 	require.NoError(t, err)
 	require.NoError(t, conn.(interface{ CloseWrite() error }).CloseWrite())

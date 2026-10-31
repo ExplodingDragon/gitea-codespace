@@ -275,7 +275,7 @@ func (e *Engine) readImageMetadata(ctx context.Context, imageName string) (image
 	}
 	metadata, err := parseImageMetadata([]byte(inspect.Config.Labels[labelMetadata]))
 	if err != nil {
-		return imageMetadata{}, devcontainer.InvalidConfiguration(fmt.Errorf("decode image devcontainer.metadata: %w", err))
+		return imageMetadata{}, fmt.Errorf("decode image devcontainer.metadata: %w", err)
 	}
 	return metadata, nil
 }

@@ -201,7 +201,14 @@ func TestRegistryCacheAcceptsBuildKitCapabilityPath(t *testing.T) {
 	}
 	defer func() { require.NoError(t, cache.Close()) }()
 	cache.minFreeBytes = 0
-	namespace := Namespace(cache.secret, 1, 2, 3)
+	namespace := Namespace(cache.secret, "site-one", 2, 3)
+	require.True(t, ValidateNamespace(cache.secret, namespace))
+	other := Namespace(cache.secret, "site-two", 2, 3)
+	require.NotEqual(t, namespace, other)
+	require.True(t, ValidateNamespace(cache.secret, other))
+	parts := strings.Split(other, "-")
+	parts[2] = strings.Split(namespace, "-")[2]
+	require.False(t, ValidateNamespace(cache.secret, strings.Join(parts, "-")))
 	request := httptest.NewRequest(http.MethodPost, "/v2/cache/"+namespace+"/build/blobs/uploads/", nil)
 	response := httptest.NewRecorder()
 	cache.Handler().ServeHTTP(response, request)
@@ -329,7 +336,7 @@ func TestRegistryCacheAuthorizesScopedCacheRepository(t *testing.T) {
 			"ghcr.io": {allow: []string{"devcontainers/*"}},
 		},
 	}
-	repoHash := Namespace(cache.secret, 1, 2, 3)
+	repoHash := Namespace(cache.secret, "site-one", 2, 3)
 	request, err := http.NewRequest(http.MethodPut, "/v2/cache/"+repoHash+"/build/manifests/cache", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -352,7 +359,7 @@ func TestRegistryCacheRejectsUnauthorizedRepositories(t *testing.T) {
 			"ghcr.io": {allow: []string{"devcontainers/*"}},
 		},
 	}
-	repoHash := Namespace(cache.secret, 1, 2, 3)
+	repoHash := Namespace(cache.secret, "site-one", 2, 3)
 	request, err := http.NewRequest(http.MethodGet, "/v2/cache/"+repoHash+"/build/manifests/cache", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -383,7 +390,7 @@ func TestRegistryCacheBlobMountRequiresSameRepository(t *testing.T) {
 	cache := &registryCache{
 		secret: []byte("secret"),
 	}
-	repoHash := Namespace(cache.secret, 1, 2, 3)
+	repoHash := Namespace(cache.secret, "site-one", 2, 3)
 	repository := "cache/" + repoHash + "/build"
 	request, err := http.NewRequest(http.MethodPost, "/v2/"+repository+"/blobs/uploads/?mount=sha256:abc&from="+repository, nil)
 	if err != nil {

@@ -218,12 +218,30 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}} {
+	for _, object := range []client.Object{&corev1.ConfigMap{}, &api.GiteaSite{}, &api.Codespace{}} {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), object, IdentityUIDIndex, func(object client.Object) []string {
 			return []string{string(object.GetUID())}
 		}); err != nil {
 			return nil, err
 		}
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &api.GiteaSite{}, SiteGatewayUIDIndex, func(object client.Object) []string {
+		uid := object.(*api.GiteaSite).Spec.Gateway.UID
+		if uid == "" {
+			return nil
+		}
+		return []string{string(uid)}
+	}); err != nil {
+		return nil, err
+	}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &api.Codespace{}, RuntimeSiteUIDIndex, func(object client.Object) []string {
+		uid := object.(*api.Codespace).Spec.Site.UID
+		if uid == "" {
+			return nil
+		}
+		return []string{string(uid)}
+	}); err != nil {
+		return nil, err
 	}
 	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string {
 		return []string{object.(*api.Codespace).Spec.RuntimeUUID}

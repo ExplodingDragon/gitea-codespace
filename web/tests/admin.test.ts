@@ -82,7 +82,7 @@ test('native resource editing preserves identity and write-only credentials', as
   ];
   let signedIn = false;
   let lastWrite: {managerSecret?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
-  let recoveryWrite: Record<string, string> = {};
+  let recoveryWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request();
@@ -242,6 +242,21 @@ test('native resource editing preserves identity and write-only credentials', as
       resourceVersion: '8',
       podUID: 'pod-uid',
     });
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  recoveryWrite = undefined;
+  await runtimeRow.getByRole('button', {name: 'Delete data'}).click();
+  await expect(page.getByText('Disable the owning site first.', {exact: false})).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.getByRole('dialog').screenshot({
+    path: 'test-results/runtime-cleanup-confirmation-mobile.png',
+  });
+  await page.getByRole('button', {name: 'Delete', exact: true}).click();
+  await expect.poll(() => recoveryWrite).toEqual({uid: 'runtime-uid', resourceVersion: '8', podUID: 'pod-uid'});
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.screenshot({path: 'test-results/runtime-cleanup-mobile.png', fullPage: true, animations: 'disabled'});
+  await page.setViewportSize({width: 1280, height: 900});
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({path: 'test-results/runtime-cleanup-desktop.png', fullPage: true, animations: 'disabled'});
   await page.getByRole('button', {name: 'Sign out'}).click();
   await expect(page.getByRole('button', {name: 'Sign in', exact: true})).toBeVisible();
   expect(errors).toEqual([]);

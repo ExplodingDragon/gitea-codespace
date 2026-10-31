@@ -16,7 +16,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-const IdentityUIDIndex = "codespace.identity.uid"
+const (
+	IdentityUIDIndex    = "codespace.identity.uid"
+	SiteGatewayUIDIndex = "codespace.site.gateway.uid"
+	RuntimeSiteUIDIndex = "codespace.runtime.site.uid"
+)
 
 // ResolveAgent checks current resource ownership after TLS verifies the certificate.
 func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate *x509.Certificate) (*api.Codespace, *corev1.Pod, error) {

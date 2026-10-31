@@ -188,7 +188,7 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 	require.ErrorIs(t, <-done, context.Canceled)
 }
 
-func TestControlClientDrainsPriorExecutionBeforeNewOperation(t *testing.T) {
+func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, journal.Close()) }()
@@ -243,22 +243,23 @@ func TestControlClientDrainsPriorExecutionBeforeNewOperation(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- client.Run(ctx) }()
 	select {
-	case <-secondFinished:
+	case err := <-done:
+		require.ErrorIs(t, err, context.Canceled)
 	case <-ctx.Done():
-		t.Fatal("new operation was not executed")
+		t.Fatal("canceled writer did not exit")
 	}
 	select {
 	case <-firstCanceled:
 	default:
-		t.Fatal("new operation started before cancellation")
+		t.Fatal("execution was not canceled before the writer exited")
 	}
+	require.Empty(t, secondFinished)
 	cancel()
-	require.ErrorIs(t, <-done, context.Canceled)
 	require.False(t, overlap.Load())
 	data, err := journal.read("state/report.pb", 1024*1024)
 	require.NoError(t, err)
 	report := &agentv1.AgentReport{}
 	require.NoError(t, proto.Unmarshal(data, report))
 	require.NotNil(t, report.Result)
-	require.EqualValues(t, 2, report.Result.OperationRversion)
+	require.EqualValues(t, 1, report.Result.OperationRversion)
 }

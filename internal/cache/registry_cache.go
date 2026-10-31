@@ -334,7 +334,7 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 	if !ok || username != Username {
 		return errors.New("cache registry credentials are required")
 	}
-	token, err := c.verifyToken(request.Context(), password)
+	token, err := c.verifyToken(password)
 	if err != nil {
 		return err
 	}

@@ -22,7 +22,7 @@ func ConfiguredEndpoints(configuration devcontainer.Configuration) ([]*codespace
 	for _, port := range configuration.ForwardPorts {
 		value, err := devContainerPort(port)
 		if err != nil {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("forwardPorts: %w", err))
+			return nil, fmt.Errorf("forwardPorts: %w", err)
 		}
 		if value != 0 {
 			ports[value] = struct{}{}
@@ -31,7 +31,7 @@ func ConfiguredEndpoints(configuration devcontainer.Configuration) ([]*codespace
 	for _, port := range configuration.AppPort {
 		value, err := port.ContainerPort()
 		if err != nil {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
+			return nil, fmt.Errorf("appPort: %w", err)
 		}
 		if value != 0 {
 			ports[value] = struct{}{}
@@ -54,12 +54,12 @@ func ConfiguredEndpoints(configuration devcontainer.Configuration) ([]*codespace
 			label = "Port " + strconv.Itoa(int(port))
 		}
 		if err := runtimeendpoint.ValidateLabel(label); err != nil {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("port %d label: %w", port, err))
+			return nil, fmt.Errorf("port %d label: %w", port, err)
 		}
 		endpoints = append(endpoints, &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Port: uint32(port)})
 	}
 	if len(endpoints) > runtimeendpoint.MaxDeclaredEndpointCount {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("configured endpoints exceed limit %d", runtimeendpoint.MaxDeclaredEndpointCount))
+		return nil, fmt.Errorf("configured endpoints exceed limit %d", runtimeendpoint.MaxDeclaredEndpointCount)
 	}
 	return endpoints, nil
 }

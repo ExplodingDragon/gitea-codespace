@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
 	"github.com/stretchr/testify/require"
@@ -25,11 +26,16 @@ import (
 func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	ctx := t.Context()
 	namespace := "codespace-system"
+	gatewayConfig := configpkg.DefaultGatewayConfig()
+	gatewayConfig.HTTP.Listen = ":8080"
+	gatewayConfig.HTTP.PublicURL = "https://gateway.example.com"
+	gatewayJSON, err := json.Marshal(gatewayConfig)
+	require.NoError(t, err)
 	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: namespace, UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{
-		"httpListen": ":8080", "sshListen": ":2222", "url": "https://gateway.example.com", "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid",
+		"config": string(gatewayJSON), "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid",
 	}}
 	gatewayKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: namespace, UID: "gateway-key-uid", Labels: map[string]string{pendingComponentLabel: gateway.Name}}, Data: map[string][]byte{"hostKey": []byte("test")}}
-	cacheConfig := configpkg.CacheConfig{Name: "Build cache", Listen: ":5000", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/cache"}, MaxSize: "1GiB"}
+	cacheConfig := configpkg.CacheConfig{Name: "Build cache", Revision: 1, Enabled: true, Listen: ":5000", PublicURL: "https://cache.example.com", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/cache"}, MaxSize: "1GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour), Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{"docker.io": {Allow: []string{"library/*"}}}}
 	encoded, err := json.Marshal(cacheConfig)
 	require.NoError(t, err)
 	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: namespace, UID: "cache-uid", Labels: map[string]string{ComponentLabel: "cache"}}, Data: map[string]string{

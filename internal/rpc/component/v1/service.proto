@@ -145,6 +145,8 @@ message CacheControlRequest {
 message CacheControlResponse {
   uint32 protocol_version = 1;
   uint64 sequence = 2;
+  // A positive value acknowledges lease renewal, measured from request send time.
+  // Configuration-only updates use zero and do not extend permission.
   int64 permit_valid_for_milliseconds = 3;
   CacheConfiguration config = 4;
   CacheGCGrant gc_grant = 5;

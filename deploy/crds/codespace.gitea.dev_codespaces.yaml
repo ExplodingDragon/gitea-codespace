@@ -455,6 +455,13 @@ spec:
                       intent and helps make sure that UIDs and names do not get conflated.
                     type: string
                 type: object
+              volumeInitialization:
+                description: A started format is never retried when the filesystem
+                  is unrecognizable.
+                enum:
+                - started
+                - ready
+                type: string
             type: object
         required:
         - spec

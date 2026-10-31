@@ -169,9 +169,9 @@ func (j *Journal) Close() error {
 	return errors.Join(err, j.root.Close())
 }
 
-// RunStage records intent before invoking a side effect. An interrupted invocation
+// RunOnce records intent before invoking a side effect. An interrupted invocation
 // is not replayed because its external result cannot be inferred from a missing ack.
-func (j *Journal) RunStage(ctx context.Context, version int64, name string, run func(context.Context) error) error {
+func (j *Journal) RunOnce(ctx context.Context, version int64, name string, run func(context.Context) error) error {
 	if version <= 0 || name == "" || len(name) > 128 || run == nil {
 		return fmt.Errorf("execution stage identity is invalid")
 	}

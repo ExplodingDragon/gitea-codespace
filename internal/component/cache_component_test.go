@@ -6,6 +6,7 @@ package component
 import (
 	"context"
 	"io"
+	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -19,23 +20,38 @@ type cacheTestStream struct {
 	requests  chan *componentv1.CacheControlRequest
 	responses chan *componentv1.CacheControlResponse
 	closed    bool
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func (s *cacheTestStream) Send(request *componentv1.CacheControlRequest) error {
-	s.requests <- request
-	return nil
+	select {
+	case s.requests <- request:
+		return nil
+	case <-s.done:
+		return context.Canceled
+	}
 }
 
 func (s *cacheTestStream) Receive() (*componentv1.CacheControlResponse, error) {
-	response, ok := <-s.responses
-	if !ok {
-		return nil, io.EOF
+	select {
+	case response, ok := <-s.responses:
+		if !ok {
+			return nil, io.EOF
+		}
+		return response, nil
+	case <-s.done:
+		return nil, context.Canceled
 	}
-	return response, nil
 }
 
 func (s *cacheTestStream) Close() error {
-	s.closed = true
+	s.closeOnce.Do(func() {
+		s.closed = true
+		if s.done != nil {
+			close(s.done)
+		}
+	})
 	return nil
 }
 
@@ -100,4 +116,67 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		require.Empty(t, client.waiters)
 		require.True(t, stream.closed)
 	})
+}
+
+func TestCachePermitUsesAcknowledgedRequestSendTime(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		stream := &cacheTestStream{requests: make(chan *componentv1.CacheControlRequest, 1), responses: make(chan *componentv1.CacheControlResponse, 1)}
+		client := &CacheComponentClient{
+			stream: stream, cacheID: "cache", sessionID: "session", permitUntil: time.Now().Add(10 * time.Second),
+			ready: make(chan struct{}), waiters: make(map[uint64]chan *componentv1.CacheControlResponse),
+		}
+		go client.receive(t.Context(), stream, "")
+		done := make(chan error, 1)
+		sent := time.Now()
+		go func() {
+			_, err := client.HeartbeatCache(t.Context(), cachepkg.Owner{}, cachepkg.Status{})
+			done <- err
+		}()
+		request := <-stream.requests
+		time.Sleep(4 * time.Second)
+		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		require.NoError(t, <-done)
+		require.Equal(t, sent.Add(14*time.Second), client.permitUntil)
+		time.Sleep(time.Second)
+		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		synctest.Wait()
+		require.Equal(t, sent.Add(14*time.Second), client.permitUntil)
+		go func() {
+			_, err := client.HeartbeatCache(t.Context(), cachepkg.Owner{}, cachepkg.Status{})
+			done <- err
+		}()
+		request = <-stream.requests
+		require.ErrorIs(t, <-done, context.DeadlineExceeded)
+		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		close(stream.responses)
+		synctest.Wait()
+		require.Error(t, client.streamErr)
+		require.Equal(t, sent.Add(14*time.Second), client.permitUntil)
+	})
+}
+
+func TestCachePermitClosesExpiredOrBlockedStream(t *testing.T) {
+	for _, mode := range []string{"expired", "blocked"} {
+		t.Run(mode, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				stream := &cacheTestStream{requests: make(chan *componentv1.CacheControlRequest), done: make(chan struct{})}
+				client := &CacheComponentClient{
+					stream: stream, cacheID: "cache", sessionID: "session", permitUntil: time.Now().Add(3 * time.Second),
+					ready: make(chan struct{}), waiters: make(map[uint64]chan *componentv1.CacheControlResponse),
+				}
+				var err error
+				if mode == "expired" {
+					close(client.ready)
+					client.permitUntil = time.Now().Add(-time.Second)
+					_, err = client.GetCache(t.Context(), "cache")
+				} else {
+					_, err = client.HeartbeatCache(t.Context(), cachepkg.Owner{}, cachepkg.Status{})
+				}
+				require.Error(t, err)
+				require.True(t, stream.closed)
+				require.Empty(t, client.sent)
+				require.Empty(t, client.waiters)
+			})
+		})
+	}
 }

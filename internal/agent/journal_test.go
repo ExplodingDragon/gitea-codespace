@@ -30,7 +30,7 @@ func TestJournalRecovery(t *testing.T) {
 	require.ErrorContains(t, err, "pinned algorithm")
 	calls := 0
 	run := func(context.Context) error { calls++; return nil }
-	require.NoError(t, j.RunStage(t.Context(), 1, "onCreateCommand", run))
+	require.NoError(t, j.RunOnce(t.Context(), 1, "onCreateCommand", run))
 	require.NoError(t, j.Close())
 
 	_, err = OpenJournal(directory, VolumeIdentity{SiteUID: "other", ResourceUID: "resource", RuntimeUUID: "runtime"})
@@ -41,21 +41,21 @@ func TestJournalRecovery(t *testing.T) {
 	key, err = j.GitSSHKey("ed25519", false)
 	require.NoError(t, err)
 	require.Equal(t, public, key.PublicKey().Marshal())
-	require.NoError(t, j.RunStage(t.Context(), 1, "onCreateCommand", run))
+	require.NoError(t, j.RunOnce(t.Context(), 1, "onCreateCommand", run))
 	require.Equal(t, 1, calls)
 
 	j.record.Stages["postCreateCommand"] = stageResult{}
 	require.NoError(t, j.save())
-	require.ErrorContains(t, j.RunStage(t.Context(), 1, "postCreateCommand", run), "unknown result")
+	require.ErrorContains(t, j.RunOnce(t.Context(), 1, "postCreateCommand", run), "unknown result")
 	require.Equal(t, 1, calls)
-	require.ErrorContains(t, j.RunStage(t.Context(), 1, "build", func(context.Context) error {
+	require.ErrorContains(t, j.RunOnce(t.Context(), 1, "build", func(context.Context) error {
 		return errors.New("build failed")
 	}), "build failed")
-	require.ErrorContains(t, j.RunStage(t.Context(), 1, "build", run), "previously failed")
+	require.ErrorContains(t, j.RunOnce(t.Context(), 1, "build", run), "previously failed")
 	require.Equal(t, 1, calls)
-	require.NoError(t, j.RunStage(t.Context(), 2, "postStartCommand/pod-two", run))
+	require.NoError(t, j.RunOnce(t.Context(), 2, "postStartCommand/pod-two", run))
 	require.Equal(t, 2, calls)
-	require.ErrorContains(t, j.RunStage(t.Context(), 1, "onCreateCommand", run), "stale")
+	require.ErrorContains(t, j.RunOnce(t.Context(), 1, "onCreateCommand", run), "stale")
 	info, err := os.Stat(filepath.Join(directory, "identity/git-key"))
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
@@ -68,18 +68,18 @@ func TestJournalSerialExecution(t *testing.T) {
 	started, finish := make(chan struct{}), make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- j.RunStage(t.Context(), 1, "build", func(context.Context) error {
+		done <- j.RunOnce(t.Context(), 1, "build", func(context.Context) error {
 			close(started)
 			<-finish
 			return nil
 		})
 	}()
 	<-started
-	err = j.RunStage(t.Context(), 2, "stop", func(context.Context) error { return nil })
+	err = j.RunOnce(t.Context(), 2, "stop", func(context.Context) error { return nil })
 	close(finish)
 	require.ErrorContains(t, err, "still running")
 	require.NoError(t, <-done)
-	require.NoError(t, j.RunStage(t.Context(), 2, "stop", func(context.Context) error { return nil }))
+	require.NoError(t, j.RunOnce(t.Context(), 2, "stop", func(context.Context) error { return nil }))
 }
 
 func TestJournalRejectsInvalidRecoveryFiles(t *testing.T) {

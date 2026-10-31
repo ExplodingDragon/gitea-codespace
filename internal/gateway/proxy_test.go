@@ -227,7 +227,7 @@ func TestGatewayProxyResponseRebuildsSetCookieForHTTPS(t *testing.T) {
 
 	normalizeGatewayProxyResponse(header, gatewayProxyResponseContext{externalScheme: "https"})
 
-	cookies := ParseSetCookiesByName(t, header.Values("Set-Cookie"))
+	cookies := parseSetCookiesByName(t, header.Values("Set-Cookie"))
 	if _, ok := cookies[SessionCookieName]; ok {
 		t.Fatalf("reserved session cookie was returned")
 	}
@@ -277,7 +277,7 @@ func TestGatewayProxyResponseRebuildsSetCookieForHTTP(t *testing.T) {
 
 	normalizeGatewayProxyResponse(header, gatewayProxyResponseContext{externalScheme: "http"})
 
-	cookies := ParseSetCookiesByName(t, header.Values("Set-Cookie"))
+	cookies := parseSetCookiesByName(t, header.Values("Set-Cookie"))
 	if len(cookies) != 2 {
 		t.Fatalf("cookies = %#v", header.Values("Set-Cookie"))
 	}
@@ -296,7 +296,7 @@ func TestGatewayProxyResponseRebuildsSetCookieForHTTP(t *testing.T) {
 	}
 }
 
-func ParseSetCookiesByName(t *testing.T, values []string) map[string]*http.Cookie {
+func parseSetCookiesByName(t *testing.T, values []string) map[string]*http.Cookie {
 	t.Helper()
 
 	cookies := make(map[string]*http.Cookie, len(values))

@@ -199,6 +199,10 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 						cancelSession()
 						return err
 					}
+					if errors.Is(executionErr, context.Canceled) || errors.Is(executionErr, context.DeadlineExceeded) {
+						cancelSession()
+						return executionErr
+					}
 				default:
 				}
 			}

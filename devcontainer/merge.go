@@ -64,12 +64,12 @@ func Merge(base, override Configuration) Configuration {
 	if override.UserEnvProbe != "" {
 		result.UserEnvProbe = override.UserEnvProbe
 	}
-	result.InitializeCommand = mergeCommand(result.InitializeCommand, override.InitializeCommand, "configuration")
-	result.OnCreateCommand = mergeCommand(result.OnCreateCommand, override.OnCreateCommand, "configuration")
-	result.UpdateContentCommand = mergeCommand(result.UpdateContentCommand, override.UpdateContentCommand, "configuration")
-	result.PostCreateCommand = mergeCommand(result.PostCreateCommand, override.PostCreateCommand, "configuration")
-	result.PostStartCommand = mergeCommand(result.PostStartCommand, override.PostStartCommand, "configuration")
-	result.PostAttachCommand = mergeCommand(result.PostAttachCommand, override.PostAttachCommand, "configuration")
+	result.InitializeCommand = mergeCommand(result.InitializeCommand, override.InitializeCommand)
+	result.OnCreateCommand = mergeCommand(result.OnCreateCommand, override.OnCreateCommand)
+	result.UpdateContentCommand = mergeCommand(result.UpdateContentCommand, override.UpdateContentCommand)
+	result.PostCreateCommand = mergeCommand(result.PostCreateCommand, override.PostCreateCommand)
+	result.PostStartCommand = mergeCommand(result.PostStartCommand, override.PostStartCommand)
+	result.PostAttachCommand = mergeCommand(result.PostAttachCommand, override.PostAttachCommand)
 	if override.WaitFor != "" {
 		result.WaitFor = override.WaitFor
 	}
@@ -279,7 +279,7 @@ func jsonEqual(left, right any) bool {
 	return string(a) == string(b)
 }
 
-func mergeCommand(base, override Command, name string) Command {
+func mergeCommand(base, override Command) Command {
 	if len(base.Value) == 0 {
 		return override
 	}
@@ -298,7 +298,7 @@ func mergeCommand(base, override Command, name string) Command {
 		entries[prefix] = command.Value
 	}
 	add("base", base)
-	add(name, override)
+	add("configuration", override)
 	encoded, _ := json.Marshal(entries)
 	return Command{Value: encoded}
 }

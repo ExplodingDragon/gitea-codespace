@@ -85,10 +85,10 @@ type featureOption struct {
 func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration, repositoryConfiguration devcontainer.Configuration) (string, map[string]string, error) {
 	lockfile, lockfileExists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	if resolved.FrozenLockfile && !resolved.Synthetic && !lockfileExists {
-		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container lockfile does not exist"))
+		return "", nil, fmt.Errorf("dev container lockfile does not exist")
 	}
 	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
 	for reference, options := range resolved.Features {
@@ -139,14 +139,14 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	orderedFeatures, err := orderFeatures(features, resolved.OverrideFeatureInstallOrder)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	for _, feature := range orderedFeatures {
 		_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
 	}
 	imageConfiguration, err = devcontainer.ResolveLocalVariables(imageConfiguration, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	inspect, err := e.client.ImageInspect(ctx, baseImage)
 	if err != nil {
@@ -162,7 +162,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	imageConfiguration, err = devcontainer.ResolveContainerVariables(imageConfiguration, resolved.WorkspaceFolder, containerEnvironment)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	for name, value := range imageConfiguration.ContainerEnv {
 		containerEnvironment[name] = value
@@ -171,11 +171,11 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	for _, feature := range orderedFeatures {
 		featureConfiguration, err := devcontainer.ResolveLocalVariables(featureConfigurationFromMetadata(feature.metadata), resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 		if err != nil {
-			return "", nil, devcontainer.InvalidConfiguration(err)
+			return "", nil, err
 		}
 		featureConfiguration, err = devcontainer.ResolveContainerVariables(featureConfiguration, resolved.WorkspaceFolder, containerEnvironment)
 		if err != nil {
-			return "", nil, devcontainer.InvalidConfiguration(err)
+			return "", nil, err
 		}
 		for name, value := range featureConfiguration.ContainerEnv {
 			value = os.Expand(value, func(name string) string { return containerEnvironment[name] })
@@ -200,14 +200,14 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	repositoryConfiguration, err = devcontainer.ResolveContainerVariables(repositoryConfiguration, resolved.WorkspaceFolder, repositoryEnvironment)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	resolved.Configuration = devcontainer.Merge(effectiveConfiguration, repositoryConfiguration)
 	if err := resolved.Finalize(); err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	digests := make(map[string]string, len(orderedFeatures))
 	for _, feature := range orderedFeatures {
@@ -229,7 +229,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			}
 		}
 		if err := devcontainer.WriteLockfile(resolved.ConfigurationPath, generated, resolved.FrozenLockfile); err != nil {
-			return "", nil, devcontainer.InvalidConfiguration(err)
+			return "", nil, err
 		}
 	}
 	containerUser := strings.TrimSpace(resolved.ContainerUser)
@@ -286,7 +286,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		path := filepath.Join(configurationDir, filepath.FromSlash(featureReference))
 		path, err := resolvePathInsideRoot(allowedRoot, path)
 		if err != nil {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("resolve local Dev Container Feature %s: %w", featureReference, err))
+			return nil, fmt.Errorf("resolve local Dev Container Feature %s: %w", featureReference, err)
 		}
 		if err := copyDirectory(path, directory); err != nil {
 			return nil, fmt.Errorf("copy local Dev Container Feature %s: %w", featureReference, err)
@@ -300,7 +300,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		}
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, resolveReference, nil)
 		if err != nil {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature URL: %w", err))
+			return nil, fmt.Errorf("parse Dev Container Feature URL: %w", err)
 		}
 		response, err := http.DefaultClient.Do(request)
 		if err != nil {
@@ -316,14 +316,14 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		}
 		digest := fmt.Sprintf("sha256:%x", hash.Sum(nil))
 		if locked.Integrity != "" && locked.Integrity != digest {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference))
+			return nil, fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference)
 		}
 		return loadFeatureDirectory(featureReference, resolveReference, digest, rawOptions, directory, true)
 	}
 	resolveReference := featureReference
 	if strings.TrimSpace(locked.Integrity) != "" {
 		if strings.TrimSpace(locked.Resolved) == "" {
-			return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile entry is incomplete", featureReference))
+			return nil, fmt.Errorf("dev container feature %s lockfile entry is incomplete", featureReference)
 		}
 		resolveReference = locked.Resolved
 	}
@@ -354,11 +354,11 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, plainHTTP bool, registryCredentials map[string]devcontainer.RegistryCredential) (*resolvedFeature, error) {
 	original, err := registry.ParseReference(featureReference)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err))
+		return nil, fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err)
 	}
 	parsed, err := registry.ParseReference(resolveReference)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("parse Dev Container Feature %q: %w", featureReference, err))
+		return nil, fmt.Errorf("parse Dev Container Feature %q: %w", featureReference, err)
 	}
 	if parsed.Reference == "" {
 		parsed.Reference = "latest"
@@ -382,7 +382,7 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", featureReference, err)
 	}
 	if locked.Integrity != "" && descriptor.Digest.String() != locked.Integrity {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference))
+		return nil, fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference)
 	}
 	manifestReader, err := repository.Fetch(ctx, descriptor)
 	if err != nil {
@@ -395,10 +395,10 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 		return nil, fmt.Errorf("decode Dev Container Feature manifest %s: %w", featureReference, err)
 	}
 	if !strings.HasPrefix(manifest.Config.MediaType, devContainerFeatureMediaType) {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("oci artifact %s is not a Dev Container Feature", featureReference))
+		return nil, fmt.Errorf("oci artifact %s is not a Dev Container Feature", featureReference)
 	}
 	if len(manifest.Layers) != 1 {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s must contain one layer", featureReference))
+		return nil, fmt.Errorf("dev container feature %s must contain one layer", featureReference)
 	}
 	layer, err := repository.Fetch(ctx, manifest.Layers[0])
 	if err != nil {
@@ -417,24 +417,24 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 func loadFeatureDirectory(reference, resolved, digest string, rawOptions json.RawMessage, directory string, lockable bool) (*resolvedFeature, error) {
 	metadataFile, err := os.Open(filepath.Join(directory, "devcontainer-feature.json"))
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("open Feature metadata: %w", err))
+		return nil, fmt.Errorf("open Feature metadata: %w", err)
 	}
 	decoder := json.NewDecoder(metadataFile)
 	decoder.DisallowUnknownFields()
 	var metadata featureMetadata
 	decodeErr := decoder.Decode(&metadata)
 	if err := errors.Join(decodeErr, metadataFile.Close()); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("decode Feature metadata: %w", err))
+		return nil, fmt.Errorf("decode Feature metadata: %w", err)
 	}
 	if strings.TrimSpace(metadata.ID) == "" || strings.TrimSpace(metadata.Version) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s identity is incomplete", reference))
+		return nil, fmt.Errorf("dev container feature %s identity is incomplete", reference)
 	}
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s install.sh is missing", reference))
+		return nil, fmt.Errorf("dev container feature %s install.sh is missing", reference)
 	}
 	options, err := resolveFeatureOptions(metadata.Options, rawOptions)
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container feature %s: %w", reference, err))
+		return nil, fmt.Errorf("dev container feature %s: %w", reference, err)
 	}
 	return &resolvedFeature{reference: reference, resolved: resolved, digest: digest, directory: directory, options: options, metadata: metadata, lockable: lockable}, nil
 }

@@ -27,7 +27,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 	case "create":
 		options, err := buildCreateOptions(request)
 		if err != nil {
-			return nil, devcontainer.InvalidConfiguration(err)
+			return nil, err
 		}
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			return configureCreate(ctx, engine, state, request)

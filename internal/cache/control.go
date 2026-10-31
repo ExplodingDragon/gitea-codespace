@@ -19,7 +19,7 @@ import (
 type Control interface {
 	GetCache(context.Context, string) (ControlConfig, error)
 	ClaimCache(context.Context, string) (Owner, error)
-	HeartbeatCache(context.Context, Owner, Status) error
+	HeartbeatCache(context.Context, Owner, Status) (time.Time, error)
 	ReleaseCache(context.Context, Owner) error
 	BeginCacheGC(context.Context, Owner) (GCGrant, error)
 	CompleteCacheGC(context.Context, GCGrant) error

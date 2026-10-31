@@ -4,7 +4,6 @@
 package devcontainer
 
 import (
-	"errors"
 	"fmt"
 	"strings"
 )
@@ -83,26 +82,4 @@ type LifecycleState struct {
 	OnCreateComplete      bool `json:"on_create_complete"`
 	UpdateContentComplete bool `json:"update_content_complete"`
 	PostCreateComplete    bool `json:"post_create_complete"`
-}
-
-// InvalidConfigurationError identifies repository configuration that cannot succeed when retried.
-type InvalidConfigurationError struct {
-	err error
-}
-
-func (e *InvalidConfigurationError) Error() string { return e.err.Error() }
-func (e *InvalidConfigurationError) Unwrap() error { return e.err }
-
-// InvalidConfiguration marks an error as deterministic repository configuration failure.
-func InvalidConfiguration(err error) error {
-	if err == nil {
-		return nil
-	}
-	return &InvalidConfigurationError{err: err}
-}
-
-// IsInvalidConfiguration reports whether retrying without a configuration change cannot succeed.
-func IsInvalidConfiguration(err error) bool {
-	var target *InvalidConfigurationError
-	return errors.As(err, &target)
 }

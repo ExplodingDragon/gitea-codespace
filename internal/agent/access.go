@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -48,7 +49,16 @@ func (s *AccessServer) Handler() (string, http.Handler) {
 	agentv1connect.RegisterAgentAccessServiceHandler(rpcServer, s)
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, rpcServer, connecthttp.WithReadMaxBytes(256*1024), connecthttp.WithSendMaxBytes(256*1024))
-	return "/" + agentv1connect.AgentAccessServiceName + "/", mux
+	return "/" + agentv1connect.AgentAccessServiceName + "/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithCancel(r.Context())
+		stopClose := context.AfterFunc(ctx, func() { _ = r.Body.Close() })
+		defer stopClose()
+		defer func() {
+			cancel()
+			_ = r.Body.Close()
+		}()
+		mux.ServeHTTP(w, r.WithContext(ctx))
+	})
 }
 
 func (s *AccessServer) Access(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
@@ -189,13 +199,13 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "sftp", "--workdir", state.RemoteWorkdir}
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT:
 		containerID = endpoint.ContainerId
-		command, user, workdir = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", fmt.Sprint(endpoint.Port)}, "", "/"
+		command, user, workdir = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(endpoint.Port), 10)}, "", "/"
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP:
 		port := open.GetTcp().GetPort()
 		if port == 0 || port > 65535 {
 			return connect.NewError(connect.CodeInvalidArgument, "loopback TCP port is invalid")
 		}
-		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", fmt.Sprint(port)}
+		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(port), 10)}
 	default:
 		return connect.NewError(connect.CodeInvalidArgument, "access capability is invalid")
 	}
@@ -221,12 +231,18 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 		return err
 	}
 	defer attached.Close()
+	stopClose := context.AfterFunc(ctx, attached.Close)
+	defer stopClose()
 	writeErr := make(chan error, 1)
 	go func() {
 		for {
 			frame, err := stream.Receive()
 			if err != nil {
-				_ = attached.CloseWrite()
+				if errors.Is(err, io.EOF) && ctx.Err() == nil {
+					_ = attached.CloseWrite()
+				} else {
+					attached.Close()
+				}
 				writeErr <- err
 				return
 			}
@@ -279,12 +295,13 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 				err = fmt.Errorf("access frame is invalid after open")
 			}
 			if err != nil {
+				attached.Close()
 				writeErr <- err
 				return
 			}
 		}
 	}()
-	send := func(response *agentv1.AccessResponse) error { return stream.Send(response) }
+	send := stream.Send
 	var outputErr error
 	if interactive {
 		outputErr = copyFrames(attached.Reader, func(value []byte) error {

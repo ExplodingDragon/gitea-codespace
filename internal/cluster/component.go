@@ -6,12 +6,12 @@ package cluster
 import (
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"slices"
-	"strconv"
 	"strings"
 	"time"
 
@@ -92,72 +92,24 @@ func (s *ComponentServer) gatewayConfig(ctx context.Context, identity componentI
 		reader = s.Client
 	}
 	var components corev1.ConfigMapList
-	if err := reader.List(ctx, &components, client.InNamespace(s.ManagementNamespace)); err != nil {
+	if err := reader.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: identity.UID}); err != nil {
 		return nil, "", err
 	}
-	var component *corev1.ConfigMap
-	for i := range components.Items {
-		candidate := &components.Items[i]
-		if string(candidate.UID) == identity.UID && candidate.Labels[ComponentLabel] == "gateway" && candidate.DeletionTimestamp.IsZero() {
-			component = candidate
-			break
-		}
-	}
-	if component == nil {
+	if len(components.Items) != 1 {
 		return nil, "", connect.NewError(connect.CodePermissionDenied, "gateway component identity is no longer configured")
 	}
-	value := func(name, fallback string) string {
-		if strings.TrimSpace(component.Data[name]) != "" {
-			return strings.TrimSpace(component.Data[name])
-		}
-		return fallback
+	component := &components.Items[0]
+	if component.Labels[ComponentLabel] != "gateway" || !component.DeletionTimestamp.IsZero() {
+		return nil, "", connect.NewError(connect.CodePermissionDenied, "gateway component identity is no longer configured")
 	}
-	integer := func(name string, fallback int64) (int64, error) {
-		if strings.TrimSpace(component.Data[name]) == "" {
-			return fallback, nil
-		}
-		parsed, err := strconv.ParseInt(component.Data[name], 10, 32)
-		if err != nil || parsed <= 0 {
-			return 0, fmt.Errorf("gateway %s must be a positive integer", name)
-		}
-		return parsed, nil
-	}
-	sessionTTL, err := integer("sessionTTLMilliseconds", int64((12*time.Hour)/time.Millisecond))
-	if err != nil {
-		return nil, "", err
-	}
-	idleTimeout, err := integer("sessionIdleTimeoutMilliseconds", int64((30*time.Minute)/time.Millisecond))
-	if err != nil {
-		return nil, "", err
-	}
-	revalidate, err := integer("revalidateIntervalMilliseconds", int64((30*time.Second)/time.Millisecond))
-	if err != nil {
-		return nil, "", err
-	}
-	maxPerCodespace, err := integer("maxSessionsPerCodespace", 16)
-	if err != nil {
-		return nil, "", err
-	}
-	maxPerUser, err := integer("maxSessionsPerUser", 32)
-	if err != nil {
-		return nil, "", err
-	}
-	maxInflight, err := integer("maxInflight", 256)
-	if err != nil {
-		return nil, "", err
-	}
-	maxInflightSession, err := integer("maxInflightPerSession", 16)
-	if err != nil {
-		return nil, "", err
-	}
-	maxChannels, err := integer("maxChannelsPerSSHConnection", 16)
+	config, err := gatewayComponentConfig(component)
 	if err != nil {
 		return nil, "", err
 	}
 	return &componentv1.GatewayConfigurationSnapshot{
-		HttpListen: value("httpListen", ":8080"), PublicUrl: value("url", ""), SshListen: value("sshListen", ":2222"), SshPublicAddress: value("sshAddress", ""),
-		SessionTtlMilliseconds: sessionTTL, SessionIdleTimeoutMilliseconds: idleTimeout, RevalidateIntervalMilliseconds: revalidate,
-		MaxSessionsPerCodespace: int32(maxPerCodespace), MaxSessionsPerUser: int32(maxPerUser), MaxInflight: int32(maxInflight), MaxInflightPerSession: int32(maxInflightSession), MaxChannelsPerSshConnection: int32(maxChannels),
+		HttpListen: config.HTTP.Listen, PublicUrl: config.HTTP.PublicURL, SshListen: config.SSH.Listen, SshPublicAddress: config.SSH.PublicAddr,
+		SessionTtlMilliseconds: int64(config.Sessions.TTL.ToStdlib() / time.Millisecond), SessionIdleTimeoutMilliseconds: int64(config.Sessions.IdleTimeout.ToStdlib() / time.Millisecond), RevalidateIntervalMilliseconds: int64(config.Sessions.RevalidateInterval.ToStdlib() / time.Millisecond),
+		MaxSessionsPerCodespace: int32(config.Sessions.MaxPerCodespace), MaxSessionsPerUser: int32(config.Sessions.MaxPerUser), MaxInflight: int32(config.Limits.MaxInflightTotal), MaxInflightPerSession: int32(config.Limits.MaxInflightPerSession), MaxChannelsPerSshConnection: int32(config.SSH.MaxChannelsPerConnection),
 	}, component.UID, nil
 }
 
@@ -170,32 +122,30 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 		return nil, fmt.Errorf("gateway public URL and SSH address are required")
 	}
 	var sites api.GiteaSiteList
-	if err := s.IdentityIndex.List(ctx, &sites); err != nil {
-		return nil, err
-	}
-	allowedSites := make(map[types.UID]bool)
-	for i := range sites.Items {
-		site := &sites.Items[i]
-		if site.Spec.Enabled && site.Spec.Gateway.UID == componentUID && meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") {
-			allowedSites[site.UID] = true
-		}
-	}
-	var runtimes api.CodespaceList
-	if err := s.IdentityIndex.List(ctx, &runtimes); err != nil {
+	if err := s.IdentityIndex.List(ctx, &sites, client.MatchingFields{SiteGatewayUIDIndex: string(componentUID)}); err != nil {
 		return nil, err
 	}
 	response := &componentv1.GatewayControlResponse{ProtocolVersion: 1, Snapshot: true, Config: configuration}
-	for i := range runtimes.Items {
-		cs := &runtimes.Items[i]
-		if !allowedSites[cs.Spec.Site.UID] {
+	for i := range sites.Items {
+		site := &sites.Items[i]
+		if !site.Spec.Enabled || site.Spec.Gateway.UID != componentUID || !meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") {
 			continue
 		}
-		route, err := s.route(ctx, s.IdentityIndex, cs, componentUID)
-		if err != nil {
+		var runtimes api.CodespaceList
+		if err := s.IdentityIndex.List(ctx, &runtimes,
+			client.InNamespace("codespace-"+site.Name),
+			client.MatchingFields{RuntimeSiteUIDIndex: string(site.UID)},
+		); err != nil {
 			return nil, err
 		}
-		if route != nil {
-			response.Runtimes = append(response.Runtimes, route)
+		for index := range runtimes.Items {
+			route, err := s.route(ctx, s.IdentityIndex, &runtimes.Items[index], componentUID)
+			if err != nil {
+				return nil, err
+			}
+			if route != nil {
+				response.Runtimes = append(response.Runtimes, route)
+			}
 		}
 	}
 	slices.SortFunc(response.Runtimes, func(a, b *componentv1.GatewayRuntimeRoute) int { return strings.Compare(a.RuntimeUuid, b.RuntimeUuid) })
@@ -338,7 +288,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 		case <-ctx.Done():
 			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
 		case err := <-receiveErrors:
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err

@@ -6,7 +6,9 @@ package cluster
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -65,7 +67,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		if err != nil || !available {
 			continue
 		}
-		namespace := cachepkg.Namespace(material.secret.Data["registryKey"], site.Spec.ManagerID, create.Repository.RepositoryId, create.GitIdentity.UserId)
+		namespace := cachepkg.Namespace(material.secret.Data["registryKey"], string(site.UID), create.Repository.RepositoryId, create.GitIdentity.UserId)
 		token, err := cachepkg.SignCredential(material.secret.Data["tokenKey"], material.component.Name, namespace, configpkg.CachePolicy{Public: true, Build: true}, time.Now().Add(cacheCredentialTTL))
 		if err != nil {
 			return nil, err
@@ -93,7 +95,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			encoded, _ := json.Marshal(create.DevContainer)
 			_, _ = digest.Write(encoded)
 		}
-		result.BuildScope = fmt.Sprintf("%x", digest.Sum(nil))
+		result.BuildScope = hex.EncodeToString(digest.Sum(nil))
 		return result, nil
 	}
 	return nil, nil
@@ -114,16 +116,17 @@ func (s *ComponentServer) cacheAvailable(ctx context.Context, material *cacheMat
 
 func (s *ComponentServer) cacheByUID(ctx context.Context, uid string) (*cacheMaterial, error) {
 	var components corev1.ConfigMapList
-	if err := s.Client.List(ctx, &components, client.InNamespace(s.ManagementNamespace)); err != nil {
+	if err := s.Client.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: uid}); err != nil {
 		return nil, err
 	}
-	for i := range components.Items {
-		component := &components.Items[i]
-		if string(component.UID) == uid && component.Labels[ComponentLabel] == "cache" && component.DeletionTimestamp.IsZero() {
-			return s.cacheMaterial(ctx, component)
-		}
+	if len(components.Items) != 1 {
+		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 	}
-	return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
+	component := &components.Items[0]
+	if string(component.UID) != uid || component.Labels[ComponentLabel] != "cache" || !component.DeletionTimestamp.IsZero() {
+		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
+	}
+	return s.cacheMaterial(ctx, component)
 }
 
 func (s *ComponentServer) cacheByReference(ctx context.Context, reference api.ResourceReference) (*cacheMaterial, error) {
@@ -138,16 +141,19 @@ func (s *ComponentServer) cacheByReference(ctx context.Context, reference api.Re
 }
 
 func (s *ComponentServer) cacheMaterial(ctx context.Context, component *corev1.ConfigMap) (*cacheMaterial, error) {
-	var config configpkg.CacheConfig
-	decoder := json.NewDecoder(strings.NewReader(component.Data["config"]))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&config); err != nil {
-		return nil, fmt.Errorf("cache configuration is invalid")
+	config, err := cacheComponentConfig(component)
+	if err != nil {
+		return nil, err
 	}
-	config.ID = component.Name
 	secretName, secretUID := component.Data["secretName"], component.Data["secretUID"]
+	if secretName == "" || secretUID == "" {
+		return nil, fmt.Errorf("cache Secret reference is missing")
+	}
 	var secret corev1.Secret
-	if secretName == "" || secretUID == "" || s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: secretName}, &secret) != nil || string(secret.UID) != secretUID || secret.Labels[ComponentUIDLabel] != string(component.UID) || !secret.DeletionTimestamp.IsZero() {
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: secretName}, &secret); err != nil {
+		return nil, fmt.Errorf("load cache Secret: %w", err)
+	}
+	if string(secret.UID) != secretUID || secret.Labels[ComponentUIDLabel] != string(component.UID) || !secret.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("cache Secret identity is invalid")
 	}
 	if len(secret.Data["registryKey"]) < 32 || len(secret.Data["tokenKey"]) < 32 {
@@ -182,27 +188,33 @@ func cacheOwnerHolder(identity componentIdentity, sessionID string, revision int
 	return strings.Join([]string{identity.UID, identity.Instance, sessionID, strconv.FormatInt(revision, 10)}, "/")
 }
 
-func (s *ComponentServer) claimCache(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*coordinationv1.Lease, error) {
+func (s *ComponentServer) claimCache(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) error {
+	if !material.config.Enabled {
+		return connect.NewError(connect.CodeFailedPrecondition, "cache is disabled")
+	}
 	now := metav1.NowMicro()
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-owner-" + material.component.Name, Namespace: s.ManagementNamespace}}
 	err := s.Client.Get(ctx, client.ObjectKeyFromObject(lease), lease)
 	missing := apierrors.IsNotFound(err)
 	if err != nil && !missing {
-		return nil, err
+		return err
 	}
 	if !missing && lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second)) {
-		return nil, connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
+		return connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
 	}
 	lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
 	lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
 	lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision)), LeaseDurationSeconds: ptr.To(int32(cacheOwnerTTL / time.Second)), AcquireTime: &now, RenewTime: &now}
 	if missing {
-		return lease, s.Client.Create(ctx, lease)
+		return s.Client.Create(ctx, lease)
 	}
-	return lease, s.Client.Update(ctx, lease)
+	return s.Client.Update(ctx, lease)
 }
 
 func (s *ComponentServer) renewCache(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string, status *componentv1.CacheStatus) error {
+	if !material.config.Enabled {
+		return connect.NewError(connect.CodeFailedPrecondition, "cache is disabled")
+	}
 	var lease coordinationv1.Lease
 	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: "cache-owner-" + material.component.Name}, &lease); err != nil {
 		return err
@@ -223,17 +235,6 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 		lease.Annotations["codespace.gitea.dev/cleanup-result"] = status.CleanupResult
 	}
 	return s.Client.Update(ctx, &lease)
-}
-
-func (s *ComponentServer) releaseCache(ctx context.Context, identity componentIdentity, cacheID, sessionID string) {
-	var lease coordinationv1.Lease
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: "cache-owner-" + cacheID}, &lease); err != nil {
-		return
-	}
-	holder := strings.Split(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
-	if lease.Labels[ComponentUIDLabel] == identity.UID && len(holder) == 4 && holder[1] == identity.Instance && holder[2] == sessionID {
-		_ = s.Client.Delete(ctx, &lease, client.Preconditions{UID: &lease.UID, ResourceVersion: &lease.ResourceVersion})
-	}
 }
 
 func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*componentv1.CacheGCGrant, error) {
@@ -281,14 +282,10 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 	if err != nil {
 		return err
 	}
-	if _, err := s.claimCache(ctx, identity, material, first.SessionId); err != nil {
+	if err := s.claimCache(ctx, identity, material, first.SessionId); err != nil {
 		return err
 	}
-	defer func() {
-		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		s.releaseCache(releaseCtx, identity, first.CacheId, first.SessionId)
-	}()
+	// Keep the Lease until expiry: disconnect does not prove the old cache stopped writing.
 
 	requests := make(chan *componentv1.CacheControlRequest)
 	receiveErrors := make(chan error, 1)
@@ -312,8 +309,6 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 		changes, unsubscribe = s.CacheChanges.Subscribe()
 	}
 	defer unsubscribe()
-	permitTicker := time.NewTicker(5 * time.Second)
-	defer permitTicker.Stop()
 	lifetime := time.NewTimer(45 * time.Minute)
 	defer lifetime.Stop()
 	sequence, lastRevision := first.Sequence, int64(-1)
@@ -326,7 +321,11 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 			}
 			material = current
 			if material.config.Revision != lastRevision {
-				if err := stream.Send(&componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds(), Config: componentpkg.CacheConfigToProto(material.config)}); err != nil {
+				response := &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, Config: componentpkg.CacheConfigToProto(material.config)}
+				if lastRevision == -1 {
+					response.PermitValidForMilliseconds = cacheOwnerTTL.Milliseconds()
+				}
+				if err := stream.Send(response); err != nil {
 					return err
 				}
 				lastRevision = material.config.Revision
@@ -337,7 +336,7 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 		case <-ctx.Done():
 			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
 		case err := <-receiveErrors:
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				return nil
 			}
 			return err
@@ -365,10 +364,6 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 			}
 		case <-changes:
 			sendConfig = true
-		case <-permitTicker.C:
-			if err := stream.Send(&componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds()}); err != nil {
-				return err
-			}
 		case <-lifetime.C:
 			return nil
 		}

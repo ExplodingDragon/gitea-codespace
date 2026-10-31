@@ -138,7 +138,7 @@ func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
 // Create resolves configuration, creates resources, and completes the first lifecycle.
 func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("dev container owner ID is empty"))
+		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
 	environmentID := uuid.NewString()
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
@@ -149,10 +149,10 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 		AllowedPathRoot: options.AllowedPathRoot,
 	})
 	if err != nil {
-		return nil, devcontainer.InvalidConfiguration(err)
+		return nil, err
 	}
 	if err := validateCacheOptions(options.Cache); err != nil {
-		return nil, devcontainer.InvalidConfiguration(err)
+		return nil, err
 	}
 	e.applyCacheCredentials(options.Cache)
 	composeProject := ""
@@ -163,16 +163,16 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 		return nil, fmt.Errorf("clean incomplete Dev Container environment: %w", err)
 	}
 	if err := mergeInjectedFeatures(resolved, options.InjectedFeatures); err != nil {
-		return nil, devcontainer.InvalidConfiguration(err)
+		return nil, err
 	}
 	resolved.FrozenLockfile = options.FrozenLockfile
 	resolved.Cache = options.Cache
 	resolved.Configuration = devcontainer.Merge(resolved.Configuration, devcontainer.Configuration{Mounts: options.AdditionalMounts})
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
-		return nil, devcontainer.InvalidConfiguration(err)
+		return nil, err
 	}
 	if err := runInitializeCommand(ctx, resolved.InitializeCommand, options.HostUser, resolved.Workspace, options.LocalEnvironment, e.stdout, e.stderr); err != nil {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("run initializeCommand: %w", err))
+		return nil, fmt.Errorf("run initializeCommand: %w", err)
 	}
 
 	workspaceFolder := strings.TrimSpace(resolved.WorkspaceFolder)
@@ -193,7 +193,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var primaryService string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, workspaceFolder, labels, options.HostUser)
+		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser)
 	} else {
 		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser)
 	}
@@ -325,15 +325,15 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	}
 	publishSpecs, err := appPortPublishSpecs(resolved.AppPort)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	exposedPorts, portBindings, err := nat.ParsePortSpecs(publishSpecs)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(fmt.Errorf("appPort: %w", err))
+		return "", nil, fmt.Errorf("appPort: %w", err)
 	}
 	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
 	if err != nil {
-		return "", nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, err
 	}
 	override := resolved.OverrideCommand == nil || *resolved.OverrideCommand
 	config := &container.Config{
@@ -429,7 +429,7 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 
 func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) ([]string, error) {
 	if hasRunArg(resolved.RunArgs, "--entrypoint") {
-		return nil, devcontainer.InvalidConfiguration(fmt.Errorf("runArgs --entrypoint overrides Dev Container Feature startup entrypoints"))
+		return nil, fmt.Errorf("runArgs --entrypoint overrides Dev Container Feature startup entrypoints")
 	}
 	arguments := []string{"--tty", "--interactive"}
 	if config.WorkingDir != "" {
@@ -496,7 +496,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	return arguments, nil
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -582,7 +582,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
 	if err != nil {
-		return "", nil, nil, devcontainer.InvalidConfiguration(err)
+		return "", nil, nil, err
 	}
 	service.Image = featureImage
 	service.Build = nil
@@ -678,7 +678,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		relatedService, ok := project.Services[name]
 		if !ok {
-			return "", nil, nil, devcontainer.InvalidConfiguration(fmt.Errorf("docker compose runServices service %q does not exist", name))
+			return "", nil, nil, fmt.Errorf("docker compose runServices service %q does not exist", name)
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name

@@ -25,7 +25,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 		Workspace: "/workspaces/repo", WorkspaceFolder: "/workspaces/repo", RemoteUser: "developer", RemoteWorkdir: "/workspaces/repo",
 	}
 	require.NoError(t, state.Validate())
-	require.NoError(t, j.RunStage(t.Context(), 1, "create", func(context.Context) error {
+	require.NoError(t, j.RunOnce(t.Context(), 1, "create", func(context.Context) error {
 		data, err := json.Marshal(state)
 		require.NoError(t, err)
 		return j.write("state/environment.json", data)

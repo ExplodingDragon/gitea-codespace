@@ -25,6 +25,7 @@ import (
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/encoding/protojson"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -143,6 +144,51 @@ func (s *AgentControlServer) current(ctx context.Context) (*api.Codespace, error
 		return nil, connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
 	}
 	return cs, nil
+}
+
+func (s *AgentControlServer) PrepareVolume(ctx context.Context, request *agentv1.PrepareVolumeRequest) (*agentv1.PrepareVolumeResponse, error) {
+	if request.ProtocolVersion != 1 {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported Agent protocol version")
+	}
+	certificate, _ := ctx.Value(agentPeerKey{}).(*x509.Certificate)
+	cs, pod, err := ResolveAgent(ctx, s.IdentityIndex, s.Client, certificate)
+	if err != nil {
+		return nil, connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
+	}
+	var site api.GiteaSite
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
+		return nil, err
+	}
+	if !site.Spec.Enabled || !site.DeletionTimestamp.IsZero() || !pod.DeletionTimestamp.IsZero() || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" ||
+		(cs.Spec.Operation.Type != "create" && cs.Spec.Operation.Type != "resume") || s.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) <= 0 {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "volume preparation requires current execution permission")
+	}
+	var volume corev1.PersistentVolumeClaim
+	if cs.Spec.Runtime.VolumeMode != corev1.PersistentVolumeBlock || cs.Status.Volume.UID == "" {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime block volume is not bound")
+	}
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Volume.Name}, &volume); err != nil {
+		return nil, err
+	}
+	if volume.UID != cs.Status.Volume.UID || !volume.DeletionTimestamp.IsZero() || volume.Labels[RuntimeUIDLabel] != string(cs.UID) || volume.Labels[SiteUIDLabel] != string(site.UID) {
+		return nil, connect.NewError(connect.CodePermissionDenied, "runtime volume identity changed")
+	}
+	if request.Initialized {
+		if cs.Status.VolumeInitialization == "ready" {
+			return &agentv1.PrepareVolumeResponse{}, nil
+		}
+		cs.Status.VolumeInitialization = "ready"
+	} else {
+		if cs.Spec.Operation.Type != "create" || cs.Status.VolumeInitialization != "" {
+			return nil, connect.NewError(connect.CodeFailedPrecondition, "unrecognized data volume requires administrator recovery")
+		}
+		// Persist before granting permission: a lost reply cannot authorize another format.
+		cs.Status.VolumeInitialization = "started"
+	}
+	if err := s.Client.Status().Update(ctx, cs); err != nil {
+		return nil, err
+	}
+	return &agentv1.PrepareVolumeResponse{}, nil
 }
 
 func (s *AgentControlServer) gitea(ctx context.Context, cs *api.Codespace) (codespacev1connect.ManagerServiceClient, error) {

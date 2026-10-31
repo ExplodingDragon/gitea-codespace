@@ -24,12 +24,12 @@ func TestCacheAuthenticationExpiry(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := reader.verifyToken(t.Context(), token); err != nil {
+	if _, err := reader.verifyToken(token); err != nil {
 		t.Fatal(err)
 	}
 	hashKey := cacheSessionKey(token)
 	expires := reader.sessions[hashKey].expires
-	if _, err := reader.verifyToken(t.Context(), token); err != nil {
+	if _, err := reader.verifyToken(token); err != nil {
 		t.Fatal(err)
 	}
 	if !reader.sessions[hashKey].expires.Equal(expires) {
@@ -38,7 +38,7 @@ func TestCacheAuthenticationExpiry(t *testing.T) {
 	entry := reader.sessions[hashKey]
 	entry.expires = time.Now().Add(-time.Second)
 	reader.sessions[hashKey] = entry
-	if _, err := reader.verifyToken(t.Context(), token+"x"); err == nil {
+	if _, err := reader.verifyToken(token + "x"); err == nil {
 		t.Fatal("modified cache credential was accepted")
 	}
 }
@@ -62,6 +62,30 @@ func TestCacheServiceStopsMaintenanceWhenManagerLeaseIsLost(t *testing.T) {
 	}
 }
 
+func TestCacheServiceExpiresWhileHeartbeatIsBlocked(t *testing.T) {
+	control := &fakeCacheControl{
+		config:         ControlConfig{Config: configpkg.CacheConfig{ID: "test", Enabled: true, Listen: "127.0.0.1:0", PublicURL: "http://cache.example.com", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}, RegistryKey: "test-key", TokenKey: []byte(strings.Repeat("t", 32))},
+		permitDuration: 50 * time.Millisecond, stallHeartbeat: true,
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	released := make(chan struct{})
+	go func() {
+		_ = runCacheInstance(ctx, io.Discard, control, control.config)
+		close(released)
+	}()
+	select {
+	case <-released:
+		control.mu.Lock()
+		defer control.mu.Unlock()
+		if control.owner.ID != "" {
+			t.Fatal("expired cache owner was not released")
+		}
+	case <-ctx.Done():
+		t.Fatal("blocked heartbeat prevented the cache permit from expiring")
+	}
+}
+
 func cacheSessionKey(value string) string {
 	hash := sha256.Sum256([]byte(value))
 	return hex.EncodeToString(hash[:])
@@ -70,10 +94,12 @@ func cacheSessionKey(value string) string {
 // fakeCacheControl models the Manager contract. Manager integration tests cover
 // lease and revision conditions against Kubernetes resources.
 type fakeCacheControl struct {
-	mu           sync.Mutex
-	config       ControlConfig
-	owner        Owner
-	heartbeatErr error
+	mu             sync.Mutex
+	config         ControlConfig
+	owner          Owner
+	heartbeatErr   error
+	permitDuration time.Duration
+	stallHeartbeat bool
 }
 
 func (f *fakeCacheControl) GetCache(context.Context, string) (ControlConfig, error) {
@@ -88,20 +114,28 @@ func (f *fakeCacheControl) ClaimCache(_ context.Context, id string) (Owner, erro
 	if f.owner.ID != "" {
 		return Owner{}, ErrCacheServiceBusy
 	}
-	f.owner = Owner{CacheID: id, ID: "owner", ConfigRevision: f.config.Config.Revision}
+	duration := f.permitDuration
+	if duration == 0 {
+		duration = 15 * time.Second
+	}
+	f.owner = Owner{CacheID: id, ID: "owner", ConfigRevision: f.config.Config.Revision, ExpiresAt: time.Now().Add(duration)}
 	return f.owner, nil
 }
 
-func (f *fakeCacheControl) HeartbeatCache(_ context.Context, owner Owner, _ Status) error {
+func (f *fakeCacheControl) HeartbeatCache(ctx context.Context, owner Owner, _ Status) (time.Time, error) {
+	if f.stallHeartbeat {
+		<-ctx.Done()
+		return time.Time{}, ctx.Err()
+	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if owner.ID == "" || owner.ID != f.owner.ID {
-		return errors.New("cache service ownership lost")
+		return time.Time{}, errors.New("cache service ownership lost")
 	}
 	if f.heartbeatErr != nil {
-		return f.heartbeatErr
+		return time.Time{}, f.heartbeatErr
 	}
-	return nil
+	return time.Now().Add(15 * time.Second), nil
 }
 
 func (f *fakeCacheControl) ReleaseCache(_ context.Context, owner Owner) error {
