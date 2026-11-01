@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -92,7 +92,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	}
 	if cs.Status.Pod.Name == "" {
 		meta.RemoveStatusCondition(&cs.Status.Conditions, "Stopped")
-		cs.Status.Pod.Name = "runtime-" + uuid.NewString()
+		cs.Status.Pod.Name = "runtime-" + uuid.NewV4().String()
 		cs.Status.IdentitySecretName = cs.Status.Pod.Name + "-identity"
 		if err := r.updateStatus(ctx, &cs); err != nil {
 			return ctrl.Result{}, err

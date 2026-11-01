@@ -10,11 +10,11 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"uuid"
 
 	cachepkg "gitea.dev/codespace/internal/cache"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
-	"github.com/google/uuid"
 )
 
 const componentProtocolVersion uint32 = 1
@@ -99,7 +99,7 @@ func (c *CacheComponentClient) start(ctx context.Context, id string) error {
 		c.mu.Unlock()
 		return err
 	}
-	c.stream, c.cacheID, c.sessionID = stream, id, uuid.NewString()
+	c.stream, c.cacheID, c.sessionID = stream, id, uuid.NewV4().String()
 	c.cancelStream = cancel
 	c.sequence, c.config, c.streamErr = 1, cachepkg.ControlConfig{RegistryKey: string(registryKey), TokenKey: append([]byte(nil), tokenKey...)}, nil
 	c.ready = make(chan struct{})

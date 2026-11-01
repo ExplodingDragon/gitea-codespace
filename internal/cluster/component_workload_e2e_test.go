@@ -7,9 +7,9 @@ import (
 	"context"
 	"testing"
 	"time"
+	"uuid"
 
 	configpkg "gitea.dev/codespace/internal/config"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -25,7 +25,7 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	cluster := newE2ECluster(t, 3*time.Minute)
 	namespace := cluster.managementNamespace
 	server := &AdminServer{Client: cluster.Client, Namespace: namespace}
-	suffix := uuid.NewString()[:8]
+	suffix := uuid.NewV4().String()[:8]
 
 	gatewayConfig := configpkg.DefaultGatewayConfig()
 	gatewayConfig.HTTP.PublicURL = "https://gateway-" + suffix + ".example.test"

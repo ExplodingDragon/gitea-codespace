@@ -8,9 +8,9 @@ import (
 	"math"
 	"sync"
 	"time"
+	"uuid"
 
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
-	"github.com/google/uuid"
 )
 
 // Permit measures execution authority from request send time, including reconnects.
@@ -26,7 +26,7 @@ type Permit struct {
 func (p *Permit) Reconnect() string {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	p.session = uuid.NewString()
+	p.session = uuid.NewV4().String()
 	p.sequence, p.version = 0, 0
 	p.sent, p.deadline = time.Time{}, time.Time{}
 	return p.session

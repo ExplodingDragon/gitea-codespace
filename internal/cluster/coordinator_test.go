@@ -14,6 +14,7 @@ import (
 	"sync"
 	"testing"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
@@ -23,7 +24,6 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/go-logr/logr/testr"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	corev1 "k8s.io/api/core/v1"
@@ -185,7 +185,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	quota := testQuota(site, ns.Name)
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}, site).WithObjects(site, ns, template, gateway, hostKey, credential, quota).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
-			object.SetUID(types.UID(uuid.NewString()))
+			object.SetUID(types.UID(uuid.NewV4().String()))
 			return c.Create(ctx, object, opts...)
 		}}).Build()
 	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace, PlatformImage: testRuntime().Image}, ObservationReader: c}

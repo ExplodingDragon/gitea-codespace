@@ -15,8 +15,7 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/google/uuid"
+	"uuid"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -61,7 +60,7 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 
 	readyStage := devcontainer.LifecycleStage("")
 	state, err := engine.Create(ctx, CreateOptions{
-		OwnerID:         "devcontainer-e2e-" + uuid.NewString(),
+		OwnerID:         "devcontainer-e2e-" + uuid.NewV4().String(),
 		Workspace:       workspace,
 		AllowedPathRoot: workspace,
 		Source:          devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
@@ -131,7 +130,7 @@ func TestDockerE2EImageSource(t *testing.T) {
 	}
 	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
-		OwnerID:         "devcontainer-image-e2e-" + uuid.NewString(),
+		OwnerID:         "devcontainer-image-e2e-" + uuid.NewV4().String(),
 		Workspace:       workspace,
 		AllowedPathRoot: workspace,
 		Source:          devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
@@ -188,7 +187,7 @@ func TestDockerE2EBuildSource(t *testing.T) {
 	}
 	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
-		OwnerID: "devcontainer-build-e2e-" + uuid.NewString(), Workspace: workspace, AllowedPathRoot: workspace,
+		OwnerID: "devcontainer-build-e2e-" + uuid.NewV4().String(), Workspace: workspace, AllowedPathRoot: workspace,
 		Source:   devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
 		HostUser: devcontainer.HostUser{Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME")},
 	})
@@ -223,7 +222,7 @@ func TestDockerE2EDockerInDockerFeature(t *testing.T) {
 	}
 	defer func() { _ = engine.Close() }()
 	state, err := engine.Create(ctx, CreateOptions{
-		OwnerID:         "devcontainer-dind-e2e-" + uuid.NewString(),
+		OwnerID:         "devcontainer-dind-e2e-" + uuid.NewV4().String(),
 		Workspace:       workspace,
 		AllowedPathRoot: workspace,
 		Source: devcontainer.Source{Content: `{

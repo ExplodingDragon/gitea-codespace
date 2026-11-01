@@ -18,8 +18,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/sys/unix"
 )
@@ -320,7 +320,7 @@ func (j *Journal) save() error {
 }
 
 func (j *Journal) write(name string, data []byte) error {
-	temporary := name + "." + uuid.NewString()
+	temporary := name + "." + uuid.NewV4().String()
 	file, err := j.root.OpenFile(temporary, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return err

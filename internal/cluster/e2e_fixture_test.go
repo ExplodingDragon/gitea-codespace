@@ -8,8 +8,8 @@ import (
 	"os"
 	"testing"
 	"time"
+	"uuid"
 
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -88,7 +88,7 @@ func (e *e2eCluster) createNamespace(t *testing.T, prefix string) *corev1.Namesp
 		prefix = prefix[:63-uuidSuffixLength]
 	}
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-		Name:   prefix + "-" + uuid.NewString(),
+		Name:   prefix + "-" + uuid.NewV4().String(),
 		Labels: map[string]string{e2eRunLabel: e.runID},
 	}}
 	require.NoError(t, e.Create(e.ctx, namespace))

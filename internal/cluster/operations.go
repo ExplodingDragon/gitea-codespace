@@ -8,11 +8,11 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"uuid"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/google/uuid"
 	"google.golang.org/protobuf/encoding/protojson"
 	"google.golang.org/protobuf/proto"
 	corev1 "k8s.io/api/core/v1"
@@ -123,7 +123,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			},
 		}
 		if cs.Spec.RuntimeUUID == "" {
-			cs.Spec.RuntimeUUID = uuid.NewString()
+			cs.Spec.RuntimeUUID = uuid.NewV4().String()
 		}
 	} else {
 		if cs.Spec.Site.UID != site.UID || cs.Spec.CodespaceID != payload.CodespaceId || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction == "delete" {

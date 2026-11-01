@@ -9,10 +9,10 @@ import (
 	"encoding/pem"
 	"testing"
 	"time"
+	"uuid"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -30,7 +30,7 @@ import (
 func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	cluster := newE2ECluster(t, time.Minute)
 	c, ctx := cluster.Client, cluster.ctx
-	name := "e2e-" + uuid.NewString()
+	name := "e2e-" + uuid.NewV4().String()
 	site := testSite(name, "")
 	site.ResourceVersion, site.Generation, site.Finalizers = "", 0, nil
 	site.Labels = map[string]string{e2eRunLabel: cluster.runID}
@@ -103,7 +103,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: namespace},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: uuid.NewString(), EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: uuid.NewV4().String(), EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
 	}
 	require.NoError(t, c.Create(ctx, cs))
 	changed := cs.DeepCopy()
@@ -220,7 +220,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 func TestKubernetesE2EAgentCertificate(t *testing.T) {
 	cluster := newE2ECluster(t, 2*time.Minute)
 	c, ctx := cluster.Client, cluster.ctx
-	name := "identity-" + uuid.NewString()
+	name := "identity-" + uuid.NewV4().String()
 	ns := cluster.createNamespace(t, name)
 	issuer := &unstructured.Unstructured{Object: map[string]any{
 		"apiVersion": "cert-manager.io/v1", "kind": "ClusterIssuer",

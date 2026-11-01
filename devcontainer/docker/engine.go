@@ -20,6 +20,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -37,7 +38,6 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
-	"github.com/google/uuid"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -140,7 +140,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if strings.TrimSpace(options.OwnerID) == "" {
 		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
-	environmentID := uuid.NewString()
+	environmentID := uuid.NewV4().String()
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
 		Workspace:       options.Workspace,
 		Source:          options.Source,

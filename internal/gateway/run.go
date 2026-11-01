@@ -13,11 +13,11 @@ import (
 	"os"
 	"sync"
 	"time"
+	"uuid"
 
 	configpkg "gitea.dev/codespace/internal/config"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
-	"github.com/google/uuid"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 )
@@ -30,7 +30,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 	}
 	var runtime *runningGateway
 	var config *componentv1.GatewayConfigurationSnapshot
-	sessionID := uuid.NewString()
+	sessionID := uuid.NewV4().String()
 	var sequence uint64
 	var responseSequence uint64
 	defer func() {

@@ -14,10 +14,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	configpkg "gitea.dev/codespace/internal/config"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -88,7 +88,7 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
 	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, gateway).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
-		object.SetUID(types.UID(uuid.NewString()))
+		object.SetUID(types.UID(uuid.NewV4().String()))
 		object.SetCreationTimestamp(metav1.Now())
 		return c.Create(ctx, object, opts...)
 	}}).Build()
@@ -208,7 +208,7 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	ctx := t.Context()
 	namespace := "codespace-system"
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
-		object.SetUID(types.UID(uuid.NewString()))
+		object.SetUID(types.UID(uuid.NewV4().String()))
 		object.SetCreationTimestamp(metav1.Now())
 		object.SetGeneration(1)
 		return c.Create(ctx, object, opts...)

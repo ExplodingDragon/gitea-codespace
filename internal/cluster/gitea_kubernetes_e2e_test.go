@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"uuid"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -32,7 +32,7 @@ func TestKubernetesE2ERealGiteaHandshake(t *testing.T) {
 	managerSecret := strings.TrimSpace(string(managerSecretData))
 	require.NotEmpty(t, managerSecret)
 
-	siteUID := types.UID(uuid.NewString())
+	siteUID := types.UID(uuid.NewV4().String())
 	credential := &corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{GenerateName: "real-gitea-smoke-", Namespace: cluster.managementNamespace, Labels: map[string]string{SiteUIDLabel: string(siteUID), e2eRunLabel: cluster.runID}},
 		Data:       map[string][]byte{"managerSecret": []byte(managerSecret)},

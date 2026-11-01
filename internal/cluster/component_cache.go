@@ -14,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"uuid"
 
 	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
@@ -24,7 +25,6 @@ import (
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
-	"github.com/google/uuid"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -238,7 +238,7 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 }
 
 func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*componentv1.CacheGCGrant, error) {
-	grantID, now := uuid.NewString(), metav1.NowMicro()
+	grantID, now := uuid.NewV4().String(), metav1.NowMicro()
 	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-gc-" + material.component.Name, Namespace: s.ManagementNamespace, Labels: map[string]string{ComponentUIDLabel: identity.UID}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}}, Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To(sessionID + "/" + grantID), LeaseDurationSeconds: ptr.To(int32(cacheGCTTL / time.Second)), AcquireTime: &now, RenewTime: &now}}
 	if err := s.Client.Create(ctx, lease); apierrors.IsAlreadyExists(err) {
 		var current coordinationv1.Lease

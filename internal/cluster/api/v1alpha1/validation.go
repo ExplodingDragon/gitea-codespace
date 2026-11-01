@@ -10,9 +10,9 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"uuid"
 
 	"github.com/distribution/reference"
-	"github.com/google/uuid"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
@@ -149,7 +149,7 @@ func (c *Codespace) Validate(managementNamespace string) error {
 		return fmt.Errorf("codespace namespace does not match its site")
 	}
 	id, err := uuid.Parse(c.Spec.RuntimeUUID)
-	if err != nil || id.Version() != 4 || id.String() != c.Spec.RuntimeUUID {
+	if err != nil || id[6]>>4 != 4 || id.String() != c.Spec.RuntimeUUID {
 		return fmt.Errorf("runtime UUID must be a canonical UUID v4")
 	}
 	if c.Spec.CodespaceID <= 0 || c.Spec.Operation.Version <= 0 || !tagPattern.MatchString(c.Spec.EnvironmentTag) {

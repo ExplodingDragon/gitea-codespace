@@ -5,8 +5,7 @@ package gateway
 
 import (
 	"fmt"
-
-	"github.com/google/uuid"
+	"uuid"
 )
 
 // ValidateRuntimeUUID checks the canonical identity used in routes and state keys.
@@ -15,7 +14,7 @@ func ValidateRuntimeUUID(codespaceUUID string) error {
 	if err != nil {
 		return err
 	}
-	if parsed.Version() != 4 || parsed.String() != codespaceUUID {
+	if parsed[6]>>4 != 4 || parsed.String() != codespaceUUID {
 		return fmt.Errorf("codespace uuid must be canonical lower-case UUID v4")
 	}
 	return nil
