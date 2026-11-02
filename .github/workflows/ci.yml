@@ -49,6 +49,7 @@ jobs:
           version: v4.3.0
       - name: Install build tools
         run: |
+          go mod download
           make install-proto
           pnpm --dir web install --frozen-lockfile
           pnpm --dir web exec playwright install --with-deps chromium

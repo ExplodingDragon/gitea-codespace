@@ -20,9 +20,7 @@ trap 'rm -rf "$$work"; rmdir .tmp 2>/dev/null || true' EXIT; \
 mkdir -p "$$work/agent/v1" "$$work/component/v1" "$$work/codespace/v1"; \
 cp internal/rpc/agent/v1/service.proto "$$work/agent/v1/service.proto"; \
 cp internal/rpc/component/v1/service.proto "$$work/component/v1/service.proto"; \
-$(GO) mod download gitea.dev/codespace-proto-go; \
 proto_module="$$($(GO) list -m -f '{{.Dir}}' gitea.dev/codespace-proto-go)"; \
-test -n "$$proto_module"; \
 cp "$$proto_module/proto/codespace/v1/types.proto" "$$work/codespace/v1/types.proto";
 endef
 
