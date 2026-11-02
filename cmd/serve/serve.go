@@ -42,7 +42,7 @@ func NewCommand() *cobra.Command {
 	flags.StringVar(&options.Namespace, "namespace", "codespace-system", "Management namespace")
 	flags.StringVar(&options.ManagerURL, "manager-url", "https://codespace-manager.codespace-system.svc:8443", "Manager Service URL used by Agents")
 	flags.StringVar(&options.ComponentURL, "component-url", "https://codespace-manager.codespace-system.svc:8445", "Manager Service URL used by Gateway and Cache")
-	flags.StringVar(&options.PlatformImage, "platform-image", "", "Digest-pinned image used by all managed Codespace workloads")
+	flags.StringVar(&options.PlatformImage, "platform-image", "", "Explicitly tagged or digest-pinned image used by all managed Codespace workloads")
 	flags.StringSliceVar(&options.ImagePullSecrets, "image-pull-secret", nil, "Management-namespace image pull Secret copied to managed site namespaces")
 	flags.StringVar(&options.IdentityIssuer, "identity-issuer", "codespace-identity", "cert-manager ClusterIssuer for component identities")
 	flags.StringVar(&options.HealthAddress, "health-address", ":8081", "Health and readiness listen address")

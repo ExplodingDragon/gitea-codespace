@@ -136,21 +136,17 @@ jobs:
         uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
         with:
           version: v4.3.0
-      - name: Set up ORAS
-        uses: oras-project/setup-oras@5e2f2482b30b0cb3e14e67f89a80c88c659a7c63 # v2.0.3
-        with:
-          version: 1.3.6
       - name: Log in to GHCR
         uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Log ORAS in to GHCR
+      - name: Log Helm in to GHCR
         env:
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GHCR_USER: ${{ github.actor }}
-        run: printf '%s' "$GHCR_TOKEN" | oras login ghcr.io --username "$GHCR_USER" --password-stdin
+        run: printf '%s' "$GHCR_TOKEN" | helm registry login ghcr.io --username "$GHCR_USER" --password-stdin
       - name: Build and publish image
         id: image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
@@ -175,21 +171,18 @@ jobs:
         id: chart
         run: |
           mkdir -p .tmp/chart
-          helm package charts/gitea-codespace --destination .tmp/chart
-          set -- .tmp/chart/gitea-codespace-*.tgz
-          test "$#" -eq 1
-          digest="$(oras push \
-            --image-spec v1.0 \
-            --artifact-type application/vnd.cncf.helm.config.v1+json \
-            --annotation 'org.opencontainers.image.title=Gitea Codespace Helm chart' \
-            --annotation 'org.opencontainers.image.description=Kubernetes deployment chart for Gitea Codespace' \
-            --annotation "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
-            --annotation "org.opencontainers.image.revision=${GITHUB_SHA}" \
-            --annotation 'org.opencontainers.image.version=main' \
-            --annotation 'org.opencontainers.image.licenses=MIT' \
-            "${HELM_CHART_NAME}:main" \
-            "$1":application/vnd.cncf.helm.chart.content.v1.tar+gzip \
-            --format 'go-template={{.digest}}')"
+          source_version="$(awk '$1 == "version:" {print $2; exit}' charts/gitea-codespace/Chart.yaml)"
+          test "${source_version##*-}" = 'main.0'
+          version="${source_version%-main.0}-main.${GITHUB_RUN_NUMBER}"
+          helm package charts/gitea-codespace \
+            --version "$version" \
+            --app-version "main-${GITHUB_SHA}" \
+            --destination .tmp/chart
+          output="$(helm push ".tmp/chart/gitea-codespace-${version}.tgz" oci://ghcr.io/explodingdragon/charts 2>&1)"
+          printf '%s\n' "$output"
+          digest="$(printf '%s\n' "$output" | sed -n 's/^Digest: \(sha256:[0-9a-f]\{64\}\)$/\1/p' | tail -n 1)"
+          test -n "$digest"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
       - name: Attest image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
@@ -215,6 +208,7 @@ jobs:
             echo
             echo 'Helm chart:'
             echo '```text'
+            echo 'oci://${{ env.HELM_CHART_NAME }} --version ${{ steps.chart.outputs.version }}'
             echo 'oci://${{ env.HELM_CHART_NAME }}@${{ steps.chart.outputs.digest }}'
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"

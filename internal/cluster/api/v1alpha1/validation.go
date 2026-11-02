@@ -137,8 +137,10 @@ func (r RuntimeConfiguration) Validate() error {
 	if err != nil {
 		return fmt.Errorf("invalid platform image: %w", err)
 	}
-	if _, ok := image.(reference.Digested); !ok {
-		return fmt.Errorf("platform image must be pinned by digest")
+	if _, tagged := image.(reference.Tagged); !tagged {
+		if _, digested := image.(reference.Digested); !digested {
+			return fmt.Errorf("platform image must include an explicit tag or digest")
+		}
 	}
 	return nil
 }

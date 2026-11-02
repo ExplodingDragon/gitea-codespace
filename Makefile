@@ -89,8 +89,14 @@ frontend-check:
 	$(PNPM) --dir web run format:check
 
 helm-check:
+	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin
+	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
+	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
+	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'
 	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
-	helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin >/dev/null
+	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
+	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000"'; \
+	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: IfNotPresent'
 
 admin-dev:
 	$(PNPM) --dir web run dev

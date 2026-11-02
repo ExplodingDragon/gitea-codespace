@@ -1,5 +1,7 @@
 The Codespace Manager is installed in {{ .Release.Namespace }}.
 
+Platform image: {{ include "gitea-codespace.image" . }}
+
 Open the administration UI locally:
 
   kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "gitea-codespace.fullname" . }}-admin 18080:{{ .Values.admin.service.port }}

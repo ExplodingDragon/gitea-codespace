@@ -23,10 +23,11 @@ spec:
         {{- toYaml . | nindent 8 }}
         {{- end }}
         {{- include "gitea-codespace.selectorLabels" . | nindent 8 }}
-      {{- with .Values.podAnnotations }}
       annotations:
+        {{- with omit .Values.podAnnotations "codespace.gitea.dev/platform-revision" }}
         {{- toYaml . | nindent 8 }}
-      {{- end }}
+        {{- end }}
+        codespace.gitea.dev/platform-revision: {{ .Chart.AppVersion | quote }}
     spec:
       serviceAccountName: {{ $fullname }}
       automountServiceAccountToken: true
@@ -47,7 +48,7 @@ spec:
       containers:
         - name: manager
           image: {{ include "gitea-codespace.image" . | quote }}
-          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          imagePullPolicy: {{ include "gitea-codespace.imagePullPolicy" . }}
           args:
             - serve
             - --namespace={{ .Release.Namespace }}

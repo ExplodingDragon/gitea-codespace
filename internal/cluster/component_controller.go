@@ -38,6 +38,7 @@ type ComponentReconciler struct {
 	ManagerURL             string
 	IdentityIssuer         string
 	PlatformImage          string
+	PlatformRevision       string
 	ImagePullSecrets       []string
 	GatewayParentName      string
 	GatewayParentNamespace string
@@ -46,6 +47,8 @@ type ComponentReconciler struct {
 }
 
 const componentFinalizer = "codespace.gitea.dev/component-cleanup"
+
+const platformRevisionAnnotation = "codespace.gitea.dev/platform-revision"
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	if request.Namespace != r.ManagementNamespace {
@@ -104,8 +107,8 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 			return ctrl.Result{}, err
 		}
 	}
-	if component.UID == "" || r.PlatformImage == "" {
-		return ctrl.Result{}, fmt.Errorf("component UID and platform image are required")
+	if component.UID == "" || r.PlatformImage == "" || r.PlatformRevision == "" {
+		return ctrl.Result{}, fmt.Errorf("component UID, platform image and platform revision are required")
 	}
 	var gatewayConfig *configpkg.GatewayConfig
 	var cacheConfig *configpkg.CacheConfig
@@ -345,9 +348,13 @@ func (r *ComponentReconciler) reconcileCacheVolume(ctx context.Context, componen
 }
 
 func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component *corev1.ConfigMap, role, identitySecret string, ports []int32, cache *configpkg.CacheConfig) error {
+	pullPolicy, err := platformImagePullPolicy(r.PlatformImage)
+	if err != nil {
+		return err
+	}
 	labels := map[string]string{"app.kubernetes.io/name": "codespace", ComponentLabel: role, ComponentUIDLabel: string(component.UID)}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: component.Namespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
 		if err := controllerutil.SetControllerReference(component, deployment, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -359,7 +366,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			args = append(args, "--id", component.Name)
 		}
 		container := corev1.Container{
-			Name: role, Image: r.PlatformImage, ImagePullPolicy: corev1.PullIfNotPresent, Args: args,
+			Name: role, Image: r.PlatformImage, ImagePullPolicy: pullPolicy, Args: args,
 			Env:             []corev1.EnvVar{{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL}, {Name: "GITEA_CODESPACE_CERTIFICATE_DIRECTORY", Value: "/var/run/codespace/identity"}},
 			Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}},
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
@@ -410,7 +417,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 				volumes = append(volumes, corev1.Volume{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: component.Name}}})
 			}
 		}
-		deployment.Spec.Template = corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels}, Spec: corev1.PodSpec{
+		deployment.Spec.Template = corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{platformRevisionAnnotation: r.PlatformRevision}}, Spec: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), TerminationGracePeriodSeconds: ptr.To(int64(30)),
 			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets),
 			SecurityContext:  &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},

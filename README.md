@@ -18,30 +18,27 @@ make build
 
 `make build` embeds the Vue administration UI in `bin/gitea-codespace`. `make images` cross-compiles the `linux/amd64` binary on the host and then builds the single platform image used by Manager, Agent, Gateway, and Cache. The Docker build only packages that binary and its runtime dependencies. Internal Agent and component protocols live under `internal/rpc`; `make proto-generate` updates their checked-in Go bindings.
 
-Pull requests run static checks, backend and browser tests, and a platform-image smoke test. Pushes to `main` publish `ghcr.io/explodingdragon/gitea-codespace:main` and `ghcr.io/explodingdragon/charts/gitea-codespace:main`; the workflow summary provides their immutable digests. Versioned artifact tags begin with the first release.
+Pull requests run static checks, backend and browser tests, and a platform-image smoke test. Pushes to `main` publish `ghcr.io/explodingdragon/gitea-codespace:main` and a Helm prerelease named `0.1.0-main.<run-number>`. The workflow summary records the exact chart version and immutable digests.
 
 ## Deploy
 
-Use the [`gitea-codespace` Helm chart](charts/gitea-codespace) with a digest-pinned platform image. The target cluster must already provide cert-manager and a verified RuntimeClass/StorageClass pair. Runtime environments, Gitea sites, Gateways, and Caches are then configured through the administration UI.
+Use the [`gitea-codespace` Helm chart](charts/gitea-codespace). The target cluster must already provide cert-manager and a verified RuntimeClass/StorageClass pair. Runtime environments, Gitea sites, Gateways, and Caches are then configured through the administration UI.
 
-Copy the image and chart digests from the successful `main` workflow summary, then install the OCI chart directly from GHCR:
+Create the administration token, then install the newest development chart. Its default platform image is the continuously updated `main` tag:
 
 ```sh
-IMAGE_DIGEST=sha256:REPLACE_WITH_THE_PLATFORM_IMAGE_DIGEST
-CHART_DIGEST=sha256:REPLACE_WITH_THE_HELM_CHART_DIGEST
-
 kubectl create namespace codespace-system
 kubectl -n codespace-system create secret generic codespace-admin \
   --from-literal=token="$(openssl rand -hex 32)"
 
 helm upgrade --install codespace \
-  "oci://ghcr.io/explodingdragon/charts/gitea-codespace@${CHART_DIGEST}" \
+  oci://ghcr.io/explodingdragon/charts/gitea-codespace \
+  --devel \
   --namespace codespace-system \
-  --set image.digest="${IMAGE_DIGEST}" \
   --set admin.tokenSecret.name=codespace-admin
 ```
 
-Helm OCI version selection accepts semantic versions, while the development channel is intentionally named `main`. Installing the chart by its immutable digest keeps the `main` publication model and remains directly supported by Helm 4. After the first workflow publication, make both GHCR packages public so that Helm and Kubernetes can pull them without registry credentials.
+For a reproducible installation, copy the chart version and image digest from a successful workflow summary, add `--version 0.1.0-main.<run-number>`, and set `image.digest`. The chart digest can also replace the chart version in the OCI reference. Tagged images are always checked for updates when a Pod is created; digest-pinned images use the local copy when present. Existing Runtime Pods are not restarted merely because `main` changes. Both GHCR packages must be public unless pull credentials are configured.
 
 The administration Service defaults to `ClusterIP`:
 

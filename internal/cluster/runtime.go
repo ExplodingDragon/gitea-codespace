@@ -238,6 +238,10 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 
 func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*corev1.Pod, error) {
 	runtime := cs.Spec.Runtime
+	pullPolicy, err := platformImagePullPolicy(runtime.Image)
+	if err != nil {
+		return nil, err
+	}
 	devContainer, err := json.Marshal(runtime.DevContainer)
 	if err != nil {
 		return nil, fmt.Errorf("encode Dev Container injection configuration: %w", err)
@@ -263,7 +267,7 @@ func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*co
 				{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: cs.Status.IdentitySecretName, DefaultMode: ptr.To(int32(0o400)), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "tls.crt"}, {Key: "tls.key", Path: "tls.key"}, {Key: "ca.crt", Path: "ca.crt"}}}}},
 			},
 			Containers: []corev1.Container{{
-				Name: "runtime", Image: runtime.Image, ImagePullPolicy: corev1.PullIfNotPresent,
+				Name: "runtime", Image: runtime.Image, ImagePullPolicy: pullPolicy,
 				Command:   []string{"/usr/local/bin/gitea-codespace", "agent"},
 				Ports:     []corev1.ContainerPort{{Name: "agent-access", ContainerPort: 8444, Protocol: corev1.ProtocolTCP}},
 				Resources: runtime.Resources,

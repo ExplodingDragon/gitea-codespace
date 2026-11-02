@@ -8,11 +8,11 @@
     "image": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["repository", "digest", "pullPolicy", "pullSecrets"],
+      "required": ["repository", "tag", "digest", "pullSecrets"],
       "properties": {
         "repository": {"type": "string", "minLength": 1},
-        "digest": {"type": "string", "pattern": "^sha256:[0-9a-f]{64}$"},
-        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]},
+        "tag": {"type": "string", "minLength": 1},
+        "digest": {"type": "string", "pattern": "^(|sha256:[0-9a-f]{64})$"},
         "pullSecrets": {"type": "array", "uniqueItems": true, "items": {"type": "string", "minLength": 1}}
       }
     },

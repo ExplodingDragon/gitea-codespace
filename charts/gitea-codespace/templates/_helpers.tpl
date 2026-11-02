@@ -23,5 +23,13 @@ app.kubernetes.io/component: manager
 {{- end -}}
 
 {{- define "gitea-codespace.image" -}}
+{{- if .Values.image.digest -}}
 {{- printf "%s@%s" .Values.image.repository .Values.image.digest -}}
+{{- else -}}
+{{- printf "%s:%s" .Values.image.repository .Values.image.tag -}}
+{{- end -}}
+{{- end -}}
+
+{{- define "gitea-codespace.imagePullPolicy" -}}
+{{- if .Values.image.digest -}}IfNotPresent{{- else -}}Always{{- end -}}
 {{- end -}}

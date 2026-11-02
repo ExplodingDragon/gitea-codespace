@@ -45,6 +45,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(gateway, gatewayKey, cache, cacheKey).Build()
 	reconciler := &ComponentReconciler{
 		Client: c, ManagementNamespace: namespace, ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64),
+		PlatformRevision:  "sha-test",
 		ImagePullSecrets:  []string{"registry"},
 		GatewayParentName: "public", GatewayHTTPSectionName: "https", GatewaySSHSectionName: "ssh",
 	}
@@ -64,8 +65,10 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 		require.NotNil(t, deployment.Spec.Template.Spec.AutomountServiceAccountToken)
 		require.False(t, *deployment.Spec.Template.Spec.AutomountServiceAccountToken)
 		require.True(t, *deployment.Spec.Template.Spec.Containers[0].SecurityContext.ReadOnlyRootFilesystem)
+		require.Equal(t, corev1.PullIfNotPresent, deployment.Spec.Template.Spec.Containers[0].ImagePullPolicy)
 		require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, deployment.Spec.Template.Spec.ImagePullSecrets)
 		require.Equal(t, string(component.UID), deployment.Spec.Template.Labels[ComponentUIDLabel])
+		require.Equal(t, "sha-test", deployment.Spec.Template.Annotations[platformRevisionAnnotation])
 		probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
 		if component.Labels[ComponentLabel] == "gateway" {
 			require.Equal(t, "/api/readyz", probe.HTTPGet.Path)

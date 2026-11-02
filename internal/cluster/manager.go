@@ -12,7 +12,7 @@ import (
 	"time"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"github.com/distribution/reference"
+	"gitea.dev/codespace/internal/controlplane"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -162,12 +162,8 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.PlatformImage == "" || options.IdentityIssuer == "" {
 		return nil, fmt.Errorf("management namespace, Manager and component URLs, platform image and identity issuer are required")
 	}
-	platformImage, err := reference.ParseNormalizedNamed(options.PlatformImage)
-	if err != nil {
-		return nil, fmt.Errorf("invalid platform image: %w", err)
-	}
-	if _, ok := platformImage.(reference.Digested); !ok {
-		return nil, fmt.Errorf("platform image must be pinned by digest")
+	if _, err := platformImagePullPolicy(options.PlatformImage); err != nil {
+		return nil, err
 	}
 	seenPullSecrets := make(map[string]struct{}, len(options.ImagePullSecrets))
 	for _, name := range options.ImagePullSecrets {
@@ -333,7 +329,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		}
 	}
 	if err := componentController.Complete(&ComponentReconciler{
-		Client: liveClient, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, IdentityIssuer: options.IdentityIssuer, PlatformImage: options.PlatformImage, ImagePullSecrets: options.ImagePullSecrets,
+		Client: liveClient, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, IdentityIssuer: options.IdentityIssuer, PlatformImage: options.PlatformImage, PlatformRevision: controlplane.BuildVersion(), ImagePullSecrets: options.ImagePullSecrets,
 		GatewayParentName: options.GatewayParentName, GatewayParentNamespace: options.GatewayParentNamespace,
 		GatewayHTTPSectionName: options.GatewayHTTPSectionName, GatewaySSHSectionName: options.GatewaySSHSectionName,
 	}); err != nil {

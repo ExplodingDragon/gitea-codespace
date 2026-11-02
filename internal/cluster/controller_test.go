@@ -102,12 +102,30 @@ func TestRuntimeConfigurationRequiresIsolationVolumeMode(t *testing.T) {
 	require.EqualError(t, runtime.Validate(), "sysbox isolation requires a Filesystem volume")
 }
 
-func TestManagerRequiresDigestPinnedPlatformImage(t *testing.T) {
-	_, err := NewManager(nil, ManagerOptions{
-		Namespace: "codespace-system", ManagerURL: "https://manager.example.test", ComponentURL: "https://component.example.test",
-		PlatformImage: "registry.example.test/codespace:latest", IdentityIssuer: "codespace-identity",
-	})
-	require.EqualError(t, err, "platform image must be pinned by digest")
+func TestPlatformImagePullPolicy(t *testing.T) {
+	tests := []struct {
+		image  string
+		policy corev1.PullPolicy
+		err    string
+	}{
+		{image: "registry.example.test/codespace:main", policy: corev1.PullAlways},
+		{image: "registry.example.test/codespace@sha256:" + strings.Repeat("a", 64), policy: corev1.PullIfNotPresent},
+		{image: "registry.example.test/codespace", err: "platform image must include an explicit tag or digest"},
+	}
+	for _, test := range tests {
+		t.Run(test.image, func(t *testing.T) {
+			policy, err := platformImagePullPolicy(test.image)
+			if test.err != "" {
+				require.EqualError(t, err, test.err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, test.policy, policy)
+		})
+	}
+	runtime := testRuntime()
+	runtime.Image = "registry.example.test/codespace:main"
+	require.NoError(t, runtime.Validate())
 }
 
 func TestSiteOwnershipAndCleanup(t *testing.T) {
@@ -261,6 +279,7 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	require.Equal(t, []corev1.VolumeDevice{{Name: "data", DevicePath: "/dev/codespace-data"}}, container.VolumeDevices)
 	require.NotContains(t, container.VolumeMounts, corev1.VolumeMount{Name: "data", MountPath: "/var/lib/codespace"})
 	require.Contains(t, container.Env, corev1.EnvVar{Name: "CODESPACE_DATA_DEVICE", Value: "/dev/codespace-data"})
+	require.Equal(t, corev1.PullIfNotPresent, container.ImagePullPolicy)
 }
 
 func TestExitedRuntimePreservesVolume(t *testing.T) {
@@ -340,7 +359,7 @@ func TestLeadershipSelectsOnlyCurrentManagerPod(t *testing.T) {
 func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Operation: api.Operation{Type: "stop", Version: 2}},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"}},
 	}
 	pod, err := runtimePod(cs, "https://manager.example", nil)
