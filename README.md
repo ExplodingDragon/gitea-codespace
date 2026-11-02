@@ -22,9 +22,25 @@ Pull requests run static checks, backend and browser tests, and a platform-image
 
 ## Deploy
 
-Use the [`gitea-codespace` Helm chart](charts/gitea-codespace). The target cluster must already provide cert-manager and a verified RuntimeClass/StorageClass pair. Runtime environments, Gitea sites, Gateways, and Caches are then configured through the administration UI.
+Use the [`gitea-codespace` Helm chart](charts/gitea-codespace). The target cluster must provide cert-manager, an internal CA-backed `ClusterIssuer`, and a verified RuntimeClass/StorageClass pair. The shared issuer gives Manager, Agent, Gateway, and Cache certificates from one trust chain, which is required for their mutual TLS connections.
 
-Create the administration token, then install the newest development chart. Its default platform image is the continuously updated `main` tag:
+For a development cluster using the standard `cert-manager` namespace, create the example CA and wait until its issuer is ready:
+
+```sh
+kubectl -n cert-manager wait \
+  --for=condition=Available deployment/cert-manager-webhook \
+  --timeout=120s
+
+kubectl apply -f deploy/examples/identity.yaml
+kubectl -n cert-manager wait \
+  --for=condition=Ready certificate/codespace-root \
+  --timeout=120s
+kubectl wait \
+  --for=condition=Ready clusterissuer/codespace-identity \
+  --timeout=120s
+```
+
+The example issuer is a development bootstrap. Production clusters should use their existing internal CA issuer and set `identity.clusterIssuer` during installation. Create the administration token, then install the newest development chart. Its default platform image is the continuously updated `main` tag:
 
 ```sh
 kubectl create namespace codespace-system
@@ -35,10 +51,22 @@ helm upgrade --install codespace \
   oci://ghcr.io/explodingdragon/charts/gitea-codespace \
   --devel \
   --namespace codespace-system \
-  --set admin.tokenSecret.name=codespace-admin
+  --set admin.tokenSecret.name=codespace-admin \
+  --wait \
+  --timeout 5m
 ```
 
 For a reproducible installation, copy the chart version and image digest from a successful workflow summary, add `--version 0.1.0-main.<run-number>`, and set `image.digest`. The chart digest can also replace the chart version in the OCI reference. Tagged images are always checked for updates when a Pod is created; digest-pinned images use the local copy when present. Existing Runtime Pods are not restarted merely because `main` changes. Both GHCR packages must be public unless pull credentials are configured.
+
+The chart creates a cert-manager `Certificate`; cert-manager then creates the identity Secret mounted by the Manager. Verify both before opening the administration page:
+
+```sh
+kubectl -n codespace-system wait \
+  --for=condition=Ready certificate \
+  --selector=app.kubernetes.io/instance=codespace \
+  --timeout=120s
+kubectl -n codespace-system get pods
+```
 
 The administration Service defaults to `ClusterIP`:
 
@@ -46,6 +74,8 @@ The administration Service defaults to `ClusterIP`:
 kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
+
+The chart [installation guide](charts/gitea-codespace/README.md) covers production issuer requirements and certificate troubleshooting.
 
 For local development against the current kubeconfig, build the binary and inspect the supported Manager flags:
 
