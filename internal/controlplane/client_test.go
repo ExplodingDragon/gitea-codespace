@@ -16,6 +16,18 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
 
+func TestBuildVersion(t *testing.T) {
+	original := buildVersion
+	t.Cleanup(func() {
+		buildVersion = original
+	})
+
+	buildVersion = "sha-0123456789ab"
+	if version := BuildVersion(); version != "sha-0123456789ab" {
+		t.Fatalf("build version = %q", version)
+	}
+}
+
 func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 	t.Parallel()
 

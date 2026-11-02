@@ -8,6 +8,7 @@ objects configured through the administration UI.
 ## Prerequisites
 
 - Kubernetes 1.31 or later;
+- Helm 4.3 or later;
 - cert-manager and a `ClusterIssuer` for workload identities;
 - a digest-pinned Gitea Codespace platform image;
 - an administrator token stored in a Kubernetes Secret;
@@ -21,23 +22,35 @@ or install Sysbox on a dedicated node pool using its
 [Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Verify the chosen runtime, storage, and platform image with a real Pod first.
 The broader isolation, storage, network, and recovery requirements are defined
-in the [deployment design](../../../src/deployment-requirements.md).
+in the [deployment design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/deployment-requirements.md).
 
 ## Install
 
-Create the administration token, then install a published image by digest:
+Copy the image and chart digests from the successful `main` workflow summary,
+then create the administration token and install the OCI chart:
 
 ```sh
+IMAGE_DIGEST=sha256:REPLACE_WITH_THE_PLATFORM_IMAGE_DIGEST
+CHART_DIGEST=sha256:REPLACE_WITH_THE_HELM_CHART_DIGEST
+
 kubectl create namespace codespace-system
 kubectl -n codespace-system create secret generic codespace-admin \
   --from-literal=token="$(openssl rand -hex 32)"
 
-helm upgrade --install codespace ./charts/gitea-codespace \
+helm upgrade --install codespace \
+  "oci://ghcr.io/explodingdragon/charts/gitea-codespace@${CHART_DIGEST}" \
   --namespace codespace-system \
-  --set image.repository=registry.example.com/gitea/codespace \
-  --set image.digest=sha256:REPLACE_WITH_THE_PUBLISHED_DIGEST \
+  --set image.digest="${IMAGE_DIGEST}" \
   --set admin.tokenSecret.name=codespace-admin
 ```
+
+Pushes to `main` publish the platform image as
+`ghcr.io/explodingdragon/gitea-codespace:main` and the chart as
+`ghcr.io/explodingdragon/charts/gitea-codespace:main`. Helm OCI version
+selection accepts semantic versions, so the development chart is installed by
+the immutable digest shown in the workflow summary. After the first
+publication, the repository owner must make both GHCR packages public so Helm
+and clusters can pull them without registry credentials.
 
 The image digest is shared by Manager and all workloads it creates. For a
 private registry, list existing pull Secret names in `image.pullSecrets`.

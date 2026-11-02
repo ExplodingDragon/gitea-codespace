@@ -16,11 +16,32 @@ make test
 make build
 ```
 
-`make build` embeds the Vue administration UI in `bin/gitea-codespace`. `make images` builds the single platform image used by Manager, Agent, Gateway, and Cache. Internal Agent and component protocols live under `internal/rpc`; `make proto-generate` updates their checked-in Go bindings.
+`make build` embeds the Vue administration UI in `bin/gitea-codespace`. `make images` cross-compiles the `linux/amd64` binary on the host and then builds the single platform image used by Manager, Agent, Gateway, and Cache. The Docker build only packages that binary and its runtime dependencies. Internal Agent and component protocols live under `internal/rpc`; `make proto-generate` updates their checked-in Go bindings.
+
+Pull requests run static checks, backend and browser tests, and a platform-image smoke test. Pushes to `main` publish `ghcr.io/explodingdragon/gitea-codespace:main` and `ghcr.io/explodingdragon/charts/gitea-codespace:main`; the workflow summary provides their immutable digests. Versioned artifact tags begin with the first release.
 
 ## Deploy
 
 Use the [`gitea-codespace` Helm chart](charts/gitea-codespace) with a digest-pinned platform image. The target cluster must already provide cert-manager and a verified RuntimeClass/StorageClass pair. Runtime environments, Gitea sites, Gateways, and Caches are then configured through the administration UI.
+
+Copy the image and chart digests from the successful `main` workflow summary, then install the OCI chart directly from GHCR:
+
+```sh
+IMAGE_DIGEST=sha256:REPLACE_WITH_THE_PLATFORM_IMAGE_DIGEST
+CHART_DIGEST=sha256:REPLACE_WITH_THE_HELM_CHART_DIGEST
+
+kubectl create namespace codespace-system
+kubectl -n codespace-system create secret generic codespace-admin \
+  --from-literal=token="$(openssl rand -hex 32)"
+
+helm upgrade --install codespace \
+  "oci://ghcr.io/explodingdragon/charts/gitea-codespace@${CHART_DIGEST}" \
+  --namespace codespace-system \
+  --set image.digest="${IMAGE_DIGEST}" \
+  --set admin.tokenSecret.name=codespace-admin
+```
+
+Helm OCI version selection accepts semantic versions, while the development channel is intentionally named `main`. Installing the chart by its immutable digest keeps the `main` publication model and remains directly supported by Helm 4. After the first workflow publication, make both GHCR packages public so that Helm and Kubernetes can pull them without registry credentials.
 
 The administration Service defaults to `ClusterIP`:
 

@@ -4,6 +4,7 @@ CONTAINER_TOOL ?= docker
 GO_BIN ?= $(shell bin="$$($(GO) env GOBIN)"; if test -n "$$bin"; then printf "%s" "$$bin"; else printf "%s/bin" "$$($(GO) env GOPATH)"; fi)
 BUF ?= $(GO_BIN)/buf
 CODESPACE_IMAGE ?= gitea-codespace:local
+CODESPACE_VERSION ?= development
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
 KUBERNETES_RUNTIME_CLASS ?= sysbox-runc
 KUBERNETES_STORAGE_CLASS ?= local-path
@@ -23,9 +24,18 @@ proto_module="$$($(GO) list -m -f '{{.Dir}}' gitea.dev/codespace-proto-go)"; \
 cp "$$proto_module/proto/codespace/v1/types.proto" "$$work/codespace/v1/types.proto";
 endef
 
-.PHONY: generate-kubernetes
+.PHONY: generate-kubernetes kubernetes-check
 generate-kubernetes:
 	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths=./internal/cluster/api/... output:crd:artifacts:config=deploy/crds
+	cp deploy/crds/*.yaml charts/gitea-codespace/crds/
+
+kubernetes-check:
+	@mkdir -p .tmp; \
+	work="$$(mktemp -d .tmp/kubernetes-work.XXXXXX)"; \
+	trap 'rm -rf "$$work"; rmdir .tmp 2>/dev/null || true' EXIT; \
+	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths=./internal/cluster/api/... output:crd:artifacts:config="$$work"; \
+	diff -ru "$$work" deploy/crds; \
+	diff -ru "$$work" charts/gitea-codespace/crds
 
 .PHONY: install-proto proto-format proto-generate proto-check format lint build build-linux images frontend frontend-check admin-dev helm-check scripts-check
 install-proto:
@@ -58,14 +68,14 @@ format:
 	$(MAKE) proto-format
 	$(PNPM) --dir web run format
 
-lint: proto-check scripts-check frontend-check helm-check
+lint: proto-check scripts-check frontend-check helm-check kubernetes-check
 	$(GO) vet ./...
 
 build: frontend
-	$(GO) build -o bin/gitea-codespace .
+	$(GO) build -ldflags="-X 'gitea.dev/codespace/internal/controlplane.buildVersion=$(CODESPACE_VERSION)'" -o bin/gitea-codespace .
 
 build-linux: frontend
-	CGO_ENABLED=0 GOOS=linux $(GO) build -trimpath -o bin/gitea-codespace .
+	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w -X 'gitea.dev/codespace/internal/controlplane.buildVersion=$(CODESPACE_VERSION)'" -o bin/gitea-codespace .
 
 images: build-linux
 	$(CONTAINER_TOOL) build -f deploy/Dockerfile -t $(CODESPACE_IMAGE) .

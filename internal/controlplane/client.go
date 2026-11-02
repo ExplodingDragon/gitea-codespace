@@ -14,8 +14,13 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 )
 
+var buildVersion string
+
 // BuildVersion identifies the binary independently of the wire protocol version.
 func BuildVersion() string {
+	if buildVersion != "" {
+		return buildVersion
+	}
 	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
 		return info.Main.Version
 	}
