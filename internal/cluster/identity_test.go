@@ -60,7 +60,7 @@ func TestReconcileIdentitySecretReplacesInvalidOwnedMaterial(t *testing.T) {
 	owner := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "site", UID: "pod-uid"}}
 	kubeClient := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(owner).Build()
 	const workloadIdentity = "spiffe://codespace/agent/site/runtime/pod-uid"
-	renewAfter, err := reconcileIdentitySecret(t.Context(), kubeClient, authority, owner, "runtime-identity", "agent", workloadIdentity,
+	renewAfter, err := reconcileIdentitySecret(t.Context(), kubeClient, authority, owner, owner.Namespace, "runtime-identity", "agent", workloadIdentity,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, nil)
 	require.NoError(t, err)
 	require.Positive(t, renewAfter)
@@ -69,7 +69,7 @@ func TestReconcileIdentitySecretReplacesInvalidOwnedMaterial(t *testing.T) {
 	require.NoError(t, kubeClient.Get(t.Context(), types.NamespacedName{Namespace: owner.Namespace, Name: "runtime-identity"}, &secret))
 	secret.Data[identitypkg.TLSCertificateKey] = []byte("invalid")
 	require.NoError(t, kubeClient.Update(t.Context(), &secret))
-	_, err = reconcileIdentitySecret(t.Context(), kubeClient, authority, owner, secret.Name, "agent", workloadIdentity,
+	_, err = reconcileIdentitySecret(t.Context(), kubeClient, authority, owner, owner.Namespace, secret.Name, "agent", workloadIdentity,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth}, nil)
 	require.NoError(t, err)
 	require.NoError(t, kubeClient.Get(t.Context(), types.NamespacedName{Namespace: owner.Namespace, Name: secret.Name}, &secret))

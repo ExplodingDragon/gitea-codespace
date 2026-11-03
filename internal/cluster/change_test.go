@@ -36,7 +36,9 @@ func TestCoordinationUpdates(t *testing.T) {
 			now := metav1.Now()
 			o.SetDeletionTimestamp(&now)
 		}, true},
-		{"cache configuration", &corev1.ConfigMap{}, func(o client.Object) { o.(*corev1.ConfigMap).Data = map[string]string{"config": "new"} }, true},
+		{"cache configuration", &api.CodespaceComponent{}, func(o client.Object) {
+			o.(*api.CodespaceComponent).Spec = testCacheComponent("cache", "cache-uid").Spec
+		}, true},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
 			current := testCase.object.DeepCopyObject().(client.Object)

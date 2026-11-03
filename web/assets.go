@@ -12,6 +12,7 @@ import (
 )
 
 // all: keeps the package buildable from a clean checkout that only contains dist/.gitkeep.
+//
 //go:embed all:dist
 var assets embed.FS
 

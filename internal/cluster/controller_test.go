@@ -98,6 +98,18 @@ func TestRuntimeConfigurationRequiresIsolationVolumeMode(t *testing.T) {
 	require.EqualError(t, runtime.Validate(), "sysbox isolation requires a Filesystem volume")
 }
 
+func TestComponentConfigurationValidation(t *testing.T) {
+	cache := testCacheComponent("cache", "cache-uid")
+	require.NoError(t, cache.Validate())
+	cache.Name = "cache.invalid"
+	require.EqualError(t, cache.Validate(), "component requires a valid name and display name")
+	cache.Name = "cache"
+	cache.Spec.Cache.Storage.VolumeSize = "invalid"
+	require.EqualError(t, cache.Validate(), "filesystem cache requires a positive volume size")
+	cache.Spec.Cache.Storage = api.CacheStorage{Driver: "s3", VolumeSize: "1Gi", S3: api.CacheS3Storage{Region: "test", Bucket: "cache"}}
+	require.EqualError(t, cache.Validate(), "S3 cache cannot select filesystem storage settings")
+}
+
 func TestPlatformImagePullPolicy(t *testing.T) {
 	tests := []struct {
 		image  string

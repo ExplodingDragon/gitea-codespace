@@ -16,34 +16,35 @@ test('native resource editing preserves identity and write-only credentials', as
       spec: {
         role: 'gateway',
         displayName: 'Primary gateway',
+        resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
         gateway: {
-          http: {listen: ':8080', public_url: 'https://workspace.example.com'},
+          publicURL: 'https://workspace.example.com',
+          sshPublicAddress: 'ssh.example.com:2222',
+          parent: {},
           ssh: {
-            listen: ':2222',
-            public_addr: 'ssh.example.com:2222',
-            handshake_timeout: '30s',
-            max_channels_per_connection: 32,
+            handshakeTimeout: '30s',
+            maxChannelsPerConnection: 32,
             auth: {
-              max_attempts_per_ip_per_minute: 30,
-              max_attempts_per_codespace_per_minute: 20,
-              max_attempts_per_ip_codespace_per_minute: 10,
-              max_attempts_per_public_key_per_minute: 30,
-              failure_window: '10m',
+              maxAttemptsPerIP: 30,
+              maxAttemptsPerCodespace: 20,
+              maxAttemptsPerIPCodespace: 10,
+              maxAttemptsPerPublicKey: 30,
+              failureWindow: '10m',
             },
           },
           sessions: {
             ttl: '8h',
-            idle_timeout: '30m',
-            revalidate_interval: '5m',
-            max_per_codespace: 32,
-            max_per_user: 128,
+            idleTimeout: '30m',
+            revalidateInterval: '5m',
+            maxPerCodespace: 32,
+            maxPerUser: 128,
           },
           limits: {
-            max_inflight_total: 4096,
-            max_inflight_per_session: 32,
-            public_max_connections_per_endpoint: 64,
-            public_max_connections_per_ip: 16,
-            validation_max_inflight: 128,
+            maxInflightTotal: 4096,
+            maxInflightPerSession: 32,
+            publicMaxConnectionsPerEndpoint: 64,
+            publicMaxConnectionsPerIP: 16,
+            validationMaxInflight: 128,
           },
         },
       },
@@ -222,6 +223,7 @@ test('native resource editing preserves identity and write-only credentials', as
   await expect.poll(() => rotationWrite).toEqual({name: 'gateway', uid: 'gateway-uid', resourceVersion: '1'});
   await page.getByRole('button', {name: 'Edit component', exact: true}).click();
   await expect(field('Public HTTPS URL')).toHaveValue('https://workspace.example.com');
+  await expect(field('Gateway namespace')).toHaveCount(0);
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('link', {name: 'Running environments', exact: true}).click();
   const runtimeRow = page.getByRole('row').filter({hasText: 'runtime-one'});

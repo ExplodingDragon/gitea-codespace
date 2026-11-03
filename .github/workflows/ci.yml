@@ -50,7 +50,7 @@ jobs:
       - name: Install build tools
         run: |
           go mod download
-          make install-proto
+          make install-tools
           pnpm --dir web install --frozen-lockfile
           pnpm --dir web exec playwright install --with-deps chromium
       - name: Run static checks

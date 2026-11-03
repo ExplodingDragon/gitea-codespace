@@ -67,6 +67,7 @@ collect_diagnostics() {
 	"$HELM_BIN" status "$RELEASE" -n "$MANAGEMENT_NAMESPACE" >"$ARTIFACTS/diagnostics/helm.txt" 2>&1
 	"$KUBECTL_BIN" get giteasites -l "$RUN_LABEL=$RUN_ID" -o yaml >"$ARTIFACTS/diagnostics/giteasites.yaml" 2>&1
 	"$KUBECTL_BIN" get environmenttemplates -l "$RUN_LABEL=$RUN_ID" -o yaml >"$ARTIFACTS/diagnostics/environmenttemplates.yaml" 2>&1
+	"$KUBECTL_BIN" get codespacecomponents -l "$RUN_LABEL=$RUN_ID" -o yaml >"$ARTIFACTS/diagnostics/codespacecomponents.yaml" 2>&1
 	for namespace in "$@"; do
 		[[ -n $namespace ]] || continue
 		directory="$ARTIFACTS/diagnostics/$namespace"
@@ -99,14 +100,10 @@ cleanup() {
 		kill "$PORT_FORWARD_PID" >/dev/null 2>&1
 		wait "$PORT_FORWARD_PID" >/dev/null 2>&1
 	fi
-	if ! "$KUBECTL_BIN" delete configmap -n "$MANAGEMENT_NAMESPACE" \
-		-l 'app.kubernetes.io/component in (gateway,cache)' --ignore-not-found --wait --timeout=2m >/dev/null 2>&1; then
+	if ! "$KUBECTL_BIN" delete codespacecomponents,giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --wait=false >/dev/null 2>&1; then
 		cleanup_failed=1
 	fi
-	if ! "$KUBECTL_BIN" delete giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --wait=false >/dev/null 2>&1; then
-		cleanup_failed=1
-	fi
-	if ! "$KUBECTL_BIN" wait --for=delete giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --timeout=2m >/dev/null 2>&1; then
+	if ! "$KUBECTL_BIN" wait --for=delete codespacecomponents,giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --timeout=2m >/dev/null 2>&1; then
 		cleanup_failed=1
 	fi
 	if ! "$HELM_BIN" uninstall "$RELEASE" -n "$MANAGEMENT_NAMESPACE" --wait >/dev/null 2>&1; then
@@ -171,6 +168,7 @@ echo "Deploying isolated Manager release"
 for resource in \
 	customresourcedefinition/giteasites.codespace.gitea.dev \
 	customresourcedefinition/environmenttemplates.codespace.gitea.dev \
+	customresourcedefinition/codespacecomponents.codespace.gitea.dev \
 	customresourcedefinition/codespaces.codespace.gitea.dev; do
 	"$KUBECTL_BIN" get "$resource" >/dev/null
 done
@@ -198,11 +196,11 @@ run_cluster_tests "Runtime Agent process model" '^TestKubernetesE2EAgentProcesse
 run_cluster_tests "Runtime, Docker persistence, and Dev Container" '^TestKubernetesE2EDockerPersistence$' 80m
 
 echo "Deploying S3Mock"
-"$KUBECTL_BIN" create deployment s3mock -n "$MANAGEMENT_NAMESPACE" --image="$S3MOCK_IMAGE" --dry-run=client -o yaml | \
-	"$KUBECTL_BIN" set env --local -f - COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=codespace-e2e -o yaml | \
-	"$KUBECTL_BIN" set resources --local -f - --requests=cpu=50m,memory=128Mi --limits=cpu=1,memory=512Mi -o yaml | \
+"$KUBECTL_BIN" create deployment s3mock -n "$MANAGEMENT_NAMESPACE" --image="$S3MOCK_IMAGE" --dry-run=client -o yaml |
+	"$KUBECTL_BIN" set env --local -f - COM_ADOBE_TESTING_S3MOCK_STORE_INITIAL_BUCKETS=codespace-e2e -o yaml |
+	"$KUBECTL_BIN" set resources --local -f - --requests=cpu=50m,memory=128Mi --limits=cpu=1,memory=512Mi -o yaml |
 	"$KUBECTL_BIN" patch --local -f - --type=strategic --patch \
-		'{"spec":{"template":{"spec":{"containers":[{"name":"s3mock","readinessProbe":{"tcpSocket":{"port":9090},"periodSeconds":1,"failureThreshold":120}}]}}}}' -o yaml | \
+		'{"spec":{"template":{"spec":{"containers":[{"name":"s3mock","readinessProbe":{"tcpSocket":{"port":9090},"periodSeconds":1,"failureThreshold":120}}]}}}}' -o yaml |
 	"$KUBECTL_BIN" apply -f -
 "$KUBECTL_BIN" expose deployment s3mock -n "$MANAGEMENT_NAMESPACE" --name=s3mock --port=9090 --target-port=9090
 "$KUBECTL_BIN" rollout status deployment/s3mock -n "$MANAGEMENT_NAMESPACE" --timeout=5m

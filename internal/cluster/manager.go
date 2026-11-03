@@ -15,9 +15,8 @@ import (
 	"gitea.dev/codespace/internal/controlplane"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -33,18 +32,14 @@ import (
 const managerLeaderLabel = "codespace.gitea.dev/manager-leader"
 
 type ManagerOptions struct {
-	Namespace              string
-	ManagerURL             string
-	ComponentURL           string
-	PlatformImage          string
-	ImagePullSecrets       []string
-	IdentitySecretName     string
-	HealthAddress          string
-	GatewayParentName      string
-	GatewayParentNamespace string
-	GatewayHTTPSectionName string
-	GatewaySSHSectionName  string
-	PodName                string
+	Namespace          string
+	ManagerURL         string
+	ComponentURL       string
+	PlatformImage      string
+	ImagePullSecrets   []string
+	IdentitySecretName string
+	HealthAddress      string
+	PodName            string
 }
 
 type Manager struct {
@@ -185,20 +180,6 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 			return nil, fmt.Errorf("manager %s Service URL must be an HTTPS origin", name)
 		}
 	}
-	if options.GatewayParentName == "" {
-		if options.GatewayParentNamespace != "" || options.GatewayHTTPSectionName != "" || options.GatewaySSHSectionName != "" {
-			return nil, fmt.Errorf("gateway parent name is required when route settings are configured")
-		}
-	} else {
-		if len(validation.IsDNS1123Subdomain(options.GatewayParentName)) != 0 || options.GatewayParentNamespace != "" && len(validation.IsDNS1123Label(options.GatewayParentNamespace)) != 0 {
-			return nil, fmt.Errorf("gateway parent name and namespace must be valid Kubernetes names")
-		}
-		for _, section := range []string{options.GatewayHTTPSectionName, options.GatewaySSHSectionName} {
-			if section != "" && len(validation.IsDNS1123Label(section)) != 0 {
-				return nil, fmt.Errorf("gateway listener names must be valid Kubernetes names")
-			}
-		}
-	}
 	types := runtime.NewScheme()
 	if err := scheme.AddToScheme(types); err != nil {
 		return nil, err
@@ -218,7 +199,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, object := range []client.Object{&corev1.ConfigMap{}, &api.GiteaSite{}, &api.Codespace{}} {
+	for _, object := range []client.Object{&api.CodespaceComponent{}, &api.GiteaSite{}, &api.Codespace{}} {
 		if err := mgr.GetFieldIndexer().IndexField(context.Background(), object, IdentityUIDIndex, func(object client.Object) []string {
 			return []string{string(object.GetUID())}
 		}); err != nil {
@@ -280,26 +261,26 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 	activity := &RuntimeActivityTracker{}
-	gatewayChanges := &ChangeNotifier{}
+	componentChanges := &ChangeNotifier{}
 	siteChanges := &ChangeNotifier{}
-	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}, &corev1.Pod{}, &corev1.ConfigMap{}} {
+	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}, &api.CodespaceComponent{}, &corev1.Pod{}} {
 		informer, err := mgr.GetCache().GetInformer(context.Background(), object)
 		if err != nil {
 			return nil, err
 		}
 		if _, err := informer.AddEventHandler(kcache.ResourceEventHandlerFuncs{
 			AddFunc: func(any) {
-				gatewayChanges.Notify()
+				componentChanges.Notify()
 				siteChanges.Notify()
 			},
 			UpdateFunc: func(previous, current any) {
 				if coordinationUpdateChanged(previous, current) {
-					gatewayChanges.Notify()
+					componentChanges.Notify()
 					siteChanges.Notify()
 				}
 			},
 			DeleteFunc: func(any) {
-				gatewayChanges.Notify()
+				componentChanges.Notify()
 				siteChanges.Notify()
 			},
 		}); err != nil {
@@ -319,7 +300,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 			return nil, err
 		}
 	}
-	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, GatewayChanges: gatewayChanges, CacheChanges: gatewayChanges}
+	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges}
 	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components}
 	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
@@ -333,18 +314,14 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets}); err != nil {
 		return nil, err
 	}
-	componentController := ctrl.NewControllerManagedBy(mgr).For(&corev1.ConfigMap{}).Owns(&appsv1.Deployment{}).Owns(&corev1.Secret{})
-	if options.GatewayParentName != "" {
-		for _, routeType := range []struct{ version, kind string }{{"v1", "HTTPRoute"}, {"v1alpha2", "TCPRoute"}} {
-			route := &unstructured.Unstructured{}
-			route.SetGroupVersionKind(schema.GroupVersionKind{Group: "gateway.networking.k8s.io", Version: routeType.version, Kind: routeType.kind})
-			componentController = componentController.Owns(route)
-		}
-	}
+	componentController := ctrl.NewControllerManagedBy(mgr).For(&api.CodespaceComponent{}).
+		Owns(&appsv1.Deployment{}).
+		Owns(&corev1.Secret{}).
+		Owns(&corev1.Service{}).
+		Owns(&corev1.PersistentVolumeClaim{}).
+		Owns(&networkingv1.NetworkPolicy{})
 	if err := componentController.Complete(&ComponentReconciler{
 		Client: liveClient, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, ManagerIdentity: identityAuthority.ManagerIdentity(), PlatformImage: options.PlatformImage, PlatformRevision: controlplane.BuildVersion(), ImagePullSecrets: options.ImagePullSecrets,
-		GatewayParentName: options.GatewayParentName, GatewayParentNamespace: options.GatewayParentNamespace,
-		GatewayHTTPSectionName: options.GatewayHTTPSectionName, GatewaySSHSectionName: options.GatewaySSHSectionName,
 	}); err != nil {
 		return nil, err
 	}

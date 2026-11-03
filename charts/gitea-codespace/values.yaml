@@ -25,13 +25,6 @@ admin:
     tlsSecret: ""
     annotations: {}
 
-gatewayAPI:
-  parent:
-    name: ""
-    namespace: ""
-    httpListener: ""
-    sshListener: ""
-
 serviceAccount:
   annotations: {}
 

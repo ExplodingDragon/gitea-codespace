@@ -238,9 +238,10 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		}
 		currentReport := request.Report.OperationRversion == cs.Spec.Operation.Version
 		// Reporting a completed fact does not grant permission to execute more work.
-		if cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" || cs.Status.RecoveryAction != "" {
+		switch {
+		case cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" || cs.Status.RecoveryAction != "":
 			response.CancelExecution = true
-		} else if currentReport {
+		case currentReport:
 			result := request.Report.Result
 			if err := s.saveReport(ctx, cs, request.Report); err != nil {
 				return err
@@ -249,7 +250,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			if result != nil {
 				response.AcknowledgedResultVersion = result.OperationRversion
 			}
-		} else if request.Report.OperationRversion == 0 && (request.Report.Result != nil || request.Report.Boot != nil || request.Report.Target != nil) {
+		case request.Report.OperationRversion == 0 && (request.Report.Result != nil || request.Report.Boot != nil || request.Report.Target != nil):
 			return connect.NewError(connect.CodeInvalidArgument, "agent facts require an operation version")
 		}
 		if cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version {

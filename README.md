@@ -71,6 +71,12 @@ Visit <http://127.0.0.1:18080> and sign in with the administration token. Comple
 
 Users can then create Codespaces from supported repository pages in Gitea.
 
+Components are cluster-scoped resources managed through this page. The Manager
+creates their Deployments, Services, credentials, network policies, and cache
+storage in the management namespace. A site selects components by Kubernetes
+identity, so deleting and recreating a component with the same name does not
+silently reuse its former authorization.
+
 ## Operations
 
 The Manager creates an installation identity in `Secret/codespace-gitea-codespace-internal-ca`. Back up this Secret and enable Kubernetes Secret encryption at rest. It must remain available across upgrades and Manager restarts.
@@ -82,7 +88,7 @@ Public administration access, Codespace endpoint routing, HTTPS, private image r
 Use the Go version declared in [`go.mod`](go.mod) and pnpm. The common development checks are:
 
 ```sh
-make install-proto
+make install-tools
 make format
 make lint
 make test

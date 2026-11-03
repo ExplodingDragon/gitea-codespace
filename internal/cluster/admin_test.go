@@ -17,7 +17,6 @@ import (
 	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	configpkg "gitea.dev/codespace/internal/config"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -86,13 +85,13 @@ func TestAdminSessionLifecycle(t *testing.T) {
 func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}}
+	gateway := testGatewayComponent("gateway", "gateway-uid")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, gateway).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 		object.SetUID(types.UID(uuid.NewV4().String()))
 		object.SetCreationTimestamp(metav1.Now())
 		return c.Create(ctx, object, opts...)
 	}}).Build()
-	server := &AdminServer{Client: c, Namespace: gateway.Namespace}
+	server := &AdminServer{Client: c, Namespace: "codespace-system"}
 	site := testSite("example", "")
 	site.ResourceVersion, site.Spec.Credential = "", api.ResourceReference{}
 	spec := adminSiteSpec{GiteaSiteSpec: site.Spec, ManagerID: "9007199254740993"}
@@ -215,43 +214,36 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	}}).Build()
 	server := &AdminServer{Client: c, Namespace: namespace}
 
-	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway"}}
-	require.NoError(t, server.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Primary gateway", Gateway: &gatewayConfig}}, true))
-	var gatewaySecret corev1.Secret
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: gateway.Data["sshHostKeySecret"]}, &gatewaySecret))
-	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
-	require.Equal(t, string(gateway.UID), gatewaySecret.Labels[ComponentUIDLabel])
-	require.NotEmpty(t, gatewaySecret.Data["hostKey"])
-	originalGatewaySecret := gatewaySecret.DeepCopy()
+	gatewaySpec := testGatewayComponent("gateway", "").Spec
+	gatewaySpec.Gateway.Parent = api.GatewayParent{}
+	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway"}}
+	require.NoError(t, server.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
+	gatewaySecret := testComponentCredential(gateway, nil)
+	generated, err := newGatewayHostKeySecret(gatewaySecret.Name, namespace)
+	require.NoError(t, err)
+	gatewaySecret.Data = generated.Data
+	require.NoError(t, c.Create(ctx, gatewaySecret))
+	originalHostKey := append([]byte(nil), gatewaySecret.Data["hostKey"]...)
 	rotation, err := json.Marshal(adminWriteIdentity{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
 	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/components/gateway/rotate-ssh-host-key", bytes.NewReader(rotation)))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(gateway), gateway))
-	require.NotEqual(t, originalGatewaySecret.Name, gateway.Data["sshHostKeySecret"])
-	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(originalGatewaySecret), originalGatewaySecret)))
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: gateway.Data["sshHostKeySecret"]}, &gatewaySecret))
-	require.True(t, ptr.Deref(gatewaySecret.Immutable, false))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(gatewaySecret), gatewaySecret))
 	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
-	require.NotEqual(t, originalGatewaySecret.Data["hostKey"], gatewaySecret.Data["hostKey"])
+	require.NotEqual(t, originalHostKey, gatewaySecret.Data["hostKey"])
 
-	cacheConfig := configpkg.CacheConfig{
-		Name: "Build cache", Enabled: true, Listen: ":5000", PublicURL: "https://cache.example.com", MaxSize: "1GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
-		Storage: configpkg.CacheStorageConfig{Driver: "s3", S3: configpkg.CacheS3Config{Endpoint: "https://s3.example.com", Region: "test", Bucket: "codespace"}},
-	}
-	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cache"}}
-	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Build cache", Cache: &cacheConfig}, S3AccessKey: "initial-access", S3SecretKey: "initial-secret"}, true))
-	var persisted configpkg.CacheConfig
-	require.NoError(t, json.Unmarshal([]byte(cache.Data["config"]), &persisted))
-	require.EqualValues(t, 1, persisted.Revision)
-	var original corev1.Secret
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cache.Data["secretName"]}, &original))
-	require.Equal(t, []byte("initial-access"), original.Data["s3AccessKey"])
-	require.NotEmpty(t, original.Data["registryKey"])
-	for _, component := range []*corev1.ConfigMap{gateway, cache} {
-		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1}}
+	cacheSpec := testCacheComponent("cache", "").Spec
+	cacheSpec.Cache.Storage = api.CacheStorage{Driver: "s3", S3: api.CacheS3Storage{Endpoint: "https://s3.example.com", Region: "test", Bucket: "codespace"}}
+	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "cache"}}
+	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: cacheSpec, S3AccessKey: "initial-access", S3SecretKey: "initial-secret"}, true))
+	var cacheSecret corev1.Secret
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cache.Name + "-cache"}, &cacheSecret))
+	require.Equal(t, []byte("initial-access"), cacheSecret.Data["s3AccessKey"])
+	require.NotEmpty(t, cacheSecret.Data["registryKey"])
+	originalRegistryKey := append([]byte(nil), cacheSecret.Data["registryKey"]...)
+	for _, component := range []*api.CodespaceComponent{gateway, cache} {
+		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: namespace, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(component, api.GroupVersion.WithKind("CodespaceComponent"))}}, Spec: appsv1.DeploymentSpec{Replicas: ptr.To(int32(1))}, Status: appsv1.DeploymentStatus{ReadyReplicas: 1}}
 		require.NoError(t, c.Create(ctx, deployment))
 	}
 	now := metav1.NowMicro()
@@ -275,44 +267,21 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "initial-access")
 	require.NotContains(t, string(encoded), "initial-secret")
-	require.NotContains(t, string(encoded), string(gatewaySecret.Data["hostKey"]))
+	require.NotContains(t, string(encoded), string(originalHostKey))
 	require.NotContains(t, string(encoded), "PRIVATE KEY")
 	require.ErrorContains(t, server.checkDeletion(ctx, cache), "disable the cache")
 	disabled := cache.DeepCopy()
-	disabledConfig := persisted
-	disabledConfig.Enabled = false
-	disabledJSON, err := json.Marshal(disabledConfig)
-	require.NoError(t, err)
-	disabled.Data["config"] = string(disabledJSON)
+	disabled.Spec.Cache.Enabled = false
 	require.ErrorContains(t, server.checkDeletion(ctx, disabled), "active writer lease")
 	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 	cacheLease.Spec.RenewTime = &expired
 	require.NoError(t, c.Update(ctx, cacheLease))
 	require.NoError(t, server.checkDeletion(ctx, disabled))
 
-	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name, UID: cache.UID, ResourceVersion: cache.ResourceVersion}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Updated cache", Cache: &cacheConfig}, S3AccessKey: "rotated-access", S3SecretKey: "rotated-secret"}, false))
-	require.NoError(t, json.Unmarshal([]byte(cache.Data["config"]), &persisted))
-	require.EqualValues(t, 2, persisted.Revision)
-	require.NotEqual(t, original.Name, cache.Data["secretName"])
-	var rotated corev1.Secret
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cache.Data["secretName"]}, &rotated))
-	require.Equal(t, original.Data["registryKey"], rotated.Data["registryKey"])
-	require.Equal(t, original.Data["tokenKey"], rotated.Data["tokenKey"])
-	require.Equal(t, []byte("rotated-access"), rotated.Data["s3AccessKey"])
-	require.Equal(t, string(cache.UID), rotated.Labels[ComponentUIDLabel])
-
-	// Reconciliation completes ownership binding when the configuration update
-	// committed but the administration request ended before the final update.
-	delete(rotated.Labels, ComponentUIDLabel)
-	rotated.Labels[pendingComponentLabel], rotated.OwnerReferences = cache.Name, nil
-	require.NoError(t, c.Update(ctx, &rotated))
-	require.NoError(t, bindComponentCredential(ctx, c, cache))
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&rotated), &rotated))
-	require.Equal(t, string(cache.UID), rotated.Labels[ComponentUIDLabel])
-
-	original.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Hour))
-	require.NoError(t, c.Update(ctx, &original))
-	require.NoError(t, server.pruneCredentials(ctx))
-	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(&original), &original)))
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&rotated), &rotated))
+	cacheSpec.DisplayName = "Updated cache"
+	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name, UID: cache.UID, ResourceVersion: cache.ResourceVersion}, Spec: cacheSpec, S3AccessKey: "rotated-access", S3SecretKey: "rotated-secret"}, false))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: cache.Name + "-cache"}, &cacheSecret))
+	require.Equal(t, originalRegistryKey, cacheSecret.Data["registryKey"])
+	require.Equal(t, []byte("rotated-access"), cacheSecret.Data["s3AccessKey"])
+	require.Equal(t, string(cache.UID), cacheSecret.Labels[ComponentUIDLabel])
 }

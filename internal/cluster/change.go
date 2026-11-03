@@ -81,9 +81,9 @@ func coordinationUpdateChanged(previous, current any) bool {
 			return true
 		}
 		return old.Status.Phase != next.Status.Phase || old.Status.PodIP != next.Status.PodIP || !equality.Semantic.DeepEqual(old.Status.PodIPs, next.Status.PodIPs)
-	case *corev1.ConfigMap:
-		next, ok := next.(*corev1.ConfigMap)
-		return !ok || !equality.Semantic.DeepEqual(old.Data, next.Data) || !equality.Semantic.DeepEqual(old.BinaryData, next.BinaryData)
+	case *api.CodespaceComponent:
+		next, ok := next.(*api.CodespaceComponent)
+		return !ok || old.Generation != next.Generation || !equality.Semantic.DeepEqual(old.Spec, next.Spec)
 	default:
 		return true
 	}

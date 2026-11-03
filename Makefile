@@ -1,8 +1,11 @@
 GO ?= go
+GOFMT ?= gofmt
 PNPM ?= pnpm
 CONTAINER_TOOL ?= docker
 GO_BIN ?= $(shell bin="$$($(GO) env GOBIN)"; if test -n "$$bin"; then printf "%s" "$$bin"; else printf "%s/bin" "$$($(GO) env GOPATH)"; fi)
 BUF ?= $(GO_BIN)/buf
+SHFMT ?= $(GO_BIN)/shfmt
+ACTIONLINT ?= $(GO_BIN)/actionlint
 CODESPACE_IMAGE ?= gitea-codespace:local
 CODESPACE_VERSION ?= development
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
@@ -12,6 +15,8 @@ CONTROLLER_GEN_VERSION := v0.21.0
 BUF_VERSION := v1.8.0
 PROTOC_GEN_GO_VERSION := v1.36.11
 PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
+SHFMT_VERSION := v3.14.1
+ACTIONLINT_VERSION := v1.7.12
 BASH_SCRIPTS := \
 	internal/devcontainerruntime/builtin/configure-git.sh \
 	internal/devcontainerruntime/builtin/endpoint.sh \
@@ -19,6 +24,7 @@ BASH_SCRIPTS := \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := devcontainer/docker/builtin/update-user.sh
+GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.tmp/*' -not -path './web/node_modules/*')
 
 define prepare-proto-workspace
 mkdir -p .tmp; \
@@ -44,11 +50,13 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-proto proto-format proto-generate proto-check format lint build build-linux images frontend frontend-check admin-dev helm-check scripts-check
-install-proto:
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images frontend frontend-check admin-dev helm-check scripts-check scripts-format-check workflow-check
+install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
 	$(GO) install connectrpc.com/connect/v2/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
+	$(GO) install mvdan.cc/sh/v3/cmd/shfmt@$(SHFMT_VERSION)
+	$(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
 
 proto-format:
 	$(BUF) format internal/rpc/agent/v1/service.proto -w
@@ -72,11 +80,16 @@ proto-check:
 
 format:
 	$(GO) fmt ./...
+	$(SHFMT) -w -ln bash $(BASH_SCRIPTS)
+	$(SHFMT) -w -ln posix -i 2 $(POSIX_SCRIPTS)
 	$(MAKE) proto-format
 	$(PNPM) --dir web run format
 
-lint: proto-check scripts-check frontend-check helm-check kubernetes-check
+lint: go-format-check proto-check scripts-check scripts-format-check workflow-check frontend-check helm-check kubernetes-check
 	$(GO) vet ./...
+
+go-format-check:
+	@unformatted="$$($(GOFMT) -l $(GO_FILES))"; test -z "$$unformatted" || { printf 'Go files need formatting:\n%s\n' "$$unformatted" >&2; exit 1; }
 
 build: frontend
 	$(GO) build -ldflags="-X 'gitea.dev/codespace/internal/controlplane.buildVersion=$(CODESPACE_VERSION)'" -o bin/gitea-codespace .
@@ -116,6 +129,13 @@ test: scripts-check
 scripts-check:
 	@set -e; for script in $(BASH_SCRIPTS); do bash -n "$$script"; done
 	@set -e; for script in $(POSIX_SCRIPTS); do sh -n "$$script"; done
+
+scripts-format-check:
+	$(SHFMT) -d -ln bash $(BASH_SCRIPTS)
+	$(SHFMT) -d -ln posix -i 2 $(POSIX_SCRIPTS)
+
+workflow-check:
+	$(ACTIONLINT) .github/workflows/*.yml
 
 .PHONY: test-e2e
 test-e2e:

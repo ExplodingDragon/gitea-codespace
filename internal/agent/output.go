@@ -146,11 +146,12 @@ func (o *Output) flushPending() {
 	}
 	err := o.log.Append(o.pending)
 	o.pending, o.pendingBytes = nil, 0
-	if errors.Is(err, ErrLogFull) {
+	switch {
+	case errors.Is(err, ErrLogFull):
 		o.truncated = true
-	} else if err != nil {
+	case err != nil:
 		o.err = fmt.Errorf("persist operation output: %w", err)
-	} else {
+	default:
 		select {
 		case o.ready <- struct{}{}:
 		default:

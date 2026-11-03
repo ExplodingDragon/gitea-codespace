@@ -297,14 +297,15 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 				}
 			}
 			deadline, permitErr := permit.Accept(response, time.Now())
-			if permitErr != nil {
+			switch {
+			case permitErr != nil:
 				if cancelExecution != nil {
 					cancelExecution()
 				}
-			} else if operation == nil || runtimeOptions == nil {
+			case operation == nil || runtimeOptions == nil:
 				cancelSession()
 				return fmt.Errorf("manager did not provide the current operation")
-			} else if finished == nil && operation.OperationRversion != lastStarted && c.snapshot().Result == nil && ((operation.GetCreate() == nil && operation.GetResume() == nil) || response.Access != nil) {
+			case finished == nil && operation.OperationRversion != lastStarted && c.snapshot().Result == nil && ((operation.GetCreate() == nil && operation.GetResume() == nil) || response.Access != nil):
 				lastStarted = operation.OperationRversion
 				cancelExecution, finished = c.startExecution(ctx, response, operation, runtimeOptions, output, wake)
 			}

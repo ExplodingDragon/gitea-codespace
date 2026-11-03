@@ -122,10 +122,12 @@ internal component CA.
 
 ## Gateway API
 
-Set `gatewayAPI.parent.name` to an existing Gateway when Manager should create
-HTTPRoute and TCPRoute resources for Gateway workloads. The parent namespace
-defaults to the chart namespace. Listener names are selected with
-`gatewayAPI.parent.httpListener` and `gatewayAPI.parent.sshListener`.
+Configure the parent Gateway and listener names on each Gateway component in
+the administration page. Manager verifies that the HTTP listener uses HTTP or
+HTTPS and that the optional SSH listener uses TCP, then maintains that
+component's HTTPRoute and TCPRoute. Per-component selection allows separate
+Gateway components to use different public domains and listeners without
+changing the Helm release.
 
 HTTPS certificates for Codespace endpoint hostnames belong to the external
 Gateway listener and its `certificateRefs`. The cluster operator can use
@@ -133,7 +135,8 @@ cert-manager to maintain that Secret. SSH uses the Gateway SSH host key and is
 not part of the X.509 certificate hierarchy.
 
 Leaving the parent name empty keeps public route creation under the cluster
-operator's control.
+operator's control. The component Service remains available inside the
+cluster for an operator-managed Ingress, Gateway route, or port-forward.
 
 ## Internal CA recovery
 

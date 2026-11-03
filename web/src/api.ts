@@ -106,61 +106,55 @@ export type Site = {
   upstreams: {cidr: string; ports: number[]}[];
 };
 
-export type Gateway = {
-  http: {listen: string; public_url: string};
-  ssh: {
-    listen: string;
-    public_addr: string;
-    handshake_timeout: string;
-    max_channels_per_connection: number;
-    auth: {
-      max_attempts_per_ip_per_minute: number;
-      max_attempts_per_codespace_per_minute: number;
-      max_attempts_per_ip_codespace_per_minute: number;
-      max_attempts_per_public_key_per_minute: number;
-      failure_window: string;
-    };
-  };
-  sessions: {
-    ttl: string;
-    idle_timeout: string;
-    revalidate_interval: string;
-    max_per_codespace: number;
-    max_per_user: number;
-  };
-  limits: {
-    max_inflight_total: number;
-    max_inflight_per_session: number;
-    public_max_connections_per_endpoint: number;
-    public_max_connections_per_ip: number;
-    validation_max_inflight: number;
-  };
-};
-
-export type Cache = {
-  id: string;
-  name: string;
-  revision: string;
-  enabled: boolean;
-  listen: string;
-  public_url: string;
-  storage: {
-    driver: 'filesystem' | 's3';
-    path: string;
-    min_free_space: string;
-    s3: {endpoint: string; region: string; bucket: string; prefix: string; force_path_style: boolean};
-  };
-  max_size: string;
-  max_age: string;
-  gc_interval: string;
-  upstreams: Record<string, {allow: string[]}>;
-};
-
 export type Component = {
   role: 'gateway' | 'cache';
   displayName: string;
-  gateway?: Gateway;
-  cache?: Cache;
+  resources: {requests: Record<string, string>; limits: Record<string, string>};
+  gateway?: {
+    publicURL: string;
+    sshPublicAddress: string;
+    parent: {name?: string; namespace?: string; httpSectionName?: string; sshSectionName?: string};
+    ssh: {
+      handshakeTimeout: string;
+      maxChannelsPerConnection: number;
+      auth: {
+        maxAttemptsPerIP: number;
+        maxAttemptsPerCodespace: number;
+        maxAttemptsPerIPCodespace: number;
+        maxAttemptsPerPublicKey: number;
+        failureWindow: string;
+      };
+    };
+    sessions: {
+      ttl: string;
+      idleTimeout: string;
+      revalidateInterval: string;
+      maxPerCodespace: number;
+      maxPerUser: number;
+    };
+    limits: {
+      maxInflightTotal: number;
+      maxInflightPerSession: number;
+      publicMaxConnectionsPerEndpoint: number;
+      publicMaxConnectionsPerIP: number;
+      validationMaxInflight: number;
+    };
+  };
+  cache?: {
+    enabled: boolean;
+    publicURL: string;
+    storage: {
+      driver: 'filesystem' | 's3';
+      volumeSize?: string;
+      storageClassName?: string;
+      minFreeSpace?: string;
+      s3: {endpoint?: string; region?: string; bucket?: string; prefix?: string; forcePathStyle?: boolean};
+    };
+    maxSize?: string;
+    maxAge: string;
+    gcInterval: string;
+    upstreams: Record<string, {allow: string[]}>;
+  };
 };
 
 export type ComponentStatus = {

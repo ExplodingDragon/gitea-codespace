@@ -14,6 +14,7 @@ import (
 
 	"github.com/distribution/reference"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -90,6 +91,69 @@ func (t *EnvironmentTemplate) Validate() error {
 		return err
 	}
 	return ValidateObjectSize(t)
+}
+
+func (c *CodespaceComponent) Validate() error {
+	if len(validation.IsDNS1123Label(c.Name)) != 0 || strings.TrimSpace(c.Spec.DisplayName) == "" || len(c.Spec.DisplayName) > 100 {
+		return fmt.Errorf("component requires a valid name and display name")
+	}
+	if len(c.Spec.Resources.Claims) != 0 {
+		return fmt.Errorf("component dynamic resource claims are not supported")
+	}
+	for _, list := range []corev1.ResourceList{c.Spec.Resources.Requests, c.Spec.Resources.Limits} {
+		for name, quantity := range list {
+			if quantity.Sign() < 0 {
+				return fmt.Errorf("component resource %s must not be negative", name)
+			}
+		}
+	}
+	switch c.Spec.Role {
+	case "gateway":
+		if c.Spec.Gateway == nil || c.Spec.Cache != nil {
+			return fmt.Errorf("gateway component requires only Gateway settings")
+		}
+		parent := c.Spec.Gateway.Parent
+		if parent.Name == "" {
+			if parent.Namespace != "" || parent.HTTPSectionName != "" || parent.SSHSectionName != "" {
+				return fmt.Errorf("gateway parent name is required when listener settings are configured")
+			}
+		} else {
+			for _, name := range []string{parent.Name, parent.Namespace, parent.HTTPSectionName} {
+				if len(validation.IsDNS1123Subdomain(name)) != 0 {
+					return fmt.Errorf("gateway parent and HTTP listener names are required")
+				}
+			}
+			if parent.SSHSectionName != "" && len(validation.IsDNS1123Subdomain(parent.SSHSectionName)) != 0 {
+				return fmt.Errorf("gateway SSH listener name is invalid")
+			}
+		}
+	case "cache":
+		if c.Spec.Cache == nil || c.Spec.Gateway != nil {
+			return fmt.Errorf("cache component requires only Cache settings")
+		}
+		switch c.Spec.Cache.Storage.Driver {
+		case "filesystem":
+			volumeSize, err := resource.ParseQuantity(c.Spec.Cache.Storage.VolumeSize)
+			if err != nil || volumeSize.Sign() <= 0 {
+				return fmt.Errorf("filesystem cache requires a positive volume size")
+			}
+			if c.Spec.Cache.Storage.StorageClassName != "" && len(validation.IsDNS1123Subdomain(c.Spec.Cache.Storage.StorageClassName)) != 0 {
+				return fmt.Errorf("cache storage class name is invalid")
+			}
+			if c.Spec.Cache.Storage.S3 != (CacheS3Storage{}) {
+				return fmt.Errorf("filesystem cache cannot select S3 storage settings")
+			}
+		case "s3":
+			if c.Spec.Cache.Storage.VolumeSize != "" || c.Spec.Cache.Storage.StorageClassName != "" || c.Spec.Cache.Storage.MinFreeSpace != "" {
+				return fmt.Errorf("S3 cache cannot select filesystem storage settings")
+			}
+		default:
+			return fmt.Errorf("cache storage driver must be filesystem or s3")
+		}
+	default:
+		return fmt.Errorf("component role must be gateway or cache")
+	}
+	return ValidateObjectSize(c)
 }
 
 func (r EnvironmentConfiguration) Validate() error {

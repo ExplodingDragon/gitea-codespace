@@ -9,7 +9,7 @@ import (
 	"time"
 	"uuid"
 
-	configpkg "gitea.dev/codespace/internal/config"
+	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -27,26 +27,24 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	server := &AdminServer{Client: cluster.Client, Namespace: namespace}
 	suffix := uuid.NewV4().String()[:8]
 
-	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gatewayConfig.HTTP.PublicURL = "https://gateway-" + suffix + ".example.test"
-	gatewayConfig.SSH.PublicAddr = "gateway-" + suffix + ".example.test:22"
-	gateway := &corev1.ConfigMap{}
-	gateway.Name = "gateway-" + suffix
-	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "E2E gateway", Gateway: &gatewayConfig}}, true))
+	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway-" + suffix}}
+	gatewaySpec := testGatewayComponent(gateway.Name, "").Spec
+	gatewaySpec.DisplayName = "E2E gateway"
+	gatewaySpec.Gateway.PublicURL = "https://gateway-" + suffix + ".example.test"
+	gatewaySpec.Gateway.SSHPublicAddress = "gateway-" + suffix + ".example.test:22"
+	gatewaySpec.Gateway.Parent = api.GatewayParent{}
+	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
 
-	cacheConfig := configpkg.CacheConfig{
-		Enabled: true, Listen: ":5000", PublicURL: "http://cache-" + suffix + ".example.test", MaxSize: "512MiB",
-		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/codespace-cache"},
-	}
-	cache := &corev1.ConfigMap{}
-	cache.Name = "cache-" + suffix
-	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: adminComponentSpec{Role: "cache", DisplayName: "E2E cache", Cache: &cacheConfig}}, true))
+	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "cache-" + suffix}}
+	cacheSpec := testCacheComponent(cache.Name, "").Spec
+	cacheSpec.DisplayName, cacheSpec.Cache.PublicURL, cacheSpec.Cache.MaxSize = "E2E cache", "http://cache-"+suffix+".example.test", "512MiB"
+	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: cacheSpec}, true))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
-		for _, component := range []*corev1.ConfigMap{gateway, cache} {
-			var current corev1.ConfigMap
-			if err := cluster.Get(cleanup, types.NamespacedName{Namespace: namespace, Name: component.Name}, &current); err == nil {
+		for _, component := range []*api.CodespaceComponent{gateway, cache} {
+			var current api.CodespaceComponent
+			if err := cluster.Get(cleanup, types.NamespacedName{Name: component.Name}, &current); err == nil {
 				if err := client.IgnoreNotFound(cluster.Delete(cleanup, &current, client.Preconditions{UID: &current.UID})); err != nil {
 					t.Errorf("delete E2E component %s: %v", component.Name, err)
 				}
@@ -57,17 +55,17 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 		assert.Eventually(t, func() bool {
 			return apierrors.IsNotFound(cluster.Get(cleanup, types.NamespacedName{Namespace: namespace, Name: "cache-owner-" + cache.Name}, &coordinationv1.Lease{}))
 		}, 30*time.Second, time.Second)
-		for _, component := range []*corev1.ConfigMap{gateway, cache} {
+		for _, component := range []*api.CodespaceComponent{gateway, cache} {
 			assert.Eventually(t, func() bool {
 				return apierrors.IsNotFound(cluster.Get(cleanup, types.NamespacedName{Namespace: namespace, Name: component.Name + "-identity"}, &corev1.Secret{}))
 			}, 30*time.Second, time.Second)
 			assert.Eventually(t, func() bool {
-				return apierrors.IsNotFound(cluster.Get(cleanup, client.ObjectKeyFromObject(component), &corev1.ConfigMap{}))
+				return apierrors.IsNotFound(cluster.Get(cleanup, client.ObjectKeyFromObject(component), &api.CodespaceComponent{}))
 			}, 30*time.Second, time.Second)
 		}
 	})
 
-	for _, component := range []*corev1.ConfigMap{gateway, cache} {
+	for _, component := range []*api.CodespaceComponent{gateway, cache} {
 		require.Eventually(t, func() bool {
 			var deployment appsv1.Deployment
 			if cluster.Get(cluster.ctx, types.NamespacedName{Namespace: namespace, Name: component.Name}, &deployment) != nil {

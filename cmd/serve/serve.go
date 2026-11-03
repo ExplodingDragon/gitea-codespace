@@ -51,10 +51,6 @@ func NewCommand() *cobra.Command {
 	flags.StringVar(&options.AdminTokenFile, "admin-token-file", "/var/run/codespace/admin/token", "Projected administrator token file")
 	flags.StringVar(&options.AgentAddress, "agent-address", ":8443", "Agent mTLS listen address")
 	flags.StringVar(&options.ComponentAddress, "component-address", ":8445", "Gateway and Cache mTLS listen address")
-	flags.StringVar(&options.GatewayParentName, "gateway-parent-name", "", "existing Gateway API parent used for managed public routes")
-	flags.StringVar(&options.GatewayParentNamespace, "gateway-parent-namespace", "", "namespace of the parent Gateway (defaults to the management namespace)")
-	flags.StringVar(&options.GatewayHTTPSectionName, "gateway-http-listener", "", "parent Gateway HTTPS listener name")
-	flags.StringVar(&options.GatewaySSHSectionName, "gateway-ssh-listener", "", "parent Gateway TCP listener name; empty leaves SSH exposure to the operator")
 	flags.StringVar(&options.PodName, "pod-name", os.Getenv("POD_NAME"), "current Manager Pod name used for leader Service routing")
 	return command
 }

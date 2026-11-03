@@ -8,18 +8,14 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"fmt"
-	"maps"
-	"math"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	configpkg "gitea.dev/codespace/internal/config"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -31,11 +27,10 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 const pendingSiteLabel = "codespace.gitea.dev/pending-site"
-
-const pendingComponentLabel = "codespace.gitea.dev/pending-component"
 
 type adminResource struct {
 	Name            string    `json:"name"`
@@ -68,9 +63,9 @@ type adminTemplateWrite struct {
 
 type adminComponentWrite struct {
 	adminWriteIdentity
-	Spec        adminComponentSpec `json:"spec"`
-	S3AccessKey string             `json:"s3AccessKey,omitempty"`
-	S3SecretKey string             `json:"s3SecretKey,omitempty"`
+	Spec        api.CodespaceComponentSpec `json:"spec"`
+	S3AccessKey string                     `json:"s3AccessKey,omitempty"`
+	S3SecretKey string                     `json:"s3SecretKey,omitempty"`
 }
 
 type adminRuntimeRecovery struct {
@@ -82,13 +77,6 @@ type adminRuntimeRecovery struct {
 type adminSiteSpec struct {
 	api.GiteaSiteSpec
 	ManagerID string `json:"managerID"`
-}
-
-type adminComponentSpec struct {
-	Role        string                   `json:"role"`
-	DisplayName string                   `json:"displayName"`
-	Gateway     *configpkg.GatewayConfig `json:"gateway,omitempty"`
-	Cache       *configpkg.CacheConfig   `json:"cache,omitempty"`
 }
 
 type adminComponentStatus struct {
@@ -178,10 +166,9 @@ func (s *AdminServer) resources(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		identity = body.adminWriteIdentity
-		object = &corev1.ConfigMap{}
-		object.SetNamespace(s.Namespace)
+		object = &api.CodespaceComponent{}
 		save = func(ctx context.Context, object client.Object, creating bool) error {
-			return s.saveComponent(ctx, object.(*corev1.ConfigMap), body, creating)
+			return s.saveComponent(ctx, object.(*api.CodespaceComponent), body, creating)
 		}
 	}
 	if r.Method == http.MethodPost {
@@ -235,8 +222,8 @@ func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Reques
 	if !adminDecode(w, r, &body) {
 		return
 	}
-	var component corev1.ConfigMap
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: name}, &component); err != nil {
+	var component api.CodespaceComponent
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Name: name}, &component); err != nil {
 		adminError(w, err)
 		return
 	}
@@ -244,35 +231,28 @@ func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Reques
 		adminJSON(w, http.StatusConflict, map[string]string{"error": "component changed; reload before rotating its SSH host key"})
 		return
 	}
-	if component.Labels[ComponentLabel] != "gateway" {
+	if component.Spec.Role != "gateway" {
 		adminJSON(w, http.StatusBadRequest, map[string]string{"error": "only Gateway components have an SSH host key"})
 		return
 	}
-	oldSecretName, oldSecretUID := component.Data["sshHostKeySecret"], types.UID(component.Data["sshHostKeySecretUID"])
-	secret, err := newGatewayHostKeySecret(component.Name, component.Namespace)
+	var secret corev1.Secret
+	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: component.Name + "-ssh-host-key"}, &secret); err != nil {
+		adminError(w, err)
+		return
+	}
+	if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, &component) || !secret.DeletionTimestamp.IsZero() {
+		adminJSON(w, http.StatusConflict, map[string]string{"error": "Gateway SSH host key ownership changed"})
+		return
+	}
+	generated, err := newGatewayHostKeySecret(secret.Name, secret.Namespace)
 	if err != nil {
 		adminError(w, err)
 		return
 	}
-	if err := s.Client.Create(r.Context(), secret); err != nil {
+	secret.Data = generated.Data
+	if err := s.Client.Update(r.Context(), &secret); err != nil {
 		adminError(w, err)
 		return
-	}
-	component.Data["sshHostKeySecret"], component.Data["sshHostKeySecretUID"] = secret.Name, string(secret.UID)
-	if err := s.Client.Update(r.Context(), &component); err != nil {
-		adminError(w, err)
-		return
-	}
-	if err := bindComponentCredential(r.Context(), s.Client, &component); err != nil {
-		adminError(w, err)
-		return
-	}
-	if oldSecretName != "" && oldSecretUID != "" {
-		oldSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: oldSecretName, Namespace: component.Namespace}}
-		if err := s.Client.Delete(r.Context(), oldSecret, client.Preconditions{UID: &oldSecretUID}); err != nil && !apierrors.IsNotFound(err) {
-			adminError(w, err)
-			return
-		}
 	}
 	adminJSON(w, http.StatusOK, map[string]string{"name": name})
 }
@@ -402,33 +382,25 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			}{item.Status.Bound, item.Status.Pod, item.Status.Volume, item.Status.Target != nil && item.Status.Target.Ready, item.Status.Conditions})
 		}
 	case "components":
-		var list corev1.ConfigMapList
-		if err := s.Client.List(ctx, &list, client.InNamespace(s.Namespace)); err != nil {
+		var list api.CodespaceComponentList
+		if err := s.Client.List(ctx, &list); err != nil {
 			return nil, err
 		}
 		for _, item := range list.Items {
-			role := item.Labels[ComponentLabel]
-			if role != "gateway" && role != "cache" {
-				continue
-			}
-			spec, err := componentSpecFromConfigMap(&item)
-			if err != nil {
-				return nil, err
-			}
 			status, err := s.componentStatus(ctx, &item)
 			if err != nil {
 				return nil, err
 			}
-			appendItem(&item, spec, status)
+			appendItem(&item, item.Spec, status)
 		}
 	}
 	return items, nil
 }
 
-func (s *AdminServer) componentStatus(ctx context.Context, component *corev1.ConfigMap) (adminComponentStatus, error) {
+func (s *AdminServer) componentStatus(ctx context.Context, component *api.CodespaceComponent) (adminComponentStatus, error) {
 	status := adminComponentStatus{DesiredReplicas: 1}
 	var deployment appsv1.Deployment
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: component.Name}, &deployment)
+	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &deployment)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return status, err
 	}
@@ -437,13 +409,13 @@ func (s *AdminServer) componentStatus(ctx context.Context, component *corev1.Con
 		status.ReadyReplicas = deployment.Status.ReadyReplicas
 		status.Available = status.DesiredReplicas > 0 && status.ReadyReplicas == status.DesiredReplicas
 	}
-	if component.Labels[ComponentLabel] != "cache" {
+	if component.Spec.Role != "cache" {
 		return status, nil
 	}
 	deploymentAvailable := status.Available
 	status.Available = false
 	var lease coordinationv1.Lease
-	err = s.Client.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: "cache-owner-" + component.Name}, &lease)
+	err = s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: "cache-owner-" + component.Name}, &lease)
 	if apierrors.IsNotFound(err) {
 		return status, nil
 	}
@@ -538,11 +510,11 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 		if index == 0 {
 			role = "gateway"
 		}
-		var component corev1.ConfigMap
-		if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: ref.Name}, &component); err != nil {
+		var component api.CodespaceComponent
+		if err := s.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &component); err != nil {
 			return err
 		}
-		if component.UID != ref.UID || !component.DeletionTimestamp.IsZero() || component.Labels[ComponentLabel] != role {
+		if component.UID != ref.UID || !component.DeletionTimestamp.IsZero() || component.Spec.Role != role {
 			return apierrors.NewBadRequest("component reference is stale or has the wrong role")
 		}
 	}
@@ -573,89 +545,49 @@ func (s *AdminServer) saveTemplate(ctx context.Context, template *api.Environmen
 	return nil
 }
 
-func componentSpecFromConfigMap(component *corev1.ConfigMap) (adminComponentSpec, error) {
-	role := component.Labels[ComponentLabel]
-	spec := adminComponentSpec{Role: role, DisplayName: component.Data["displayName"]}
-	switch role {
-	case "gateway":
-		gateway, err := gatewayComponentConfig(component)
-		if err != nil {
-			return adminComponentSpec{}, fmt.Errorf("gateway %s has invalid configuration: %w", component.Name, err)
-		}
-		spec.Gateway = &gateway
-	case "cache":
-		cache, err := cacheComponentConfig(component)
-		if err != nil {
-			return adminComponentSpec{}, fmt.Errorf("cache %s has invalid configuration: %w", component.Name, err)
-		}
-		cache.Storage.S3.AccessKey = ""
-		cache.Storage.S3.SecretKey = ""
-		spec.Cache = &cache
-	default:
-		return adminComponentSpec{}, fmt.Errorf("component %s has an invalid role", component.Name)
+func (s *AdminServer) saveComponent(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite, creating bool) error {
+	previousRole := component.Spec.Role
+	component.Spec = body.Spec
+	component.Spec.DisplayName = strings.TrimSpace(component.Spec.DisplayName)
+	if err := component.Validate(); err != nil {
+		return apierrors.NewBadRequest(err.Error())
 	}
-	return spec, nil
-}
-
-func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.ConfigMap, body adminComponentWrite, creating bool) error {
-	spec := body.Spec
-	if spec.Role != "gateway" && spec.Role != "cache" || strings.TrimSpace(spec.DisplayName) == "" || len(spec.DisplayName) > 100 {
-		return apierrors.NewBadRequest("component requires a role and display name")
-	}
-	if !creating && component.Labels[ComponentLabel] != spec.Role {
+	if !creating && previousRole != body.Spec.Role {
 		return apierrors.NewBadRequest("component role is immutable")
 	}
-	data := map[string]string{"displayName": strings.TrimSpace(spec.DisplayName)}
-	var secret *corev1.Secret
-	switch spec.Role {
-	case "gateway":
-		if spec.Gateway == nil || spec.Cache != nil {
-			return apierrors.NewBadRequest("Gateway configuration is required")
-		}
-		if err := spec.Gateway.Validate(); err != nil {
+	if component.Spec.Role == "gateway" {
+		if _, err := gatewayComponentConfig(component); err != nil {
 			return apierrors.NewBadRequest(err.Error())
 		}
-		encoded, err := json.Marshal(spec.Gateway)
-		if err != nil {
-			return err
-		}
-		data["config"] = string(encoded)
-		if creating {
-			secret, err = newGatewayHostKeySecret(component.Name, s.Namespace)
-			if err != nil {
-				return err
+		if component.Spec.Gateway.Parent.Name != "" {
+			if err := validateGatewayParent(ctx, s.Client, component.Spec.Gateway.Parent); err != nil {
+				return apierrors.NewBadRequest(err.Error())
 			}
 		}
-	case "cache":
-		if spec.Cache == nil || spec.Gateway != nil {
-			return apierrors.NewBadRequest("Cache configuration is required")
-		}
-		revision := int64(1)
-		if !creating {
-			current, err := cacheComponentConfig(component)
-			if err != nil || current.Revision == math.MaxInt64 {
-				return apierrors.NewBadRequest("stored Cache configuration revision is invalid")
-			}
-			revision = current.Revision + 1
-		}
-		spec.Cache.ID, spec.Cache.Name, spec.Cache.Revision = component.Name, data["displayName"], revision
-		if err := spec.Cache.Validate(); err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		accessKey, secretKey := spec.Cache.Storage.S3.AccessKey, spec.Cache.Storage.S3.SecretKey
-		if body.S3AccessKey != "" || body.S3SecretKey != "" {
-			accessKey, secretKey = body.S3AccessKey, body.S3SecretKey
-		}
-		if (accessKey == "") != (secretKey == "") {
-			return apierrors.NewBadRequest("S3 access key and secret key must be configured together")
-		}
-		spec.Cache.Storage.S3.AccessKey, spec.Cache.Storage.S3.SecretKey = "", ""
-		encoded, err := json.Marshal(spec.Cache)
-		if err != nil {
-			return err
-		}
-		data["config"] = string(encoded)
-		if creating {
+	} else if _, err := cacheComponentConfig(component); err != nil {
+		return apierrors.NewBadRequest(err.Error())
+	}
+	if (body.S3AccessKey == "") != (body.S3SecretKey == "") {
+		return apierrors.NewBadRequest("S3 access key and secret key must be configured together")
+	}
+	var err error
+	if creating {
+		err = s.Client.Create(ctx, component)
+	} else {
+		err = s.Client.Update(ctx, component)
+	}
+	if err != nil || component.Spec.Role != "cache" || body.S3AccessKey == "" {
+		return err
+	}
+	return s.saveCacheCredentials(ctx, component, body.S3AccessKey, body.S3SecretKey)
+}
+
+func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.CodespaceComponent, accessKey, secretKey string) error {
+	name := component.Name + "-cache"
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var secret corev1.Secret
+		err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &secret)
+		if apierrors.IsNotFound(err) {
 			registryKey, tokenKey := make([]byte, 32), make([]byte, 32)
 			if _, err := rand.Read(registryKey); err != nil {
 				return err
@@ -663,53 +595,26 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *corev1.Confi
 			if _, err := rand.Read(tokenKey); err != nil {
 				return err
 			}
-			secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{GenerateName: component.Name + "-cache-", Namespace: s.Namespace, Labels: map[string]string{pendingComponentLabel: component.Name}}, Data: map[string][]byte{"registryKey": registryKey, "tokenKey": tokenKey, "s3AccessKey": []byte(accessKey), "s3SecretKey": []byte(secretKey)}}
-		} else if body.S3AccessKey != "" || body.S3SecretKey != "" {
-			var current corev1.Secret
-			if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Data["secretName"]}, &current); err != nil {
+			secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace, Labels: map[string]string{ComponentUIDLabel: string(component.UID)}}, Data: map[string][]byte{"registryKey": registryKey, "tokenKey": tokenKey}}
+			if err := controllerutil.SetControllerReference(component, &secret, s.Client.Scheme()); err != nil {
 				return err
 			}
-			if string(current.UID) != component.Data["secretUID"] || current.Labels[ComponentUIDLabel] != string(component.UID) {
-				return apierrors.NewBadRequest("Cache Secret identity changed")
-			}
-			secret = &corev1.Secret{ObjectMeta: metav1.ObjectMeta{GenerateName: component.Name + "-cache-", Namespace: s.Namespace, Labels: map[string]string{pendingComponentLabel: component.Name}}, Data: map[string][]byte{
-				"registryKey": append([]byte(nil), current.Data["registryKey"]...), "tokenKey": append([]byte(nil), current.Data["tokenKey"]...),
-				"s3AccessKey": []byte(accessKey), "s3SecretKey": []byte(secretKey),
-			}}
-		}
-	}
-	if secret != nil {
-		if err := s.Client.Create(ctx, secret); err != nil {
-			return err
-		}
-		if spec.Role == "gateway" {
-			data["sshHostKeySecret"], data["sshHostKeySecretUID"] = secret.Name, string(secret.UID)
-		} else {
-			data["secretName"], data["secretUID"] = secret.Name, string(secret.UID)
-		}
-	}
-	if creating {
-		component.Namespace = s.Namespace
-		component.Labels = map[string]string{ComponentLabel: spec.Role}
-		component.Data = data
-		if err := s.Client.Create(ctx, component); err != nil {
-			return err
-		}
-	} else {
-		for key := range component.Data {
-			if key != "sshHostKeySecret" && key != "sshHostKeySecretUID" && key != "secretName" && key != "secretUID" {
-				delete(component.Data, key)
+			secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(accessKey), []byte(secretKey)
+			if err := s.Client.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
+				return apierrors.NewConflict(corev1.Resource("secrets"), name, err)
+			} else {
+				return err
 			}
 		}
-		maps.Copy(component.Data, data)
-		if err := s.Client.Update(ctx, component); err != nil {
+		if err != nil {
 			return err
 		}
-	}
-	if secret == nil {
-		return nil
-	}
-	return bindComponentCredential(ctx, s.Client, component)
+		if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, component) || !secret.DeletionTimestamp.IsZero() {
+			return apierrors.NewConflict(corev1.Resource("secrets"), name, fmt.Errorf("cache Secret ownership changed"))
+		}
+		secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(accessKey), []byte(secretKey)
+		return s.Client.Update(ctx, &secret)
+	})
 }
 
 func newGatewayHostKeySecret(component, namespace string) (*corev1.Secret, error) {
@@ -722,8 +627,7 @@ func newGatewayHostKeySecret(component, namespace string) (*corev1.Secret, error
 		return nil, err
 	}
 	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: component + "-ssh-", Namespace: namespace, Labels: map[string]string{pendingComponentLabel: component}},
-		Immutable:  ptr.To(true),
+		ObjectMeta: metav1.ObjectMeta{Name: component, Namespace: namespace},
 		Data:       map[string][]byte{"hostKey": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})},
 	}, nil
 }
@@ -757,8 +661,8 @@ func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) e
 		if len(runtimes.Items) != 0 {
 			return fmt.Errorf("delete the site's Codespaces in Gitea or clean up its runtime data here before deleting the site")
 		}
-	case *corev1.ConfigMap:
-		role := current.Labels[ComponentLabel]
+	case *api.CodespaceComponent:
+		role := current.Spec.Role
 		if role != "gateway" && role != "cache" {
 			return fmt.Errorf("resource is not a managed component")
 		}
@@ -777,15 +681,14 @@ func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) e
 			}
 		}
 		if role == "cache" {
-			spec, err := componentSpecFromConfigMap(current)
-			if err != nil || spec.Cache == nil {
+			if current.Spec.Cache == nil {
 				return fmt.Errorf("could not verify the cache configuration")
 			}
-			if spec.Cache.Enabled {
+			if current.Spec.Cache.Enabled {
 				return fmt.Errorf("disable the cache before deleting it")
 			}
 			var lease coordinationv1.Lease
-			err = s.Client.Get(ctx, types.NamespacedName{Namespace: current.Namespace, Name: "cache-owner-" + current.Name}, &lease)
+			err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: "cache-owner-" + current.Name}, &lease)
 			if err != nil && !apierrors.IsNotFound(err) {
 				return fmt.Errorf("could not verify the cache writer lease")
 			}
@@ -819,38 +722,6 @@ func bindSiteCredential(ctx context.Context, reader client.Client, namespace str
 	})
 }
 
-func bindComponentCredential(ctx context.Context, reader client.Client, component *corev1.ConfigMap) error {
-	secretName, secretUID := component.Data["secretName"], component.Data["secretUID"]
-	if component.Labels[ComponentLabel] == "gateway" {
-		secretName, secretUID = component.Data["sshHostKeySecret"], component.Data["sshHostKeySecretUID"]
-	}
-	if secretName == "" || secretUID == "" {
-		return fmt.Errorf("component credential reference is missing")
-	}
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var credential corev1.Secret
-		if err := reader.Get(ctx, types.NamespacedName{Namespace: component.Namespace, Name: secretName}, &credential); err != nil {
-			return err
-		}
-		if string(credential.UID) != secretUID || !credential.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("component credential identity changed")
-		}
-		if credential.Labels[ComponentUIDLabel] == string(component.UID) {
-			if len(credential.OwnerReferences) == 1 && credential.OwnerReferences[0].UID == component.UID {
-				return nil
-			}
-			return fmt.Errorf("component credential ownership conflicts")
-		}
-		if credential.Labels[pendingComponentLabel] != component.Name || credential.Labels[ComponentUIDLabel] != "" || len(credential.OwnerReferences) != 0 {
-			return fmt.Errorf("component credential ownership conflicts")
-		}
-		delete(credential.Labels, pendingComponentLabel)
-		credential.Labels[ComponentUIDLabel] = string(component.UID)
-		credential.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "ConfigMap", Name: component.Name, UID: component.UID}}
-		return reader.Update(ctx, &credential)
-	})
-}
-
 func (s *AdminServer) pruneCredentials(ctx context.Context) error {
 	var sites api.GiteaSiteList
 	if err := s.Client.List(ctx, &sites); err != nil {
@@ -860,28 +731,16 @@ func (s *AdminServer) pruneCredentials(ctx context.Context) error {
 	for _, site := range sites.Items {
 		used[site.Spec.Credential.UID] = true
 	}
-	var components corev1.ConfigMapList
-	if err := s.Client.List(ctx, &components, client.InNamespace(s.Namespace)); err != nil {
-		return err
-	}
-	for _, component := range components.Items {
-		for _, field := range []string{"sshHostKeySecretUID", "secretUID"} {
-			if uid := component.Data[field]; uid != "" {
-				used[types.UID(uid)] = true
-			}
-		}
-	}
 	var secrets corev1.SecretList
 	if err := s.Client.List(ctx, &secrets, client.InNamespace(s.Namespace)); err != nil {
 		return err
 	}
 	for _, secret := range secrets.Items {
 		isSiteCredential := secret.Labels[pendingSiteLabel] != "" || secret.Labels[SiteUIDLabel] != ""
-		isComponentCredential := secret.Labels[pendingComponentLabel] != "" || secret.Labels[ComponentUIDLabel] != ""
-		if !isSiteCredential && !isComponentCredential {
+		if !isSiteCredential {
 			continue
 		}
-		validPrefix := strings.HasPrefix(secret.Name, "site-credential-") || strings.Contains(secret.Name, "-ssh-") || strings.Contains(secret.Name, "-cache-")
+		validPrefix := strings.HasPrefix(secret.Name, "site-credential-")
 		if !validPrefix || used[secret.UID] || time.Since(secret.CreationTimestamp.Time) < time.Hour {
 			continue
 		}
@@ -894,17 +753,6 @@ func (s *AdminServer) pruneCredentials(ctx context.Context) error {
 			if site.Spec.Credential.UID == secret.UID {
 				referenced = true
 				break
-			}
-		}
-		if !referenced {
-			if err := s.Client.List(ctx, &components, client.InNamespace(s.Namespace)); err != nil {
-				return err
-			}
-			for _, component := range components.Items {
-				if types.UID(component.Data["sshHostKeySecretUID"]) == secret.UID || types.UID(component.Data["secretUID"]) == secret.UID {
-					referenced = true
-					break
-				}
 			}
 		}
 		if !referenced {

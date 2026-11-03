@@ -8,7 +8,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
 	"io"
@@ -25,7 +24,6 @@ import (
 	"gitea.dev/codespace/internal/accessticket"
 	cachepkg "gitea.dev/codespace/internal/cache"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
@@ -112,15 +110,10 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	encoded, err := x509.MarshalPKCS8PrivateKey(hostPrivate)
 	require.NoError(t, err)
 	hostKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
-	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gatewayConfig.HTTP.PublicURL = "https://workspace.example"
-	gatewayConfig.SSH.PublicAddr = "workspace.example:2222"
-	gatewayJSON, err := json.Marshal(gatewayConfig)
-	require.NoError(t, err)
-	component := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{
-		"config": string(gatewayJSON), "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid",
-	}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: component.Namespace, UID: "gateway-key-uid", Labels: map[string]string{ComponentUIDLabel: string(component.UID)}}, Data: map[string][]byte{"hostKey": hostKey}}
+	component := testGatewayComponent("gateway", "gateway-uid")
+	component.Spec.Gateway.PublicURL = "https://workspace.example"
+	component.Spec.Gateway.SSHPublicAddress = "workspace.example:2222"
+	secret := testComponentCredential(component, map[string][]byte{"hostKey": hostKey})
 	site := testSite("example", "site-uid")
 	site.Status.CanonicalURL = "https://gitea.example"
 	site.Status.Conditions = []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionTrue, ObservedGeneration: site.Generation}}
@@ -136,13 +129,13 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: cs.Namespace, UID: cs.Status.Pod.UID, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.1.2.3", PodIPs: []corev1.PodIP{{IP: "10.1.2.3"}}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs, pod).Build()
 	index := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs, pod).
-		WithIndex(&corev1.ConfigMap{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).
+		WithIndex(&api.CodespaceComponent{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).
 		WithIndex(&api.GiteaSite{}, SiteGatewayUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.GiteaSite).Spec.Gateway.UID)} }).
 		WithIndex(&api.Codespace{}, RuntimeSiteUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.Codespace).Spec.Site.UID)} }).
 		WithIndex(&api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string { return []string{object.(*api.Codespace).Spec.RuntimeUUID} }).Build()
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: component.Namespace, Tickets: &AccessTickets{privateKey: signingKey}}
+	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Tickets: &AccessTickets{privateKey: signingKey}}
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: string(component.UID)})
 	snapshot, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.NoError(t, err)
@@ -239,19 +232,12 @@ func contextWithComponent(ctx context.Context, identity componentIdentity) conte
 func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	ctx := t.Context()
 	namespace := "codespace-system"
-	cacheConfig := configpkg.CacheConfig{
-		Name: "Build cache", Revision: 7, Enabled: true, Listen: ":5000", PublicURL: "https://cache.example.com", MaxSize: "1GiB",
-		Storage:   configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/cache"},
-		Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{"ghcr.io": {Allow: []string{"devcontainers/*"}}},
-	}
-	encoded, err := json.Marshal(cacheConfig)
-	require.NoError(t, err)
-	component := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "cache", Namespace: namespace, UID: "cache-uid", Generation: 3, Labels: map[string]string{ComponentLabel: "cache"}}, Data: map[string]string{
-		"config": string(encoded), "secretName": "cache-key", "secretUID": "cache-key-uid",
-	}}
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cache-key", Namespace: namespace, UID: "cache-key-uid", Labels: map[string]string{ComponentUIDLabel: string(component.UID)}}, Data: map[string][]byte{
+	component := testCacheComponent("cache", "cache-uid")
+	component.Generation = 7
+	component.Spec.Cache.Upstreams = map[string]api.CacheUpstream{"ghcr.io": {Allow: []string{"devcontainers/*"}}}
+	secret := testComponentCredential(component, map[string][]byte{
 		"registryKey": []byte(strings.Repeat("r", 32)), "tokenKey": []byte(strings.Repeat("t", 32)),
-	}}
+	})
 	site := testSite("example", "site-uid")
 	site.Spec.Caches = []api.ResourceReference{{Name: "offline-cache", UID: "offline-cache-uid"}, {Name: component.Name, UID: component.UID}}
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{
@@ -259,13 +245,13 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs).Build()
 	identityIndex := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component).
-		WithIndex(&corev1.ConfigMap{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).Build()
+		WithIndex(&api.CodespaceComponent{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).Build()
 	server := &ComponentServer{Client: c, IdentityIndex: identityIndex, ManagementNamespace: namespace}
 	cacheContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: string(component.UID)})
 
 	identity, material, err := server.cacheForRequest(cacheContext, component.Name)
 	require.NoError(t, err)
-	require.EqualValues(t, cacheConfig.Revision, material.config.Revision)
+	require.EqualValues(t, component.Generation, material.config.Revision)
 
 	const sessionID = "11111111-1111-4111-8111-111111111111"
 	material.config.Enabled = false

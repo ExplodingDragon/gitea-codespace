@@ -15,7 +15,7 @@ import (
 var GroupVersion = schema.GroupVersion{Group: "codespace.gitea.dev", Version: "v1alpha1"}
 
 func AddToScheme(scheme *runtime.Scheme) error {
-	scheme.AddKnownTypes(GroupVersion, &GiteaSite{}, &GiteaSiteList{}, &EnvironmentTemplate{}, &EnvironmentTemplateList{}, &Codespace{}, &CodespaceList{})
+	scheme.AddKnownTypes(GroupVersion, &GiteaSite{}, &GiteaSiteList{}, &EnvironmentTemplate{}, &EnvironmentTemplateList{}, &CodespaceComponent{}, &CodespaceComponentList{}, &Codespace{}, &CodespaceList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
 	return nil
 }
@@ -156,6 +156,155 @@ type EnvironmentTemplateList struct {
 	metav1.TypeMeta `json:",inline"`
 	metav1.ListMeta `json:"metadata,omitempty"`
 	Items           []EnvironmentTemplate `json:"items"`
+}
+
+// GatewayParent selects the existing Gateway API listeners that expose a
+// managed Gateway component. An empty parent leaves exposure to the cluster
+// operator. When a parent is selected, HTTP is required because every public
+// endpoint uses HTTP; SSH remains optional.
+type GatewayParent struct {
+	Name            string `json:"name,omitempty"`
+	Namespace       string `json:"namespace,omitempty"`
+	HTTPSectionName string `json:"httpSectionName,omitempty"`
+	SSHSectionName  string `json:"sshSectionName,omitempty"`
+}
+
+type GatewaySSHAuth struct {
+	// +kubebuilder:validation:Minimum=1
+	MaxAttemptsPerIP int32 `json:"maxAttemptsPerIP"`
+	// +kubebuilder:validation:Minimum=1
+	MaxAttemptsPerCodespace int32 `json:"maxAttemptsPerCodespace"`
+	// +kubebuilder:validation:Minimum=1
+	MaxAttemptsPerIPCodespace int32 `json:"maxAttemptsPerIPCodespace"`
+	// +kubebuilder:validation:Minimum=1
+	MaxAttemptsPerPublicKey int32 `json:"maxAttemptsPerPublicKey"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	FailureWindow string `json:"failureWindow"`
+}
+
+type GatewaySSHSettings struct {
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	HandshakeTimeout string `json:"handshakeTimeout"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1024
+	MaxChannelsPerConnection int32          `json:"maxChannelsPerConnection"`
+	Auth                     GatewaySSHAuth `json:"auth"`
+}
+
+type GatewaySessions struct {
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	TTL string `json:"ttl"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	IdleTimeout string `json:"idleTimeout"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	RevalidateInterval string `json:"revalidateInterval"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	MaxPerCodespace int32 `json:"maxPerCodespace"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	MaxPerUser int32 `json:"maxPerUser"`
+}
+
+type GatewayLimits struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1000000
+	MaxInflightTotal int32 `json:"maxInflightTotal"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=1024
+	MaxInflightPerSession int32 `json:"maxInflightPerSession"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	PublicMaxConnectionsPerEndpoint int32 `json:"publicMaxConnectionsPerEndpoint"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=10000
+	PublicMaxConnectionsPerIP int32 `json:"publicMaxConnectionsPerIP"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=4096
+	ValidationMaxInflight int32 `json:"validationMaxInflight"`
+}
+
+type GatewayComponentSpec struct {
+	PublicURL        string             `json:"publicURL"`
+	SSHPublicAddress string             `json:"sshPublicAddress"`
+	Parent           GatewayParent      `json:"parent"`
+	SSH              GatewaySSHSettings `json:"ssh"`
+	Sessions         GatewaySessions    `json:"sessions"`
+	Limits           GatewayLimits      `json:"limits"`
+}
+
+type CacheS3Storage struct {
+	Endpoint       string `json:"endpoint,omitempty"`
+	Region         string `json:"region,omitempty"`
+	Bucket         string `json:"bucket,omitempty"`
+	Prefix         string `json:"prefix,omitempty"`
+	ForcePathStyle bool   `json:"forcePathStyle,omitempty"`
+}
+
+type CacheStorage struct {
+	// +kubebuilder:validation:Enum=filesystem;s3
+	Driver string `json:"driver"`
+	// VolumeSize is the persistent volume capacity. Cache eviction is governed
+	// independently by maxSize so operators can reserve free filesystem space.
+	VolumeSize       string         `json:"volumeSize,omitempty"`
+	StorageClassName string         `json:"storageClassName,omitempty"`
+	MinFreeSpace     string         `json:"minFreeSpace,omitempty"`
+	S3               CacheS3Storage `json:"s3,omitempty"`
+}
+
+type CacheUpstream struct {
+	// +kubebuilder:validation:MinItems=1
+	Allow []string `json:"allow"`
+}
+
+type CacheComponentSpec struct {
+	Enabled   bool         `json:"enabled"`
+	PublicURL string       `json:"publicURL"`
+	Storage   CacheStorage `json:"storage"`
+	MaxSize   string       `json:"maxSize,omitempty"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	MaxAge string `json:"maxAge"`
+	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
+	GCInterval string                   `json:"gcInterval"`
+	Upstreams  map[string]CacheUpstream `json:"upstreams,omitempty"`
+}
+
+type CodespaceComponentSpec struct {
+	// +kubebuilder:validation:Enum=gateway;cache
+	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="component role is immutable"
+	Role string `json:"role"`
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=100
+	DisplayName string                      `json:"displayName"`
+	Resources   corev1.ResourceRequirements `json:"resources"`
+	Gateway     *GatewayComponentSpec       `json:"gateway,omitempty"`
+	Cache       *CacheComponentSpec         `json:"cache,omitempty"`
+}
+
+type CodespaceComponentStatus struct {
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
+	// +listType=map
+	// +listMapKey=type
+	Conditions []metav1.Condition `json:"conditions,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+// +kubebuilder:resource:scope=Cluster,shortName=cscomp
+// +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63 && !self.metadata.name.contains('.')",message="component name must be a Kubernetes DNS label"
+// +kubebuilder:validation:XValidation:rule="self.spec.role == 'gateway' ? has(self.spec.gateway) && !has(self.spec.cache) : has(self.spec.cache) && !has(self.spec.gateway)",message="component role must select exactly one configuration"
+type CodespaceComponent struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+	Spec              CodespaceComponentSpec   `json:"spec"`
+	Status            CodespaceComponentStatus `json:"status,omitempty"`
+}
+
+// +kubebuilder:object:root=true
+type CodespaceComponentList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []CodespaceComponent `json:"items"`
 }
 
 type Operation struct {

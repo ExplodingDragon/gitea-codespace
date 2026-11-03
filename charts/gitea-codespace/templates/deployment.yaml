@@ -62,18 +62,6 @@ spec:
             {{- range .Values.image.pullSecrets }}
             - --image-pull-secret={{ . }}
             {{- end }}
-            {{- with .Values.gatewayAPI.parent.name }}
-            - --gateway-parent-name={{ . }}
-            {{- end }}
-            {{- with .Values.gatewayAPI.parent.namespace }}
-            - --gateway-parent-namespace={{ . }}
-            {{- end }}
-            {{- with .Values.gatewayAPI.parent.httpListener }}
-            - --gateway-http-listener={{ . }}
-            {{- end }}
-            {{- with .Values.gatewayAPI.parent.sshListener }}
-            - --gateway-ssh-listener={{ . }}
-            {{- end }}
           env:
             - name: POD_NAME
               valueFrom:

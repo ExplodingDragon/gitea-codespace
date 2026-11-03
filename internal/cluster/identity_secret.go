@@ -17,11 +17,11 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
-func reconcileIdentitySecret(ctx context.Context, kubeClient client.Client, authority *IdentityAuthority, owner client.Object, name, role, rawIdentity string, usages []x509.ExtKeyUsage, labels map[string]string) (time.Duration, error) {
+func reconcileIdentitySecret(ctx context.Context, kubeClient client.Client, authority *IdentityAuthority, owner client.Object, namespace, name, role, rawIdentity string, usages []x509.ExtKeyUsage, labels map[string]string) (time.Duration, error) {
 	if authority == nil {
 		return 0, fmt.Errorf("internal certificate authority is required")
 	}
-	key := client.ObjectKey{Namespace: owner.GetNamespace(), Name: name}
+	key := client.ObjectKey{Namespace: namespace, Name: name}
 	var secret corev1.Secret
 	err := kubeClient.Get(ctx, key, &secret)
 	notFound := apierrors.IsNotFound(err)
@@ -40,7 +40,7 @@ func reconcileIdentitySecret(ctx context.Context, kubeClient client.Client, auth
 		return 0, err
 	}
 	if notFound {
-		secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: owner.GetNamespace()}}
+		secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace}}
 	}
 	secret.Type = corev1.SecretTypeTLS
 	secret.Data = map[string][]byte{

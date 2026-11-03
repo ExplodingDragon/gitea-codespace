@@ -264,9 +264,10 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 					err = unix.Kill(inspect.Pid, syscall.Signal(value.Signal))
 				}
 			case *agentv1.AccessRequest_StdinEof:
-				if !value.StdinEof {
+				switch {
+				case !value.StdinEof:
 					err = fmt.Errorf("stdin EOF frame is invalid")
-				} else if interactive {
+				case interactive:
 					// A PTY receives terminal EOF as EOT. Let the process finish
 					// before closing the hijacked input so pending output is kept.
 					_, _ = attached.Conn.Write([]byte{0x04})
@@ -288,7 +289,7 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 					if err == nil {
 						err = attached.CloseWrite()
 					}
-				} else {
+				default:
 					err = attached.CloseWrite()
 				}
 			default:

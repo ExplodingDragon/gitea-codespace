@@ -41,28 +41,29 @@ function defaultGateway(): Component {
   return {
     role: 'gateway',
     displayName: '',
+    resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
     gateway: {
-      http: {listen: ':8080', public_url: ''},
+      publicURL: '',
+      sshPublicAddress: '',
+      parent: {name: '', namespace: '', httpSectionName: '', sshSectionName: ''},
       ssh: {
-        listen: ':2222',
-        public_addr: '',
-        handshake_timeout: '30s',
-        max_channels_per_connection: 32,
+        handshakeTimeout: '30s',
+        maxChannelsPerConnection: 32,
         auth: {
-          max_attempts_per_ip_per_minute: 30,
-          max_attempts_per_codespace_per_minute: 20,
-          max_attempts_per_ip_codespace_per_minute: 10,
-          max_attempts_per_public_key_per_minute: 30,
-          failure_window: '10m',
+          maxAttemptsPerIP: 30,
+          maxAttemptsPerCodespace: 20,
+          maxAttemptsPerIPCodespace: 10,
+          maxAttemptsPerPublicKey: 30,
+          failureWindow: '10m',
         },
       },
-      sessions: {ttl: '8h', idle_timeout: '30m', revalidate_interval: '5m', max_per_codespace: 32, max_per_user: 128},
+      sessions: {ttl: '8h', idleTimeout: '30m', revalidateInterval: '5m', maxPerCodespace: 32, maxPerUser: 128},
       limits: {
-        max_inflight_total: 4096,
-        max_inflight_per_session: 32,
-        public_max_connections_per_endpoint: 64,
-        public_max_connections_per_ip: 16,
-        validation_max_inflight: 128,
+        maxInflightTotal: 4096,
+        maxInflightPerSession: 32,
+        publicMaxConnectionsPerEndpoint: 64,
+        publicMaxConnectionsPerIP: 16,
+        validationMaxInflight: 128,
       },
     },
   };
@@ -71,22 +72,20 @@ function defaultCache(): Component {
   return {
     role: 'cache',
     displayName: '',
+    resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
     cache: {
-      id: '',
-      name: '',
-      revision: '0',
       enabled: true,
-      listen: ':5000',
-      public_url: '',
+      publicURL: '',
       storage: {
         driver: 'filesystem',
-        path: '/var/lib/codespace-cache',
-        min_free_space: '1GiB',
-        s3: {endpoint: '', region: '', bucket: '', prefix: '', force_path_style: false},
+        volumeSize: '50Gi',
+        storageClassName: '',
+        minFreeSpace: '1GiB',
+        s3: {endpoint: '', region: '', bucket: '', prefix: '', forcePathStyle: false},
       },
-      max_size: '50GiB',
-      max_age: '720h',
-      gc_interval: '24h',
+      maxSize: '45GiB',
+      maxAge: '720h',
+      gcInterval: '24h',
       upstreams: {},
     },
   };
@@ -98,6 +97,15 @@ function edit(item?: Resource<Component, ComponentStatus>) {
   s3AccessKey.value = '';
   s3SecretKey.value = '';
   form.value = item ? structuredClone(toRaw(item.spec)) : defaultGateway();
+  if (form.value.gateway) {
+    form.value.gateway.parent = {
+      name: '',
+      namespace: '',
+      httpSectionName: '',
+      sshSectionName: '',
+      ...form.value.gateway.parent,
+    };
+  }
   upstreams.value = Object.entries(form.value.cache?.upstreams ?? {}).map(([host, config]) => ({
     host,
     allow: config.allow.join('\n'),
@@ -107,8 +115,10 @@ function edit(item?: Resource<Component, ComponentStatus>) {
 }
 function setRole(role: 'gateway' | 'cache') {
   const displayName = form.value?.displayName ?? '';
+  const resources = form.value?.resources;
   form.value = role === 'gateway' ? defaultGateway() : defaultCache();
   form.value.displayName = displayName;
+  if (resources) form.value.resources = resources;
   upstreams.value = [];
 }
 function close() {
@@ -121,7 +131,17 @@ async function save() {
   error.value = '';
   try {
     const spec = structuredClone(toRaw(form.value!));
+    if (spec.gateway && !spec.gateway.parent.name?.trim()) {
+      spec.gateway.parent = {name: '', namespace: '', httpSectionName: '', sshSectionName: ''};
+    }
     if (spec.cache) {
+      if (spec.cache.storage.driver === 'filesystem') {
+        spec.cache.storage.s3 = {};
+      } else {
+        spec.cache.storage.volumeSize = undefined;
+        spec.cache.storage.storageClassName = undefined;
+        spec.cache.storage.minFreeSpace = undefined;
+      }
       spec.cache.upstreams = {};
       for (const item of upstreams.value) {
         const host = item.host.trim().toLowerCase();
@@ -256,35 +276,77 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           @update:value="setRole"
         />
       </NFormItem>
+      <NFormItem label="CPU request">
+        <NInput
+          v-model:value="form.resources.requests.cpu"
+          required
+        />
+      </NFormItem>
+      <NFormItem label="Memory request">
+        <NInput
+          v-model:value="form.resources.requests.memory"
+          required
+        />
+      </NFormItem>
+      <NFormItem label="CPU limit">
+        <NInput
+          v-model:value="form.resources.limits.cpu"
+          required
+        />
+      </NFormItem>
+      <NFormItem label="Memory limit">
+        <NInput
+          v-model:value="form.resources.limits.memory"
+          required
+        />
+      </NFormItem>
     </div>
     <template v-if="form.gateway">
       <h2>Gateway addresses</h2>
       <div class="fields">
         <NFormItem label="Public HTTPS URL">
           <NInput
-            v-model:value="form.gateway.http.public_url"
+            v-model:value="form.gateway.publicURL"
             placeholder="https://codespace.example.com"
             required
           />
         </NFormItem>
         <NFormItem label="Public SSH address">
           <NInput
-            v-model:value="form.gateway.ssh.public_addr"
+            v-model:value="form.gateway.sshPublicAddress"
             placeholder="codespace.example.com:22"
             required
           />
         </NFormItem>
-        <NFormItem label="HTTP listen address">
+        <NFormItem label="Gateway API parent">
           <NInput
-            v-model:value="form.gateway.http.listen"
+            v-model:value="form.gateway.parent.name"
+            placeholder="public-gateway"
+          />
+        </NFormItem>
+        <NFormItem
+          v-if="form.gateway.parent.name"
+          label="Gateway namespace"
+        >
+          <NInput
+            v-model:value="form.gateway.parent.namespace"
             required
           />
         </NFormItem>
-        <NFormItem label="SSH listen address">
+        <NFormItem
+          v-if="form.gateway.parent.name"
+          label="HTTPS listener"
+        >
           <NInput
-            v-model:value="form.gateway.ssh.listen"
+            v-model:value="form.gateway.parent.httpSectionName"
             required
           />
+        </NFormItem>
+        <NFormItem
+          v-if="form.gateway.parent.name"
+          label="SSH listener"
+        >
+          <NInput v-model:value="form.gateway.parent.sshSectionName" />
         </NFormItem>
       </div>
       <h2>Sessions and limits</h2>
@@ -297,43 +359,43 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </NFormItem>
         <NFormItem label="Idle timeout">
           <NInput
-            v-model:value="form.gateway.sessions.idle_timeout"
+            v-model:value="form.gateway.sessions.idleTimeout"
             required
           />
         </NFormItem>
         <NFormItem label="Authorization refresh">
           <NInput
-            v-model:value="form.gateway.sessions.revalidate_interval"
+            v-model:value="form.gateway.sessions.revalidateInterval"
             required
           />
         </NFormItem>
         <NFormItem label="Sessions per Codespace">
           <NInputNumber
-            v-model:value="form.gateway.sessions.max_per_codespace"
+            v-model:value="form.gateway.sessions.maxPerCodespace"
             :min="1"
           />
         </NFormItem>
         <NFormItem label="Sessions per user">
           <NInputNumber
-            v-model:value="form.gateway.sessions.max_per_user"
+            v-model:value="form.gateway.sessions.maxPerUser"
             :min="1"
           />
         </NFormItem>
         <NFormItem label="Total in-flight requests">
           <NInputNumber
-            v-model:value="form.gateway.limits.max_inflight_total"
+            v-model:value="form.gateway.limits.maxInflightTotal"
             :min="1"
           />
         </NFormItem>
         <NFormItem label="In-flight requests per session">
           <NInputNumber
-            v-model:value="form.gateway.limits.max_inflight_per_session"
+            v-model:value="form.gateway.limits.maxInflightPerSession"
             :min="1"
           />
         </NFormItem>
         <NFormItem label="SSH channels per connection">
           <NInputNumber
-            v-model:value="form.gateway.ssh.max_channels_per_connection"
+            v-model:value="form.gateway.ssh.maxChannelsPerConnection"
             :min="1"
           />
         </NFormItem>
@@ -343,14 +405,8 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <div class="fields">
         <NFormItem label="Public registry URL">
           <NInput
-            v-model:value="form.cache.public_url"
+            v-model:value="form.cache.publicURL"
             placeholder="https://cache.example.com"
-            required
-          />
-        </NFormItem>
-        <NFormItem label="Listen address">
-          <NInput
-            v-model:value="form.cache.listen"
             required
           />
         </NFormItem>
@@ -363,29 +419,30 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             ]"
           />
         </NFormItem>
-        <NFormItem label="Maximum size"><NInput v-model:value="form.cache.max_size" /></NFormItem>
+        <NFormItem label="Maximum cache size"><NInput v-model:value="form.cache.maxSize" /></NFormItem>
         <NFormItem label="Maximum age">
           <NInput
-            v-model:value="form.cache.max_age"
+            v-model:value="form.cache.maxAge"
             required
           />
         </NFormItem>
         <NFormItem label="Cleanup interval">
           <NInput
-            v-model:value="form.cache.gc_interval"
+            v-model:value="form.cache.gcInterval"
             required
           />
         </NFormItem>
       </div>
       <template v-if="form.cache.storage.driver === 'filesystem'">
         <div class="fields">
-          <NFormItem label="Mounted storage path">
+          <NFormItem label="Volume size">
             <NInput
-              v-model:value="form.cache.storage.path"
+              v-model:value="form.cache.storage.volumeSize"
               required
             />
           </NFormItem>
-          <NFormItem label="Minimum free space"><NInput v-model:value="form.cache.storage.min_free_space" /></NFormItem>
+          <NFormItem label="Storage class"><NInput v-model:value="form.cache.storage.storageClassName" /></NFormItem>
+          <NFormItem label="Minimum free space"><NInput v-model:value="form.cache.storage.minFreeSpace" /></NFormItem>
         </div>
       </template>
       <template v-else>
@@ -418,7 +475,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             />
           </NFormItem>
           <NFormItem>
-            <NCheckbox v-model:checked="form.cache.storage.s3.force_path_style">Use path-style requests</NCheckbox>
+            <NCheckbox v-model:checked="form.cache.storage.s3.forcePathStyle">Use path-style requests</NCheckbox>
           </NFormItem>
         </div>
       </template>
@@ -503,12 +560,12 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           </td>
           <td>{{ item.spec.role === 'gateway' ? 'Gateway' : 'Registry cache' }}</td>
           <td>
-            {{ item.spec.gateway?.http.public_url || item.spec.cache?.public_url }}
+            {{ item.spec.gateway?.publicURL || item.spec.cache?.publicURL }}
             <p
               v-if="item.spec.gateway"
               class="muted"
             >
-              SSH {{ item.spec.gateway.ssh.public_addr }}
+              SSH {{ item.spec.gateway.sshPublicAddress }}
             </p>
           </td>
           <td>

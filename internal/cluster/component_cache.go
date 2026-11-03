@@ -41,7 +41,7 @@ const (
 )
 
 type cacheMaterial struct {
-	component *corev1.ConfigMap
+	component *api.CodespaceComponent
 	config    configpkg.CacheConfig
 	secret    *corev1.Secret
 }
@@ -72,11 +72,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		if err != nil {
 			return nil, err
 		}
-		port, err := componentListenPort(material.config.Listen)
-		if err != nil {
-			return nil, fmt.Errorf("cache listen address is invalid: %w", err)
-		}
-		registryAddress := fmt.Sprintf("%s.%s.svc:%d", material.component.Name, s.ManagementNamespace, port)
+		registryAddress := fmt.Sprintf("%s.%s.svc:%d", material.component.Name, s.ManagementNamespace, cachePort)
 		registryURL := "http://" + registryAddress
 		result := &agentv1.RuntimeCache{
 			BuildRegistry: registryURL + "/cache/" + namespace,
@@ -119,49 +115,46 @@ func (s *ComponentServer) cacheByUID(ctx context.Context, uid string) (*cacheMat
 	if reader == nil {
 		reader = s.Client
 	}
-	var components corev1.ConfigMapList
-	if err := reader.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: uid}); err != nil {
+	var components api.CodespaceComponentList
+	if err := reader.List(ctx, &components, client.MatchingFields{IdentityUIDIndex: uid}); err != nil {
 		return nil, err
 	}
 	if len(components.Items) != 1 {
 		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 	}
 	indexedUID := components.Items[0].UID
-	component := &corev1.ConfigMap{}
+	component := &api.CodespaceComponent{}
 	if err := s.Client.Get(ctx, client.ObjectKeyFromObject(&components.Items[0]), component); err != nil {
 		return nil, err
 	}
-	if component.UID != indexedUID || string(component.UID) != uid || component.Labels[ComponentLabel] != "cache" || !component.DeletionTimestamp.IsZero() {
+	if component.UID != indexedUID || string(component.UID) != uid || component.Spec.Role != "cache" || !component.DeletionTimestamp.IsZero() {
 		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 	}
 	return s.cacheMaterial(ctx, component)
 }
 
 func (s *ComponentServer) cacheByReference(ctx context.Context, reference api.ResourceReference) (*cacheMaterial, error) {
-	var component corev1.ConfigMap
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: reference.Name}, &component); err != nil {
+	var component api.CodespaceComponent
+	if err := s.Client.Get(ctx, types.NamespacedName{Name: reference.Name}, &component); err != nil {
 		return nil, err
 	}
-	if component.UID != reference.UID || component.Labels[ComponentLabel] != "cache" || !component.DeletionTimestamp.IsZero() {
+	if component.UID != reference.UID || component.Spec.Role != "cache" || !component.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("cache reference is no longer current")
 	}
 	return s.cacheMaterial(ctx, &component)
 }
 
-func (s *ComponentServer) cacheMaterial(ctx context.Context, component *corev1.ConfigMap) (*cacheMaterial, error) {
+func (s *ComponentServer) cacheMaterial(ctx context.Context, component *api.CodespaceComponent) (*cacheMaterial, error) {
 	config, err := cacheComponentConfig(component)
 	if err != nil {
 		return nil, err
 	}
-	secretName, secretUID := component.Data["secretName"], component.Data["secretUID"]
-	if secretName == "" || secretUID == "" {
-		return nil, fmt.Errorf("cache Secret reference is missing")
-	}
+	secretName := component.Name + "-cache"
 	var secret corev1.Secret
 	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: secretName}, &secret); err != nil {
 		return nil, fmt.Errorf("load cache Secret: %w", err)
 	}
-	if string(secret.UID) != secretUID || secret.Labels[ComponentUIDLabel] != string(component.UID) || !secret.DeletionTimestamp.IsZero() {
+	if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, component) || !secret.DeletionTimestamp.IsZero() {
 		return nil, fmt.Errorf("cache Secret identity is invalid")
 	}
 	if len(secret.Data["registryKey"]) < 32 || len(secret.Data["tokenKey"]) < 32 {
@@ -211,7 +204,7 @@ func (s *ComponentServer) claimCache(ctx context.Context, identity componentIden
 		return connect.NewError(connect.CodeResourceExhausted, "cache storage already has an active writer")
 	}
 	lease.Labels = map[string]string{ComponentUIDLabel: identity.UID}
-	lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}
+	lease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(material.component, api.GroupVersion.WithKind("CodespaceComponent"))}
 	lease.Spec = coordinationv1.LeaseSpec{HolderIdentity: ptr.To(cacheOwnerHolder(identity, sessionID, material.config.Revision)), LeaseDurationSeconds: ptr.To(int32(cacheOwnerTTL / time.Second)), AcquireTime: &now, RenewTime: &now}
 	if missing {
 		return s.Client.Create(ctx, lease)
@@ -247,7 +240,7 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 
 func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*componentv1.CacheGCGrant, error) {
 	grantID, now := uuid.NewV4().String(), metav1.NowMicro()
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-gc-" + material.component.Name, Namespace: s.ManagementNamespace, Labels: map[string]string{ComponentUIDLabel: identity.UID}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(material.component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))}}, Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To(sessionID + "/" + grantID), LeaseDurationSeconds: ptr.To(int32(cacheGCTTL / time.Second)), AcquireTime: &now, RenewTime: &now}}
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-gc-" + material.component.Name, Namespace: s.ManagementNamespace, Labels: map[string]string{ComponentUIDLabel: identity.UID}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(material.component, api.GroupVersion.WithKind("CodespaceComponent"))}}, Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To(sessionID + "/" + grantID), LeaseDurationSeconds: ptr.To(int32(cacheGCTTL / time.Second)), AcquireTime: &now, RenewTime: &now}}
 	if err := s.Client.Create(ctx, lease); apierrors.IsAlreadyExists(err) {
 		var current coordinationv1.Lease
 		if err := s.Client.Get(ctx, client.ObjectKeyFromObject(lease), &current); err != nil {
@@ -313,8 +306,8 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 	}()
 	changes := (<-chan struct{})(nil)
 	unsubscribe := func() {}
-	if s.CacheChanges != nil {
-		changes, unsubscribe = s.CacheChanges.Subscribe()
+	if s.Changes != nil {
+		changes, unsubscribe = s.Changes.Subscribe()
 	}
 	defer unsubscribe()
 	lifetime := time.NewTimer(45 * time.Minute)

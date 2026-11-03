@@ -28,7 +28,6 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/assert"
@@ -420,31 +419,31 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		return c.Get(ctx, client.ObjectKeyFromObject(template), template) == nil && meta.IsStatusConditionTrue(template.Status.Conditions, "Ready")
 	}, time.Minute, time.Second)
 
-	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gatewayConfig.HTTP.PublicURL = "http://" + gatewayName + ".test"
-	gatewayConfig.SSH.PublicAddr = gatewayName + ".test:22"
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig}}, true))
+	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
+	gatewaySpec := testGatewayComponent(gatewayName, "").Spec
+	gatewaySpec.DisplayName = "Lifecycle E2E gateway"
+	gatewaySpec.Gateway.PublicURL = "http://" + gatewayName + ".test"
+	gatewaySpec.Gateway.SSHPublicAddress = gatewayName + ".test:22"
+	gatewaySpec.Gateway.Parent = api.GatewayParent{}
+	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, true))
 
-	cacheConfig := configpkg.CacheConfig{
-		Enabled: true, Listen: ":5000", PublicURL: "http://" + cacheName + ".test", MaxSize: "4GiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
-		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "/var/lib/codespace-cache", MinFreeSpace: "128MiB"},
-		Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{
-			"docker.io": {Allow: []string{"library/debian*"}},
-			"ghcr.io":   {Allow: []string{"coder/devcontainer-features/code-server*", "devcontainers/features/common-utils*"}},
-		},
+	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
+	cacheSpec := testCacheComponent(cacheName, "").Spec
+	cacheSpec.DisplayName, cacheSpec.Cache.PublicURL, cacheSpec.Cache.MaxSize = "Lifecycle E2E cache", "http://"+cacheName+".test", "4GiB"
+	cacheSpec.Cache.Upstreams = map[string]api.CacheUpstream{
+		"docker.io": {Allow: []string{"library/debian*"}},
+		"ghcr.io":   {Allow: []string{"coder/devcontainer-features/code-server*", "devcontainers/features/common-utils*"}},
 	}
-	cache := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cacheName}, Spec: adminComponentSpec{Role: "cache", DisplayName: "Lifecycle E2E cache", Cache: &cacheConfig}}, true))
+	require.NoError(t, admin.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cacheName}, Spec: cacheSpec}, true))
 
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: gatewayName}, gateway))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: gatewayName}, gateway))
 	nodePortService := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{Name: externalGatewayService, Namespace: managementNamespace, Labels: map[string]string{e2eRunLabel: cluster.runID}},
 		Spec: corev1.ServiceSpec{
 			Type:     corev1.ServiceTypeNodePort,
 			Selector: map[string]string{ComponentLabel: "gateway", ComponentUIDLabel: string(gateway.UID)},
 			Ports: []corev1.ServicePort{
-				{Name: "http", Port: 18081, TargetPort: intstr.FromInt32(18081)},
+				{Name: "http", Port: 18081, TargetPort: intstr.FromInt32(8080)},
 				{Name: "ssh", Port: 2222, TargetPort: intstr.FromInt32(2222)},
 			},
 		},
@@ -453,9 +452,9 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(nodePortService), nodePortService))
 	require.NotZero(t, nodePortService.Spec.Ports[0].NodePort)
 	require.NotZero(t, nodePortService.Spec.Ports[1].NodePort)
-	gatewayConfig.HTTP.PublicURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
-	gatewayConfig.SSH.PublicAddr = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
-	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: adminComponentSpec{Role: "gateway", DisplayName: "Lifecycle E2E gateway", Gateway: &gatewayConfig}}, false))
+	gatewaySpec.Gateway.PublicURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
+	gatewaySpec.Gateway.SSHPublicAddress = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
+	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, false))
 
 	for _, name := range []string{gatewayName, cacheName} {
 		require.Eventually(t, func() bool {
@@ -466,7 +465,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 			return deployment.Status.ObservedGeneration == deployment.Generation && deployment.Status.ReadyReplicas == 1
 		}, 3*time.Minute, time.Second, "component %s did not become ready", name)
 	}
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: cacheName}, cache))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cacheName}, cache))
 
 	quota := corev1.ResourceList{
 		corev1.ResourcePods: resource.MustParse("2"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"),
@@ -910,12 +909,12 @@ func cleanupLifecycleResources(t *testing.T, c client.Client, managementNamespac
 		_ = c.Delete(ctx, &service, client.Preconditions{UID: &service.UID})
 	}
 	for _, name := range []string{gatewayName, cacheName} {
-		var component corev1.ConfigMap
-		if c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: name}, &component) == nil {
+		var component api.CodespaceComponent
+		if c.Get(ctx, types.NamespacedName{Name: name}, &component) == nil {
 			_ = c.Delete(ctx, &component, client.Preconditions{UID: &component.UID})
 		}
 		assert.Eventually(t, func() bool {
-			return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: name}, &corev1.ConfigMap{}))
+			return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: name}, &api.CodespaceComponent{}))
 		}, time.Minute, time.Second, "component %s was not finalized", name)
 	}
 	var template api.EnvironmentTemplate

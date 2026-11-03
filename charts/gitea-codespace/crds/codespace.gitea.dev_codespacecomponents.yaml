@@ -1,0 +1,395 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.21.0
+  name: codespacecomponents.codespace.gitea.dev
+spec:
+  group: codespace.gitea.dev
+  names:
+    kind: CodespaceComponent
+    listKind: CodespaceComponentList
+    plural: codespacecomponents
+    shortNames:
+    - cscomp
+    singular: codespacecomponent
+  scope: Cluster
+  versions:
+  - name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            description: |-
+              APIVersion defines the versioned schema of this representation of an object.
+              Servers should convert recognized schemas to the latest internal value, and
+              may reject unrecognized values.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#resources
+            type: string
+          kind:
+            description: |-
+              Kind is a string value representing the REST resource this object represents.
+              Servers may infer this from the endpoint the client submits requests to.
+              Cannot be updated.
+              In CamelCase.
+              More info: https://git.k8s.io/community/contributors/devel/sig-architecture/api-conventions.md#types-kinds
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              cache:
+                properties:
+                  enabled:
+                    type: boolean
+                  gcInterval:
+                    pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                    type: string
+                  maxAge:
+                    pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                    type: string
+                  maxSize:
+                    type: string
+                  publicURL:
+                    type: string
+                  storage:
+                    properties:
+                      driver:
+                        enum:
+                        - filesystem
+                        - s3
+                        type: string
+                      minFreeSpace:
+                        type: string
+                      s3:
+                        properties:
+                          bucket:
+                            type: string
+                          endpoint:
+                            type: string
+                          forcePathStyle:
+                            type: boolean
+                          prefix:
+                            type: string
+                          region:
+                            type: string
+                        type: object
+                      storageClassName:
+                        type: string
+                      volumeSize:
+                        description: |-
+                          VolumeSize is the persistent volume capacity. Cache eviction is governed
+                          independently by maxSize so operators can reserve free filesystem space.
+                        type: string
+                    required:
+                    - driver
+                    type: object
+                  upstreams:
+                    additionalProperties:
+                      properties:
+                        allow:
+                          items:
+                            type: string
+                          minItems: 1
+                          type: array
+                      required:
+                      - allow
+                      type: object
+                    type: object
+                required:
+                - enabled
+                - gcInterval
+                - maxAge
+                - publicURL
+                - storage
+                type: object
+              displayName:
+                maxLength: 100
+                minLength: 1
+                type: string
+              gateway:
+                properties:
+                  limits:
+                    properties:
+                      maxInflightPerSession:
+                        format: int32
+                        maximum: 1024
+                        minimum: 1
+                        type: integer
+                      maxInflightTotal:
+                        format: int32
+                        maximum: 1000000
+                        minimum: 1
+                        type: integer
+                      publicMaxConnectionsPerEndpoint:
+                        format: int32
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                      publicMaxConnectionsPerIP:
+                        format: int32
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                      validationMaxInflight:
+                        format: int32
+                        maximum: 4096
+                        minimum: 1
+                        type: integer
+                    required:
+                    - maxInflightPerSession
+                    - maxInflightTotal
+                    - publicMaxConnectionsPerEndpoint
+                    - publicMaxConnectionsPerIP
+                    - validationMaxInflight
+                    type: object
+                  parent:
+                    description: |-
+                      GatewayParent selects the existing Gateway API listeners that expose a
+                      managed Gateway component. An empty parent leaves exposure to the cluster
+                      operator. When a parent is selected, HTTP is required because every public
+                      endpoint uses HTTP; SSH remains optional.
+                    properties:
+                      httpSectionName:
+                        type: string
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      sshSectionName:
+                        type: string
+                    type: object
+                  publicURL:
+                    type: string
+                  sessions:
+                    properties:
+                      idleTimeout:
+                        pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                        type: string
+                      maxPerCodespace:
+                        format: int32
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                      maxPerUser:
+                        format: int32
+                        maximum: 10000
+                        minimum: 1
+                        type: integer
+                      revalidateInterval:
+                        pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                        type: string
+                      ttl:
+                        pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                        type: string
+                    required:
+                    - idleTimeout
+                    - maxPerCodespace
+                    - maxPerUser
+                    - revalidateInterval
+                    - ttl
+                    type: object
+                  ssh:
+                    properties:
+                      auth:
+                        properties:
+                          failureWindow:
+                            pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                            type: string
+                          maxAttemptsPerCodespace:
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          maxAttemptsPerIP:
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          maxAttemptsPerIPCodespace:
+                            format: int32
+                            minimum: 1
+                            type: integer
+                          maxAttemptsPerPublicKey:
+                            format: int32
+                            minimum: 1
+                            type: integer
+                        required:
+                        - failureWindow
+                        - maxAttemptsPerCodespace
+                        - maxAttemptsPerIP
+                        - maxAttemptsPerIPCodespace
+                        - maxAttemptsPerPublicKey
+                        type: object
+                      handshakeTimeout:
+                        pattern: ^[0-9]+(ns|us|ms|s|m|h)$
+                        type: string
+                      maxChannelsPerConnection:
+                        format: int32
+                        maximum: 1024
+                        minimum: 1
+                        type: integer
+                    required:
+                    - auth
+                    - handshakeTimeout
+                    - maxChannelsPerConnection
+                    type: object
+                  sshPublicAddress:
+                    type: string
+                required:
+                - limits
+                - parent
+                - publicURL
+                - sessions
+                - ssh
+                - sshPublicAddress
+                type: object
+              resources:
+                description: ResourceRequirements describes the compute resource requirements.
+                properties:
+                  claims:
+                    description: |-
+                      Claims lists the names of resources, defined in spec.resourceClaims,
+                      that are used by this container.
+
+                      This field depends on the
+                      DynamicResourceAllocation feature gate.
+
+                      This field is immutable. It can only be set for containers.
+                    items:
+                      description: ResourceClaim references one entry in PodSpec.ResourceClaims.
+                      properties:
+                        name:
+                          description: |-
+                            Name must match the name of one entry in pod.spec.resourceClaims of
+                            the Pod where this field is used. It makes that resource available
+                            inside a container.
+                          type: string
+                        request:
+                          description: |-
+                            Request is the name chosen for a request in the referenced claim.
+                            If empty, everything from the claim is made available, otherwise
+                            only the result of this request.
+                          type: string
+                      required:
+                      - name
+                      type: object
+                    type: array
+                    x-kubernetes-list-map-keys:
+                    - name
+                    x-kubernetes-list-type: map
+                  limits:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Limits describes the maximum amount of compute resources allowed.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                  requests:
+                    additionalProperties:
+                      anyOf:
+                      - type: integer
+                      - type: string
+                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
+                      x-kubernetes-int-or-string: true
+                    description: |-
+                      Requests describes the minimum amount of compute resources required.
+                      If Requests is omitted for a container, it defaults to Limits if that is explicitly specified,
+                      otherwise to an implementation-defined value. Requests cannot exceed Limits.
+                      More info: https://kubernetes.io/docs/concepts/configuration/manage-resources-containers/
+                    type: object
+                type: object
+              role:
+                enum:
+                - gateway
+                - cache
+                type: string
+                x-kubernetes-validations:
+                - message: component role is immutable
+                  rule: self == oldSelf
+            required:
+            - displayName
+            - resources
+            - role
+            type: object
+          status:
+            properties:
+              conditions:
+                items:
+                  description: Condition contains details for one aspect of the current
+                    state of this API Resource.
+                  properties:
+                    lastTransitionTime:
+                      description: |-
+                        lastTransitionTime is the last time the condition transitioned from one status to another.
+                        This should be when the underlying condition changed.  If that is not known, then using the time when the API field changed is acceptable.
+                      format: date-time
+                      type: string
+                    message:
+                      description: |-
+                        message is a human readable message indicating details about the transition.
+                        This may be an empty string.
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      description: |-
+                        observedGeneration represents the .metadata.generation that the condition was set based upon.
+                        For instance, if .metadata.generation is currently 12, but the .status.conditions[x].observedGeneration is 9, the condition is out of date
+                        with respect to the current state of the instance.
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      description: |-
+                        reason contains a programmatic identifier indicating the reason for the condition's last transition.
+                        Producers of specific condition types may define expected values and meanings for this field,
+                        and whether the values are considered a guaranteed API.
+                        The value should be a CamelCase string.
+                        This field may not be empty.
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      description: status of the condition, one of True, False, Unknown.
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      description: type of condition in CamelCase or in foo.example.com/CamelCase.
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+        x-kubernetes-validations:
+        - message: component name must be a Kubernetes DNS label
+          rule: size(self.metadata.name) <= 63 && !self.metadata.name.contains('.')
+        - message: component role must select exactly one configuration
+          rule: 'self.spec.role == ''gateway'' ? has(self.spec.gateway) && !has(self.spec.cache)
+            : has(self.spec.cache) && !has(self.spec.gateway)'
+    served: true
+    storage: true
+    subresources:
+      status: {}

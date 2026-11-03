@@ -98,7 +98,7 @@ func (a *IdentityAuthority) sync(ctx context.Context, allowCreate bool) error {
 			if !allowCreate {
 				return fmt.Errorf("%w: internal CA Secret %s/%s disappeared; restore it from backup", errIdentityTrustMaterial, a.namespace, a.secretName)
 			}
-			hasState, err := hasPersistedIdentityState(ctx, a.client, a.namespace)
+			hasState, err := hasPersistedIdentityState(ctx, a.client)
 			if err != nil {
 				return err
 			}
@@ -174,7 +174,7 @@ func (a *IdentityAuthority) sync(ctx context.Context, allowCreate bool) error {
 	return nil
 }
 
-func hasPersistedIdentityState(ctx context.Context, kubeClient client.Client, namespace string) (bool, error) {
+func hasPersistedIdentityState(ctx context.Context, kubeClient client.Client) (bool, error) {
 	var sites api.GiteaSiteList
 	if err := kubeClient.List(ctx, &sites, client.Limit(1)); err != nil {
 		return false, err
@@ -189,8 +189,8 @@ func hasPersistedIdentityState(ctx context.Context, kubeClient client.Client, na
 	if len(runtimes.Items) != 0 {
 		return true, nil
 	}
-	var components corev1.ConfigMapList
-	if err := kubeClient.List(ctx, &components, client.InNamespace(namespace), client.HasLabels{ComponentLabel}, client.Limit(1)); err != nil {
+	var components api.CodespaceComponentList
+	if err := kubeClient.List(ctx, &components, client.Limit(1)); err != nil {
 		return false, err
 	}
 	if len(components.Items) != 0 {
@@ -209,7 +209,7 @@ func (a *IdentityAuthority) Load() (tls.Certificate, *x509.CertPool, error) {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	if a.authority == nil || len(a.managerLeaf.Certificate) == 0 {
-		return tls.Certificate{}, nil, fmt.Errorf("Manager identity is not initialized")
+		return tls.Certificate{}, nil, fmt.Errorf("manager identity is not initialized")
 	}
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(a.authority.RootPEM()) {

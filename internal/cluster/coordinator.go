@@ -317,11 +317,11 @@ func siteManagerClient(ctx context.Context, c client.Client, managementNamespace
 }
 
 func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) (*codespacev1.DeclareManagerRequest, []string, error) {
-	var gateway corev1.ConfigMap
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: site.Spec.Gateway.Name}, &gateway); err != nil {
+	var gateway api.CodespaceComponent
+	if err := c.Client.Get(ctx, types.NamespacedName{Name: site.Spec.Gateway.Name}, &gateway); err != nil {
 		return nil, nil, err
 	}
-	if gateway.UID != site.Spec.Gateway.UID || gateway.Labels[ComponentLabel] != "gateway" || !gateway.DeletionTimestamp.IsZero() {
+	if gateway.UID != site.Spec.Gateway.UID || gateway.Spec.Role != "gateway" || !gateway.DeletionTimestamp.IsZero() {
 		return nil, nil, fmt.Errorf("gateway identity changed")
 	}
 	gatewayConfig, err := gatewayComponentConfig(&gateway)
@@ -329,10 +329,10 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 		return nil, nil, err
 	}
 	var hostKey corev1.Secret
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: gateway.Data["sshHostKeySecret"]}, &hostKey); err != nil {
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: gateway.Name + "-ssh-host-key"}, &hostKey); err != nil {
 		return nil, nil, err
 	}
-	if string(hostKey.UID) != gateway.Data["sshHostKeySecretUID"] || hostKey.Labels[ComponentUIDLabel] != string(gateway.UID) || !hostKey.DeletionTimestamp.IsZero() {
+	if hostKey.Labels[ComponentUIDLabel] != string(gateway.UID) || !metav1.IsControlledBy(&hostKey, &gateway) || !hostKey.DeletionTimestamp.IsZero() {
 		return nil, nil, fmt.Errorf("gateway SSH identity changed")
 	}
 	signer, err := ssh.ParsePrivateKey(hostKey.Data["hostKey"])

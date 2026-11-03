@@ -289,14 +289,15 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	}
 	o.Authority.Revoke(cs.UID)
 	cs.Status.SettledOperationVersion = result.Version
-	if response.ResourceAbsent {
+	switch {
+	case response.ResourceAbsent:
 		// Only a complete inventory response authorizes cleanup of an absent resource.
 		cs.Status.RecoveryAction = "stop"
 		cs.Status.Target = nil
 		cs.Status.Boot = nil
-	} else if kind == "delete" || (!result.Succeeded && (kind == "create" || kind == "abort_create")) {
+	case kind == "delete" || (!result.Succeeded && (kind == "create" || kind == "abort_create")):
 		cs.Status.RecoveryAction = "delete"
-	} else if !result.Succeeded {
+	case !result.Succeeded:
 		// A failed resume returns to stopped and retains the existing workspace.
 		cs.Status.RecoveryAction = "stop"
 	}

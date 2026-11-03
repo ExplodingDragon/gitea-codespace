@@ -7,7 +7,6 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
-	"encoding/json"
 	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
@@ -21,7 +20,6 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/go-logr/logr/testr"
 	"github.com/stretchr/testify/require"
@@ -174,21 +172,19 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	block, err := ssh.MarshalPrivateKey(private, "")
 	require.NoError(t, err)
-	gatewayConfig := configpkg.DefaultGatewayConfig()
-	gatewayConfig.HTTP.PublicURL = "https://workspace.example"
-	gatewayConfig.SSH.PublicAddr = "workspace.example:2222"
-	gatewayJSON, err := json.Marshal(gatewayConfig)
-	require.NoError(t, err)
-	gateway := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Name: "gateway", Namespace: "codespace-system", UID: "gateway-uid", Labels: map[string]string{ComponentLabel: "gateway"}}, Data: map[string]string{"config": string(gatewayJSON), "sshHostKeySecret": "gateway-key", "sshHostKeySecretUID": "gateway-key-uid"}}
-	hostKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "gateway-key", Namespace: gateway.Namespace, UID: "gateway-key-uid", CreationTimestamp: metav1.Now(), Labels: map[string]string{ComponentUIDLabel: string(gateway.UID)}}, Data: map[string][]byte{"hostKey": pem.EncodeToMemory(block)}}
-	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "site-credential", Namespace: gateway.Namespace, UID: "credential-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-secret")}}
+	gateway := testGatewayComponent("gateway", "gateway-uid")
+	gateway.Spec.Gateway.PublicURL = "https://workspace.example"
+	gateway.Spec.Gateway.SSHPublicAddress = "workspace.example:2222"
+	hostKey := testComponentCredential(gateway, map[string][]byte{"hostKey": pem.EncodeToMemory(block)})
+	hostKey.CreationTimestamp = metav1.Now()
+	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "site-credential", Namespace: "codespace-system", UID: "credential-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-secret")}}
 	quota := testQuota(site, ns.Name)
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}, site).WithObjects(site, ns, template, gateway, hostKey, credential, quota).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 			object.SetUID(types.UID(uuid.NewV4().String()))
 			return c.Create(ctx, object, opts...)
 		}}).Build()
-	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: gateway.Namespace, PlatformImage: testRuntime().Image}, ObservationReader: c}
+	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system", PlatformImage: testRuntime().Image}, ObservationReader: c}
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = log.IntoContext(ctx, testr.New(t))
 	done := make(chan struct{})
@@ -208,7 +204,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return c.Get(t.Context(), key, &cs) == nil && cs.Spec.Operation.Version == 2
 	}, 5*time.Second, 10*time.Millisecond)
-	runtime := &RuntimeReconciler{Client: c, ManagementNamespace: gateway.Namespace, Authority: coordinator.Authority}
+	runtime := &RuntimeReconciler{Client: c, ManagementNamespace: "codespace-system", Authority: coordinator.Authority}
 	_, err = runtime.Reconcile(t.Context(), ctrl.Request{NamespacedName: key})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(t.Context(), key, &cs))

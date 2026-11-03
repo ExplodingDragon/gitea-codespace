@@ -301,7 +301,7 @@ func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespac
 		return fmt.Errorf("agent identity requires assigned Kubernetes UIDs")
 	}
 	identity := identitypkg.AgentURI(string(cs.Spec.Site.UID), string(cs.UID), string(pod.UID))
-	_, err := reconcileIdentitySecret(ctx, r.Client, r.Identity, pod, runtimeIdentitySecretName(cs), "agent", identity,
+	_, err := reconcileIdentitySecret(ctx, r.Client, r.Identity, pod, pod.Namespace, runtimeIdentitySecretName(cs), "agent", identity,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(cs.Spec.Site.UID)},
 	)

@@ -57,8 +57,8 @@ func componentIdentityHandler(next http.Handler) http.Handler {
 	})
 }
 
-// ComponentServer projects Kubernetes state and Gitea authorization to a
-// narrowly scoped Gateway identity. It never exposes Gitea credentials.
+// ComponentServer projects Kubernetes state and Gitea authorization to
+// authenticated Gateway and Cache identities. It never exposes Gitea credentials.
 type ComponentServer struct {
 	componentv1connect.UnimplementedComponentServiceHandler
 	Client              client.Client
@@ -66,8 +66,7 @@ type ComponentServer struct {
 	ManagementNamespace string
 	Tickets             *AccessTickets
 	Activity            *RuntimeActivityTracker
-	GatewayChanges      *ChangeNotifier
-	CacheChanges        *ChangeNotifier
+	Changes             *ChangeNotifier
 }
 
 func (s *ComponentServer) Handler() (string, http.Handler) {
@@ -91,15 +90,19 @@ func (s *ComponentServer) gatewayConfig(ctx context.Context, identity componentI
 	if reader == nil {
 		reader = s.Client
 	}
-	var components corev1.ConfigMapList
-	if err := reader.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: identity.UID}); err != nil {
+	var components api.CodespaceComponentList
+	if err := reader.List(ctx, &components, client.MatchingFields{IdentityUIDIndex: identity.UID}); err != nil {
 		return nil, "", err
 	}
 	if len(components.Items) != 1 {
 		return nil, "", connect.NewError(connect.CodePermissionDenied, "gateway component identity is no longer configured")
 	}
-	component := &components.Items[0]
-	if component.Labels[ComponentLabel] != "gateway" || !component.DeletionTimestamp.IsZero() {
+	indexedUID := components.Items[0].UID
+	component := &api.CodespaceComponent{}
+	if err := s.Client.Get(ctx, client.ObjectKeyFromObject(&components.Items[0]), component); err != nil {
+		return nil, "", err
+	}
+	if component.UID != indexedUID || string(component.UID) != identity.UID || component.Spec.Role != "gateway" || !component.DeletionTimestamp.IsZero() {
 		return nil, "", connect.NewError(connect.CodePermissionDenied, "gateway component identity is no longer configured")
 	}
 	config, err := gatewayComponentConfig(component)
@@ -258,8 +261,8 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	}()
 	changes := (<-chan struct{})(nil)
 	unsubscribe := func() {}
-	if s.GatewayChanges != nil {
-		changes, unsubscribe = s.GatewayChanges.Subscribe()
+	if s.Changes != nil {
+		changes, unsubscribe = s.Changes.Subscribe()
 	}
 	defer unsubscribe()
 	permitTicker := time.NewTicker(10 * time.Second)
