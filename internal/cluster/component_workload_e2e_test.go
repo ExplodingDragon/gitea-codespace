@@ -61,6 +61,9 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 			assert.Eventually(t, func() bool {
 				return apierrors.IsNotFound(cluster.Get(cleanup, types.NamespacedName{Namespace: namespace, Name: component.Name + "-identity"}, &corev1.Secret{}))
 			}, 30*time.Second, time.Second)
+			assert.Eventually(t, func() bool {
+				return apierrors.IsNotFound(cluster.Get(cleanup, client.ObjectKeyFromObject(component), &corev1.ConfigMap{}))
+			}, 30*time.Second, time.Second)
 		}
 	})
 

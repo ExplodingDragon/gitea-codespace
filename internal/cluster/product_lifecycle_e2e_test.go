@@ -31,6 +31,7 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/pkg/sftp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
 	appsv1 "k8s.io/api/apps/v1"
@@ -913,6 +914,9 @@ func cleanupLifecycleResources(t *testing.T, c client.Client, managementNamespac
 		if c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: name}, &component) == nil {
 			_ = c.Delete(ctx, &component, client.Preconditions{UID: &component.UID})
 		}
+		assert.Eventually(t, func() bool {
+			return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: name}, &corev1.ConfigMap{}))
+		}, time.Minute, time.Second, "component %s was not finalized", name)
 	}
 	var template api.EnvironmentTemplate
 	if c.Get(ctx, types.NamespacedName{Name: templateName}, &template) == nil {

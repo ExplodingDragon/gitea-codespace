@@ -72,7 +72,7 @@ collect_diagnostics() {
 		directory="$ARTIFACTS/diagnostics/$namespace"
 		mkdir -p "$directory"
 		"$KUBECTL_BIN" get namespace "$namespace" -o yaml >"$directory/namespace.yaml" 2>&1
-		"$KUBECTL_BIN" get all,pvc,networkpolicy -n "$namespace" -o wide >"$directory/resources.txt" 2>&1
+		"$KUBECTL_BIN" get all,configmap,pvc,networkpolicy -n "$namespace" -o wide >"$directory/resources.txt" 2>&1
 		"$KUBECTL_BIN" get events -n "$namespace" --sort-by=.lastTimestamp >"$directory/events.txt" 2>&1
 		while IFS= read -r pod; do
 			[[ -n $pod ]] || continue
@@ -99,6 +99,10 @@ cleanup() {
 		kill "$PORT_FORWARD_PID" >/dev/null 2>&1
 		wait "$PORT_FORWARD_PID" >/dev/null 2>&1
 	fi
+	if ! "$KUBECTL_BIN" delete configmap -n "$MANAGEMENT_NAMESPACE" \
+		-l 'app.kubernetes.io/component in (gateway,cache)' --ignore-not-found --wait --timeout=2m >/dev/null 2>&1; then
+		cleanup_failed=1
+	fi
 	if ! "$KUBECTL_BIN" delete giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --wait=false >/dev/null 2>&1; then
 		cleanup_failed=1
 	fi
@@ -114,7 +118,7 @@ cleanup() {
 		fi
 	done
 	for namespace in "${namespaces[@]}"; do
-		if ! "$KUBECTL_BIN" wait --for=delete "namespace/$namespace" --timeout=5m >/dev/null 2>&1; then
+		if ! "$KUBECTL_BIN" wait --for=delete "namespace/$namespace" --timeout=3m >/dev/null 2>&1; then
 			cleanup_failed=1
 		fi
 	done
