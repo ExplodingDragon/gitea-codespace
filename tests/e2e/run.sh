@@ -114,11 +114,12 @@ cleanup() {
 		fi
 	done
 	for namespace in "${namespaces[@]}"; do
-		if ! "$KUBECTL_BIN" wait --for=delete "namespace/$namespace" --timeout=3m >/dev/null 2>&1; then
+		if ! "$KUBECTL_BIN" wait --for=delete "namespace/$namespace" --timeout=5m >/dev/null 2>&1; then
 			cleanup_failed=1
 		fi
 	done
 	if ((status == 0 && cleanup_failed != 0)); then
+		collect_diagnostics "${namespaces[@]}"
 		status=1
 		echo "E2E resources were not completely removed" >"$ARTIFACTS/diagnostics/cleanup.txt"
 	fi
