@@ -50,7 +50,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images frontend frontend-check admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images frontend frontend-check test-frontend admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -107,6 +107,9 @@ frontend:
 frontend-check:
 	$(PNPM) --dir web run check
 	$(PNPM) --dir web run format:check
+
+test-frontend:
+	$(PNPM) --dir web run test
 
 helm-check:
 	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin

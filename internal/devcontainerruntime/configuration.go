@@ -13,7 +13,10 @@ import (
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
-const maxInjectedFeatures = 32
+const (
+	maxInjectedFeatures    = 32
+	webIDEFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
+)
 
 // Configuration defines administrator-owned additions to a repository's Dev
 // Container configuration. It is copied into the Codespace runtime snapshot.
@@ -25,7 +28,6 @@ type Configuration struct {
 // WebIDEConfiguration defines the platform-managed code-server installation.
 type WebIDEConfiguration struct {
 	Enabled    bool     `json:"enabled"`
-	Feature    string   `json:"feature,omitempty"`
 	Version    string   `json:"version,omitempty"`
 	Extensions []string `json:"extensions,omitempty"`
 }
@@ -43,12 +45,12 @@ func (c Configuration) Validate() error {
 		if strings.TrimSpace(c.WebIDE.Version) == "" || len(c.WebIDE.Version) > 128 {
 			return fmt.Errorf("web IDE requires a version of at most 128 characters")
 		}
-		id, err := validateFeatureReference(c.WebIDE.Feature)
+		id, err := validateFeatureReference(webIDEFeatureReference)
 		if err != nil {
-			return fmt.Errorf("web IDE Feature: %w", err)
+			return fmt.Errorf("platform web IDE Feature: %w", err)
 		}
-		seen[id] = c.WebIDE.Feature
-	} else if c.WebIDE.Feature != "" || c.WebIDE.Version != "" || len(c.WebIDE.Extensions) != 0 {
+		seen[id] = webIDEFeatureReference
+	} else if c.WebIDE.Version != "" || len(c.WebIDE.Extensions) != 0 {
 		return fmt.Errorf("disabled web IDE configuration must be empty")
 	}
 	if len(c.WebIDE.Extensions) > 128 {

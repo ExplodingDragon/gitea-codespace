@@ -1,12 +1,14 @@
 <script setup lang="ts">
-import {onMounted, ref, toRaw} from 'vue';
+import {computed, onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, useDialog} from 'naive-ui';
 import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
+import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type Component, type Environment, type Resource, type Site} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import ResourceStatus from '../components/ResourceStatus.vue';
 
 const sites = ref<Resource<Site>[]>([]);
+const {t} = useI18n();
 const environments = ref<Resource<Environment>[]>([]);
 const components = ref<Resource<Component>[]>([]);
 const editing = ref(false);
@@ -18,15 +20,15 @@ const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({name: name.value, form: form.value, secret: secret.value}));
-const quotaFields = [
-  {key: 'pods', label: 'Pods'},
-  {key: 'persistentvolumeclaims', label: 'Persistent volumes'},
-  {key: 'requests.cpu', label: 'CPU requests'},
-  {key: 'limits.cpu', label: 'CPU limits'},
-  {key: 'requests.memory', label: 'Memory requests'},
-  {key: 'limits.memory', label: 'Memory limits'},
-  {key: 'requests.storage', label: 'Storage'},
-];
+const quotaFields = computed(() => [
+  {key: 'pods', label: t('site.pods')},
+  {key: 'persistentvolumeclaims', label: t('site.persistentVolumes')},
+  {key: 'requests.cpu', label: t('site.cpuRequests')},
+  {key: 'limits.cpu', label: t('site.cpuLimits')},
+  {key: 'requests.memory', label: t('site.memoryRequests')},
+  {key: 'limits.memory', label: t('site.memoryLimits')},
+  {key: 'requests.storage', label: t('site.storage')},
+]);
 async function load() {
   busy.value = true;
   error.value = '';
@@ -35,7 +37,7 @@ async function load() {
     environments.value = await request('environments');
     components.value = await request('components');
   } catch (e) {
-    error.value = errorMessage(e);
+    error.value = errorMessage(e, t);
   } finally {
     busy.value = false;
   }
@@ -99,17 +101,17 @@ async function save() {
     dirty.endTracking();
     await load();
   } catch (e) {
-    error.value = errorMessage(e);
+    error.value = errorMessage(e, t);
   } finally {
     busy.value = false;
   }
 }
 function remove(site: Resource<Site>) {
   dialog.warning({
-    title: `Delete ${site.spec.displayName}?`,
-    content: 'The site namespace is removed after its resources have been cleaned up.',
-    positiveText: 'Delete',
-    negativeText: 'Cancel',
+    title: t('site.deleteTitle', {name: site.spec.displayName}),
+    content: t('site.deleteContent'),
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       try {
         await request(`sites/${site.name}`, 'DELETE', {
@@ -119,7 +121,7 @@ function remove(site: Resource<Site>) {
         });
         await load();
       } catch (e) {
-        error.value = errorMessage(e);
+        error.value = errorMessage(e, t);
       }
     },
   });
@@ -128,14 +130,14 @@ function remove(site: Resource<Site>) {
 
 <template>
   <div class="page-heading">
-    <h1>{{ editing ? (selected ? 'Edit Gitea site' : 'New Gitea site') : 'Gitea sites' }}</h1>
+    <h1>{{ editing ? (selected ? t('site.edit') : t('site.new')) : t('site.title') }}</h1>
     <div
       v-if="!editing"
       class="actions"
     >
       <NButton
-        aria-label="Refresh sites"
-        title="Refresh sites"
+        :aria-label="t('site.refresh')"
+        :title="t('site.refresh')"
         :disabled="busy"
         @click="load"
       >
@@ -145,7 +147,7 @@ function remove(site: Resource<Site>) {
         type="primary"
         @click="edit()"
       >
-        Add site
+        {{ t('site.add') }}
       </NButton>
     </div>
   </div>
@@ -162,46 +164,46 @@ function remove(site: Resource<Site>) {
     @submit.prevent="save"
   >
     <div class="fields">
-      <NFormItem label="Resource name">
+      <NFormItem :label="t('common.resourceName')">
         <NInput
           v-model:value="name"
           :disabled="!!selected"
           required
         />
       </NFormItem>
-      <NFormItem label="Display name">
+      <NFormItem :label="t('site.displayName')">
         <NInput
           v-model:value="form.displayName"
           required
         />
       </NFormItem>
-      <NFormItem label="Gitea URL">
+      <NFormItem :label="t('site.url')">
         <NInput
           v-model:value="form.url"
           placeholder="https://gitea.example.com"
           required
         />
       </NFormItem>
-      <NFormItem label="Manager ID">
+      <NFormItem :label="t('site.managerID')">
         <NInput
           v-model:value="form.managerID"
           :disabled="!!selected"
-          placeholder="Manager ID from Gitea"
+          :placeholder="t('site.managerIDPlaceholder')"
           required
         />
       </NFormItem>
     </div>
-    <NFormItem :label="selected ? 'Replace Manager secret (configured)' : 'Manager secret'">
+    <NFormItem :label="selected ? t('site.replaceManagerSecret') : t('site.managerSecret')">
       <NInput
         v-model:value="secret"
         type="password"
         autocomplete="new-password"
-        placeholder="Leave blank to retain the configured secret"
+        :placeholder="t('site.retainSecret')"
         :required="!selected"
       />
     </NFormItem>
     <div class="fields">
-      <NFormItem label="Environment templates">
+      <NFormItem :label="t('site.templates')">
         <NSelect
           multiple
           :value="form.templates.map((item) => item.uid)"
@@ -221,7 +223,7 @@ function remove(site: Resource<Site>) {
           "
         />
       </NFormItem>
-      <NFormItem label="Gateway">
+      <NFormItem :label="t('site.gateway')">
         <NSelect
           :value="form.gateway.uid || null"
           :options="
@@ -237,7 +239,7 @@ function remove(site: Resource<Site>) {
           "
         />
       </NFormItem>
-      <NFormItem label="Caches">
+      <NFormItem :label="t('site.caches')">
         <NSelect
           multiple
           :value="form.caches.map((item) => item.uid)"
@@ -251,20 +253,20 @@ function remove(site: Resource<Site>) {
           "
         />
       </NFormItem>
-      <NFormItem label="Lifecycle">
+      <NFormItem :label="t('site.lifecycle')">
         <div class="checkboxes">
-          <NCheckbox v-model:checked="form.enabled">Enabled</NCheckbox>
-          <NCheckbox v-model:checked="form.acceptCreates">Accept new Codespaces</NCheckbox>
+          <NCheckbox v-model:checked="form.enabled">{{ t('site.enabled') }}</NCheckbox>
+          <NCheckbox v-model:checked="form.acceptCreates">{{ t('site.acceptCreates') }}</NCheckbox>
         </div>
       </NFormItem>
-      <NFormItem label="Concurrent startups">
+      <NFormItem :label="t('site.startups')">
         <NInputNumber
           v-model:value="form.startupConcurrency"
           :min="1"
           :max="64"
         />
       </NFormItem>
-      <NFormItem label="Concurrent cleanup operations">
+      <NFormItem :label="t('site.cleanups')">
         <NInputNumber
           v-model:value="form.cleanupConcurrency"
           :min="1"
@@ -272,7 +274,7 @@ function remove(site: Resource<Site>) {
         />
       </NFormItem>
     </div>
-    <h2>Site quota</h2>
+    <h2>{{ t('site.quota') }}</h2>
     <div class="fields">
       <NFormItem
         v-for="field in quotaFields"
@@ -285,19 +287,19 @@ function remove(site: Resource<Site>) {
         />
       </NFormItem>
     </div>
-    <h2>Upstream networks</h2>
+    <h2>{{ t('site.upstreams') }}</h2>
     <div
       v-for="(upstream, index) in form.upstreams"
       :key="index"
       class="upstream-row"
     >
-      <NFormItem label="CIDR">
+      <NFormItem :label="t('site.cidr')">
         <NInput
           v-model:value="upstream.cidr"
           placeholder="10.0.0.10/32"
         />
       </NFormItem>
-      <NFormItem label="TCP ports">
+      <NFormItem :label="t('site.ports')">
         <NSelect
           :value="upstream.ports"
           multiple
@@ -313,27 +315,27 @@ function remove(site: Resource<Site>) {
       </NFormItem>
       <NButton
         quaternary
-        aria-label="Remove upstream"
-        title="Remove upstream"
+        :aria-label="t('site.removeUpstream')"
+        :title="t('site.removeUpstream')"
         @click="form.upstreams.splice(index, 1)"
       >
         <template #icon><Trash2 :size="16" /></template>
       </NButton>
     </div>
-    <NButton @click="form.upstreams.push({cidr: '', ports: [443]})">Add upstream</NButton>
+    <NButton @click="form.upstreams.push({cidr: '', ports: [443]})">{{ t('site.addUpstream') }}</NButton>
     <div class="form-actions">
       <NButton
         type="primary"
         attr-type="submit"
         :loading="busy"
       >
-        Save site
+        {{ t('site.save') }}
       </NButton>
       <NButton
         :disabled="busy"
         @click="close"
       >
-        Cancel
+        {{ t('common.cancel') }}
       </NButton>
     </div>
   </NForm>
@@ -344,10 +346,10 @@ function remove(site: Resource<Site>) {
     <table>
       <thead>
         <tr>
-          <th>Site</th>
-          <th>Gitea</th>
-          <th>Availability</th>
-          <th>Actions</th>
+          <th>{{ t('site.site') }}</th>
+          <th>{{ t('site.gitea') }}</th>
+          <th>{{ t('site.availability') }}</th>
+          <th>{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -361,22 +363,22 @@ function remove(site: Resource<Site>) {
           </td>
           <td>
             {{ site.spec.url }}
-            <p class="muted">Manager {{ site.spec.managerID }}</p>
+            <p class="muted">{{ t('site.manager', {id: site.spec.managerID}) }}</p>
           </td>
           <td><ResourceStatus :resource="site" /></td>
           <td>
             <div class="actions">
               <NButton
-                aria-label="Edit site"
-                title="Edit site"
+                :aria-label="t('site.editAction')"
+                :title="t('site.editAction')"
                 :disabled="site.deleting"
                 @click="edit(site)"
               >
                 <template #icon><Pencil :size="16" /></template>
               </NButton>
               <NButton
-                aria-label="Delete site"
-                title="Delete site"
+                :aria-label="t('site.deleteAction')"
+                :title="t('site.deleteAction')"
                 :disabled="site.spec.enabled || site.deleting"
                 @click="remove(site)"
               >
@@ -390,7 +392,7 @@ function remove(site: Resource<Site>) {
             colspan="4"
             class="empty"
           >
-            {{ busy ? 'Loading sites...' : 'No Gitea sites configured' }}
+            {{ busy ? t('site.loading') : t('site.empty') }}
           </td>
         </tr>
       </tbody>

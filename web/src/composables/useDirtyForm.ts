@@ -1,7 +1,9 @@
 import {computed, onBeforeUnmount, ref} from 'vue';
 import {onBeforeRouteLeave, onBeforeRouteUpdate} from 'vue-router';
+import {useI18n} from 'vue-i18n';
 
 export function useDirtyForm(value: () => unknown) {
+  const {t} = useI18n();
   const initial = ref('');
   const current = computed(() => JSON.stringify(value()));
   const dirty = computed(() => initial.value !== '' && current.value !== initial.value);
@@ -10,7 +12,7 @@ export function useDirtyForm(value: () => unknown) {
   };
   window.addEventListener('beforeunload', beforeUnload);
   onBeforeUnmount(() => window.removeEventListener('beforeunload', beforeUnload));
-  const confirmDiscard = () => !dirty.value || window.confirm('Discard unsaved changes?');
+  const confirmDiscard = () => !dirty.value || window.confirm(t('common.discard'));
   onBeforeRouteLeave(confirmDiscard);
   onBeforeRouteUpdate(confirmDiscard);
   return {

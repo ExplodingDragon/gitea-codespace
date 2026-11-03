@@ -152,7 +152,6 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	environment.RuntimeClassName = e2eRuntime.runtimeClass
 	environment.StorageClassName = e2eRuntime.storageClass
 	if e2eRuntime.isolation == "kata" {
-		environment.VolumeMode = corev1.PersistentVolumeBlock
 		environment.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
 	}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: environment}}

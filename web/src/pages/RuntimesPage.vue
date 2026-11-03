@@ -1,21 +1,23 @@
 <script setup lang="ts">
 import {onMounted, ref} from 'vue';
-import {NAlert, NButton, NTag, useDialog} from 'naive-ui';
+import {NAlert, NButton, useDialog} from 'naive-ui';
 import {RefreshCw} from '@lucide/vue';
+import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type RuntimeInstance, type Resource} from '../api';
+import ResourceStatus from '../components/ResourceStatus.vue';
 
 const items = ref<Resource<RuntimeInstance>[]>([]);
+const {t} = useI18n();
 const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
 
 function deleteRuntime(item: Resource<RuntimeInstance>) {
   dialog.warning({
-    title: 'Delete runtime data',
-    content:
-      'Disable the owning site first. This permanently removes the environment and its stored data after the previous runtime has stopped.',
-    positiveText: 'Delete',
-    negativeText: 'Cancel',
+    title: t('runtime.deleteTitle'),
+    content: t('runtime.deleteContent'),
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
     async onPositiveClick() {
       busy.value = true;
       error.value = '';
@@ -31,7 +33,7 @@ function deleteRuntime(item: Resource<RuntimeInstance>) {
         );
         await load();
       } catch (e) {
-        error.value = errorMessage(e);
+        error.value = errorMessage(e, t);
       } finally {
         busy.value = false;
       }
@@ -50,11 +52,10 @@ function recoveryRequired(item: Resource<RuntimeInstance>) {
 
 function confirmWriterStopped(item: Resource<RuntimeInstance>) {
   dialog.warning({
-    title: 'Confirm runtime recovery',
-    content:
-      'Confirm only after the previous runtime Pod can no longer write to its volume. The runtime will converge to stopped before it can be resumed.',
-    positiveText: 'Confirm stopped',
-    negativeText: 'Cancel',
+    title: t('runtime.recoveryTitle'),
+    content: t('runtime.recoveryContent'),
+    positiveText: t('runtime.confirmStopped'),
+    negativeText: t('common.cancel'),
     async onPositiveClick() {
       busy.value = true;
       error.value = '';
@@ -66,7 +67,7 @@ function confirmWriterStopped(item: Resource<RuntimeInstance>) {
         );
         await load();
       } catch (e) {
-        error.value = errorMessage(e);
+        error.value = errorMessage(e, t);
       } finally {
         busy.value = false;
       }
@@ -79,7 +80,7 @@ async function load() {
   try {
     items.value = await request('runtimes');
   } catch (e) {
-    error.value = errorMessage(e);
+    error.value = errorMessage(e, t);
   } finally {
     busy.value = false;
   }
@@ -89,10 +90,10 @@ onMounted(load);
 
 <template>
   <div class="page-heading">
-    <h1>Running environments</h1>
+    <h1>{{ t('runtime.title') }}</h1>
     <NButton
-      aria-label="Refresh environments"
-      title="Refresh environments"
+      :aria-label="t('runtime.refresh')"
+      :title="t('runtime.refresh')"
       :disabled="busy"
       @click="load"
     >
@@ -110,12 +111,12 @@ onMounted(load);
     <table class="runtime-table">
       <thead>
         <tr>
-          <th>Codespace</th>
-          <th>Site</th>
-          <th>Environment</th>
-          <th>Operation</th>
-          <th>Runtime</th>
-          <th class="runtime-actions">Actions</th>
+          <th>{{ t('runtime.codespace') }}</th>
+          <th>{{ t('runtime.site') }}</th>
+          <th>{{ t('runtime.environment') }}</th>
+          <th>{{ t('runtime.operation') }}</th>
+          <th>{{ t('runtime.runtime') }}</th>
+          <th class="runtime-actions">{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -131,12 +132,7 @@ onMounted(load);
           <td>{{ item.spec.environmentTag }}</td>
           <td>{{ item.spec.operation }} #{{ item.spec.version }}</td>
           <td>
-            <NTag
-              size="small"
-              :type="item.status?.ready ? 'success' : 'default'"
-            >
-              {{ item.deleting ? 'Deleting' : item.status?.ready ? 'Ready' : 'Not ready' }}
-            </NTag>
+            <ResourceStatus :resource="item" />
             <p class="muted">{{ item.status?.pod?.name }}</p>
           </td>
           <td class="runtime-actions">
@@ -147,7 +143,7 @@ onMounted(load);
                 :disabled="busy"
                 @click="confirmWriterStopped(item)"
               >
-                Confirm stopped
+                {{ t('runtime.confirmStopped') }}
               </NButton>
               <NButton
                 size="small"
@@ -155,7 +151,7 @@ onMounted(load);
                 :disabled="busy || item.deleting"
                 @click="deleteRuntime(item)"
               >
-                Delete data
+                {{ t('runtime.deleteData') }}
               </NButton>
             </div>
           </td>
@@ -165,7 +161,7 @@ onMounted(load);
             colspan="6"
             class="empty"
           >
-            {{ busy ? 'Loading environments...' : 'No running environments' }}
+            {{ busy ? t('runtime.loading') : t('runtime.empty') }}
           </td>
         </tr>
       </tbody>

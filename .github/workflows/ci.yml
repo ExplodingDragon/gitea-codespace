@@ -58,7 +58,7 @@ jobs:
       - name: Run backend tests
         run: make test
       - name: Run administration UI tests
-        run: pnpm --dir web test
+        run: make test-frontend
       - name: Build linux/amd64 binary
         run: make build-linux
       - name: Upload platform binary

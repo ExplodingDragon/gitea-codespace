@@ -1,16 +1,40 @@
 import {ref} from 'vue';
+import {currentLocale} from './i18n';
 
 export const csrf = ref('');
 
-export function errorMessage(error: unknown): string {
+export class APIError extends Error {
+  constructor(
+    readonly code: string,
+    readonly status: number,
+    message: string,
+    readonly detail: string,
+  ) {
+    super(message);
+  }
+}
+
+type Translate = (key: string, parameters?: Record<string, unknown>) => string;
+
+export function errorMessage(error: unknown, translate?: Translate): string {
+  if (error instanceof APIError && translate) {
+    const summary = translate(`errors.${error.code}`, {status: error.status});
+    return error.detail ? `${summary}\n${error.detail}` : summary;
+  }
+  if (error instanceof APIError) return error.detail ? `${error.message}\n${error.detail}` : error.message;
   return error instanceof Error ? error.message : String(error);
 }
 
 export async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {
+    'Accept-Language': currentLocale(),
+    'X-CSRF-Token': csrf.value,
+  };
+  if (body !== undefined) headers['Content-Type'] = 'application/json';
   const response = await fetch(`/api/admin/${path}`, {
     method,
     credentials: 'same-origin',
-    headers: {'Content-Type': 'application/json', 'X-CSRF-Token': csrf.value},
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body),
   });
   if (response.status === 401) {
@@ -19,11 +43,19 @@ export async function request<T>(path: string, method = 'GET', body?: unknown): 
   if (!response.ok) {
     const fallback = `Request failed (${response.status})`;
     const data: unknown = await response.json().catch(() => undefined);
+    const code =
+      typeof data === 'object' && data !== null && 'code' in data && typeof data.code === 'string'
+        ? data.code
+        : 'request_failed';
     const message =
-      typeof data === 'object' && data !== null && 'error' in data && typeof data.error === 'string'
-        ? data.error
+      typeof data === 'object' && data !== null && 'message' in data && typeof data.message === 'string'
+        ? data.message
         : fallback;
-    throw new Error(message);
+    const detail =
+      typeof data === 'object' && data !== null && 'detail' in data && typeof data.detail === 'string'
+        ? data.detail
+        : '';
+    throw new APIError(code, response.status, message, detail);
   }
   return response.status === 204 ? (undefined as T) : response.json();
 }
@@ -66,14 +98,18 @@ export type Runtime = {
   runtimeClassName: string;
   storageClassName: string;
   storage: {storage: string};
-  volumeMode: 'Filesystem' | 'Block';
   accessMode: string;
   resources: {requests: Record<string, string>; limits: Record<string, string>};
   gitSSHKeyType: string;
   devContainer: {
-    webIDE: {enabled: boolean; feature?: string; version?: string; extensions?: string[]};
+    webIDE: {enabled: boolean; version?: string; extensions?: string[]};
     features?: {reference: string; options?: Record<string, unknown>}[];
   };
+};
+
+export type ClusterOptions = {
+  runtimeClasses: {name: string; handler: string; isolation: 'kata' | 'sysbox'}[];
+  storageClasses: {name: string; provisioner: string; default: boolean}[];
 };
 
 export type Environment = {

@@ -71,6 +71,8 @@ apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:
   name: sysbox-runc
+  labels:
+    codespace.gitea.dev/isolation: sysbox
 handler: sysbox-runc
 EOF
 	kubectl get runtimeclass/sysbox-runc >/dev/null
@@ -89,6 +91,7 @@ helm upgrade --install kata-deploy \
 	--wait \
 	--timeout 10m
 kubectl get runtimeclass/kata-qemu-runtime-rs >/dev/null
+kubectl label runtimeclass/kata-qemu-runtime-rs codespace.gitea.dev/isolation=kata --overwrite
 
 echo "Installing RawFile LocalPV $RAWFILE_VERSION"
 helm repo add rawfile-localpv https://openebs.github.io/rawfile-localpv

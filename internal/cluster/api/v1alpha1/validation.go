@@ -157,7 +157,7 @@ func (c *CodespaceComponent) Validate() error {
 }
 
 func (r EnvironmentConfiguration) Validate() error {
-	if r.Isolation != "kata" && r.Isolation != "sysbox" {
+	if r.Isolation != IsolationKata && r.Isolation != IsolationSysbox {
 		return fmt.Errorf("runtime isolation must be kata or sysbox")
 	}
 	if len(validation.IsDNS1123Subdomain(r.RuntimeClassName)) != 0 || len(validation.IsDNS1123Subdomain(r.StorageClassName)) != 0 {
@@ -165,15 +165,6 @@ func (r EnvironmentConfiguration) Validate() error {
 	}
 	if r.AccessMode != corev1.ReadWriteOncePod && r.AccessMode != corev1.ReadWriteOnce {
 		return fmt.Errorf("storage access mode must be ReadWriteOncePod or a verified ReadWriteOnce combination")
-	}
-	if r.VolumeMode != corev1.PersistentVolumeFilesystem && r.VolumeMode != corev1.PersistentVolumeBlock {
-		return fmt.Errorf("storage volume mode must be Filesystem or Block")
-	}
-	if r.Isolation == "kata" && r.VolumeMode != corev1.PersistentVolumeBlock {
-		return fmt.Errorf("kata isolation requires a raw Block volume so Docker data is mounted inside the guest")
-	}
-	if r.Isolation == "sysbox" && r.VolumeMode != corev1.PersistentVolumeFilesystem {
-		return fmt.Errorf("sysbox isolation requires a Filesystem volume")
 	}
 	if len(r.Resources.Claims) != 0 {
 		return fmt.Errorf("runtime dynamic resource claims are not supported")

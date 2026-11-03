@@ -2,10 +2,12 @@
 import {onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
 import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
+import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type Component, type ComponentStatus, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
+const {t} = useI18n();
 const selected = ref<Resource<Component, ComponentStatus>>();
 const editing = ref(false);
 const name = ref('');
@@ -30,7 +32,7 @@ async function load() {
   try {
     items.value = await request('components');
   } catch (e) {
-    error.value = errorMessage(e);
+    error.value = errorMessage(e, t);
   } finally {
     busy.value = false;
   }
@@ -145,7 +147,7 @@ async function save() {
       spec.cache.upstreams = {};
       for (const item of upstreams.value) {
         const host = item.host.trim().toLowerCase();
-        if (!host || spec.cache.upstreams[host]) throw new Error('Registry hosts must be present and unique');
+        if (!host || spec.cache.upstreams[host]) throw new Error(t('component.duplicateRegistry'));
         spec.cache.upstreams[host] = {
           allow: item.allow
             .split(/[\n,]/)
@@ -166,20 +168,17 @@ async function save() {
     dirty.endTracking();
     await load();
   } catch (e) {
-    error.value = errorMessage(e);
+    error.value = errorMessage(e, t);
   } finally {
     busy.value = false;
   }
 }
 function remove(item: Resource<Component, ComponentStatus>) {
   dialog.warning({
-    title: `Delete ${item.spec.displayName}?`,
-    content:
-      item.spec.role === 'cache'
-        ? 'Remove site references, disable the cache, and wait for its writer lease to expire before deleting it.'
-        : 'Sites must stop referencing this component before it can be deleted.',
-    positiveText: 'Delete',
-    negativeText: 'Cancel',
+    title: t('component.deleteTitle', {name: item.spec.displayName}),
+    content: item.spec.role === 'cache' ? t('component.deleteCacheContent') : t('component.deleteGatewayContent'),
+    positiveText: t('common.delete'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       try {
         await request(`components/${item.name}`, 'DELETE', {
@@ -189,17 +188,17 @@ function remove(item: Resource<Component, ComponentStatus>) {
         });
         await load();
       } catch (e) {
-        error.value = errorMessage(e);
+        error.value = errorMessage(e, t);
       }
     },
   });
 }
 function rotateHostKey(item: Resource<Component, ComponentStatus>) {
   dialog.warning({
-    title: `Rotate the SSH host key for ${item.spec.displayName}?`,
-    content: 'SSH access is temporarily unavailable while the Gateway publishes its new host key.',
-    positiveText: 'Rotate key',
-    negativeText: 'Cancel',
+    title: t('component.rotateTitle', {name: item.spec.displayName}),
+    content: t('component.rotateContent'),
+    positiveText: t('component.rotateConfirm'),
+    negativeText: t('common.cancel'),
     onPositiveClick: async () => {
       try {
         await request(`components/${item.name}/rotate-ssh-host-key`, 'POST', {
@@ -209,7 +208,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         });
         await load();
       } catch (e) {
-        error.value = errorMessage(e);
+        error.value = errorMessage(e, t);
       }
     },
   });
@@ -218,14 +217,14 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
 
 <template>
   <div class="page-heading">
-    <h1>{{ editing ? (selected ? 'Edit component' : 'New component') : 'Components' }}</h1>
+    <h1>{{ editing ? (selected ? t('component.edit') : t('component.new')) : t('component.title') }}</h1>
     <div
       v-if="!editing"
       class="actions"
     >
       <NButton
-        aria-label="Refresh components"
-        title="Refresh components"
+        :aria-label="t('component.refresh')"
+        :title="t('component.refresh')"
         :disabled="busy"
         @click="load"
       >
@@ -235,7 +234,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         type="primary"
         @click="edit()"
       >
-        Add component
+        {{ t('component.add') }}
       </NButton>
     </div>
   </div>
@@ -252,49 +251,49 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     @submit.prevent="save"
   >
     <div class="fields">
-      <NFormItem label="Resource name">
+      <NFormItem :label="t('common.resourceName')">
         <NInput
           v-model:value="name"
           :disabled="!!selected"
           required
         />
       </NFormItem>
-      <NFormItem label="Display name">
+      <NFormItem :label="t('component.displayName')">
         <NInput
           v-model:value="form.displayName"
           required
         />
       </NFormItem>
-      <NFormItem label="Role">
+      <NFormItem :label="t('component.role')">
         <NSelect
           :value="form.role"
           :disabled="!!selected"
           :options="[
-            {label: 'Gateway', value: 'gateway'},
-            {label: 'Registry cache', value: 'cache'},
+            {label: t('component.gateway'), value: 'gateway'},
+            {label: t('component.cache'), value: 'cache'},
           ]"
           @update:value="setRole"
         />
       </NFormItem>
-      <NFormItem label="CPU request">
+      <NFormItem :label="t('component.cpuRequest')">
         <NInput
           v-model:value="form.resources.requests.cpu"
           required
         />
       </NFormItem>
-      <NFormItem label="Memory request">
+      <NFormItem :label="t('component.memoryRequest')">
         <NInput
           v-model:value="form.resources.requests.memory"
           required
         />
       </NFormItem>
-      <NFormItem label="CPU limit">
+      <NFormItem :label="t('component.cpuLimit')">
         <NInput
           v-model:value="form.resources.limits.cpu"
           required
         />
       </NFormItem>
-      <NFormItem label="Memory limit">
+      <NFormItem :label="t('component.memoryLimit')">
         <NInput
           v-model:value="form.resources.limits.memory"
           required
@@ -302,23 +301,23 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </NFormItem>
     </div>
     <template v-if="form.gateway">
-      <h2>Gateway addresses</h2>
+      <h2>{{ t('component.gatewayAddresses') }}</h2>
       <div class="fields">
-        <NFormItem label="Public HTTPS URL">
+        <NFormItem :label="t('component.publicHTTPS')">
           <NInput
             v-model:value="form.gateway.publicURL"
             placeholder="https://codespace.example.com"
             required
           />
         </NFormItem>
-        <NFormItem label="Public SSH address">
+        <NFormItem :label="t('component.publicSSH')">
           <NInput
             v-model:value="form.gateway.sshPublicAddress"
             placeholder="codespace.example.com:22"
             required
           />
         </NFormItem>
-        <NFormItem label="Gateway API parent">
+        <NFormItem :label="t('component.gatewayParent')">
           <NInput
             v-model:value="form.gateway.parent.name"
             placeholder="public-gateway"
@@ -326,7 +325,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </NFormItem>
         <NFormItem
           v-if="form.gateway.parent.name"
-          label="Gateway namespace"
+          :label="t('component.gatewayNamespace')"
         >
           <NInput
             v-model:value="form.gateway.parent.namespace"
@@ -335,7 +334,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </NFormItem>
         <NFormItem
           v-if="form.gateway.parent.name"
-          label="HTTPS listener"
+          :label="t('component.httpListener')"
         >
           <NInput
             v-model:value="form.gateway.parent.httpSectionName"
@@ -344,56 +343,56 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </NFormItem>
         <NFormItem
           v-if="form.gateway.parent.name"
-          label="SSH listener"
+          :label="t('component.sshListener')"
         >
           <NInput v-model:value="form.gateway.parent.sshSectionName" />
         </NFormItem>
       </div>
-      <h2>Sessions and limits</h2>
+      <h2>{{ t('component.sessions') }}</h2>
       <div class="fields">
-        <NFormItem label="Session lifetime">
+        <NFormItem :label="t('component.sessionLifetime')">
           <NInput
             v-model:value="form.gateway.sessions.ttl"
             required
           />
         </NFormItem>
-        <NFormItem label="Idle timeout">
+        <NFormItem :label="t('component.idleTimeout')">
           <NInput
             v-model:value="form.gateway.sessions.idleTimeout"
             required
           />
         </NFormItem>
-        <NFormItem label="Authorization refresh">
+        <NFormItem :label="t('component.authRefresh')">
           <NInput
             v-model:value="form.gateway.sessions.revalidateInterval"
             required
           />
         </NFormItem>
-        <NFormItem label="Sessions per Codespace">
+        <NFormItem :label="t('component.sessionsPerCodespace')">
           <NInputNumber
             v-model:value="form.gateway.sessions.maxPerCodespace"
             :min="1"
           />
         </NFormItem>
-        <NFormItem label="Sessions per user">
+        <NFormItem :label="t('component.sessionsPerUser')">
           <NInputNumber
             v-model:value="form.gateway.sessions.maxPerUser"
             :min="1"
           />
         </NFormItem>
-        <NFormItem label="Total in-flight requests">
+        <NFormItem :label="t('component.inflightTotal')">
           <NInputNumber
             v-model:value="form.gateway.limits.maxInflightTotal"
             :min="1"
           />
         </NFormItem>
-        <NFormItem label="In-flight requests per session">
+        <NFormItem :label="t('component.inflightSession')">
           <NInputNumber
             v-model:value="form.gateway.limits.maxInflightPerSession"
             :min="1"
           />
         </NFormItem>
-        <NFormItem label="SSH channels per connection">
+        <NFormItem :label="t('component.sshChannels')">
           <NInputNumber
             v-model:value="form.gateway.ssh.maxChannelsPerConnection"
             :min="1"
@@ -403,30 +402,30 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     </template>
     <template v-if="form.cache">
       <div class="fields">
-        <NFormItem label="Public registry URL">
+        <NFormItem :label="t('component.publicRegistry')">
           <NInput
             v-model:value="form.cache.publicURL"
             placeholder="https://cache.example.com"
             required
           />
         </NFormItem>
-        <NFormItem label="Storage driver">
+        <NFormItem :label="t('component.storageDriver')">
           <NSelect
             v-model:value="form.cache.storage.driver"
             :options="[
-              {label: 'Persistent volume', value: 'filesystem'},
-              {label: 'S3-compatible storage', value: 's3'},
+              {label: t('component.persistentVolume'), value: 'filesystem'},
+              {label: t('component.s3Storage'), value: 's3'},
             ]"
           />
         </NFormItem>
-        <NFormItem label="Maximum cache size"><NInput v-model:value="form.cache.maxSize" /></NFormItem>
-        <NFormItem label="Maximum age">
+        <NFormItem :label="t('component.maxCacheSize')"><NInput v-model:value="form.cache.maxSize" /></NFormItem>
+        <NFormItem :label="t('component.maxAge')">
           <NInput
             v-model:value="form.cache.maxAge"
             required
           />
         </NFormItem>
-        <NFormItem label="Cleanup interval">
+        <NFormItem :label="t('component.cleanupInterval')">
           <NInput
             v-model:value="form.cache.gcInterval"
             required
@@ -435,39 +434,45 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </div>
       <template v-if="form.cache.storage.driver === 'filesystem'">
         <div class="fields">
-          <NFormItem label="Volume size">
+          <NFormItem :label="t('component.volumeSize')">
             <NInput
               v-model:value="form.cache.storage.volumeSize"
               required
             />
           </NFormItem>
-          <NFormItem label="Storage class"><NInput v-model:value="form.cache.storage.storageClassName" /></NFormItem>
-          <NFormItem label="Minimum free space"><NInput v-model:value="form.cache.storage.minFreeSpace" /></NFormItem>
+          <NFormItem :label="t('component.storageClass')">
+            <NInput v-model:value="form.cache.storage.storageClassName" />
+          </NFormItem>
+          <NFormItem :label="t('component.minFreeSpace')">
+            <NInput v-model:value="form.cache.storage.minFreeSpace" />
+          </NFormItem>
         </div>
       </template>
       <template v-else>
         <div class="fields">
-          <NFormItem label="S3 endpoint"><NInput v-model:value="form.cache.storage.s3.endpoint" /></NFormItem>
-          <NFormItem label="Region">
+          <NFormItem :label="t('component.s3Endpoint')">
+            <NInput v-model:value="form.cache.storage.s3.endpoint" />
+          </NFormItem>
+          <NFormItem :label="t('component.region')">
             <NInput
               v-model:value="form.cache.storage.s3.region"
               required
             />
           </NFormItem>
-          <NFormItem label="Bucket">
+          <NFormItem :label="t('component.bucket')">
             <NInput
               v-model:value="form.cache.storage.s3.bucket"
               required
             />
           </NFormItem>
-          <NFormItem label="Prefix"><NInput v-model:value="form.cache.storage.s3.prefix" /></NFormItem>
-          <NFormItem label="Replace access key">
+          <NFormItem :label="t('component.prefix')"><NInput v-model:value="form.cache.storage.s3.prefix" /></NFormItem>
+          <NFormItem :label="t('component.replaceAccessKey')">
             <NInput
               v-model:value="s3AccessKey"
               autocomplete="off"
             />
           </NFormItem>
-          <NFormItem label="Replace secret key">
+          <NFormItem :label="t('component.replaceSecretKey')">
             <NInput
               v-model:value="s3SecretKey"
               type="password"
@@ -475,16 +480,12 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             />
           </NFormItem>
           <NFormItem>
-            <NCheckbox v-model:checked="form.cache.storage.s3.forcePathStyle">Use path-style requests</NCheckbox>
+            <NCheckbox v-model:checked="form.cache.storage.s3.forcePathStyle">{{ t('component.pathStyle') }}</NCheckbox>
           </NFormItem>
         </div>
       </template>
-      <h2>Registry mirrors</h2>
-      <p class="muted">
-        Each registry host is mirrored only for the listed repository prefixes. A trailing
-        <code>*</code>
-        allows repositories below that prefix.
-      </p>
+      <h2>{{ t('component.mirrors') }}</h2>
+      <p class="muted">{{ t('component.mirrorHelp') }}</p>
       <div
         v-for="(upstream, index) in upstreams"
         :key="index"
@@ -493,18 +494,18 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         <NInput
           v-model:value="upstream.host"
           placeholder="ghcr.io"
-          aria-label="Registry host"
+          :aria-label="t('component.registryHost')"
         />
         <NInput
           v-model:value="upstream.allow"
           type="textarea"
           :autosize="{minRows: 1, maxRows: 4}"
           placeholder="devcontainers/*"
-          aria-label="Allowed repositories"
+          :aria-label="t('component.allowedRepositories')"
         />
         <NButton
-          aria-label="Remove registry mirror"
-          title="Remove registry mirror"
+          :aria-label="t('component.removeMirror')"
+          :title="t('component.removeMirror')"
           @click="upstreams.splice(index, 1)"
         >
           <template #icon><X :size="16" /></template>
@@ -515,9 +516,11 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         @click="upstreams.push({host: '', allow: ''})"
       >
         <template #icon><Plus :size="16" /></template>
-        Add registry mirror
+        {{ t('component.addMirror') }}
       </NButton>
-      <NFormItem><NCheckbox v-model:checked="form.cache.enabled">Accept cache requests</NCheckbox></NFormItem>
+      <NFormItem>
+        <NCheckbox v-model:checked="form.cache.enabled">{{ t('component.acceptCache') }}</NCheckbox>
+      </NFormItem>
     </template>
     <div class="form-actions">
       <NButton
@@ -525,13 +528,13 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         attr-type="submit"
         :loading="busy"
       >
-        Save component
+        {{ t('component.save') }}
       </NButton>
       <NButton
         :disabled="busy"
         @click="close"
       >
-        Cancel
+        {{ t('common.cancel') }}
       </NButton>
     </div>
   </NForm>
@@ -542,11 +545,11 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     <table>
       <thead>
         <tr>
-          <th>Component</th>
-          <th>Role</th>
-          <th>Public address</th>
-          <th>State</th>
-          <th>Actions</th>
+          <th>{{ t('component.component') }}</th>
+          <th>{{ t('component.role') }}</th>
+          <th>{{ t('component.publicAddress') }}</th>
+          <th>{{ t('component.state') }}</th>
+          <th>{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -558,14 +561,14 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             <strong>{{ item.spec.displayName }}</strong>
             <p class="muted">{{ item.name }}</p>
           </td>
-          <td>{{ item.spec.role === 'gateway' ? 'Gateway' : 'Registry cache' }}</td>
+          <td>{{ item.spec.role === 'gateway' ? t('component.gateway') : t('component.cache') }}</td>
           <td>
             {{ item.spec.gateway?.publicURL || item.spec.cache?.publicURL }}
             <p
               v-if="item.spec.gateway"
               class="muted"
             >
-              SSH {{ item.spec.gateway.sshPublicAddress }}
+              {{ t('component.sshAddress', {address: item.spec.gateway.sshPublicAddress}) }}
             </p>
           </td>
           <td>
@@ -574,50 +577,50 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
               size="small"
               type="warning"
             >
-              Deleting
+              {{ t('common.deleting') }}
             </NTag>
             <NTag
               v-else-if="item.spec.cache && !item.spec.cache.enabled"
               size="small"
             >
-              Disabled
+              {{ t('common.disabled') }}
             </NTag>
             <NTag
               v-else
               size="small"
               :type="item.status?.available ? 'success' : 'warning'"
             >
-              {{ item.status?.available ? 'Available' : 'Pending' }}
+              {{ item.status?.available ? t('common.available') : t('common.pending') }}
             </NTag>
             <p
               v-if="item.spec.cache && item.status?.lastHeartbeat"
               class="muted"
             >
-              Cache heartbeat received
+              {{ t('component.heartbeat') }}
             </p>
           </td>
           <td>
             <div class="actions">
               <NButton
                 v-if="item.spec.gateway"
-                aria-label="Rotate SSH host key"
-                title="Rotate SSH host key"
+                :aria-label="t('component.rotateKey')"
+                :title="t('component.rotateKey')"
                 :disabled="item.deleting"
                 @click="rotateHostKey(item)"
               >
                 <template #icon><KeyRound :size="16" /></template>
               </NButton>
               <NButton
-                aria-label="Edit component"
-                title="Edit component"
+                :aria-label="t('component.editAction')"
+                :title="t('component.editAction')"
                 :disabled="item.deleting"
                 @click="edit(item)"
               >
                 <template #icon><Pencil :size="16" /></template>
               </NButton>
               <NButton
-                aria-label="Delete component"
-                title="Delete component"
+                :aria-label="t('component.deleteAction')"
+                :title="t('component.deleteAction')"
                 :disabled="item.deleting"
                 @click="remove(item)"
               >
@@ -631,7 +634,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             colspan="5"
             class="empty"
           >
-            {{ busy ? 'Loading components...' : 'No components configured' }}
+            {{ busy ? t('component.loading') : t('component.empty') }}
           </td>
         </tr>
       </tbody>

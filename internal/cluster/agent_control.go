@@ -164,7 +164,7 @@ func (s *AgentControlServer) PrepareVolume(ctx context.Context, request *agentv1
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "volume preparation requires current execution permission")
 	}
 	var volume corev1.PersistentVolumeClaim
-	if cs.Spec.Runtime.VolumeMode != corev1.PersistentVolumeBlock || cs.Status.Volume.UID == "" {
+	if cs.Spec.Runtime.StorageVolumeMode() != corev1.PersistentVolumeBlock || cs.Status.Volume.UID == "" {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime block volume is not bound")
 	}
 	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Volume.Name}, &volume); err != nil {

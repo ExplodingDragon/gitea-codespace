@@ -1,5 +1,13 @@
 import {expect, test} from '@playwright/test';
-import type {Component, ComponentStatus, Environment, Resource, RuntimeInstance, Site} from '../src/api';
+import type {
+  ClusterOptions,
+  Component,
+  ComponentStatus,
+  Environment,
+  Resource,
+  RuntimeInstance,
+  Site,
+} from '../src/api';
 
 test('native resource editing preserves identity and write-only credentials', async ({page}) => {
   const errors: string[] = [];
@@ -76,17 +84,24 @@ test('native resource editing preserves identity and write-only credentials', as
             status: 'False',
             reason: 'WriterUnconfirmed',
             message: 'previous writer has not been confirmed stopped',
+            observedGeneration: 2,
           },
         ],
       },
     },
   ];
+  const clusterOptions: ClusterOptions = {
+    runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
+    storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
+  };
   let signedIn = false;
   let lastWrite: {managerSecret?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
   let recoveryWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
+  const requestedLanguages: string[] = [];
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request();
+    requestedLanguages.push(request.headers()['accept-language'] ?? '');
     const path = new URL(request.url()).pathname.replace('/api/admin/', '');
     if (path === 'login') {
       signedIn = true;
@@ -94,7 +109,7 @@ test('native resource editing preserves identity and write-only credentials', as
       return;
     }
     if (!signedIn) {
-      await route.fulfill({status: 401, json: {error: 'sign in required'}});
+      await route.fulfill({status: 401, json: {code: 'authentication_required', message: 'sign in required'}});
       return;
     }
     if (path === 'session') {
@@ -108,15 +123,17 @@ test('native resource editing preserves identity and write-only credentials', as
     if (request.method() === 'GET') {
       await route.fulfill({
         json:
-          kind === 'sites'
-            ? sites
-            : kind === 'environments'
-              ? environments
-              : kind === 'components'
-                ? components
-                : kind === 'runtimes'
-                  ? runtimes
-                  : [],
+          kind === 'cluster-options'
+            ? clusterOptions
+            : kind === 'sites'
+              ? sites
+              : kind === 'environments'
+                ? environments
+                : kind === 'components'
+                  ? components
+                  : kind === 'runtimes'
+                    ? runtimes
+                    : [],
       });
       return;
     }
@@ -140,7 +157,10 @@ test('native resource editing preserves identity and write-only credentials', as
       lastWrite = body;
       if (name) {
         if (body.resourceVersion !== sites[0].resourceVersion) {
-          await route.fulfill({status: 409, json: {error: 'resource changed; reload before saving'}});
+          await route.fulfill({
+            status: 409,
+            json: {code: 'resource_conflict', message: 'resource changed; reload before saving'},
+          });
           return;
         }
         sites[0] = {...sites[0], resourceVersion: '2', spec: body.spec};
@@ -157,6 +177,7 @@ test('native resource editing preserves identity and write-only credentials', as
     await route.fulfill({json: {name: body.name}});
   });
   await page.goto('/environments');
+  await expect(page.locator('.login .language-select')).toBeVisible();
   await page.locator('input[type=password]').fill('test-administrator-token');
   await page.getByRole('button', {name: 'Sign in', exact: true}).click();
   await page.getByRole('button', {name: 'Add template'}).click();
@@ -167,16 +188,22 @@ test('native resource editing preserves identity and write-only credentials', as
       .getByRole('textbox');
   await field('Resource name').fill('standard');
   await field('Tag').fill('standard');
-  await field('StorageClass').fill('storage');
   await field('code-server version').fill('4.121.0');
+  await page.screenshot({path: 'test-results/environment-template-desktop.png', fullPage: true});
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
     enabled: true,
-    feature: 'ghcr.io/coder/devcontainer-features/code-server:2.0.0',
     version: '4.121.0',
     extensions: [],
   });
+  await page.locator('.language-select .n-base-selection').click();
+  await page.getByText('简体中文', {exact: true}).last().click();
+  await expect(page.getByRole('link', {name: 'Gitea 站点', exact: true})).toBeVisible();
+  await page.getByRole('button', {name: '刷新模板'}).click();
+  await expect.poll(() => requestedLanguages.at(-1)).toBe('zh-CN');
+  await page.locator('.language-select .n-base-selection').click();
+  await page.getByText('English', {exact: true}).last().click();
   await page.getByRole('link', {name: 'Gitea sites', exact: true}).click();
   await page.getByRole('button', {name: 'Add site'}).click();
   await field('Resource name').fill('production');
@@ -234,6 +261,10 @@ test('native resource editing preserves identity and write-only credentials', as
   await expect(runtimeCells.nth(2)).toHaveText('standard');
   await expect(runtimeCells.nth(3)).toHaveText('stop #3');
   await expect(runtimeCells.nth(4)).toContainText('runtime-pod');
+  await expect(runtimeRow.getByText('Waiting for confirmation that the previous writer stopped.')).toBeVisible();
+  await expect(runtimeRow.getByText('previous writer has not been confirmed stopped')).toBeHidden();
+  await runtimeRow.getByText('Technical details').click();
+  await expect(runtimeRow.getByText('previous writer has not been confirmed stopped')).toBeVisible();
   await expect(runtimeCells.nth(5).getByRole('button', {name: 'Confirm stopped'})).toBeVisible();
   await runtimeRow.getByRole('button', {name: 'Confirm stopped'}).click();
   await page.getByRole('button', {name: 'Confirm stopped', exact: true}).last().click();

@@ -14,6 +14,12 @@ import (
 
 var GroupVersion = schema.GroupVersion{Group: "codespace.gitea.dev", Version: "v1alpha1"}
 
+const (
+	IsolationKata         = "kata"
+	IsolationSysbox       = "sysbox"
+	RuntimeIsolationLabel = "codespace.gitea.dev/isolation"
+)
+
 func AddToScheme(scheme *runtime.Scheme) error {
 	scheme.AddKnownTypes(GroupVersion, &GiteaSite{}, &GiteaSiteList{}, &EnvironmentTemplate{}, &EnvironmentTemplateList{}, &CodespaceComponent{}, &CodespaceComponentList{}, &Codespace{}, &CodespaceList{})
 	metav1.AddToGroupVersion(scheme, GroupVersion)
@@ -114,15 +120,21 @@ type EnvironmentConfiguration struct {
 	StorageClassName string                      `json:"storageClassName"`
 	Storage          corev1.ResourceList         `json:"storage"`
 	Resources        corev1.ResourceRequirements `json:"resources"`
-	// VolumeMode controls whether Kubernetes mounts the volume on the host or
-	// exposes a raw block device for the isolated runtime to mount itself.
-	// +kubebuilder:validation:Enum=Filesystem;Block
-	VolumeMode corev1.PersistentVolumeMode `json:"volumeMode"`
 	// +kubebuilder:validation:Enum=ReadWriteOncePod;ReadWriteOnce
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode"`
 	// +kubebuilder:validation:Enum=ed25519;rsa-4096
 	GitSSHKeyType string                            `json:"gitSSHKeyType"`
 	DevContainer  devcontainerruntime.Configuration `json:"devContainer"`
+}
+
+// StorageVolumeMode returns the volume representation required by the selected
+// isolation runtime. Kata mounts Docker data inside the guest, while Sysbox
+// receives the filesystem mount directly from Kubernetes.
+func (r EnvironmentConfiguration) StorageVolumeMode() corev1.PersistentVolumeMode {
+	if r.Isolation == IsolationKata {
+		return corev1.PersistentVolumeBlock
+	}
+	return corev1.PersistentVolumeFilesystem
 }
 
 // RuntimeConfiguration is fixed at creation so template and release edits do

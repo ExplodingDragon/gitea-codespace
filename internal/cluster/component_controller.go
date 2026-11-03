@@ -51,6 +51,10 @@ const (
 	componentReconcileInterval            = 5 * time.Minute
 )
 
+func gatewayHostKeySecretName(componentName string) string {
+	return componentName + "-ssh-host-key"
+}
+
 func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	if request.Namespace != "" {
 		return ctrl.Result{}, nil
@@ -155,7 +159,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, component *api.CodespaceComponent, role string) (*corev1.Secret, error) {
 	name := component.Name + "-cache"
 	if role == "gateway" {
-		name = component.Name + "-ssh-host-key"
+		name = gatewayHostKeySecretName(component.Name)
 	}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: r.ManagementNamespace}}
 	err := r.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret)

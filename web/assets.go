@@ -1,7 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-// Package web serves the compiled administration application.
+// Package web serves and localizes the compiled administration application.
 package web
 
 import (
@@ -13,7 +13,7 @@ import (
 
 // all: keeps the package buildable from a clean checkout that only contains dist/.gitkeep.
 //
-//go:embed all:dist
+//go:embed all:dist locales/*.json
 var assets embed.FS
 
 // Handler serves assets and application routes from the same origin as the API.

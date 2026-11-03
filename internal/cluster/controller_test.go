@@ -43,7 +43,7 @@ func testScheme(t *testing.T) *runtime.Scheme {
 func testEnvironment() api.EnvironmentConfiguration {
 	return api.EnvironmentConfiguration{
 		Isolation: "sysbox", RuntimeClassName: "sysbox-runc",
-		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, VolumeMode: corev1.PersistentVolumeFilesystem, AccessMode: corev1.ReadWriteOnce,
+		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, AccessMode: corev1.ReadWriteOnce,
 		Resources:     corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.Configuration{},
 	}
@@ -88,14 +88,11 @@ func TestRuntimeConfigurationRejectsDynamicResourceClaims(t *testing.T) {
 	require.EqualError(t, runtime.Validate(), "runtime dynamic resource claims are not supported")
 }
 
-func TestRuntimeConfigurationRequiresIsolationVolumeMode(t *testing.T) {
+func TestRuntimeConfigurationDerivesStorageVolumeMode(t *testing.T) {
 	runtime := testRuntime()
-	runtime.Isolation = "kata"
-	require.EqualError(t, runtime.Validate(), "kata isolation requires a raw Block volume so Docker data is mounted inside the guest")
-	runtime.VolumeMode = corev1.PersistentVolumeBlock
-	require.NoError(t, runtime.Validate())
-	runtime.Isolation = "sysbox"
-	require.EqualError(t, runtime.Validate(), "sysbox isolation requires a Filesystem volume")
+	require.Equal(t, corev1.PersistentVolumeFilesystem, runtime.StorageVolumeMode())
+	runtime.Isolation = api.IsolationKata
+	require.Equal(t, corev1.PersistentVolumeBlock, runtime.StorageVolumeMode())
 }
 
 func TestComponentConfigurationValidation(t *testing.T) {
@@ -274,7 +271,6 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	runtime := testRuntime()
 	runtime.Isolation = "kata"
 	runtime.RuntimeClassName = "kata-qemu-runtime-rs"
-	runtime.VolumeMode = corev1.PersistentVolumeBlock
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},

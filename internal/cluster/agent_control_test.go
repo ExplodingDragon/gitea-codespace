@@ -206,7 +206,7 @@ func TestAgentControlRecovery(t *testing.T) {
 		})
 	}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	cs.Spec.Runtime.VolumeMode = corev1.PersistentVolumeBlock
+	cs.Spec.Runtime.Isolation = api.IsolationKata
 	require.NoError(t, c.Update(t.Context(), cs))
 	cs.Status.Volume = api.ObservedResource{Name: "data", UID: "volume-uid"}
 	require.NoError(t, c.Status().Update(t.Context(), cs))

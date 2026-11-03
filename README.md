@@ -16,10 +16,17 @@ Gitea Codespace provides isolated, Dev Container-based development environments 
 - Kubernetes 1.31 or later;
 - Helm 4.3 or later;
 - a Gitea installation with Codespace support;
-- a working Kata Containers or Sysbox RuntimeClass;
+- a working Kata Containers or Sysbox RuntimeClass labeled with its isolation type;
 - a StorageClass compatible with the selected runtime.
 
-Kata and Sysbox require node-level installation. Verify the RuntimeClass, StorageClass, and Codespace image with a test Pod before enabling an environment template. The [Helm installation guide](charts/gitea-codespace/README.md) links to the runtime installation guides and documents the supported chart settings.
+Kata and Sysbox require node-level installation. Label each verified RuntimeClass so the administration page can associate it with the correct storage behavior:
+
+```sh
+kubectl label runtimeclass kata-qemu codespace.gitea.dev/isolation=kata
+kubectl label runtimeclass sysbox-runc codespace.gitea.dev/isolation=sysbox
+```
+
+Verify the RuntimeClass, StorageClass, and Codespace image with a test Pod before enabling an environment template. The [Helm installation guide](charts/gitea-codespace/README.md) links to the runtime installation guides and documents the supported chart settings.
 
 ## Install
 
@@ -64,7 +71,7 @@ kubectl -n codespace-system port-forward \
 Visit <http://127.0.0.1:18080> and sign in with the administration token. Complete the initial configuration in this order:
 
 1. Add a Gateway component and, when required, one or more Cache components.
-2. Add environment templates that reference verified runtime and storage classes.
+2. Add environment templates using the verified runtime and storage classes discovered from the cluster.
 3. Add a Gitea site with the Manager credentials created in Gitea.
 4. Assign the site's environment templates, Gateway, optional caches, and resource quotas.
 5. Enable the site after its status reports that the configuration is ready.
@@ -92,7 +99,7 @@ make install-tools
 make format
 make lint
 make test
-pnpm --dir web test
+make test-frontend
 make build
 ```
 

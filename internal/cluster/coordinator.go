@@ -329,7 +329,7 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 		return nil, nil, err
 	}
 	var hostKey corev1.Secret
-	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: gateway.Name + "-ssh-host-key"}, &hostKey); err != nil {
+	if err := c.Client.Get(ctx, types.NamespacedName{Namespace: c.ManagementNamespace, Name: gatewayHostKeySecretName(gateway.Name)}, &hostKey); err != nil {
 		return nil, nil, err
 	}
 	if hostKey.Labels[ComponentUIDLabel] != string(gateway.UID) || !metav1.IsControlledBy(&hostKey, &gateway) || !hostKey.DeletionTimestamp.IsZero() {

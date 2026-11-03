@@ -39,6 +39,14 @@ h2 {
 .topbar strong {
   font-size: 18px;
 }
+.topbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.language-select {
+  width: 132px;
+}
 .sidebar {
   padding: 20px 12px;
   border-right: 1px solid #d0d7de;
@@ -98,6 +106,13 @@ h2 {
   padding: 24px;
   margin: 12vh auto;
 }
+.login-language {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-bottom: 24px;
+}
 .login h1 {
   margin-bottom: 24px;
 }
@@ -141,6 +156,15 @@ td:last-child {
   margin: 4px 0 0;
   overflow-wrap: anywhere;
 }
+.technical-details {
+  margin-top: 4px;
+  max-width: 360px;
+  white-space: normal;
+}
+.technical-details code {
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
 .empty {
   padding: 48px 20px;
   text-align: center;
@@ -150,6 +174,12 @@ td:last-child {
   display: flex;
   flex-direction: column;
   gap: 8px;
+}
+.selection-summary {
+  display: flex;
+  flex-direction: column;
+  min-height: 34px;
+  justify-content: center;
 }
 .upstream-row,
 .feature-row {
@@ -179,6 +209,19 @@ td:last-child {
     border-right: 0;
     border-bottom: 1px solid #d0d7de;
     padding: 8px;
+  }
+  .topbar {
+    padding: 0 12px;
+  }
+  .topbar strong {
+    font-size: 16px;
+  }
+  .topbar-actions > svg,
+  .sign-out-label {
+    display: none;
+  }
+  .language-select {
+    width: 108px;
   }
   .sidebar a {
     flex: 0 0 auto;

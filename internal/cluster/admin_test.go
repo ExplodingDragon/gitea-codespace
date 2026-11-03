@@ -21,6 +21,8 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	nodev1 "k8s.io/api/node/v1"
+	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -42,6 +44,7 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	request := func(server *AdminServer, method, path, origin, csrf string, cookie *http.Cookie, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Origin", origin)
+		r.Header.Set("Accept-Language", "zh-CN")
 		r.Header.Set("X-CSRF-Token", csrf)
 		if cookie != nil {
 			r.AddCookie(cookie)
@@ -50,7 +53,13 @@ func TestAdminSessionLifecycle(t *testing.T) {
 		server.Handler().ServeHTTP(w, r)
 		return w
 	}
-	require.Equal(t, http.StatusForbidden, request(admin, "POST", "/api/admin/login", "https://attacker.example", "", nil, `{"token":"`+token+`"}`).Code)
+	invalidOrigin := request(admin, "POST", "/api/admin/login", "https://attacker.example", "", nil, `{"token":"`+token+`"}`)
+	require.Equal(t, http.StatusForbidden, invalidOrigin.Code)
+	var problem adminProblem
+	require.NoError(t, json.Unmarshal(invalidOrigin.Body.Bytes(), &problem))
+	require.Equal(t, "invalid_origin", problem.Code)
+	require.Equal(t, "请求来源与管理地址不一致。", problem.Message)
+	require.Empty(t, problem.Detail)
 	login := request(admin, "POST", "/api/admin/login", admin.PublicURL.String(), "", nil, `{"token":"`+token+`"}`)
 	require.Equal(t, http.StatusOK, login.Code, login.Body.String())
 	cookies := login.Result().Cookies()
@@ -82,6 +91,29 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	require.Empty(t, secrets.Items)
 }
 
+func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
+	defaultClass := "true"
+	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "sysbox-runc", Labels: map[string]string{api.RuntimeIsolationLabel: api.IsolationSysbox}}, Handler: "sysbox-runc"}
+	unmanagedRuntime := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "runc"}, Handler: "runc"}
+	storageClass := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "local-path", Annotations: map[string]string{"storageclass.kubernetes.io/is-default-class": defaultClass}}, Provisioner: "rancher.io/local-path"}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass).Build()
+	server := &AdminServer{Client: c, Namespace: "codespace-system"}
+
+	options, err := server.clusterOptions(t.Context())
+	require.NoError(t, err)
+	require.Equal(t, []adminRuntimeClass{{Name: "sysbox-runc", Handler: "sysbox-runc", Isolation: api.IsolationSysbox}}, options.RuntimeClasses)
+	require.Equal(t, []adminStorageClass{{Name: "local-path", Provisioner: "rancher.io/local-path", Default: true}}, options.StorageClasses)
+	w := httptest.NewRecorder()
+	server.handleResources(w, httptest.NewRequest(http.MethodGet, "/api/admin/cluster-options", nil))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	require.Contains(t, w.Body.String(), `"isolation":"sysbox"`)
+
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
+	require.NoError(t, server.saveTemplate(t.Context(), template, adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
+	template.Spec.Runtime.Isolation = api.IsolationKata
+	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
+}
+
 func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
@@ -110,10 +142,10 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	encoded, err := json.Marshal(input)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
-	server.resources(w, httptest.NewRequest("PUT", "/api/admin/sites/example", bytes.NewReader(encoded)))
+	server.handleResources(w, httptest.NewRequest("PUT", "/api/admin/sites/example", bytes.NewReader(encoded)))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	w = httptest.NewRecorder()
-	server.resources(w, httptest.NewRequest("PUT", "/api/admin/sites/example", bytes.NewReader(encoded)))
+	server.handleResources(w, httptest.NewRequest("PUT", "/api/admin/sites/example", bytes.NewReader(encoded)))
 	require.Equal(t, http.StatusConflict, w.Code)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(site), site))
 	require.NotEqual(t, oldRevision, site.ResourceVersion)
@@ -164,13 +196,13 @@ func TestAdminConfirmsMissingRuntimeWriterByExactIdentity(t *testing.T) {
 	body, err := json.Marshal(adminRuntimeRecovery{UID: cs.UID, ResourceVersion: cs.ResourceVersion, PodUID: cs.Status.Pod.UID})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
-	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
+	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
 	require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.Equal(t, "pod-uid", cs.Annotations[WriterStoppedAnnotation])
 
 	w = httptest.NewRecorder()
-	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
+	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
 	require.Equal(t, http.StatusConflict, w.Code)
 }
 
@@ -188,7 +220,7 @@ func TestAdminDeletesRuntimeOnlyAfterDisablingSite(t *testing.T) {
 	require.NoError(t, err)
 	remove := func() *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()
-		s.resources(w, httptest.NewRequest(http.MethodDelete, "/api/admin/runtimes/"+cs.Namespace+"/"+cs.Name, bytes.NewReader(body)))
+		s.handleResources(w, httptest.NewRequest(http.MethodDelete, "/api/admin/runtimes/"+cs.Namespace+"/"+cs.Name, bytes.NewReader(body)))
 		return w
 	}
 	require.Equal(t, http.StatusConflict, remove().Code)
@@ -227,7 +259,7 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	rotation, err := json.Marshal(adminWriteIdentity{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
-	server.resources(w, httptest.NewRequest(http.MethodPost, "/api/admin/components/gateway/rotate-ssh-host-key", bytes.NewReader(rotation)))
+	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/components/gateway/rotate-ssh-host-key", bytes.NewReader(rotation)))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(gatewaySecret), gatewaySecret))
 	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)

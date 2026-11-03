@@ -143,6 +143,8 @@ for resource in \
 	"storageclass/$CODESPACE_E2E_STORAGE_CLASS"; do
 	"$KUBECTL_BIN" get "$resource" >/dev/null
 done
+"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
+	"codespace.gitea.dev/isolation=$CODESPACE_E2E_RUNTIME_ISOLATION" --overwrite >/dev/null
 
 echo "Building Runtime test binaries"
 "$GO_BIN" test -c -tags netgo,osusergo -o "$ARTIFACTS/bin/agent.test" ./internal/agent

@@ -221,7 +221,7 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 		}
 		volume = corev1.PersistentVolumeClaim{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: cs.Namespace, Labels: map[string]string{SiteUIDLabel: string(cs.Spec.Site.UID), RuntimeUIDLabel: string(cs.UID)}},
-			Spec:       corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{cs.Spec.Runtime.AccessMode}, VolumeMode: ptr.To(cs.Spec.Runtime.VolumeMode), StorageClassName: ptr.To(cs.Spec.Runtime.StorageClassName), Resources: corev1.VolumeResourceRequirements{Requests: cs.Spec.Runtime.Storage}},
+			Spec:       corev1.PersistentVolumeClaimSpec{AccessModes: []corev1.PersistentVolumeAccessMode{cs.Spec.Runtime.AccessMode}, VolumeMode: ptr.To(cs.Spec.Runtime.StorageVolumeMode()), StorageClassName: ptr.To(cs.Spec.Runtime.StorageClassName), Resources: corev1.VolumeResourceRequirements{Requests: cs.Spec.Runtime.Storage}},
 		}
 		// Explicit deletion authorization, not garbage collection, releases user data.
 		if err := r.Client.Create(ctx, &volume); err != nil {
@@ -250,7 +250,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 	volumeMounts := []corev1.VolumeMount{{Name: "ephemeral", MountPath: "/run/codespace"}, {Name: "identity", MountPath: "/run/identity", ReadOnly: true}}
 	var volumeDevices []corev1.VolumeDevice
 	var dataDevice string
-	if runtime.VolumeMode == corev1.PersistentVolumeBlock {
+	if runtime.StorageVolumeMode() == corev1.PersistentVolumeBlock {
 		dataDevice = "/dev/codespace-data"
 		volumeDevices = []corev1.VolumeDevice{{Name: "data", DevicePath: dataDevice}}
 	} else {
@@ -287,7 +287,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 			}},
 		},
 	}
-	if runtime.Isolation == "kata" {
+	if runtime.Isolation == api.IsolationKata {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
 	} else {
 		pod.Spec.HostUsers = ptr.To(false)

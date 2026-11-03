@@ -67,7 +67,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 	}
 	if webIDE := request.DevContainer.WebIDE; webIDE.Enabled {
 		injected = append(injected, devcontainer.InjectedFeature{
-			Reference: strings.TrimSpace(webIDE.Feature), Origin: "platform Web IDE", InstallOnly: true,
+			Reference: webIDEFeatureReference, Origin: "platform Web IDE", InstallOnly: true,
 			Options: map[string]json.RawMessage{
 				"version":            json.RawMessage(strconv.Quote(strings.TrimSpace(webIDE.Version))),
 				"auth":               json.RawMessage(`"none"`),

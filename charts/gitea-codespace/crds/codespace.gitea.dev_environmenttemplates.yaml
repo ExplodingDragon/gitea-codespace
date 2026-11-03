@@ -79,8 +79,6 @@ spec:
                             items:
                               type: string
                             type: array
-                          feature:
-                            type: string
                           version:
                             type: string
                         required:
@@ -173,14 +171,6 @@ spec:
                     type: object
                   storageClassName:
                     type: string
-                  volumeMode:
-                    description: |-
-                      VolumeMode controls whether Kubernetes mounts the volume on the host or
-                      exposes a raw block device for the isolated runtime to mount itself.
-                    enum:
-                    - Filesystem
-                    - Block
-                    type: string
                 required:
                 - accessMode
                 - devContainer
@@ -190,7 +180,6 @@ spec:
                 - runtimeClassName
                 - storage
                 - storageClassName
-                - volumeMode
                 type: object
               tag:
                 pattern: ^[a-z0-9_-]{1,64}$

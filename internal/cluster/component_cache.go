@@ -35,10 +35,17 @@ import (
 )
 
 const (
-	cacheCredentialTTL = time.Hour
-	cacheOwnerTTL      = 15 * time.Second
-	cacheGCTTL         = 10 * time.Minute
+	cacheCredentialTTL           = time.Hour
+	cacheOwnerTTL                = 15 * time.Second
+	cacheGCTTL                   = 10 * time.Minute
+	cacheBytesAnnotation         = "codespace.gitea.dev/cache-bytes"
+	cacheMirrorBytesAnnotation   = "codespace.gitea.dev/mirror-bytes"
+	cacheCleanupResultAnnotation = "codespace.gitea.dev/cleanup-result"
 )
+
+func cacheOwnerLeaseName(componentName string) string {
+	return "cache-owner-" + componentName
+}
 
 type cacheMaterial struct {
 	component *api.CodespaceComponent
@@ -99,7 +106,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 
 func (s *ComponentServer) cacheAvailable(ctx context.Context, material *cacheMaterial) (bool, error) {
 	var lease coordinationv1.Lease
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: "cache-owner-" + material.component.Name}, &lease); err != nil {
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: cacheOwnerLeaseName(material.component.Name)}, &lease); err != nil {
 		if apierrors.IsNotFound(err) {
 			return false, nil
 		}
@@ -194,7 +201,7 @@ func (s *ComponentServer) claimCache(ctx context.Context, identity componentIden
 		return connect.NewError(connect.CodeFailedPrecondition, "cache is disabled")
 	}
 	now := metav1.NowMicro()
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-owner-" + material.component.Name, Namespace: s.ManagementNamespace}}
+	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: cacheOwnerLeaseName(material.component.Name), Namespace: s.ManagementNamespace}}
 	err := s.Client.Get(ctx, client.ObjectKeyFromObject(lease), lease)
 	missing := apierrors.IsNotFound(err)
 	if err != nil && !missing {
@@ -217,7 +224,7 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 		return connect.NewError(connect.CodeFailedPrecondition, "cache is disabled")
 	}
 	var lease coordinationv1.Lease
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: "cache-owner-" + material.component.Name}, &lease); err != nil {
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: cacheOwnerLeaseName(material.component.Name)}, &lease); err != nil {
 		return err
 	}
 	holder := strings.Split(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
@@ -231,9 +238,9 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 		if lease.Annotations == nil {
 			lease.Annotations = make(map[string]string)
 		}
-		lease.Annotations["codespace.gitea.dev/cache-bytes"] = strconv.FormatInt(status.CacheBytes, 10)
-		lease.Annotations["codespace.gitea.dev/mirror-bytes"] = strconv.FormatInt(status.MirrorBytes, 10)
-		lease.Annotations["codespace.gitea.dev/cleanup-result"] = status.CleanupResult
+		lease.Annotations[cacheBytesAnnotation] = strconv.FormatInt(status.CacheBytes, 10)
+		lease.Annotations[cacheMirrorBytesAnnotation] = strconv.FormatInt(status.MirrorBytes, 10)
+		lease.Annotations[cacheCleanupResultAnnotation] = status.CleanupResult
 	}
 	return s.Client.Update(ctx, &lease)
 }

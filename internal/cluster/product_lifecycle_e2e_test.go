@@ -404,13 +404,11 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
 			Enabled: true,
-			Feature: "ghcr.io/coder/devcontainer-features/code-server:2.0.0",
 			Version: "4.121.0",
 		},
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
 	if runtime.isolation == "kata" {
-		runtimeConfiguration.VolumeMode = corev1.PersistentVolumeBlock
 		runtimeConfiguration.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
 	}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}

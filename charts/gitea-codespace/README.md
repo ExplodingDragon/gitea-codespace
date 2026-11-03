@@ -11,8 +11,9 @@ objects configured through the administration UI.
 - Helm 4.3 or later;
 - access to the Gitea Codespace platform image;
 - an administrator token stored in a Kubernetes Secret;
-- at least one verified Kata Containers or Sysbox RuntimeClass and compatible
-  StorageClass before an environment template is enabled.
+- at least one verified Kata Containers or Sysbox RuntimeClass labeled with
+  `codespace.gitea.dev/isolation=kata|sysbox`, and a compatible StorageClass
+  before an environment template is enabled.
 
 The chart references existing RuntimeClasses and leaves node configuration to
 the cluster operator. Install Kata using its
@@ -20,6 +21,14 @@ the cluster operator. Install Kata using its
 or install Sysbox on a dedicated node pool using its
 [Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Verify the selected runtime, storage, and platform image with a real Pod first.
+Label the verified RuntimeClass so Manager can present it with the correct
+isolation and volume behavior:
+
+```sh
+kubectl label runtimeclass kata-qemu codespace.gitea.dev/isolation=kata
+kubectl label runtimeclass sysbox-runc codespace.gitea.dev/isolation=sysbox
+```
+
 The broader isolation, storage, network, identity, and recovery design is
 defined in the [deployment requirements](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/deployment-requirements.md).
 

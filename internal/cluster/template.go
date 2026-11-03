@@ -21,6 +21,21 @@ import (
 
 type TemplateReconciler struct{ Client client.Client }
 
+func validateEnvironmentDependencies(ctx context.Context, reader client.Reader, configuration api.EnvironmentConfiguration) error {
+	var runtime nodev1.RuntimeClass
+	if err := reader.Get(ctx, types.NamespacedName{Name: configuration.RuntimeClassName}, &runtime); err != nil {
+		return fmt.Errorf("runtime class %q: %w", configuration.RuntimeClassName, err)
+	}
+	if runtime.Labels[api.RuntimeIsolationLabel] != configuration.Isolation {
+		return fmt.Errorf("runtime class %q is not labeled for %s isolation", runtime.Name, configuration.Isolation)
+	}
+	var storage storagev1.StorageClass
+	if err := reader.Get(ctx, types.NamespacedName{Name: configuration.StorageClassName}, &storage); err != nil {
+		return fmt.Errorf("storage class %q: %w", configuration.StorageClassName, err)
+	}
+	return nil
+}
+
 func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	var template api.EnvironmentTemplate
 	if err := r.Client.Get(ctx, request.NamespacedName, &template); err != nil {
@@ -30,12 +45,7 @@ func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Attested", Message: "An administrator recorded validation for this Runtime and storage configuration", ObservedGeneration: template.Generation}
 	problem := template.Validate()
 	if problem == nil {
-		var runtime nodev1.RuntimeClass
-		problem = r.Client.Get(ctx, types.NamespacedName{Name: template.Spec.Runtime.RuntimeClassName}, &runtime)
-	}
-	if problem == nil {
-		var storage storagev1.StorageClass
-		problem = r.Client.Get(ctx, types.NamespacedName{Name: template.Spec.Runtime.StorageClassName}, &storage)
+		problem = validateEnvironmentDependencies(ctx, r.Client, template.Spec.Runtime)
 	}
 	if problem != nil {
 		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "DependencyUnavailable", problem.Error()
