@@ -174,18 +174,25 @@ jobs:
           test -r "$KUBECONFIG"
 
           image_tag="$(cat .tmp/platform-image/tag)"
-          sudo k3s ctr --namespace k8s.io images import .tmp/platform-image/platform-image.tar
+          image_repository="${image_tag%:*}"
+          sudo k3s ctr --namespace k8s.io images import \
+            --base-name "$image_repository" \
+            --digests \
+            .tmp/platform-image/platform-image.tar
           image_digest="$(sudo k3s ctr --namespace k8s.io images list | awk -v ref="$image_tag" '$1 == ref {print $3}')"
           case "$image_digest" in
             sha256:????????????????????????????????????????????????????????????????) ;;
             *) echo "imported image has no sha256 digest" >&2; exit 1 ;;
           esac
+          image_reference="$image_repository@$image_digest"
+          sudo k3s ctr --namespace k8s.io images list | \
+            awk -v ref="$image_reference" '$1 == ref {found = 1} END {exit !found}'
 
           node_address="$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
           test -n "$node_address"
 
           {
-            echo "CODESPACE_IMAGE=$image_tag@$image_digest"
+            echo "CODESPACE_IMAGE=$image_reference"
             echo "CODESPACE_E2E_GITEA_LISTEN=$node_address:0"
             echo "CODESPACE_E2E_NODE_ADDRESS=$node_address"
             echo "KUBERNETES_RUNTIME_ISOLATION=$RUNTIME"
