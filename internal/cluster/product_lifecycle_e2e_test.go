@@ -397,19 +397,13 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		cleanupLifecycleResources(t, c, managementNamespace, siteName, namespace, templateName, gatewayName, cacheName, externalGatewayService)
 	})
 
-	runtimeConfiguration := testEnvironment()
-	runtimeConfiguration.Isolation = runtime.isolation
-	runtimeConfiguration.RuntimeClassName = runtime.runtimeClass
-	runtimeConfiguration.StorageClassName = runtime.storageClass
+	runtimeConfiguration := runtime.environmentConfiguration()
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
 			Enabled: true,
 			Version: "4.121.0",
 		},
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
-	}
-	if runtime.isolation == "kata" {
-		runtimeConfiguration.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
 	}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveTemplate(ctx, template, adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: templateName}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration}, Verification: "product lifecycle E2E"}, true))

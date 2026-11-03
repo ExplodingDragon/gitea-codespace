@@ -28,6 +28,7 @@ import (
 
 func TestKubernetesE2EManagerServing(t *testing.T) {
 	cluster := newE2ECluster(t, 2*time.Minute)
+	runtime := requireE2ERuntime(t)
 	namespace := cluster.createNamespace(t, "manager-e2e")
 	directory := t.TempDir()
 	token := strings.Repeat("test-administrator-", 4)
@@ -83,7 +84,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	var sessions corev1.SecretList
 	require.NoError(t, cluster.List(cluster.ctx, &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
-	body, err := json.Marshal(adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: namespace.Name}, Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: testEnvironment()}})
+	body, err := json.Marshal(adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: namespace.Name}, Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: runtime.environmentConfiguration()}})
 	require.NoError(t, err)
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, options.AdminPublicURL+"/api/admin/environments", bytes.NewReader(body))
 	require.NoError(t, err)
