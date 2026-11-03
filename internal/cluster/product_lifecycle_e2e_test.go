@@ -115,6 +115,15 @@ func (s *lifecycleRemote) CheckManager(_ context.Context, request *codespacev1.C
 	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL, ManagerName: "Kubernetes lifecycle E2E"}, nil
 }
 
+func (s *lifecycleRemote) RegisterManager(_ context.Context, request *codespacev1.RegisterManagerRequest) (*codespacev1.RegisterManagerResponse, error) {
+	if request.ProtocolVersion != 1 || request.Token != strings.Repeat("r", 40) || request.Name == "" {
+		return nil, connect.NewError(connect.CodeUnauthenticated, "invalid registration")
+	}
+	return &codespacev1.RegisterManagerResponse{
+		ManagerId: 1, ManagerSecret: strings.Repeat("e2e-site-secret-", 3), ManagerName: request.Name, GiteaWebUrl: s.baseURL,
+	}, nil
+}
+
 func (s *lifecycleRemote) DeclareManager(_ context.Context, request *codespacev1.DeclareManagerRequest) (*codespacev1.DeclareManagerResponse, error) {
 	if request.ProtocolVersion != 1 || len(request.Environments) != 1 || request.Environments[0].Tag != "standard" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid declaration")
@@ -368,7 +377,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", handler))
 	mux.Handle("/repo.git/", http.StripPrefix("/repo.git/", http.FileServer(http.Dir(repositoryDirectory))))
 	server := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/codespace/") && (r.Header.Get("x-codespace-manager-id") != "1" || r.Header.Get("x-codespace-manager-secret") != strings.Repeat("e2e-site-secret-", 3)) {
+		isRegistration := strings.HasSuffix(r.URL.Path, "/RegisterManager")
+		if strings.HasPrefix(r.URL.Path, "/api/codespace/") && !isRegistration && (r.Header.Get("x-codespace-manager-id") != "1" || r.Header.Get("x-codespace-manager-secret") != strings.Repeat("e2e-site-secret-", 3)) {
 			http.Error(w, "invalid Manager credential", http.StatusUnauthorized)
 			return
 		}
@@ -463,14 +473,14 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		corev1.ResourcePods: resource.MustParse("2"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"),
 		corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceLimitsCPU: resource.MustParse("2"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"), corev1.ResourceLimitsMemory: resource.MustParse("2Gi"),
 	}
-	siteSpec := adminSiteSpec{GiteaSiteSpec: api.GiteaSiteSpec{
+	siteSpec := adminSiteSpec{
 		DisplayName: "Lifecycle E2E site", URL: remote.baseURL, Enabled: true, AcceptCreates: true, StartupConcurrency: 1, CleanupConcurrency: 1,
 		Templates: []api.ResourceReference{{Name: template.Name, UID: template.UID}}, Gateway: api.ResourceReference{Name: gateway.Name, UID: gateway.UID}, Caches: []api.ResourceReference{{Name: cache.Name, UID: cache.UID}},
 		Quota: quota, ContainerLimits: corev1.LimitRangeItem{Type: corev1.LimitTypeContainer},
 		Upstreams: []api.NetworkDestination{{CIDR: host + "/32", Ports: []int32{int32(port)}}, {CIDR: "0.0.0.0/0", Ports: []int32{80, 443}}},
-	}, ManagerID: "1"}
+	}
 	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveSite(ctx, site, adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: siteName}, Spec: siteSpec, ManagerSecret: strings.Repeat("e2e-site-secret-", 3)}, true))
+	require.NoError(t, admin.saveSite(ctx, site, adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: siteName}, Spec: siteSpec, RegistrationToken: strings.Repeat("r", 40)}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(site), site) == nil && meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") && site.Status.CanonicalURL == remote.baseURL
 	}, 2*time.Minute, time.Second)

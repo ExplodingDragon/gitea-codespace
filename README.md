@@ -72,9 +72,10 @@ Visit <http://127.0.0.1:18080> and sign in with the administration token. Comple
 
 1. Add a Gateway component and, when required, one or more Cache components.
 2. Add environment templates using the verified runtime and storage classes discovered from the cluster.
-3. Add a Gitea site with the Manager credentials created in Gitea.
-4. Assign the site's environment templates, Gateway, optional caches, and resource quotas.
-5. Enable the site after its status reports that the configuration is ready.
+3. Open the Codespace Managers page in Gitea and copy the registration token for the intended site-wide or personal scope.
+4. Add a Gitea site with its display name, Gitea URL, and registration token. The Manager exchanges the token for a dedicated runtime identity and does not store the registration token.
+5. Assign the site's environment templates, Gateway, optional caches, and resource quotas.
+6. Enable the site after its status reports that the configuration is ready.
 
 Users can then create Codespaces from supported repository pages in Gitea.
 

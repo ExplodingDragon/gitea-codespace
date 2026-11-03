@@ -16,6 +16,10 @@ import (
 	"time"
 	"uuid"
 
+	"connectrpc.com/connect/v2"
+	"connectrpc.com/connect/v2/connecthttp"
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
@@ -114,8 +118,20 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
 }
 
-func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
+func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	ctx := t.Context()
+	registration := &adminRegistrationService{}
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, registration)
+	rpcHandler := http.NewServeMux()
+	connecthttp.Mount(rpcHandler, rpcServer)
+	path := "/" + codespacev1connect.ManagerServiceName + "/"
+	mux := http.NewServeMux()
+	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", rpcHandler))
+	gitea := httptest.NewServer(mux)
+	t.Cleanup(gitea.Close)
+	registration.webURL = "https://gitea.example.com"
+
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
 	gateway := testGatewayComponent("gateway", "gateway-uid")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, gateway).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
@@ -123,25 +139,58 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 		object.SetCreationTimestamp(metav1.Now())
 		return c.Create(ctx, object, opts...)
 	}}).Build()
-	server := &AdminServer{Client: c, Namespace: "codespace-system"}
+	server := &AdminServer{Client: c, Namespace: "codespace-system", RegistrationHTTPClient: gitea.Client()}
 	site := testSite("example", "")
+	site.Spec.URL = gitea.URL
 	site.ResourceVersion, site.Spec.Credential = "", api.ResourceReference{}
-	spec := adminSiteSpec{GiteaSiteSpec: site.Spec, ManagerID: "9007199254740993"}
-	input := adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: site.Name}, Spec: spec, ManagerSecret: strings.Repeat("secret", 8)}
+	spec := adminSiteSpec{
+		DisplayName: site.Spec.DisplayName, URL: site.Spec.URL, Enabled: site.Spec.Enabled, AcceptCreates: site.Spec.AcceptCreates,
+		StartupConcurrency: site.Spec.StartupConcurrency, CleanupConcurrency: site.Spec.CleanupConcurrency,
+		Templates: site.Spec.Templates, Gateway: site.Spec.Gateway, Caches: site.Spec.Caches, Quota: site.Spec.Quota,
+		ContainerLimits: site.Spec.ContainerLimits, Upstreams: site.Spec.Upstreams,
+	}
+	input := adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: site.Name}, Spec: spec, RegistrationToken: strings.Repeat("t", 40)}
+	invalid := site.DeepCopy()
+	invalid.Name = "invalid"
+	invalidInput := input
+	invalidInput.Name = invalid.Name
+	invalidInput.Spec.Templates = []api.ResourceReference{{Name: "missing", UID: "missing-uid"}}
+	require.Error(t, server.saveSite(ctx, invalid, invalidInput, true))
+	require.Zero(t, registration.calls)
 	require.NoError(t, server.saveSite(ctx, site, input, true))
+	require.Equal(t, 1, registration.calls)
 	require.EqualValues(t, 9007199254740993, site.Spec.ManagerID)
+	require.Equal(t, "example", site.Spec.DisplayName)
+	require.Equal(t, gitea.URL, site.Spec.URL)
+	require.Equal(t, strings.Repeat("t", 40), registration.token)
+	require.Equal(t, "example", registration.name)
+	require.Equal(t, spec, newAdminSiteSpec(site.Spec))
 	var credential corev1.Secret
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: site.Spec.Credential.Name}, &credential))
 	require.Equal(t, string(site.UID), credential.Labels[SiteUIDLabel])
 	require.Equal(t, site.UID, credential.OwnerReferences[0].UID)
-	oldRef := site.Spec.Credential
-	oldRevision := site.ResourceVersion
-	spec.GiteaSiteSpec = site.Spec
-	spec.DisplayName = "Updated site"
-	input.UID, input.ResourceVersion, input.Spec, input.ManagerSecret = site.UID, site.ResourceVersion, spec, strings.Repeat("updated", 8)
-	encoded, err := json.Marshal(input)
+	generatedInput := input
+	generatedInput.Name = ""
+	generatedInput.Spec.DisplayName = "Generated site"
+	encoded, err := json.Marshal(generatedInput)
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
+	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/sites", bytes.NewReader(encoded)))
+	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
+	var created map[string]string
+	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
+	require.Regexp(t, `^site-[0-9a-f-]{36}$`, created["name"])
+	var generated api.GiteaSite
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: created["name"]}, &generated))
+	require.Equal(t, "Generated site", generated.Spec.DisplayName)
+
+	oldRef := site.Spec.Credential
+	oldRevision := site.ResourceVersion
+	spec.DisplayName = "Updated site"
+	input.UID, input.ResourceVersion, input.Spec, input.RegistrationToken = site.UID, site.ResourceVersion, spec, ""
+	encoded, err = json.Marshal(input)
+	require.NoError(t, err)
+	w = httptest.NewRecorder()
 	server.handleResources(w, httptest.NewRequest("PUT", "/api/admin/sites/example", bytes.NewReader(encoded)))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
 	w = httptest.NewRecorder()
@@ -149,21 +198,22 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	require.Equal(t, http.StatusConflict, w.Code)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(site), site))
 	require.NotEqual(t, oldRevision, site.ResourceVersion)
-	require.NotEqual(t, oldRef, site.Spec.Credential)
+	require.Equal(t, oldRef, site.Spec.Credential)
 	items, err := server.listResources(ctx, "sites")
 	require.NoError(t, err)
 	encoded, err = json.Marshal(items)
 	require.NoError(t, err)
-	require.Contains(t, string(encoded), `"managerID":"9007199254740993"`)
-	require.NotContains(t, string(encoded), input.ManagerSecret)
+	require.NotContains(t, string(encoded), "managerID")
+	require.NotContains(t, string(encoded), "credential")
+	require.NotContains(t, string(encoded), strings.Repeat("s", 40))
 
 	// A controller can finish the ownership binding after a lost HTTP response.
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: site.Spec.Credential.Name}, &credential))
 	credential.Labels, credential.OwnerReferences = map[string]string{pendingSiteLabel: site.Name}, nil
 	require.NoError(t, c.Update(ctx, &credential))
 	require.NoError(t, bindSiteCredential(ctx, c, server.Namespace, site))
-	var old corev1.Secret
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: server.Namespace, Name: oldRef.Name}, &old))
+	old := corev1.Secret{ObjectMeta: metav1.ObjectMeta{GenerateName: "site-credential-", Namespace: server.Namespace, Labels: map[string]string{pendingSiteLabel: "missing-site"}}}
+	require.NoError(t, c.Create(ctx, &old))
 	old.CreationTimestamp = metav1.NewTime(time.Now().Add(-2 * time.Hour))
 	require.NoError(t, c.Update(ctx, &old))
 	require.NoError(t, server.pruneCredentials(ctx))
@@ -178,6 +228,23 @@ func TestAdminSiteCredentialAndConcurrentEdit(t *testing.T) {
 	encoded, err = json.Marshal(items)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "private-value")
+}
+
+type adminRegistrationService struct {
+	codespacev1connect.UnimplementedManagerServiceHandler
+	webURL string
+	token  string
+	name   string
+	calls  int
+}
+
+func (s *adminRegistrationService) RegisterManager(_ context.Context, request *codespacev1.RegisterManagerRequest) (*codespacev1.RegisterManagerResponse, error) {
+	s.calls++
+	s.token = request.GetToken()
+	s.name = request.GetName()
+	return &codespacev1.RegisterManagerResponse{
+		ManagerId: 9007199254740993, ManagerSecret: strings.Repeat("s", 40), ManagerName: request.Name, GiteaWebUrl: s.webURL,
+	}, nil
 }
 
 func TestAdminConfirmsMissingRuntimeWriterByExactIdentity(t *testing.T) {

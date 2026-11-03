@@ -15,11 +15,11 @@ const editing = ref(false);
 const selected = ref<Resource<Site>>();
 const form = ref<Site>();
 const name = ref('');
-const secret = ref('');
+const registrationToken = ref('');
 const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
-const dirty = useDirtyForm(() => ({name: name.value, form: form.value, secret: secret.value}));
+const dirty = useDirtyForm(() => ({form: form.value, registrationToken: registrationToken.value}));
 const quotaFields = computed(() => [
   {key: 'pods', label: t('site.pods')},
   {key: 'persistentvolumeclaims', label: t('site.persistentVolumes')},
@@ -46,15 +46,13 @@ onMounted(load);
 function edit(site?: Resource<Site>) {
   selected.value = site;
   name.value = site?.name ?? '';
-  secret.value = '';
+  registrationToken.value = '';
   error.value = '';
   form.value = site
     ? structuredClone(toRaw(site.spec))
     : {
         displayName: '',
         url: '',
-        managerID: '',
-        credential: {name: '', uid: ''},
         enabled: false,
         acceptCreates: true,
         startupConcurrency: 1,
@@ -82,7 +80,7 @@ function edit(site?: Resource<Site>) {
 function close() {
   if (!dirty.confirmDiscard()) return;
   editing.value = false;
-  secret.value = '';
+  registrationToken.value = '';
   dirty.endTracking();
 }
 async function save() {
@@ -90,13 +88,13 @@ async function save() {
   error.value = '';
   try {
     await request(`sites${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
-      name: name.value,
+      name: selected.value ? name.value : '',
       uid: selected.value?.uid ?? '',
       resourceVersion: selected.value?.resourceVersion ?? '',
       spec: form.value,
-      managerSecret: secret.value,
+      registrationToken: registrationToken.value,
     });
-    secret.value = '';
+    registrationToken.value = '';
     editing.value = false;
     dirty.endTracking();
     await load();
@@ -164,11 +162,13 @@ function remove(site: Resource<Site>) {
     @submit.prevent="save"
   >
     <div class="fields">
-      <NFormItem :label="t('common.resourceName')">
+      <NFormItem
+        v-if="selected"
+        :label="t('common.resourceName')"
+      >
         <NInput
           v-model:value="name"
-          :disabled="!!selected"
-          required
+          disabled
         />
       </NFormItem>
       <NFormItem :label="t('site.displayName')">
@@ -184,22 +184,17 @@ function remove(site: Resource<Site>) {
           required
         />
       </NFormItem>
-      <NFormItem :label="t('site.managerID')">
-        <NInput
-          v-model:value="form.managerID"
-          :disabled="!!selected"
-          :placeholder="t('site.managerIDPlaceholder')"
-          required
-        />
-      </NFormItem>
     </div>
-    <NFormItem :label="selected ? t('site.replaceManagerSecret') : t('site.managerSecret')">
+    <NFormItem
+      v-if="!selected"
+      :label="t('site.registrationToken')"
+      :feedback="t('site.registrationTokenHelp')"
+    >
       <NInput
-        v-model:value="secret"
+        v-model:value="registrationToken"
         type="password"
         autocomplete="new-password"
-        :placeholder="t('site.retainSecret')"
-        :required="!selected"
+        required
       />
     </NFormItem>
     <div class="fields">
@@ -363,7 +358,6 @@ function remove(site: Resource<Site>) {
           </td>
           <td>
             {{ site.spec.url }}
-            <p class="muted">{{ t('site.manager', {id: site.spec.managerID}) }}</p>
           </td>
           <td><ResourceStatus :resource="site" /></td>
           <td>

@@ -97,10 +97,9 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))
 	}
-	canonical := strings.TrimRight(response.GiteaWebUrl, "/")
-	canonicalURL, err := url.Parse(canonical)
-	if err != nil || (canonicalURL.Scheme != "https" && canonicalURL.Scheme != "http") || canonicalURL.Hostname() == "" || canonicalURL.User != nil || canonicalURL.RawQuery != "" || canonicalURL.Fragment != "" {
-		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea returned an invalid canonical URL"))
+	canonical, err := canonicalGiteaURL(response.GiteaWebUrl)
+	if err != nil {
+		return r.condition(ctx, &site, "IdentityUnavailable", err)
 	}
 	var sites api.GiteaSiteList
 	if err := r.Client.List(ctx, &sites); err != nil {
@@ -116,6 +115,15 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	}
 	site.Status.CanonicalURL = canonical
 	return r.condition(ctx, &site, "IdentityVerified", nil)
+}
+
+func canonicalGiteaURL(raw string) (string, error) {
+	canonical := strings.TrimRight(raw, "/")
+	u, err := url.Parse(canonical)
+	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+		return "", fmt.Errorf("gitea returned an invalid canonical URL")
+	}
+	return canonical, nil
 }
 
 func (r *SiteReconciler) condition(ctx context.Context, site *api.GiteaSite, reason string, problem error) (ctrl.Result, error) {

@@ -313,7 +313,7 @@ func siteManagerClient(ctx context.Context, c client.Client, managementNamespace
 		return nil, fmt.Errorf("site credential ownership or identity is invalid")
 	}
 	transport := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return controlplane.NewManagerServiceClient(transport, strings.TrimRight(site.Status.CanonicalURL, "/")+"/api/codespace", site.Spec.ManagerID, string(secret.Data["managerSecret"])), nil
+	return controlplane.NewManagerServiceClient(transport, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(secret.Data["managerSecret"])), nil
 }
 
 func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) (*codespacev1.DeclareManagerRequest, []string, error) {

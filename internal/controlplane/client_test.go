@@ -59,10 +59,45 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 	}
 }
 
+func TestNewManagerRegistrationClientDoesNotAddAuthentication(t *testing.T) {
+	t.Parallel()
+
+	service := &authenticationService{}
+	rpcServer := connect.NewServer()
+	codespacev1connect.RegisterManagerServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	server := httptest.NewServer(handler)
+	defer server.Close()
+
+	client := NewManagerRegistrationClient(server.Client(), server.URL)
+	response, err := client.RegisterManager(t.Context(), &codespacev1.RegisterManagerRequest{
+		ProtocolVersion: ProtocolVersion,
+		Token:           "registration-token",
+		Name:            "Manager",
+	})
+	if err != nil {
+		t.Fatalf("register manager: %v", err)
+	}
+	if response.GetManagerId() != 42 || service.managerID != "" || service.managerSecret != "" {
+		t.Fatalf("registration response/authentication = (%d, %q, %q)", response.GetManagerId(), service.managerID, service.managerSecret)
+	}
+}
+
 type authenticationService struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
 	managerID     string
 	managerSecret string
+}
+
+func (s *authenticationService) RegisterManager(
+	ctx context.Context,
+	_ *codespacev1.RegisterManagerRequest,
+) (*codespacev1.RegisterManagerResponse, error) {
+	info, _ := connect.CallInfoForServerContext(ctx)
+	s.managerID = info.RequestHeader().Get(ManagerIDHeader)
+	s.managerSecret = info.RequestHeader().Get(ManagerSecretHeader)
+	return &codespacev1.RegisterManagerResponse{ManagerId: 42}, nil
 }
 
 func (s *authenticationService) DeclareManager(

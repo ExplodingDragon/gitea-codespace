@@ -153,7 +153,8 @@ func TestAgentControlRecovery(t *testing.T) {
 	gitea := httptest.NewServer(giteaMux)
 	defer gitea.Close()
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(site), site))
-	site.Status.CanonicalURL = gitea.URL
+	site.Spec.URL = gitea.URL
+	site.Status.CanonicalURL = "https://gitea.example.com"
 	// Site status is not registered separately in this fixture.
 	require.NoError(t, c.Update(t.Context(), site))
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: site.Spec.Credential.Name, Namespace: "codespace-system", UID: site.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-manager-secret")}}

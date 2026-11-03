@@ -162,9 +162,10 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 		mux.ServeHTTP(w, r)
 	}))
 	defer server.Close()
-	remote.url = server.URL
+	remote.url = "https://gitea.example.com"
 	site := testSite("example", "site-uid")
-	site.Status.NamespaceUID, site.Status.CanonicalURL = "namespace-uid", server.URL
+	site.Spec.URL = server.URL
+	site.Status.NamespaceUID, site.Status.CanonicalURL = "namespace-uid", remote.url
 	site.Status.Conditions = []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionTrue, Reason: "IdentityVerified", ObservedGeneration: 1}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}, Status: api.EnvironmentTemplateStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1}}}}

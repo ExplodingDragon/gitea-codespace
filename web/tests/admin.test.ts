@@ -9,7 +9,7 @@ import type {
   Site,
 } from '../src/api';
 
-test('native resource editing preserves identity and write-only credentials', async ({page}) => {
+test('site registration creates a server-managed identity and preserves it on edit', async ({page}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const sites: Resource<Site>[] = [];
@@ -95,7 +95,7 @@ test('native resource editing preserves identity and write-only credentials', as
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
   };
   let signedIn = false;
-  let lastWrite: {managerSecret?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
+  let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
   let recoveryWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
   const requestedLanguages: string[] = [];
@@ -166,12 +166,12 @@ test('native resource editing preserves identity and write-only credentials', as
         sites[0] = {...sites[0], resourceVersion: '2', spec: body.spec};
       } else
         sites.push({
-          name: body.name,
+          name: 'site-generated',
           uid: 'site-uid',
           resourceVersion: '1',
           generation: 1,
           deleting: false,
-          spec: {...body.spec, credential: {name: 'credential', uid: 'credential-uid'}},
+          spec: body.spec,
         });
     }
     await route.fulfill({json: {name: body.name}});
@@ -206,11 +206,9 @@ test('native resource editing preserves identity and write-only credentials', as
   await page.getByText('English', {exact: true}).last().click();
   await page.getByRole('link', {name: 'Gitea sites', exact: true}).click();
   await page.getByRole('button', {name: 'Add site'}).click();
-  await field('Resource name').fill('production');
   await field('Display name').fill('Production Gitea');
   await field('Gitea URL').fill('https://gitea.example.com');
-  await field('Manager ID').fill('9007199254740993');
-  await page.getByPlaceholder('Leave blank to retain the configured secret').fill('private-manager-secret');
+  await field('Registration token').fill('0000000000000000000000000000000000000000');
   await page
     .locator('.n-form-item')
     .filter({hasText: /^Environment templates/})
@@ -225,17 +223,16 @@ test('native resource editing preserves identity and write-only credentials', as
     .click();
   await page.getByText('gateway', {exact: true}).click();
   await page.getByRole('button', {name: 'Save site'}).click();
-  await expect(page.getByText('Manager 9007199254740993', {exact: true})).toBeVisible();
-  expect(lastWrite.spec!.managerID).toBe('9007199254740993');
-  expect(lastWrite.managerSecret).toBe('private-manager-secret');
+  await expect(page.getByText('Production Gitea', {exact: true})).toBeVisible();
+  expect(lastWrite.registrationToken).toBe('0000000000000000000000000000000000000000');
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
-  await expect(page.getByPlaceholder('Leave blank to retain the configured secret')).toHaveValue('');
+  await expect(field('Registration token')).toHaveCount(0);
   await field('Display name').fill('Renamed Gitea');
   await page.getByRole('button', {name: 'Save site'}).click();
   await expect(page.getByText('Renamed Gitea', {exact: true})).toBeVisible();
   expect(lastWrite.uid).toBe('site-uid');
   expect(lastWrite.resourceVersion).toBe('1');
-  expect(lastWrite.managerSecret).toBe('');
+  expect(lastWrite.registrationToken).toBe('');
   await page.screenshot({path: 'test-results/native-sites-desktop.png', fullPage: true});
   await page.setViewportSize({width: 390, height: 844});
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();

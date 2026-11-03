@@ -42,11 +42,12 @@ type adminProblem struct {
 }
 
 type AdminServer struct {
-	Client     client.Client
-	Namespace  string
-	PublicURL  *url.URL
-	TokenFile  string
-	loginLimit *rate.Limiter
+	Client                 client.Client
+	Namespace              string
+	PublicURL              *url.URL
+	TokenFile              string
+	RegistrationHTTPClient *http.Client
+	loginLimit             *rate.Limiter
 }
 
 func NewAdminServer(reader client.Client, namespace, publicURL, tokenFile string) (*AdminServer, error) {
@@ -68,7 +69,16 @@ func NewAdminServer(reader client.Client, namespace, publicURL, tokenFile string
 		}
 	}
 	u.Path = ""
-	s := &AdminServer{Client: reader, Namespace: namespace, PublicURL: u, TokenFile: tokenFile, loginLimit: rate.NewLimiter(1, 5)}
+	s := &AdminServer{
+		Client: reader, Namespace: namespace, PublicURL: u, TokenFile: tokenFile,
+		RegistrationHTTPClient: &http.Client{
+			Timeout: 15 * time.Second,
+			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		},
+		loginLimit: rate.NewLimiter(1, 5),
+	}
 	if _, err := s.readAdminToken(); err != nil {
 		return nil, err
 	}

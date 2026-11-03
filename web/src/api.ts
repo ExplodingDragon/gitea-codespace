@@ -121,8 +121,6 @@ export type Environment = {
 export type Site = {
   displayName: string;
   url: string;
-  managerID: string;
-  credential: ResourceReference;
   enabled: boolean;
   acceptCreates: boolean;
   startupConcurrency: number;

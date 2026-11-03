@@ -36,6 +36,14 @@ const (
 	ManagerSecretHeader = "x-codespace-manager-secret"
 )
 
+// NewManagerRegistrationClient returns a ManagerService client without a runtime identity.
+func NewManagerRegistrationClient(httpClient connecthttp.HTTPClient, baseURL string) codespacev1connect.ManagerServiceClient {
+	client := connect.NewClient(connecthttp.NewTransport(httpClient, baseURL,
+		connecthttp.WithReadMaxBytes(codespacev1.ManagerServiceMaxMessageBytes),
+		connecthttp.WithSendMaxBytes(codespacev1.ManagerServiceMaxMessageBytes)))
+	return codespacev1connect.NewManagerServiceClient(client)
+}
+
 // NewManagerServiceClient returns an authenticated ManagerService client.
 func NewManagerServiceClient(httpClient connecthttp.HTTPClient, baseURL string, managerID int64, managerSecret string) codespacev1connect.ManagerServiceClient {
 	client := connect.NewClient(connecthttp.NewTransport(httpClient, baseURL,

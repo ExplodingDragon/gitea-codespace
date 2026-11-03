@@ -74,10 +74,12 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 	targetServer, unrelatedServer := serveManagerRemote(t, target), serveManagerRemote(t, unrelated)
 
 	site := testSite("target", "target-site")
-	site.Status.CanonicalURL = targetServer.URL
+	site.Spec.URL = targetServer.URL
+	site.Status.CanonicalURL = "https://target.gitea.example.com"
 	site.Spec.Credential = api.ResourceReference{Name: "target-credential", UID: "target-credential-uid"}
 	unrelatedSite := testSite("unrelated", "unrelated-site")
-	unrelatedSite.Status.CanonicalURL = unrelatedServer.URL
+	unrelatedSite.Spec.URL = unrelatedServer.URL
+	unrelatedSite.Status.CanonicalURL = "https://unrelated.gitea.example.com"
 	unrelatedSite.Spec.Credential = api.ResourceReference{Name: "unrelated-credential", UID: "unrelated-credential-uid"}
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: site.Spec.Credential.Name, Namespace: "codespace-system", UID: site.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("target")}}
 	unrelatedCredential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: unrelatedSite.Spec.Credential.Name, Namespace: "codespace-system", UID: unrelatedSite.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(unrelatedSite.UID)}}, Data: map[string][]byte{"managerSecret": []byte("unrelated")}}
