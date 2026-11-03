@@ -11,7 +11,8 @@ import (
 	"strings"
 )
 
-//go:embed dist
+// all: keeps the package buildable from a clean checkout that only contains dist/.gitkeep.
+//go:embed all:dist
 var assets embed.FS
 
 // Handler serves assets and application routes from the same origin as the API.

@@ -3,5 +3,7 @@ bin/
 codespace-state/
 .tmp/
 web/node_modules/
+web/dist/*
+!web/dist/.gitkeep
 web/test-results/
 web/playwright-report/
