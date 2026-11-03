@@ -42,7 +42,7 @@ func testCacheComponent(name string, uid types.UID) *api.CodespaceComponent {
 		Spec: api.CodespaceComponentSpec{
 			Role: "cache", DisplayName: "Build cache", Resources: testComponentResources(),
 			Cache: &api.CacheComponentSpec{
-				Enabled: true, PublicURL: "https://cache.example.com", MaxSize: "1GiB", MaxAge: "24h", GCInterval: "1h",
+				Enabled: true, PublicURL: "https://cache.example.com", MaxSize: "768MiB", MaxAge: "24h", GCInterval: "1h",
 				Storage:   api.CacheStorage{Driver: "filesystem", VolumeSize: "1Gi", MinFreeSpace: "128MiB"},
 				Upstreams: map[string]api.CacheUpstream{"docker.io": {Allow: []string{"library/*"}}},
 			},

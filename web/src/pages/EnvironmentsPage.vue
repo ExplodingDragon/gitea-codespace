@@ -6,11 +6,13 @@ import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type ClusterOptions, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import JsonEditor from '../components/JsonEditor.vue';
+import MeasurementInput from '../components/MeasurementInput.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import {measurementBaseValue} from '../utils/measurement';
 
 const {t} = useI18n();
 const items = ref<Resource<Environment>[]>([]);
-const cluster = ref<ClusterOptions>({runtimeClasses: [], storageClasses: []});
+const cluster = ref<ClusterOptions>({runtimeClasses: [], storageClasses: [], gateways: []});
 const editing = ref(false);
 const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
@@ -31,38 +33,46 @@ const dirty = useDirtyForm(() => ({
 
 const isolationOptions = computed(() => {
   const available = new Set(cluster.value.runtimeClasses.map(({isolation}) => isolation));
-  return [
-    {label: 'Kata', value: 'kata'},
-    {label: 'Sysbox', value: 'sysbox'},
+  const options = [
+    {label: 'Kata', value: 'kata', disabled: false},
+    {label: 'Sysbox', value: 'sysbox', disabled: false},
   ].filter(({value}) => available.has(value as 'kata' | 'sysbox'));
+  const current = form.value?.runtime.isolation;
+  if (current && !options.some(({value}) => value === current))
+    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
+  return options;
 });
-const runtimeOptions = computed(() =>
-  cluster.value.runtimeClasses
+const runtimeOptions = computed(() => {
+  const options = cluster.value.runtimeClasses
     .filter(({isolation}) => isolation === form.value?.runtime.isolation)
-    .map(({name, handler}) => ({label: name, value: name, handler})),
-);
-const storageOptions = computed(() =>
-  cluster.value.storageClasses.map(({name, provisioner, default: isDefault}) => ({
+    .map(({name, handler}) => ({label: name, value: name, handler, disabled: false}));
+  const current = form.value?.runtime.runtimeClassName;
+  if (current && !options.some(({value}) => value === current))
+    options.push({
+      label: t('common.unavailableOption', {name: current}),
+      value: current,
+      handler: '',
+      disabled: true,
+    });
+  return options;
+});
+const storageOptions = computed(() => {
+  const options = cluster.value.storageClasses.map(({name, provisioner, default: isDefault}) => ({
     label: isDefault ? `${name} (${t('environment.defaultStorage')})` : name,
     value: name,
     provisioner,
-  })),
-);
-const selectIsolation = computed(
-  () =>
-    isolationOptions.value.length > 1 ||
-    !isolationOptions.value.some(({value}) => value === form.value?.runtime.isolation),
-);
-const selectRuntimeClass = computed(
-  () =>
-    runtimeOptions.value.length > 1 ||
-    !runtimeOptions.value.some(({value}) => value === form.value?.runtime.runtimeClassName),
-);
-const selectStorageClass = computed(
-  () =>
-    storageOptions.value.length > 1 ||
-    !storageOptions.value.some(({value}) => value === form.value?.runtime.storageClassName),
-);
+    disabled: false,
+  }));
+  const current = form.value?.runtime.storageClassName;
+  if (current && !options.some(({value}) => value === current))
+    options.push({
+      label: t('common.unavailableOption', {name: current}),
+      value: current,
+      provisioner: '',
+      disabled: true,
+    });
+  return options;
+});
 
 async function load() {
   busy.value = true;
@@ -100,7 +110,9 @@ function edit(item?: Resource<Environment>) {
         runtime: {
           isolation: isolationOptions.value[0]?.value ?? 'kata',
           runtimeClassName: '',
-          storageClassName: cluster.value.storageClasses[0]?.name ?? '',
+          storageClassName:
+            cluster.value.storageClasses.find(({default: isDefault}) => isDefault)?.name ??
+            (cluster.value.storageClasses.length === 1 ? cluster.value.storageClasses[0].name : ''),
           storage: {storage: '20Gi'},
           accessMode: 'ReadWriteOncePod',
           resources: {requests: {cpu: '1', memory: '1Gi'}, limits: {cpu: '2', memory: '2Gi'}},
@@ -162,6 +174,14 @@ async function save() {
       !cluster.value.storageClasses.some(({name: storageName}) => storageName === form.value!.runtime.storageClassName)
     )
       throw new Error(t('environment.invalidStorageClass'));
+    for (const kind of ['cpu', 'memory'] as const) {
+      const request = measurementBaseValue(form.value!.runtime.resources.requests[kind], kind);
+      const limit = measurementBaseValue(form.value!.runtime.resources.limits[kind], kind);
+      if (request === null || limit === null || request <= 0 || request > limit)
+        throw new Error(t('environment.invalidResourceRange', {resource: t(`units.${kind}`)}));
+    }
+    if ((measurementBaseValue(form.value!.runtime.storage.storage, 'storage') ?? 0) <= 0)
+      throw new Error(t('environment.invalidStorageSize'));
     const {extensions, features} = parseDevContainerAdditions();
     form.value!.runtime.devContainer.features = features;
     if (form.value!.runtime.devContainer.webIDE.enabled)
@@ -257,7 +277,7 @@ function remove(item: Resource<Environment>) {
     class="editor"
     @submit.prevent="save"
   >
-    <h2>{{ t('environment.runtimeSection') }}</h2>
+    <h2>{{ t('environment.basicSection') }}</h2>
     <div class="fields">
       <NFormItem :label="t('common.resourceName')">
         <NInput
@@ -274,64 +294,45 @@ function remove(item: Resource<Environment>) {
       </NFormItem>
     </div>
     <NFormItem :label="t('environment.description')"><NInput v-model:value="form.description" /></NFormItem>
+
+    <h2>{{ t('environment.runtimeSection') }}</h2>
     <div class="fields">
-      <NFormItem :label="t('environment.isolation')">
+      <NFormItem
+        :label="t('environment.isolation')"
+        :feedback="t('environment.isolationHelp')"
+      >
         <NSelect
-          v-if="selectIsolation"
           :value="form.runtime.isolation"
           :options="isolationOptions"
           @update:value="setIsolation"
         />
-        <div
-          v-else
-          class="selection-summary"
-        >
-          <strong>{{ isolationOptions[0]?.label }}</strong>
-        </div>
       </NFormItem>
-      <NFormItem :label="t('environment.runtimeClass')">
+      <NFormItem
+        :label="t('environment.runtimeClass')"
+        :feedback="t('environment.runtimeClassHelp')"
+      >
         <NSelect
-          v-if="selectRuntimeClass"
           v-model:value="form.runtime.runtimeClassName"
           :options="runtimeOptions"
         />
-        <div
-          v-else
-          class="selection-summary"
-        >
-          <strong>{{ runtimeOptions[0]?.label }}</strong>
-          <span
-            v-if="runtimeOptions[0]?.handler"
-            class="muted"
-          >
-            {{ t('environment.runtimeHandler', {handler: runtimeOptions[0].handler}) }}
-          </span>
-        </div>
       </NFormItem>
     </div>
 
     <h2>{{ t('environment.storageSection') }}</h2>
     <div class="fields">
-      <NFormItem :label="t('environment.storageClass')">
+      <NFormItem
+        :label="t('environment.storageClass')"
+        :feedback="t('environment.storageClassHelp')"
+      >
         <NSelect
-          v-if="selectStorageClass"
           v-model:value="form.runtime.storageClassName"
           :options="storageOptions"
         />
-        <div
-          v-else
-          class="selection-summary"
-        >
-          <strong>{{ storageOptions[0]?.label }}</strong>
-          <span
-            v-if="storageOptions[0]?.provisioner"
-            class="muted"
-          >
-            {{ storageOptions[0].provisioner }}
-          </span>
-        </div>
       </NFormItem>
-      <NFormItem :label="t('environment.volumeAccess')">
+      <NFormItem
+        :label="t('environment.volumeAccess')"
+        :feedback="t('environment.volumeAccessHelp')"
+      >
         <NSelect
           v-model:value="form.runtime.accessMode"
           :options="[
@@ -341,9 +342,10 @@ function remove(item: Resource<Environment>) {
         />
       </NFormItem>
       <NFormItem :label="t('environment.storage')">
-        <NInput
-          v-model:value="form.runtime.storage.storage"
-          required
+        <MeasurementInput
+          v-model="form.runtime.storage.storage"
+          kind="storage"
+          :aria-label="t('environment.storage')"
         />
       </NFormItem>
       <NFormItem :label="t('environment.sshKeyType')">
@@ -355,28 +357,37 @@ function remove(item: Resource<Environment>) {
           ]"
         />
       </NFormItem>
+    </div>
+
+    <h2>{{ t('environment.computeSection') }}</h2>
+    <p class="section-help">{{ t('environment.computeHelp') }}</p>
+    <div class="fields">
       <NFormItem :label="t('environment.cpuRequest')">
-        <NInput
-          v-model:value="form.runtime.resources.requests.cpu"
-          required
+        <MeasurementInput
+          v-model="form.runtime.resources.requests.cpu"
+          kind="cpu"
+          :aria-label="t('environment.cpuRequest')"
         />
       </NFormItem>
       <NFormItem :label="t('environment.cpuLimit')">
-        <NInput
-          v-model:value="form.runtime.resources.limits.cpu"
-          required
+        <MeasurementInput
+          v-model="form.runtime.resources.limits.cpu"
+          kind="cpu"
+          :aria-label="t('environment.cpuLimit')"
         />
       </NFormItem>
       <NFormItem :label="t('environment.memoryRequest')">
-        <NInput
-          v-model:value="form.runtime.resources.requests.memory"
-          required
+        <MeasurementInput
+          v-model="form.runtime.resources.requests.memory"
+          kind="memory"
+          :aria-label="t('environment.memoryRequest')"
         />
       </NFormItem>
       <NFormItem :label="t('environment.memoryLimit')">
-        <NInput
-          v-model:value="form.runtime.resources.limits.memory"
-          required
+        <MeasurementInput
+          v-model="form.runtime.resources.limits.memory"
+          kind="memory"
+          :aria-label="t('environment.memoryLimit')"
         />
       </NFormItem>
     </div>

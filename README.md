@@ -19,7 +19,7 @@ Gitea Codespace provides isolated, Dev Container-based development environments 
 - a working Kata Containers or Sysbox RuntimeClass labeled with its isolation type;
 - a StorageClass compatible with the selected runtime.
 
-Kata and Sysbox require node-level installation. Label each verified RuntimeClass so the administration page can associate it with the correct storage behavior:
+Kata and Sysbox require node-level installation. Label each verified RuntimeClass so the administration page can associate it with the correct isolation mode:
 
 ```sh
 kubectl label runtimeclass kata-qemu codespace.gitea.dev/isolation=kata
@@ -78,6 +78,13 @@ Visit <http://127.0.0.1:18080> and sign in with the administration token. Comple
 6. Enable the site after its status reports that the configuration is ready.
 
 Users can then create Codespaces from supported repository pages in Gitea.
+
+The administration page discovers RuntimeClasses, StorageClasses, Gateways,
+and compatible listeners from the current cluster. Resource references are
+selected from these results and revalidated when saved. CPU, memory, storage,
+cache limits, and durations use numeric fields with explicit units so the
+stored Kubernetes quantities remain valid without requiring administrators to
+write quantity syntax directly.
 
 Components are cluster-scoped resources managed through this page. The Manager
 creates their Deployments, Services, credentials, network policies, and cache

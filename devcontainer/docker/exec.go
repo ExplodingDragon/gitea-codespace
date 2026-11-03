@@ -149,11 +149,6 @@ func (e *Engine) Run(ctx context.Context, containerID, user, workdir string, com
 	return err
 }
 
-// Exec runs a command and captures at most 1 MiB from each output stream.
-func (e *Engine) Exec(ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string, stdin io.Reader) ([]byte, []byte, error) {
-	return e.exec(ctx, containerID, user, workdir, command, environment, stdin, e.stdout, e.stderr, true)
-}
-
 const maxExecCaptureBytes = 1024 * 1024
 
 type execOutput struct {

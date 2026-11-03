@@ -1,12 +1,15 @@
 <script setup lang="ts">
-import {onMounted, ref, toRaw} from 'vue';
+import {computed, onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
 import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
-import {errorMessage, request, type Component, type ComponentStatus, type Resource} from '../api';
+import {errorMessage, request, type ClusterOptions, type Component, type ComponentStatus, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
+import MeasurementInput from '../components/MeasurementInput.vue';
+import {measurementBaseValue} from '../utils/measurement';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
+const cluster = ref<ClusterOptions>({runtimeClasses: [], storageClasses: [], gateways: []});
 const {t} = useI18n();
 const selected = ref<Resource<Component, ComponentStatus>>();
 const editing = ref(false);
@@ -25,12 +28,91 @@ const dirty = useDirtyForm(() => ({
   s3SecretKey: s3SecretKey.value,
   upstreams: upstreams.value,
 }));
+const gatewaySelection = computed(() => {
+  const parent = form.value?.gateway?.parent;
+  return parent?.name ? `${parent.namespace}/${parent.name}` : '__external__';
+});
+const selectedGateway = computed(() =>
+  cluster.value.gateways.find(
+    ({name: gatewayName, namespace}) => `${namespace}/${gatewayName}` === gatewaySelection.value,
+  ),
+);
+const gatewayOptions = computed(() => {
+  const options = [
+    {label: t('component.externalExposure'), value: '__external__', disabled: false},
+    ...cluster.value.gateways.map(({name: gatewayName, namespace}) => ({
+      label: `${namespace}/${gatewayName}`,
+      value: `${namespace}/${gatewayName}`,
+      disabled: false,
+    })),
+  ];
+  if (gatewaySelection.value !== '__external__' && !options.some(({value}) => value === gatewaySelection.value))
+    options.push({
+      label: t('common.unavailableOption', {name: gatewaySelection.value}),
+      value: gatewaySelection.value,
+      disabled: true,
+    });
+  return options;
+});
+const httpListenerOptions = computed(() => {
+  const options = (selectedGateway.value?.listeners ?? [])
+    .filter(({protocol}) => protocol === 'HTTP' || protocol === 'HTTPS')
+    .map(({name: listenerName, protocol, port}) => ({
+      label: `${listenerName} (${protocol}${port ? ` :${port}` : ''})`,
+      value: listenerName,
+      disabled: false,
+    }));
+  const current = form.value?.gateway?.parent.httpSectionName;
+  if (current && !options.some(({value}) => value === current))
+    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
+  return options;
+});
+const sshListenerOptions = computed(() => {
+  const options = [
+    {label: t('component.noSSHListener'), value: '', disabled: false},
+    ...(selectedGateway.value?.listeners ?? [])
+      .filter(({protocol}) => protocol === 'TCP')
+      .map(({name: listenerName, port}) => ({
+        label: `${listenerName} (TCP${port ? ` :${port}` : ''})`,
+        value: listenerName,
+        disabled: false,
+      })),
+  ];
+  const current = form.value?.gateway?.parent.sshSectionName;
+  if (current && !options.some(({value}) => value === current))
+    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
+  return options;
+});
+const storageOptions = computed(() => {
+  const hasDefaultStorage = cluster.value.storageClasses.some(({default: isDefault}) => isDefault);
+  const options = [
+    {
+      label: hasDefaultStorage
+        ? t('component.clusterDefaultStorage')
+        : t('common.unavailableOption', {name: t('component.clusterDefaultStorage')}),
+      value: '__default__',
+      disabled: !hasDefaultStorage,
+    },
+    ...cluster.value.storageClasses.map(({name: storageName, default: isDefault}) => ({
+      label: isDefault ? `${storageName} (${t('environment.defaultStorage')})` : storageName,
+      value: storageName,
+      disabled: false,
+    })),
+  ];
+  const current = form.value?.cache?.storage.storageClassName;
+  if (current && !options.some(({value}) => value === current))
+    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
+  return options;
+});
 
 async function load() {
   busy.value = true;
   error.value = '';
   try {
-    items.value = await request('components');
+    [items.value, cluster.value] = await Promise.all([
+      request<Resource<Component, ComponentStatus>[]>('components'),
+      request<ClusterOptions>('cluster-options'),
+    ]);
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
@@ -123,6 +205,25 @@ function setRole(role: 'gateway' | 'cache') {
   if (resources) form.value.resources = resources;
   upstreams.value = [];
 }
+function setGateway(value: string) {
+  if (!form.value?.gateway) return;
+  if (value === '__external__') {
+    form.value.gateway.parent = {name: '', namespace: '', httpSectionName: '', sshSectionName: ''};
+    return;
+  }
+  const gateway = cluster.value.gateways.find(
+    ({name: gatewayName, namespace}) => `${namespace}/${gatewayName}` === value,
+  );
+  if (!gateway) return;
+  const httpListeners = gateway.listeners.filter(({protocol}) => protocol === 'HTTP' || protocol === 'HTTPS');
+  const sshListeners = gateway.listeners.filter(({protocol}) => protocol === 'TCP');
+  form.value.gateway.parent = {
+    name: gateway.name,
+    namespace: gateway.namespace,
+    httpSectionName: httpListeners.length === 1 ? httpListeners[0].name : '',
+    sshSectionName: sshListeners.length === 1 ? sshListeners[0].name : '',
+  };
+}
 function close() {
   if (!dirty.confirmDiscard()) return;
   editing.value = false;
@@ -133,17 +234,56 @@ async function save() {
   error.value = '';
   try {
     const spec = structuredClone(toRaw(form.value!));
+    for (const kind of ['cpu', 'memory'] as const) {
+      const request = measurementBaseValue(spec.resources.requests[kind], kind);
+      const limit = measurementBaseValue(spec.resources.limits[kind], kind);
+      if (request === null || limit === null || request <= 0 || request > limit)
+        throw new Error(t('component.invalidResourceRange', {resource: t(`units.${kind}`)}));
+    }
     if (spec.gateway && !spec.gateway.parent.name?.trim()) {
       spec.gateway.parent = {name: '', namespace: '', httpSectionName: '', sshSectionName: ''};
+    } else if (spec.gateway) {
+      const gateway = cluster.value.gateways.find(
+        ({name: gatewayName, namespace}) =>
+          gatewayName === spec.gateway!.parent.name && namespace === spec.gateway!.parent.namespace,
+      );
+      if (
+        !gateway ||
+        !gateway.listeners.some(
+          ({name: listenerName, protocol}) =>
+            listenerName === spec.gateway!.parent.httpSectionName && (protocol === 'HTTP' || protocol === 'HTTPS'),
+        ) ||
+        (spec.gateway.parent.sshSectionName &&
+          !gateway.listeners.some(
+            ({name: listenerName, protocol}) =>
+              listenerName === spec.gateway!.parent.sshSectionName && protocol === 'TCP',
+          ))
+      )
+        throw new Error(t('component.invalidGatewaySelection'));
     }
     if (spec.cache) {
       if (spec.cache.storage.driver === 'filesystem') {
         spec.cache.storage.s3 = {};
+        const storageClassName = spec.cache.storage.storageClassName;
+        const storageClassAvailable = storageClassName
+          ? cluster.value.storageClasses.some(({name: storageName}) => storageName === storageClassName)
+          : cluster.value.storageClasses.some(({default: isDefault}) => isDefault);
+        if (!storageClassAvailable) throw new Error(t('component.invalidStorageClass'));
+        const volume = measurementBaseValue(spec.cache.storage.volumeSize, 'storage');
+        const maximum = measurementBaseValue(spec.cache.maxSize, 'bytes');
+        const reserve = measurementBaseValue(spec.cache.storage.minFreeSpace, 'bytes');
+        if (volume === null || maximum === null || reserve === null || maximum + reserve > volume * 1024)
+          throw new Error(t('component.invalidCacheSizes'));
       } else {
         spec.cache.storage.volumeSize = undefined;
         spec.cache.storage.storageClassName = undefined;
         spec.cache.storage.minFreeSpace = undefined;
       }
+      if (
+        (measurementBaseValue(spec.cache.maxAge, 'duration') ?? 0) <= 0 ||
+        (measurementBaseValue(spec.cache.gcInterval, 'duration') ?? 0) <= 0
+      )
+        throw new Error(t('component.invalidDuration'));
       spec.cache.upstreams = {};
       for (const item of upstreams.value) {
         const host = item.host.trim().toLowerCase();
@@ -250,6 +390,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     class="editor"
     @submit.prevent="save"
   >
+    <h2>{{ t('component.basicSection') }}</h2>
     <div class="fields">
       <NFormItem :label="t('common.resourceName')">
         <NInput
@@ -275,28 +416,36 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           @update:value="setRole"
         />
       </NFormItem>
+    </div>
+    <h2>{{ t('component.computeSection') }}</h2>
+    <p class="section-help">{{ t('component.computeHelp') }}</p>
+    <div class="fields">
       <NFormItem :label="t('component.cpuRequest')">
-        <NInput
-          v-model:value="form.resources.requests.cpu"
-          required
+        <MeasurementInput
+          v-model="form.resources.requests.cpu"
+          kind="cpu"
+          :aria-label="t('component.cpuRequest')"
         />
       </NFormItem>
       <NFormItem :label="t('component.memoryRequest')">
-        <NInput
-          v-model:value="form.resources.requests.memory"
-          required
+        <MeasurementInput
+          v-model="form.resources.requests.memory"
+          kind="memory"
+          :aria-label="t('component.memoryRequest')"
         />
       </NFormItem>
       <NFormItem :label="t('component.cpuLimit')">
-        <NInput
-          v-model:value="form.resources.limits.cpu"
-          required
+        <MeasurementInput
+          v-model="form.resources.limits.cpu"
+          kind="cpu"
+          :aria-label="t('component.cpuLimit')"
         />
       </NFormItem>
       <NFormItem :label="t('component.memoryLimit')">
-        <NInput
-          v-model:value="form.resources.limits.memory"
-          required
+        <MeasurementInput
+          v-model="form.resources.limits.memory"
+          kind="memory"
+          :aria-label="t('component.memoryLimit')"
         />
       </NFormItem>
     </div>
@@ -317,55 +466,57 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             required
           />
         </NFormItem>
+      </div>
+      <h2>{{ t('component.gatewayRouting') }}</h2>
+      <p class="section-help">{{ t('component.gatewayRoutingHelp') }}</p>
+      <div class="fields">
         <NFormItem :label="t('component.gatewayParent')">
-          <NInput
-            v-model:value="form.gateway.parent.name"
-            placeholder="public-gateway"
+          <NSelect
+            :value="gatewaySelection"
+            :options="gatewayOptions"
+            @update:value="setGateway"
           />
         </NFormItem>
         <NFormItem
-          v-if="form.gateway.parent.name"
-          :label="t('component.gatewayNamespace')"
-        >
-          <NInput
-            v-model:value="form.gateway.parent.namespace"
-            required
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="form.gateway.parent.name"
+          v-if="gatewaySelection !== '__external__'"
           :label="t('component.httpListener')"
         >
-          <NInput
+          <NSelect
             v-model:value="form.gateway.parent.httpSectionName"
-            required
+            :options="httpListenerOptions"
           />
         </NFormItem>
         <NFormItem
-          v-if="form.gateway.parent.name"
+          v-if="gatewaySelection !== '__external__'"
           :label="t('component.sshListener')"
         >
-          <NInput v-model:value="form.gateway.parent.sshSectionName" />
+          <NSelect
+            v-model:value="form.gateway.parent.sshSectionName"
+            :options="sshListenerOptions"
+          />
         </NFormItem>
       </div>
       <h2>{{ t('component.sessions') }}</h2>
       <div class="fields">
         <NFormItem :label="t('component.sessionLifetime')">
-          <NInput
-            v-model:value="form.gateway.sessions.ttl"
-            required
+          <MeasurementInput
+            v-model="form.gateway.sessions.ttl"
+            kind="duration"
+            :aria-label="t('component.sessionLifetime')"
           />
         </NFormItem>
         <NFormItem :label="t('component.idleTimeout')">
-          <NInput
-            v-model:value="form.gateway.sessions.idleTimeout"
-            required
+          <MeasurementInput
+            v-model="form.gateway.sessions.idleTimeout"
+            kind="duration"
+            :aria-label="t('component.idleTimeout')"
           />
         </NFormItem>
         <NFormItem :label="t('component.authRefresh')">
-          <NInput
-            v-model:value="form.gateway.sessions.revalidateInterval"
-            required
+          <MeasurementInput
+            v-model="form.gateway.sessions.revalidateInterval"
+            kind="duration"
+            :aria-label="t('component.authRefresh')"
           />
         </NFormItem>
         <NFormItem :label="t('component.sessionsPerCodespace')">
@@ -401,6 +552,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </div>
     </template>
     <template v-if="form.cache">
+      <h2>{{ t('component.cacheSection') }}</h2>
       <div class="fields">
         <NFormItem :label="t('component.publicRegistry')">
           <NInput
@@ -418,33 +570,64 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             ]"
           />
         </NFormItem>
-        <NFormItem :label="t('component.maxCacheSize')"><NInput v-model:value="form.cache.maxSize" /></NFormItem>
+        <NFormItem
+          :label="t('component.maxCacheSize')"
+          :feedback="t('component.maxCacheSizeHelp')"
+        >
+          <MeasurementInput
+            v-model="form.cache.maxSize"
+            kind="bytes"
+            :aria-label="t('component.maxCacheSize')"
+            :allow-empty="form.cache.storage.driver === 's3'"
+          />
+        </NFormItem>
         <NFormItem :label="t('component.maxAge')">
-          <NInput
-            v-model:value="form.cache.maxAge"
-            required
+          <MeasurementInput
+            v-model="form.cache.maxAge"
+            kind="duration"
+            :aria-label="t('component.maxAge')"
           />
         </NFormItem>
         <NFormItem :label="t('component.cleanupInterval')">
-          <NInput
-            v-model:value="form.cache.gcInterval"
-            required
+          <MeasurementInput
+            v-model="form.cache.gcInterval"
+            kind="duration"
+            :aria-label="t('component.cleanupInterval')"
           />
         </NFormItem>
       </div>
       <template v-if="form.cache.storage.driver === 'filesystem'">
         <div class="fields">
-          <NFormItem :label="t('component.volumeSize')">
-            <NInput
-              v-model:value="form.cache.storage.volumeSize"
-              required
+          <NFormItem
+            :label="t('component.volumeSize')"
+            :feedback="t('component.volumeSizeHelp')"
+          >
+            <MeasurementInput
+              v-model="form.cache.storage.volumeSize"
+              kind="storage"
+              :aria-label="t('component.volumeSize')"
             />
           </NFormItem>
-          <NFormItem :label="t('component.storageClass')">
-            <NInput v-model:value="form.cache.storage.storageClassName" />
+          <NFormItem
+            :label="t('component.storageClass')"
+            :feedback="t('component.storageClassHelp')"
+          >
+            <NSelect
+              :value="form.cache.storage.storageClassName || '__default__'"
+              :options="storageOptions"
+              @update:value="
+                (value: string) => {
+                  form!.cache!.storage.storageClassName = value === '__default__' ? '' : value;
+                }
+              "
+            />
           </NFormItem>
           <NFormItem :label="t('component.minFreeSpace')">
-            <NInput v-model:value="form.cache.storage.minFreeSpace" />
+            <MeasurementInput
+              v-model="form.cache.storage.minFreeSpace"
+              kind="bytes"
+              :aria-label="t('component.minFreeSpace')"
+            />
           </NFormItem>
         </div>
       </template>

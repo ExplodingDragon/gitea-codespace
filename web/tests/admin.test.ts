@@ -9,7 +9,7 @@ import type {
   Site,
 } from '../src/api';
 
-test('site registration creates a server-managed identity and preserves it on edit', async ({page}) => {
+test('administration workflows preserve resource identity and validate cluster-backed selections', async ({page}) => {
   const errors: string[] = [];
   page.on('pageerror', (error) => errors.push(error.message));
   const sites: Resource<Site>[] = [];
@@ -93,6 +93,16 @@ test('site registration creates a server-managed identity and preserves it on ed
   const clusterOptions: ClusterOptions = {
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
+    gateways: [
+      {
+        name: 'public',
+        namespace: 'ingress',
+        listeners: [
+          {name: 'https', protocol: 'HTTPS', port: 443},
+          {name: 'ssh', protocol: 'TCP', port: 22},
+        ],
+      },
+    ],
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
@@ -186,10 +196,17 @@ test('site registration creates a server-managed identity and preserves it on ed
       .locator('.n-form-item')
       .filter({has: page.locator('.n-form-item-label', {hasText: new RegExp(`^${label}$`)})})
       .getByRole('textbox');
+  const selectField = (label: string) =>
+    page
+      .locator('.n-form-item')
+      .filter({has: page.locator('.n-form-item-label', {hasText: new RegExp(`^${label}$`)})})
+      .locator('.n-base-selection');
+  await expect(selectField('Isolation')).toBeVisible();
+  await expect(selectField('RuntimeClass')).toBeVisible();
+  await expect(selectField('StorageClass')).toBeVisible();
   await field('Resource name').fill('standard');
   await field('Tag').fill('standard');
   await field('code-server version').fill('4.121.0');
-  await page.screenshot({path: 'test-results/environment-template-desktop.png', fullPage: true});
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
@@ -221,7 +238,7 @@ test('site registration creates a server-managed identity and preserves it on ed
     .filter({hasText: /^Gateway/})
     .locator('.n-base-selection')
     .click();
-  await page.getByText('gateway', {exact: true}).click();
+  await page.getByText('Primary gateway', {exact: true}).click();
   await page.getByRole('button', {name: 'Save site'}).click();
   await expect(page.getByText('Production Gitea', {exact: true})).toBeVisible();
   expect(lastWrite.registrationToken).toBe('0000000000000000000000000000000000000000');
@@ -233,11 +250,9 @@ test('site registration creates a server-managed identity and preserves it on ed
   expect(lastWrite.uid).toBe('site-uid');
   expect(lastWrite.resourceVersion).toBe('1');
   expect(lastWrite.registrationToken).toBe('');
-  await page.screenshot({path: 'test-results/native-sites-desktop.png', fullPage: true});
   await page.setViewportSize({width: 390, height: 844});
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({path: 'test-results/native-site-mobile.png', fullPage: true});
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('link', {name: 'Components', exact: true}).click();
   await expect(page.getByRole('cell', {name: 'https://workspace.example.com'})).toBeVisible();
@@ -247,7 +262,13 @@ test('site registration creates a server-managed identity and preserves it on ed
   await expect.poll(() => rotationWrite).toEqual({name: 'gateway', uid: 'gateway-uid', resourceVersion: '1'});
   await page.getByRole('button', {name: 'Edit component', exact: true}).click();
   await expect(field('Public HTTPS URL')).toHaveValue('https://workspace.example.com');
-  await expect(field('Gateway namespace')).toHaveCount(0);
+  await page.getByRole('button', {name: 'Cancel', exact: true}).click();
+  await page.getByRole('button', {name: 'Add component', exact: true}).click();
+  await expect(selectField('Exposure')).toBeVisible();
+  await selectField('Role').click();
+  await page.getByText('Registry cache', {exact: true}).last().click();
+  await expect(selectField('Storage class')).toBeVisible();
+  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('link', {name: 'Running environments', exact: true}).click();
   const runtimeRow = page.getByRole('row').filter({hasText: 'runtime-one'});
@@ -277,16 +298,11 @@ test('site registration creates a server-managed identity and preserves it on ed
   await runtimeRow.getByRole('button', {name: 'Delete data'}).click();
   await expect(page.getByText('Disable the owning site first.', {exact: false})).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.getByRole('dialog').screenshot({
-    path: 'test-results/runtime-cleanup-confirmation-mobile.png',
-  });
   await page.getByRole('button', {name: 'Delete', exact: true}).click();
   await expect.poll(() => recoveryWrite).toEqual({uid: 'runtime-uid', resourceVersion: '8', podUID: 'pod-uid'});
   await expect(page.getByRole('dialog')).toHaveCount(0);
-  await page.screenshot({path: 'test-results/runtime-cleanup-mobile.png', fullPage: true, animations: 'disabled'});
   await page.setViewportSize({width: 1280, height: 900});
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  await page.screenshot({path: 'test-results/runtime-cleanup-desktop.png', fullPage: true, animations: 'disabled'});
   await page.getByRole('button', {name: 'Sign out'}).click();
   await expect(page.getByRole('button', {name: 'Sign in', exact: true})).toBeVisible();
   expect(errors).toEqual([]);

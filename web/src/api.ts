@@ -110,6 +110,11 @@ export type Runtime = {
 export type ClusterOptions = {
   runtimeClasses: {name: string; handler: string; isolation: 'kata' | 'sysbox'}[];
   storageClasses: {name: string; provisioner: string; default: boolean}[];
+  gateways: {
+    name: string;
+    namespace: string;
+    listeners: {name: string; protocol: 'HTTP' | 'HTTPS' | 'TCP'; port: number}[];
+  }[];
 };
 
 export type Environment = {

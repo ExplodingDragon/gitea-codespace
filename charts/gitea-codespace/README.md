@@ -22,7 +22,7 @@ or install Sysbox on a dedicated node pool using its
 [Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Verify the selected runtime, storage, and platform image with a real Pod first.
 Label the verified RuntimeClass so Manager can present it with the correct
-isolation and volume behavior:
+isolation mode:
 
 ```sh
 kubectl label runtimeclass kata-qemu codespace.gitea.dev/isolation=kata
@@ -131,12 +131,13 @@ internal component CA.
 
 ## Gateway API
 
-Configure the parent Gateway and listener names on each Gateway component in
-the administration page. Manager verifies that the HTTP listener uses HTTP or
-HTTPS and that the optional SSH listener uses TCP, then maintains that
-component's HTTPRoute and TCPRoute. Per-component selection allows separate
-Gateway components to use different public domains and listeners without
-changing the Helm release.
+Select an existing parent Gateway and its listeners on each Gateway component
+in the administration page. The page discovers these resources from the
+cluster and only presents HTTP or HTTPS listeners for endpoint traffic and TCP
+listeners for SSH. Manager reads the resources again when saving, then
+maintains that component's HTTPRoute and TCPRoute. Per-component selection
+allows separate Gateway components to use different public domains and
+listeners without changing the Helm release.
 
 HTTPS certificates for Codespace endpoint hostnames belong to the external
 Gateway listener and its `certificateRefs`. The cluster operator can use
@@ -159,6 +160,12 @@ distinction prevents a deleted Secret from turning into an undetected second
 trust domain.
 
 ## Configuration and validation
+
+The administration page also discovers labeled RuntimeClasses and available
+StorageClasses. CPU, memory, storage, cache limits, and durations are entered
+as a number with an explicit unit; Manager stores the corresponding native
+Kubernetes quantity or duration and validates request/limit and cache capacity
+relationships before applying resources.
 
 [`values.yaml`](values.yaml) contains defaults. [`values.schema.json`](values.schema.json)
 is the authoritative list of supported values and validation rules. Render and

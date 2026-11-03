@@ -5,7 +5,9 @@ import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type Component, type Environment, type Resource, type Site} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
+import MeasurementInput from '../components/MeasurementInput.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import {measurementBaseValue, type MeasurementKind} from '../utils/measurement';
 
 const sites = ref<Resource<Site>[]>([]);
 const {t} = useI18n();
@@ -20,14 +22,14 @@ const error = ref('');
 const busy = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({form: form.value, registrationToken: registrationToken.value}));
-const quotaFields = computed(() => [
-  {key: 'pods', label: t('site.pods')},
-  {key: 'persistentvolumeclaims', label: t('site.persistentVolumes')},
-  {key: 'requests.cpu', label: t('site.cpuRequests')},
-  {key: 'limits.cpu', label: t('site.cpuLimits')},
-  {key: 'requests.memory', label: t('site.memoryRequests')},
-  {key: 'limits.memory', label: t('site.memoryLimits')},
-  {key: 'requests.storage', label: t('site.storage')},
+const quotaFields = computed<{key: string; label: string; kind: MeasurementKind}[]>(() => [
+  {key: 'pods', label: t('site.pods'), kind: 'count'},
+  {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count'},
+  {key: 'requests.cpu', label: t('site.cpuRequests'), kind: 'cpu'},
+  {key: 'limits.cpu', label: t('site.cpuLimits'), kind: 'cpu'},
+  {key: 'requests.memory', label: t('site.memoryRequests'), kind: 'memory'},
+  {key: 'limits.memory', label: t('site.memoryLimits'), kind: 'memory'},
+  {key: 'requests.storage', label: t('site.storage'), kind: 'storage'},
 ]);
 async function load() {
   busy.value = true;
@@ -87,6 +89,10 @@ async function save() {
   busy.value = true;
   error.value = '';
   try {
+    for (const field of quotaFields.value) {
+      if ((measurementBaseValue(form.value!.quota[field.key], field.kind) ?? 0) <= 0)
+        throw new Error(t('site.invalidQuota', {resource: field.label}));
+    }
     await request(`sites${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
       name: selected.value ? name.value : '',
       uid: selected.value?.uid ?? '',
@@ -161,6 +167,7 @@ function remove(site: Resource<Site>) {
     class="editor"
     @submit.prevent="save"
   >
+    <h2>{{ t('site.registrationSection') }}</h2>
     <div class="fields">
       <NFormItem
         v-if="selected"
@@ -197,6 +204,8 @@ function remove(site: Resource<Site>) {
         required
       />
     </NFormItem>
+    <h2>{{ t('site.assignmentsSection') }}</h2>
+    <p class="section-help">{{ t('site.assignmentsHelp') }}</p>
     <div class="fields">
       <NFormItem :label="t('site.templates')">
         <NSelect
@@ -224,7 +233,7 @@ function remove(site: Resource<Site>) {
           :options="
             components
               .filter((item) => item.spec.role === 'gateway')
-              .map((item) => ({label: item.name, value: item.uid}))
+              .map((item) => ({label: item.spec.displayName, value: item.uid, disabled: item.deleting}))
           "
           @update:value="
             (value: string) => {
@@ -239,7 +248,9 @@ function remove(site: Resource<Site>) {
           multiple
           :value="form.caches.map((item) => item.uid)"
           :options="
-            components.filter((item) => item.spec.role === 'cache').map((item) => ({label: item.name, value: item.uid}))
+            components
+              .filter((item) => item.spec.role === 'cache')
+              .map((item) => ({label: item.spec.displayName, value: item.uid, disabled: item.deleting}))
           "
           @update:value="
             (values: string[]) => {
@@ -248,7 +259,13 @@ function remove(site: Resource<Site>) {
           "
         />
       </NFormItem>
-      <NFormItem :label="t('site.lifecycle')">
+    </div>
+    <h2>{{ t('site.lifecycleSection') }}</h2>
+    <div class="fields">
+      <NFormItem
+        :label="t('site.lifecycle')"
+        :feedback="t('site.lifecycleHelp')"
+      >
         <div class="checkboxes">
           <NCheckbox v-model:checked="form.enabled">{{ t('site.enabled') }}</NCheckbox>
           <NCheckbox v-model:checked="form.acceptCreates">{{ t('site.acceptCreates') }}</NCheckbox>
@@ -270,19 +287,22 @@ function remove(site: Resource<Site>) {
       </NFormItem>
     </div>
     <h2>{{ t('site.quota') }}</h2>
-    <div class="fields">
+    <p class="section-help">{{ t('site.quotaHelp') }}</p>
+    <div class="fields quota-fields">
       <NFormItem
         v-for="field in quotaFields"
         :key="field.key"
         :label="field.label"
       >
-        <NInput
-          v-model:value="form.quota[field.key]"
-          required
+        <MeasurementInput
+          v-model="form.quota[field.key]"
+          :kind="field.kind"
+          :aria-label="field.label"
         />
       </NFormItem>
     </div>
     <h2>{{ t('site.upstreams') }}</h2>
+    <p class="section-help">{{ t('site.upstreamsHelp') }}</p>
     <div
       v-for="(upstream, index) in form.upstreams"
       :key="index"

@@ -408,7 +408,8 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 		return "", fmt.Errorf("initialize Docker command client: %w", err)
 	}
 	defer func() { _ = cli.Client().Close() }()
-	createCommand := containercommand.NewCreateCommand(cli) //nolint:staticcheck // Docker CLI is used here because devcontainer runArgs must match docker create parsing.
+	//lint:ignore SA1019 The Docker CLI parser is required to preserve docker create semantics for devcontainer runArgs.
+	createCommand := containercommand.NewCreateCommand(cli)
 	createCommand.SetArgs(arguments)
 	createCommand.SetContext(ctx)
 	createCommand.SilenceUsage = true

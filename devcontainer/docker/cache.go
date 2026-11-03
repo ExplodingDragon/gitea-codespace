@@ -219,7 +219,8 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		}
 		arguments = append(arguments, options...)
 		arguments = append(arguments, contextPath)
-		command := imagecommand.NewBuildCommand(e.cli) //nolint:staticcheck // Docker CLI keeps BuildKit cache flags aligned with user-facing docker build behavior.
+		//lint:ignore SA1019 The Docker CLI parser keeps BuildKit cache flags aligned with docker build behavior.
+		command := imagecommand.NewBuildCommand(e.cli)
 		command.SetArgs(arguments)
 		command.SetContext(ctx)
 		command.SilenceUsage = true

@@ -28,8 +28,11 @@ import (
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -100,13 +103,35 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "sysbox-runc", Labels: map[string]string{api.RuntimeIsolationLabel: api.IsolationSysbox}}, Handler: "sysbox-runc"}
 	unmanagedRuntime := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "runc"}, Handler: "runc"}
 	storageClass := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "local-path", Annotations: map[string]string{"storageclass.kubernetes.io/is-default-class": defaultClass}}, Provisioner: "rancher.io/local-path"}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass).Build()
+	gateway := &unstructured.Unstructured{}
+	gateway.SetAPIVersion("gateway.networking.k8s.io/v1")
+	gateway.SetKind("Gateway")
+	gateway.SetName("public")
+	gateway.SetNamespace("ingress")
+	gateway.Object["spec"] = map[string]any{"listeners": []any{
+		map[string]any{"name": "https", "protocol": "HTTPS", "port": int64(443)},
+		map[string]any{"name": "ssh", "protocol": "TCP", "port": int64(22)},
+		map[string]any{"name": "tls", "protocol": "TLS", "port": int64(8443)},
+	}}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass, gateway).Build()
 	server := &AdminServer{Client: c, Namespace: "codespace-system"}
 
 	options, err := server.clusterOptions(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []adminRuntimeClass{{Name: "sysbox-runc", Handler: "sysbox-runc", Isolation: api.IsolationSysbox}}, options.RuntimeClasses)
 	require.Equal(t, []adminStorageClass{{Name: "local-path", Provisioner: "rancher.io/local-path", Default: true}}, options.StorageClasses)
+	require.Equal(t, []adminGateway{{Name: "public", Namespace: "ingress", Listeners: []adminGatewayListener{{Name: "https", Protocol: "HTTPS", Port: 443}, {Name: "ssh", Protocol: "TCP", Port: 22}}}}, options.Gateways)
+	withoutGatewayAPI := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, storageClass).WithInterceptorFuncs(interceptor.Funcs{
+		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+			if list.GetObjectKind().GroupVersionKind().Kind == "GatewayList" {
+				return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "gateway.networking.k8s.io", Kind: "Gateway"}}
+			}
+			return c.List(ctx, list, opts...)
+		},
+	}).Build()
+	options, err = (&AdminServer{Client: withoutGatewayAPI}).clusterOptions(t.Context())
+	require.NoError(t, err)
+	require.Empty(t, options.Gateways)
 	w := httptest.NewRecorder()
 	server.handleResources(w, httptest.NewRequest(http.MethodGet, "/api/admin/cluster-options", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -116,6 +141,14 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.NoError(t, server.saveTemplate(t.Context(), template, adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
 	template.Spec.Runtime.Isolation = api.IsolationKata
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
+
+	cache := testCacheComponent("cache", "")
+	emptyServer := &AdminServer{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).Build(), Namespace: "codespace-system"}
+	require.ErrorContains(t, emptyServer.saveComponent(t.Context(), cache, adminComponentWrite{Spec: cache.Spec}, true), "requires an available StorageClass")
+	cache.Spec.Cache.Storage.StorageClassName = "missing"
+	require.ErrorContains(t, server.saveComponent(t.Context(), cache, adminComponentWrite{Spec: cache.Spec}, true), "storage class \"missing\" is unavailable")
+	cache.Spec.Cache.Storage.StorageClassName = "local-path"
+	require.NoError(t, server.saveComponent(t.Context(), cache, adminComponentWrite{Spec: cache.Spec}, true))
 }
 
 func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {

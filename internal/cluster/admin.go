@@ -29,6 +29,8 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/retry"
@@ -129,6 +131,7 @@ type adminComponentStatus struct {
 type adminClusterOptions struct {
 	RuntimeClasses []adminRuntimeClass `json:"runtimeClasses"`
 	StorageClasses []adminStorageClass `json:"storageClasses"`
+	Gateways       []adminGateway      `json:"gateways"`
 }
 
 type adminRuntimeClass struct {
@@ -141,6 +144,22 @@ type adminStorageClass struct {
 	Name        string `json:"name"`
 	Provisioner string `json:"provisioner"`
 	Default     bool   `json:"default"`
+}
+
+type adminGateway struct {
+	Name      string                 `json:"name"`
+	Namespace string                 `json:"namespace"`
+	Listeners []adminGatewayListener `json:"listeners"`
+}
+
+type adminGatewayListener struct {
+	Name     string `json:"name"`
+	Protocol string `json:"protocol"`
+	Port     int64  `json:"port"`
+}
+
+func isDefaultStorageClass(annotations map[string]string) bool {
+	return annotations["storageclass.kubernetes.io/is-default-class"] == "true" || annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"
 }
 
 func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
@@ -410,7 +429,7 @@ func (s *AdminServer) confirmRuntimeWriterStopped(w http.ResponseWriter, r *http
 }
 
 func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, error) {
-	options := adminClusterOptions{RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}}
+	options := adminClusterOptions{RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}, Gateways: []adminGateway{}}
 	var runtimes nodev1.RuntimeClassList
 	if err := s.Client.List(ctx, &runtimes); err != nil {
 		return options, err
@@ -429,8 +448,39 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 	for _, storage := range storages.Items {
 		options.StorageClasses = append(options.StorageClasses, adminStorageClass{
 			Name: storage.Name, Provisioner: storage.Provisioner,
-			Default: storage.Annotations["storageclass.kubernetes.io/is-default-class"] == "true" || storage.Annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true",
+			Default: isDefaultStorageClass(storage.Annotations),
 		})
+	}
+	gateways := &unstructured.UnstructuredList{}
+	gateways.SetAPIVersion("gateway.networking.k8s.io/v1")
+	gateways.SetKind("GatewayList")
+	if err := s.Client.List(ctx, gateways); err != nil {
+		if !meta.IsNoMatchError(err) && !kruntime.IsNotRegisteredError(err) {
+			return options, err
+		}
+	} else {
+		for _, gateway := range gateways.Items {
+			option := adminGateway{Name: gateway.GetName(), Namespace: gateway.GetNamespace(), Listeners: []adminGatewayListener{}}
+			listeners, _, err := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
+			if err != nil {
+				return options, fmt.Errorf("read Gateway %s/%s listeners: %w", option.Namespace, option.Name, err)
+			}
+			for _, value := range listeners {
+				listener, ok := value.(map[string]any)
+				if !ok {
+					continue
+				}
+				name, _, _ := unstructured.NestedString(listener, "name")
+				protocol, _, _ := unstructured.NestedString(listener, "protocol")
+				port, _, _ := unstructured.NestedInt64(listener, "port")
+				if name == "" || (protocol != "HTTP" && protocol != "HTTPS" && protocol != "TCP") {
+					continue
+				}
+				option.Listeners = append(option.Listeners, adminGatewayListener{Name: name, Protocol: protocol, Port: port})
+			}
+			sort.Slice(option.Listeners, func(i, j int) bool { return option.Listeners[i].Name < option.Listeners[j].Name })
+			options.Gateways = append(options.Gateways, option)
+		}
 	}
 	sort.Slice(options.RuntimeClasses, func(i, j int) bool { return options.RuntimeClasses[i].Name < options.RuntimeClasses[j].Name })
 	sort.Slice(options.StorageClasses, func(i, j int) bool {
@@ -438,6 +488,12 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 			return options.StorageClasses[i].Default
 		}
 		return options.StorageClasses[i].Name < options.StorageClasses[j].Name
+	})
+	sort.Slice(options.Gateways, func(i, j int) bool {
+		if options.Gateways[i].Namespace != options.Gateways[j].Namespace {
+			return options.Gateways[i].Namespace < options.Gateways[j].Namespace
+		}
+		return options.Gateways[i].Name < options.Gateways[j].Name
 	})
 	return options, nil
 }
@@ -692,8 +748,34 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 				return apierrors.NewBadRequest(err.Error())
 			}
 		}
-	} else if _, err := cacheComponentConfig(component); err != nil {
-		return apierrors.NewBadRequest(err.Error())
+	} else {
+		if _, err := cacheComponentConfig(component); err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
+		if component.Spec.Cache.Storage.Driver == "filesystem" {
+			storageClassName := component.Spec.Cache.Storage.StorageClassName
+			if storageClassName != "" {
+				var storage storagev1.StorageClass
+				if err := s.Client.Get(ctx, types.NamespacedName{Name: storageClassName}, &storage); err != nil {
+					return apierrors.NewBadRequest(fmt.Sprintf("storage class %q is unavailable: %v", storageClassName, err))
+				}
+			} else {
+				var storages storagev1.StorageClassList
+				if err := s.Client.List(ctx, &storages); err != nil {
+					return err
+				}
+				hasDefault := false
+				for _, storage := range storages.Items {
+					if isDefaultStorageClass(storage.Annotations) {
+						hasDefault = true
+						break
+					}
+				}
+				if !hasDefault {
+					return apierrors.NewBadRequest("filesystem cache requires an available StorageClass or a cluster default StorageClass")
+				}
+			}
+		}
 	}
 	if (body.S3AccessKey == "") != (body.S3SecretKey == "") {
 		return apierrors.NewBadRequest("S3 access key and secret key must be configured together")

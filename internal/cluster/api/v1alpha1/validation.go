@@ -13,6 +13,7 @@ import (
 	"uuid"
 
 	"github.com/distribution/reference"
+	dockerunits "github.com/docker/go-units"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/validation"
@@ -107,6 +108,12 @@ func (c *CodespaceComponent) Validate() error {
 			}
 		}
 	}
+	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+		request, limit := c.Spec.Resources.Requests[name], c.Spec.Resources.Limits[name]
+		if request.Sign() <= 0 || limit.Sign() <= 0 || request.Cmp(limit) > 0 {
+			return fmt.Errorf("component %s request and limit must be positive, with request no greater than limit", name)
+		}
+	}
 	switch c.Spec.Role {
 	case "gateway":
 		if c.Spec.Gateway == nil || c.Spec.Cache != nil {
@@ -139,6 +146,14 @@ func (c *CodespaceComponent) Validate() error {
 			}
 			if c.Spec.Cache.Storage.StorageClassName != "" && len(validation.IsDNS1123Subdomain(c.Spec.Cache.Storage.StorageClassName)) != 0 {
 				return fmt.Errorf("cache storage class name is invalid")
+			}
+			maxSize, maxErr := dockerunits.RAMInBytes(c.Spec.Cache.MaxSize)
+			minFreeSpace, minErr := dockerunits.RAMInBytes(c.Spec.Cache.Storage.MinFreeSpace)
+			if maxErr != nil || minErr != nil || maxSize <= 0 || minFreeSpace <= 0 {
+				return fmt.Errorf("filesystem cache sizes must be positive byte quantities")
+			}
+			if maxSize > volumeSize.Value()-minFreeSpace {
+				return fmt.Errorf("cache maximum size and minimum free space must fit within the volume")
 			}
 			if c.Spec.Cache.Storage.S3 != (CacheS3Storage{}) {
 				return fmt.Errorf("filesystem cache cannot select S3 storage settings")

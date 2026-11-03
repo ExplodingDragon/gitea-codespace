@@ -6,6 +6,7 @@ GO_BIN ?= $(shell bin="$$($(GO) env GOBIN)"; if test -n "$$bin"; then printf "%s
 BUF ?= $(GO_BIN)/buf
 SHFMT ?= $(GO_BIN)/shfmt
 ACTIONLINT ?= $(GO_BIN)/actionlint
+STATICCHECK ?= $(GO_BIN)/staticcheck
 CODESPACE_IMAGE ?= gitea-codespace:local
 CODESPACE_VERSION ?= development
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
@@ -17,6 +18,7 @@ PROTOC_GEN_GO_VERSION := v1.36.11
 PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
 SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
+STATICCHECK_VERSION := v0.8.2
 BASH_SCRIPTS := \
 	internal/devcontainerruntime/builtin/configure-git.sh \
 	internal/devcontainerruntime/builtin/endpoint.sh \
@@ -57,6 +59,7 @@ install-tools:
 	$(GO) install connectrpc.com/connect/v2/cmd/protoc-gen-connect-go@$(PROTOC_GEN_CONNECT_GO_VERSION)
 	$(GO) install mvdan.cc/sh/v3/cmd/shfmt@$(SHFMT_VERSION)
 	$(GO) install github.com/rhysd/actionlint/cmd/actionlint@$(ACTIONLINT_VERSION)
+	$(GO) install honnef.co/go/tools/cmd/staticcheck@$(STATICCHECK_VERSION)
 
 proto-format:
 	$(BUF) format internal/rpc/agent/v1/service.proto -w
@@ -87,6 +90,7 @@ format:
 
 lint: go-format-check proto-check scripts-check scripts-format-check workflow-check frontend-check helm-check kubernetes-check
 	$(GO) vet ./...
+	$(STATICCHECK) ./...
 
 go-format-check:
 	@unformatted="$$($(GOFMT) -l $(GO_FILES))"; test -z "$$unformatted" || { printf 'Go files need formatting:\n%s\n' "$$unformatted" >&2; exit 1; }

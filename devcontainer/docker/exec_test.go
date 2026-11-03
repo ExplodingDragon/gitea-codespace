@@ -18,6 +18,10 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func execForTest(engine *Engine, ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string, stdin io.Reader) ([]byte, []byte, error) {
+	return engine.exec(ctx, containerID, user, workdir, command, environment, stdin, engine.stdout, engine.stderr, true)
+}
+
 func TestDockerExecOutputAndCancellation(t *testing.T) {
 	for _, mode := range []string{"stream", "capture", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
@@ -63,7 +67,7 @@ func TestDockerExecOutputAndCancellation(t *testing.T) {
 			go func() {
 				var err error
 				if mode == "capture" {
-					_, _, err = engine.Exec(ctx, "container", "root", "/", []string{"test"}, nil, nil)
+					_, _, err = execForTest(engine, ctx, "container", "root", "/", []string{"test"}, nil, nil)
 				} else {
 					err = engine.Run(ctx, "container", "root", "/", []string{"test"}, nil, nil)
 				}
