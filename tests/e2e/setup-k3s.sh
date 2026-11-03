@@ -93,16 +93,34 @@ kubectl get runtimeclass/kata-qemu-runtime-rs >/dev/null
 echo "Installing RawFile LocalPV $RAWFILE_VERSION"
 helm repo add rawfile-localpv https://openebs.github.io/rawfile-localpv
 helm repo update rawfile-localpv
+cat >"$work/rawfile-values.yaml" <<'EOF'
+global:
+  analytics:
+    enabled: false
+capabilities:
+  snapshots:
+    enabled: false
+  resize:
+    enabled: false
+  apiServer:
+    enabled: false
+metrics:
+  enabled: false
+storageClasses:
+  - name: rawfile-localpv
+    enabled: true
+    volumeBindingMode: WaitForFirstConsumer
+    isDefault: false
+    allowVolumeExpansion: true
+    reclaimPolicy: Delete
+    fsType: ext4
+    thinProvision: "true"
+EOF
 helm upgrade --install rawfile-localpv rawfile-localpv/rawfile-localpv \
 	--version "$RAWFILE_VERSION" \
 	--namespace openebs \
 	--create-namespace \
-	--set global.analytics.enabled=false \
-	--set capabilities.snapshots.enabled=false \
-	--set capabilities.resize.enabled=false \
-	--set capabilities.apiServer.enabled=false \
-	--set metrics.enabled=false \
-	--set-string storageClasses[0].thinProvision=true \
+	--values "$work/rawfile-values.yaml" \
 	--wait \
 	--timeout 5m
 kubectl get storageclass/rawfile-localpv >/dev/null

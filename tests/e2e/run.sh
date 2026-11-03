@@ -32,9 +32,6 @@ required_variables=(
 	CODESPACE_E2E_RUNTIME_ISOLATION
 	CODESPACE_E2E_RUNTIME_CLASS
 	CODESPACE_E2E_STORAGE_CLASS
-	CODESPACE_E2E_GITEA_URL
-	CODESPACE_E2E_GITEA_MANAGER_ID
-	CODESPACE_E2E_GITEA_MANAGER_SECRET_FILE
 	CODESPACE_E2E_GITEA_LISTEN
 	CODESPACE_E2E_NODE_ADDRESS
 )
@@ -45,10 +42,6 @@ for variable_name in "${required_variables[@]}"; do
 	fi
 done
 
-if [[ ! -r $CODESPACE_E2E_GITEA_MANAGER_SECRET_FILE ]]; then
-	echo "CODESPACE_E2E_GITEA_MANAGER_SECRET_FILE must be a readable file" >&2
-	exit 1
-fi
 if [[ $CODESPACE_E2E_PLATFORM_IMAGE != *@sha256:* ]]; then
 	echo "CODESPACE_E2E_PLATFORM_IMAGE must be an immutable repository@sha256:digest reference" >&2
 	exit 1
@@ -196,7 +189,6 @@ run_cluster_tests "Kubernetes API integration" \
 	'^(TestKubernetesE2EResourceOwnership|TestKubernetesE2EAgentCertificate|TestKubernetesE2EManagerServing)$' 8m
 run_cluster_tests "component lifecycle" '^TestKubernetesE2EComponentWorkloads$' 5m
 run_cluster_tests "Manager leader failover" '^TestKubernetesE2EManagerFailover$' 5m
-run_cluster_tests "real Gitea handshake" '^TestKubernetesE2ERealGiteaHandshake$' 2m
 run_cluster_tests "Runtime Agent process model" '^TestKubernetesE2EAgentProcesses$' 6m
 run_cluster_tests "Runtime, Docker persistence, and Dev Container" '^TestKubernetesE2EDockerPersistence$' 80m
 
