@@ -202,8 +202,8 @@ jobs:
         run: |
           directory=.tmp/e2e/ci/diagnostics
           mkdir -p "$directory"
-          sudo journalctl -u k3s --no-pager >"$directory/k3s.log" 2>&1 || true
-          sudo journalctl -u sysbox-mgr -u sysbox-fs --no-pager >"$directory/sysbox.log" 2>&1 || true
+          sudo journalctl -u k3s --no-pager 2>&1 | tee "$directory/k3s.log" >/dev/null || true
+          sudo journalctl -u sysbox-mgr -u sysbox-fs --no-pager 2>&1 | tee "$directory/sysbox.log" >/dev/null || true
           kubectl get nodes,runtimeclasses,storageclasses,pods -A -o wide >"$directory/cluster.txt" 2>&1 || true
           kubectl get events -A --sort-by=.lastTimestamp >"$directory/events.txt" 2>&1 || true
       - name: Upload failure diagnostics
