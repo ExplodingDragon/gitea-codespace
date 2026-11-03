@@ -2,6 +2,10 @@ import {ref} from 'vue';
 
 export const csrf = ref('');
 
+export function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
 export async function request<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
   const response = await fetch(`/api/admin/${path}`, {
     method,

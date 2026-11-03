@@ -2,7 +2,7 @@
 import {onMounted, ref} from 'vue';
 import {NButton, NConfigProvider, NDialogProvider, NMessageProvider, NInput, NAlert, NForm, NFormItem} from 'naive-ui';
 import {Boxes, Globe, LogOut, Network, Container} from '@lucide/vue';
-import {csrf, request} from './api';
+import {csrf, errorMessage, request} from './api';
 
 const token = ref('');
 const error = ref('');
@@ -18,7 +18,8 @@ onMounted(async () => {
   try {
     csrf.value = (await request<{csrf: string}>('session')).csrf;
   } catch (e) {
-    if (!(e instanceof Error) || !e.message.includes('sign in')) error.value = String(e);
+    const message = errorMessage(e);
+    if (!message.includes('sign in')) error.value = message;
   } finally {
     ready.value = true;
   }
@@ -30,7 +31,7 @@ async function login() {
     csrf.value = (await request<{csrf: string}>('login', 'POST', {token: token.value})).csrf;
     token.value = '';
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     loading.value = false;
   }
@@ -40,7 +41,7 @@ async function logout() {
     await request('session', 'DELETE');
     csrf.value = '';
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   }
 }
 </script>

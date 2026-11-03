@@ -36,7 +36,7 @@ func NewCommand() *cobra.Command {
 			}
 			defer httpClient.CloseIdleConnections()
 			err = cachepkg.Run(ctx, command.OutOrStdout(), &componentpkg.CacheComponentClient{Client: client}, id)
-			if errors.Is(err, context.Canceled) {
+			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil
 			}
 			return err

@@ -68,17 +68,18 @@ func newGatewaySSHAuthLimiterFromConfig(config configpkg.GatewayConfig) *gateway
 }
 
 func newGatewaySSHAuthLimiter(config gatewaySSHAuthLimitConfig) *gatewaySSHAuthLimiter {
+	defaults := configpkg.DefaultGatewayConfig().SSH.Auth
 	if config.maxPerIP <= 0 {
-		config.maxPerIP = configpkg.DefaultGatewayConfig().SSH.Auth.MaxAttemptsPerIP
+		config.maxPerIP = defaults.MaxAttemptsPerIP
 	}
 	if config.maxPerCodespace <= 0 {
-		config.maxPerCodespace = configpkg.DefaultGatewayConfig().SSH.Auth.MaxAttemptsPerCodespace
+		config.maxPerCodespace = defaults.MaxAttemptsPerCodespace
 	}
 	if config.maxPerIPCodespace <= 0 {
-		config.maxPerIPCodespace = configpkg.DefaultGatewayConfig().SSH.Auth.MaxAttemptsPerIPCodespace
+		config.maxPerIPCodespace = defaults.MaxAttemptsPerIPCodespace
 	}
 	if config.maxPerPublicKey <= 0 {
-		config.maxPerPublicKey = configpkg.DefaultGatewayConfig().SSH.Auth.MaxAttemptsPerPublicKey
+		config.maxPerPublicKey = defaults.MaxAttemptsPerPublicKey
 	}
 	if config.backoffBase <= 0 {
 		config.backoffBase = gatewaySSHAuthBackoffBase
@@ -87,7 +88,7 @@ func newGatewaySSHAuthLimiter(config gatewaySSHAuthLimitConfig) *gatewaySSHAuthL
 		config.backoffMax = gatewaySSHAuthBackoffMax
 	}
 	if config.failureWindow <= 0 {
-		config.failureWindow = configpkg.DefaultGatewayConfig().SSH.Auth.FailureWindow.ToStdlib()
+		config.failureWindow = defaults.FailureWindow.ToStdlib()
 	}
 	if config.maxKeys <= 0 {
 		config.maxKeys = maxGatewaySSHAuthLimitKeys

@@ -2,7 +2,7 @@
 import {onMounted, ref} from 'vue';
 import {NAlert, NButton, NTag, useDialog} from 'naive-ui';
 import {RefreshCw} from '@lucide/vue';
-import {request, type RuntimeInstance, type Resource} from '../api';
+import {errorMessage, request, type RuntimeInstance, type Resource} from '../api';
 
 const items = ref<Resource<RuntimeInstance>[]>([]);
 const error = ref('');
@@ -31,7 +31,7 @@ function deleteRuntime(item: Resource<RuntimeInstance>) {
         );
         await load();
       } catch (e) {
-        error.value = (e as Error).message;
+        error.value = errorMessage(e);
       } finally {
         busy.value = false;
       }
@@ -66,7 +66,7 @@ function confirmWriterStopped(item: Resource<RuntimeInstance>) {
         );
         await load();
       } catch (e) {
-        error.value = (e as Error).message;
+        error.value = errorMessage(e);
       } finally {
         busy.value = false;
       }
@@ -79,7 +79,7 @@ async function load() {
   try {
     items.value = await request('runtimes');
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     busy.value = false;
   }

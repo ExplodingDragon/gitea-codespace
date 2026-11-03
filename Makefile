@@ -12,6 +12,13 @@ CONTROLLER_GEN_VERSION := v0.21.0
 BUF_VERSION := v1.8.0
 PROTOC_GEN_GO_VERSION := v1.36.11
 PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
+BASH_SCRIPTS := \
+	internal/devcontainerruntime/builtin/configure-git.sh \
+	internal/devcontainerruntime/builtin/endpoint.sh \
+	internal/devcontainerruntime/builtin/start-web-ide.sh \
+	tests/e2e/run.sh \
+	tests/e2e/setup-k3s.sh
+POSIX_SCRIPTS := devcontainer/docker/builtin/update-user.sh
 
 define prepare-proto-workspace
 mkdir -p .tmp; \
@@ -107,15 +114,8 @@ test: scripts-check
 	$(GO) test -p 1 -skip 'Test.*E2E' ./...
 
 scripts-check:
-	bash -n internal/devcontainerruntime/builtin/configure-git.sh
-	bash -n internal/devcontainerruntime/builtin/start-web-ide.sh
-	bash -n tests/e2e/run.sh
-	bash -n tests/e2e/setup-k3s.sh
-	sh -n devcontainer/docker/builtin/update-user.sh
-
-.PHONY: test-smoke
-test-smoke:
-	$(GO) test -p 1 -count=1 ./internal/accessticket ./internal/agent ./internal/cache ./internal/cluster ./internal/component ./internal/gateway ./internal/transport
+	@set -e; for script in $(BASH_SCRIPTS); do bash -n "$$script"; done
+	@set -e; for script in $(POSIX_SCRIPTS); do sh -n "$$script"; done
 
 .PHONY: test-e2e
 test-e2e:

@@ -71,21 +71,22 @@ type gatewayLiveSession struct {
 }
 
 func NewSessionRegistryFromConfig(config configpkg.GatewayConfig) *SessionRegistry {
+	defaults := configpkg.DefaultGatewayConfig()
 	ttl := config.Sessions.TTL.ToStdlib()
 	if ttl <= 0 {
-		ttl = configpkg.DefaultGatewayConfig().Sessions.TTL.ToStdlib()
+		ttl = defaults.Sessions.TTL.ToStdlib()
 	}
 	idleTimeout := config.Sessions.IdleTimeout.ToStdlib()
 	if idleTimeout <= 0 {
-		idleTimeout = configpkg.DefaultGatewayConfig().Sessions.IdleTimeout.ToStdlib()
+		idleTimeout = defaults.Sessions.IdleTimeout.ToStdlib()
 	}
 	maxSessionsPerCodespace := config.Sessions.MaxPerCodespace
 	if maxSessionsPerCodespace <= 0 {
-		maxSessionsPerCodespace = configpkg.DefaultGatewayConfig().Sessions.MaxPerCodespace
+		maxSessionsPerCodespace = defaults.Sessions.MaxPerCodespace
 	}
 	maxSessionsPerUser := config.Sessions.MaxPerUser
 	if maxSessionsPerUser <= 0 {
-		maxSessionsPerUser = configpkg.DefaultGatewayConfig().Sessions.MaxPerUser
+		maxSessionsPerUser = defaults.Sessions.MaxPerUser
 	}
 	return &SessionRegistry{
 		ttl:                     ttl,

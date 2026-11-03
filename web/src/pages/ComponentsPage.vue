@@ -2,7 +2,7 @@
 import {onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
 import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
-import {request, type Component, type ComponentStatus, type Resource} from '../api';
+import {errorMessage, request, type Component, type ComponentStatus, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
@@ -30,7 +30,7 @@ async function load() {
   try {
     items.value = await request('components');
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     busy.value = false;
   }
@@ -146,7 +146,7 @@ async function save() {
     dirty.endTracking();
     await load();
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     busy.value = false;
   }
@@ -169,7 +169,7 @@ function remove(item: Resource<Component, ComponentStatus>) {
         });
         await load();
       } catch (e) {
-        error.value = (e as Error).message;
+        error.value = errorMessage(e);
       }
     },
   });
@@ -189,7 +189,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         });
         await load();
       } catch (e) {
-        error.value = (e as Error).message;
+        error.value = errorMessage(e);
       }
     },
   });

@@ -42,6 +42,12 @@ type CacheS3Config struct {
 	SecretKey      string `json:"secret_key,omitempty"`
 }
 
+// CachePolicy limits a cache credential to the requested repository namespaces.
+type CachePolicy struct {
+	Public bool `json:"public"`
+	Build  bool `json:"build"`
+}
+
 func ValidCacheID(id string) bool {
 	if len(id) == 0 || len(id) > 64 {
 		return false

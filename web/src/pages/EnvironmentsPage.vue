@@ -2,7 +2,7 @@
 import {onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NDynamicTags, NForm, NFormItem, NInput, NSelect, useDialog} from 'naive-ui';
 import {Pencil, Plus, Trash2, RefreshCw, X} from '@lucide/vue';
-import {request, type Environment, type Resource} from '../api';
+import {errorMessage, request, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import ResourceStatus from '../components/ResourceStatus.vue';
 
@@ -28,7 +28,7 @@ async function load() {
   try {
     items.value = await request('environments');
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     busy.value = false;
   }
@@ -106,7 +106,7 @@ async function save() {
     dirty.endTracking();
     await load();
   } catch (e) {
-    error.value = (e as Error).message;
+    error.value = errorMessage(e);
   } finally {
     busy.value = false;
   }
@@ -126,7 +126,7 @@ function remove(item: Resource<Environment>) {
         });
         await load();
       } catch (e) {
-        error.value = (e as Error).message;
+        error.value = errorMessage(e);
       }
     },
   });
