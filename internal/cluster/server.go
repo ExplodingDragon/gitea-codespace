@@ -11,9 +11,9 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"strings"
 	"time"
 
+	identitypkg "gitea.dev/codespace/internal/identity"
 	"gitea.dev/codespace/internal/transport"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,12 +21,11 @@ import (
 
 type ServerOptions struct {
 	ManagerOptions
-	AdminAddress         string
-	AdminPublicURL       string
-	AdminTokenFile       string
-	AgentAddress         string
-	ComponentAddress     string
-	CertificateDirectory string
+	AdminAddress     string
+	AdminPublicURL   string
+	AdminTokenFile   string
+	AgentAddress     string
+	ComponentAddress string
 }
 
 // Run starts the native controllers and listeners as one cancellation boundary.
@@ -35,9 +34,8 @@ func Run(ctx context.Context, config *rest.Config, options ServerOptions) error 
 	if err != nil {
 		return err
 	}
-	componentTLS, err := (transport.Certificates{Directory: options.CertificateDirectory}).Server(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 3 || (parts[0] != "gateway" && parts[0] != "cache") || parts[1] == "" || parts[2] == "" {
+	componentTLS, err := transport.Server(mgr.Identity, func(identity *url.URL) error {
+		if _, err := identitypkg.ParseComponentURI(identity); err != nil {
 			return fmt.Errorf("gateway or Cache identity is required")
 		}
 		return nil
@@ -53,9 +51,8 @@ func Run(ctx context.Context, config *rest.Config, options ServerOptions) error 
 	if err != nil {
 		return err
 	}
-	tlsConfig, err := (transport.Certificates{Directory: options.CertificateDirectory}).Server(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 4 || parts[0] != "agent" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+	tlsConfig, err := transport.Server(mgr.Identity, func(identity *url.URL) error {
+		if _, err := identitypkg.ParseAgentURI(identity); err != nil {
 			return fmt.Errorf("agent identity is required")
 		}
 		return nil

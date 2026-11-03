@@ -5,19 +5,20 @@ package cluster
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
 	"fmt"
 	"time"
 	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,9 +35,10 @@ const (
 type RuntimeReconciler struct {
 	Client              client.Client
 	Authority           *ExecutionAuthority
+	Identity            *IdentityAuthority
 	ManagementNamespace string
 	ManagerURL          string
-	IdentityIssuer      string
+	ManagerIdentity     string
 	ImagePullSecrets    []string
 }
 
@@ -93,7 +95,6 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if cs.Status.Pod.Name == "" {
 		meta.RemoveStatusCondition(&cs.Status.Conditions, "Stopped")
 		cs.Status.Pod.Name = "runtime-" + uuid.NewV4().String()
-		cs.Status.IdentitySecretName = cs.Status.Pod.Name + "-identity"
 		if err := r.updateStatus(ctx, &cs); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -124,7 +125,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 			}
 			return r.condition(ctx, &cs, "RecoveryRequired", fmt.Errorf("previous runtime Pod disappeared; verify its writer stopped before replacing it"))
 		}
-		created, err := runtimePod(&cs, r.ManagerURL, r.ImagePullSecrets)
+		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets)
 		if err != nil {
 			return r.condition(ctx, &cs, "InvalidRuntimeConfiguration", err)
 		}
@@ -236,7 +237,7 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 	return nil
 }
 
-func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*corev1.Pod, error) {
+func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecrets []string) (*corev1.Pod, error) {
 	runtime := cs.Spec.Runtime
 	pullPolicy, err := platformImagePullPolicy(runtime.Image)
 	if err != nil {
@@ -264,7 +265,7 @@ func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*co
 			Volumes: []corev1.Volume{
 				{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: cs.Status.Volume.Name}}},
 				{Name: "ephemeral", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{Medium: corev1.StorageMediumMemory, SizeLimit: ptr.To(resource.MustParse("64Mi"))}}},
-				{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: cs.Status.IdentitySecretName, DefaultMode: ptr.To(int32(0o400)), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "tls.crt"}, {Key: "tls.key", Path: "tls.key"}, {Key: "ca.crt", Path: "ca.crt"}}}}},
+				{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeIdentitySecretName(cs), DefaultMode: ptr.To(int32(0o400)), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "tls.crt"}, {Key: "tls.key", Path: "tls.key"}, {Key: "ca.crt", Path: "ca.crt"}}}}},
 			},
 			Containers: []corev1.Container{{
 				Name: "runtime", Image: runtime.Image, ImagePullPolicy: pullPolicy,
@@ -273,6 +274,7 @@ func runtimePod(cs *api.Codespace, managerURL string, pullSecrets []string) (*co
 				Resources: runtime.Resources,
 				Env: []corev1.EnvVar{
 					{Name: "CODESPACE_MANAGER_URL", Value: managerURL},
+					{Name: "CODESPACE_MANAGER_IDENTITY", Value: managerIdentity},
 					{Name: "CODESPACE_RUNTIME_UUID", Value: cs.Spec.RuntimeUUID},
 					{Name: "CODESPACE_SITE_UID", Value: string(cs.Spec.Site.UID)},
 					{Name: "CODESPACE_RESOURCE_UID", Value: string(cs.UID)},
@@ -298,62 +300,15 @@ func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespac
 	if pod.UID == "" || cs.UID == "" || cs.Spec.Site.UID == "" {
 		return fmt.Errorf("agent identity requires assigned Kubernetes UIDs")
 	}
-	identity := fmt.Sprintf("spiffe://codespace/agent/%s/%s/%s", cs.Spec.Site.UID, cs.UID, pod.UID)
-	// Preassign ownership before cert-manager writes key material. Required keys
-	// keep the Pod waiting while the Secret is still empty.
-	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.IdentitySecretName, Namespace: cs.Namespace}}
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(secret), secret)
-	if apierrors.IsNotFound(err) {
-		secret.Labels = map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(cs.Spec.Site.UID)}
-		secret.OwnerReferences = []metav1.OwnerReference{{APIVersion: "v1", Kind: "Pod", Name: pod.Name, UID: pod.UID}}
-		if err := r.Client.Create(ctx, secret); err != nil {
-			return err
-		}
-	} else if err != nil {
-		return err
-	} else {
-		owned := false
-		for _, owner := range secret.OwnerReferences {
-			owned = owned || (owner.APIVersion == "v1" && owner.Kind == "Pod" && owner.UID == pod.UID && owner.Name == pod.Name)
-		}
-		if !owned || secret.Labels[RuntimeUIDLabel] != string(cs.UID) || secret.Labels[SiteUIDLabel] != string(cs.Spec.Site.UID) || !secret.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("agent identity Secret does not belong to the current Pod")
-		}
-	}
-	certificate := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "cert-manager.io/v1", "kind": "Certificate",
-		"metadata": map[string]any{"name": cs.Status.IdentitySecretName, "namespace": cs.Namespace},
-		"spec": map[string]any{
-			"secretName": cs.Status.IdentitySecretName,
-			"issuerRef":  map[string]any{"name": r.IdentityIssuer, "kind": "ClusterIssuer", "group": "cert-manager.io"},
-			"uris":       []any{identity}, "usages": []any{"client auth", "server auth"},
-			"duration": "24h", "renewBefore": "8h",
-			"privateKey": map[string]any{"algorithm": "ECDSA", "size": int64(256), "rotationPolicy": "Always"},
-		},
-	}}
-	certificate.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(pod, corev1.SchemeGroupVersion.WithKind("Pod"))})
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(certificate.GroupVersionKind())
-	err = r.Client.Get(ctx, client.ObjectKeyFromObject(certificate), existing)
-	if apierrors.IsNotFound(err) {
-		return r.Client.Create(ctx, certificate)
-	}
-	if err != nil {
-		return err
-	}
-	uris, _, err := unstructured.NestedStringSlice(existing.Object, "spec", "uris")
-	if err != nil || !metav1.IsControlledBy(existing, pod) || len(uris) != 1 || uris[0] != identity {
-		return fmt.Errorf("agent certificate does not belong to the current Pod")
-	}
-	for _, field := range []string{"secretName", "issuerRef", "usages", "privateKey"} {
-		actual, _, err := unstructured.NestedFieldCopy(existing.Object, "spec", field)
-		expected, _, _ := unstructured.NestedFieldCopy(certificate.Object, "spec", field)
-		if err != nil || !equality.Semantic.DeepEqual(actual, expected) {
-			return fmt.Errorf("agent certificate %s differs from the current identity configuration", field)
-		}
-	}
-	return nil
+	identity := identitypkg.AgentURI(string(cs.Spec.Site.UID), string(cs.UID), string(pod.UID))
+	_, err := reconcileIdentitySecret(ctx, r.Client, r.Identity, pod, runtimeIdentitySecretName(cs), "agent", identity,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
+		map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(cs.Spec.Site.UID)},
+	)
+	return err
 }
+
+func runtimeIdentitySecretName(cs *api.Codespace) string { return cs.Status.Pod.Name + "-identity" }
 
 func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace, remove bool) (ctrl.Result, error) {
 	// List by claim as well as owner: a second writer must not be missed by labels.
@@ -446,7 +401,6 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 	cs.Status.Target = nil
 	cs.Status.Boot = nil
 	cs.Status.Pod = api.ObservedResource{}
-	cs.Status.IdentitySecretName = ""
 	cs.Status.LastNodeName = ""
 	meta.SetStatusCondition(&cs.Status.Conditions, metav1.Condition{Type: "Stopped", Status: metav1.ConditionTrue, Reason: "ResourcesStopped", Message: "Runtime Pod has stopped", ObservedGeneration: cs.Generation})
 	if cs.Spec.Operation.Type == "stop" || cs.Spec.Operation.Type == "delete" {

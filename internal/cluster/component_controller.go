@@ -5,14 +5,15 @@ package cluster
 
 import (
 	"context"
+	"crypto/x509"
 	"fmt"
 	"net"
 	"net/url"
 	"strconv"
 	"strings"
-	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	dockerunits "github.com/docker/go-units"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -21,7 +22,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -34,9 +34,10 @@ import (
 // a new certificate identity and cannot reuse the previous component session.
 type ComponentReconciler struct {
 	Client                 client.Client
+	Identity               *IdentityAuthority
 	ManagementNamespace    string
 	ManagerURL             string
-	IdentityIssuer         string
+	ManagerIdentity        string
 	PlatformImage          string
 	PlatformRevision       string
 	ImagePullSecrets       []string
@@ -67,36 +68,34 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 			return ctrl.Result{}, nil
 		}
 		deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: component.Namespace}}
+		deploymentExists := false
 		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(deployment), deployment); err == nil {
 			if !metav1.IsControlledBy(deployment, &component) {
 				return ctrl.Result{}, fmt.Errorf("component Deployment ownership conflicts")
 			}
-			if err := r.Client.Delete(ctx, deployment); err != nil && !apierrors.IsNotFound(err) {
-				return ctrl.Result{}, err
-			}
-		} else if !apierrors.IsNotFound(err) {
-			return ctrl.Result{}, err
-		}
-		certificate := &unstructured.Unstructured{}
-		certificate.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
-		certificate.SetName(component.Name)
-		certificate.SetNamespace(component.Namespace)
-		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(certificate), certificate); err == nil {
-			if !metav1.IsControlledBy(certificate, &component) {
-				return ctrl.Result{}, fmt.Errorf("component Certificate ownership conflicts")
-			}
-			if certificate.GetDeletionTimestamp().IsZero() {
-				if err := r.Client.Delete(ctx, certificate); err != nil && !apierrors.IsNotFound(err) {
-					return ctrl.Result{}, err
-				}
-			}
-			return ctrl.Result{RequeueAfter: time.Second}, nil
+			deploymentExists = true
 		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
 		}
 		identity := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: component.Name + "-identity", Namespace: component.Namespace}}
-		if err := r.Client.Delete(ctx, identity); err != nil && !apierrors.IsNotFound(err) {
+		identityExists := false
+		if err := r.Client.Get(ctx, client.ObjectKeyFromObject(identity), identity); err == nil {
+			if !metav1.IsControlledBy(identity, &component) {
+				return ctrl.Result{}, fmt.Errorf("component identity Secret ownership conflicts")
+			}
+			identityExists = true
+		} else if !apierrors.IsNotFound(err) {
 			return ctrl.Result{}, err
+		}
+		if deploymentExists {
+			if err := r.Client.Delete(ctx, deployment); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
+		}
+		if identityExists {
+			if err := r.Client.Delete(ctx, identity); err != nil && !apierrors.IsNotFound(err) {
+				return ctrl.Result{}, err
+			}
 		}
 		controllerutil.RemoveFinalizer(&component, componentFinalizer)
 		return ctrl.Result{}, r.Client.Update(ctx, &component)
@@ -129,7 +128,10 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 		return ctrl.Result{}, fmt.Errorf("bind component credential: %w", err)
 	}
 	identitySecret := component.Name + "-identity"
-	if err := r.reconcileCertificate(ctx, &component, role, identitySecret); err != nil {
+	identityURI := identitypkg.ComponentURI(role, string(component.UID))
+	renewAfter, err := reconcileIdentitySecret(ctx, r.Client, r.Identity, &component, identitySecret, role, identityURI,
+		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth}, map[string]string{ComponentLabel: role, ComponentUIDLabel: string(component.UID)})
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	ports, err := r.reconcileService(ctx, &component, role, gatewayConfig, cacheConfig)
@@ -152,14 +154,7 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	if err := r.reconcileNetworkPolicy(ctx, &component, role, ports); err != nil {
 		return ctrl.Result{}, err
 	}
-	identityReady, err := r.reconcileIdentitySecretOwner(ctx, &component, identitySecret)
-	if err != nil {
-		return ctrl.Result{}, err
-	}
-	if !identityReady {
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-	return ctrl.Result{}, nil
+	return ctrl.Result{RequeueAfter: renewAfter}, nil
 }
 
 func (r *ComponentReconciler) reconcileGatewayRoutes(ctx context.Context, component *corev1.ConfigMap, ports []int32, config *configpkg.GatewayConfig) error {
@@ -225,55 +220,6 @@ func (r *ComponentReconciler) reconcileRoute(ctx context.Context, component *cor
 	}
 	existing.Object["spec"] = desired.Object["spec"]
 	return r.Client.Update(ctx, existing)
-}
-
-func (r *ComponentReconciler) reconcileCertificate(ctx context.Context, component *corev1.ConfigMap, role, secretName string) error {
-	certificate := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "cert-manager.io/v1", "kind": "Certificate",
-		"metadata": map[string]any{"name": component.Name, "namespace": component.Namespace},
-		"spec": map[string]any{
-			"secretName": secretName,
-			"issuerRef":  map[string]any{"name": r.IdentityIssuer, "kind": "ClusterIssuer", "group": "cert-manager.io"},
-			"uris":       []any{fmt.Sprintf("spiffe://codespace/%s/%s/deployment", role, component.UID)},
-			"usages":     []any{"client auth"}, "duration": "24h", "renewBefore": "8h",
-			"privateKey": map[string]any{"algorithm": "ECDSA", "size": int64(256), "rotationPolicy": "Always"},
-		},
-	}}
-	certificate.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))})
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(certificate), existing)
-	if apierrors.IsNotFound(err) {
-		return r.Client.Create(ctx, certificate)
-	}
-	if err != nil {
-		return err
-	}
-	if !metav1.IsControlledBy(existing, component) {
-		return fmt.Errorf("component Certificate ownership conflicts")
-	}
-	existing.Object["spec"] = certificate.Object["spec"]
-	return r.Client.Update(ctx, existing)
-}
-
-func (r *ComponentReconciler) reconcileIdentitySecretOwner(ctx context.Context, component *corev1.ConfigMap, secretName string) (bool, error) {
-	var secret corev1.Secret
-	if err := r.Client.Get(ctx, client.ObjectKey{Namespace: component.Namespace, Name: secretName}, &secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return false, nil
-		}
-		return false, err
-	}
-	if metav1.IsControlledBy(&secret, component) {
-		return true, nil
-	}
-	if owner := metav1.GetControllerOf(&secret); owner != nil {
-		return false, fmt.Errorf("component identity Secret ownership conflicts")
-	}
-	if err := controllerutil.SetControllerReference(component, &secret, r.Client.Scheme()); err != nil {
-		return false, err
-	}
-	return true, r.Client.Update(ctx, &secret)
 }
 
 func componentListenPort(value string) (int32, error) {
@@ -367,7 +313,11 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 		}
 		container := corev1.Container{
 			Name: role, Image: r.PlatformImage, ImagePullPolicy: pullPolicy, Args: args,
-			Env:             []corev1.EnvVar{{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL}, {Name: "GITEA_CODESPACE_CERTIFICATE_DIRECTORY", Value: "/var/run/codespace/identity"}},
+			Env: []corev1.EnvVar{
+				{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL},
+				{Name: "GITEA_CODESPACE_MANAGER_IDENTITY", Value: r.ManagerIdentity},
+				{Name: "GITEA_CODESPACE_CERTIFICATE_DIRECTORY", Value: "/var/run/codespace/identity"},
+			},
 			Resources:       corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("50m"), corev1.ResourceMemory: resource.MustParse("64Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("512Mi")}},
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: "identity", MountPath: "/var/run/codespace/identity", ReadOnly: true}},

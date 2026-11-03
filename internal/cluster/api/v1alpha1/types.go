@@ -225,7 +225,6 @@ type CodespaceStatus struct {
 	// A started format is never retried when the filesystem is unrecognizable.
 	// +kubebuilder:validation:Enum=started;ready
 	VolumeInitialization string `json:"volumeInitialization,omitempty"`
-	IdentitySecretName   string `json:"identitySecretName,omitempty"`
 	MetadataGeneration   int64  `json:"metadataGeneration,omitempty"`
 	// SettledOperationVersion records Gitea's terminal operation acknowledgement.
 	SettledOperationVersion int64 `json:"settledOperationVersion,omitempty"`

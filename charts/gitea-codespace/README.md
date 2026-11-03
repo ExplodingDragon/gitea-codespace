@@ -1,7 +1,7 @@
 # Gitea Codespace Helm chart
 
-This chart installs the Codespace Manager control plane: CRDs, RBAC, Manager
-Deployment, internal and administration Services, Manager certificate, and
+This chart installs the Codespace Manager control plane: CRDs, RBAC, a
+multi-replica Manager Deployment, internal and administration Services, and
 NetworkPolicy. Gateway, Cache, and Runtime workloads are created later from
 objects configured through the administration UI.
 
@@ -9,8 +9,6 @@ objects configured through the administration UI.
 
 - Kubernetes 1.31 or later;
 - Helm 4.3 or later;
-- cert-manager and a ready, internal CA-backed `ClusterIssuer` for workload
-  identities;
 - access to the Gitea Codespace platform image;
 - an administrator token stored in a Kubernetes Secret;
 - at least one verified Kata Containers or Sysbox RuntimeClass and compatible
@@ -21,45 +19,34 @@ the cluster operator. Install Kata using its
 [installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md),
 or install Sysbox on a dedicated node pool using its
 [Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
-Verify the chosen runtime, storage, and platform image with a real Pod first.
-The broader isolation, storage, network, and recovery requirements are defined
-in the [deployment design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/deployment-requirements.md).
+Verify the selected runtime, storage, and platform image with a real Pod first.
+The broader isolation, storage, network, identity, and recovery design is
+defined in the [deployment requirements](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/deployment-requirements.md).
 
-## Workload identity
+## Internal identity
 
-Manager, Agent, Gateway, and Cache authenticate each other with certificates
-from one trust chain. The chart creates the Manager `Certificate`, and Manager
-creates certificates for the workloads it controls. cert-manager materializes
-each certificate as a Secret containing `tls.crt`, `tls.key`, and `ca.crt`.
-Pods mount these Secrets, so they become Ready only after certificate issuance
-succeeds.
+Manager maintains an installation-specific root and issuing CA in
+`Secret/<release>-internal-ca`. It directly issues 24-hour certificates for
+Manager, Agent, Gateway, and Cache mutual TLS. The root remains stable while
+the issuing CA and workload certificates rotate, so normal rotation does not
+restart workloads or require another cluster service.
 
-`identity.clusterIssuer` selects the issuer and defaults to
-`codespace-identity`. A production issuer must be Ready, support URI subject
-alternative names and both client and server authentication, and place the CA
-chain in `ca.crt`. Keeping the CA outside the chart lets the cluster operator
-control its storage, trust scope, and rotation independently of an application
-release.
+The root is valid for ten years. The issuing CA is valid for one year and is
+replaced 30 days before expiry. Workload certificates are replaced eight hours
+before their 24-hour expiry. These intervals keep the stable recovery boundary
+separate from routinely rotated online keys while leaving enough time for a
+temporary control-plane outage.
 
-For a development cluster using the standard `cert-manager` namespace, the
-repository provides a self-signed root and CA issuer:
+The CA Secret is created through the Kubernetes API after Manager starts; the
+Manager Pod does not mount a pre-existing identity Secret. Multiple replicas
+use Kubernetes object creation and resource versions to converge on the same
+CA. Include this Secret in cluster backups and enable Kubernetes Secret
+encryption at rest. If the Secret is lost while managed resources exist,
+Manager stops instead of silently creating a different trust hierarchy.
 
-```sh
-kubectl -n cert-manager wait \
-  --for=condition=Available deployment/cert-manager-webhook \
-  --timeout=120s
-
-kubectl apply -f deploy/examples/identity.yaml
-kubectl -n cert-manager wait \
-  --for=condition=Ready certificate/codespace-root \
-  --timeout=120s
-kubectl wait \
-  --for=condition=Ready clusterissuer/codespace-identity \
-  --timeout=120s
-```
-
-The example CA is intended for development. Select an existing production
-issuer with `--set identity.clusterIssuer=ISSUER_NAME`.
+This internal CA is separate from browser-facing HTTPS. cert-manager is
+optional and can populate the TLS Secret referenced by an Ingress or an
+external Gateway listener.
 
 ## Install
 
@@ -80,10 +67,9 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-Pushes to `main` update the platform image's `main` tag and publish a Helm
-prerelease named `0.1.0-main.<run-number>`. `--devel` selects the newest
-prerelease. For a reproducible installation, copy the exact chart version and
-image digest from the workflow summary:
+Pushes to `main` publish a Helm prerelease named
+`0.1.0-main.<run-number>`. For a reproducible installation, use the exact chart
+version and image digest from the workflow summary:
 
 ```sh
 helm upgrade --install codespace \
@@ -96,42 +82,30 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-The chart digest shown in the summary can also be appended to the OCI chart
-reference. Tagged platform images use Kubernetes `Always` pull policy, while
-digest-pinned images use `IfNotPresent`. This keeps the development channel
-current and makes reviewed deployments reproducible. After the first
-publication, the repository owner must make both GHCR packages public unless
-registry credentials are configured.
-
-The selected image reference is shared by Manager and all workloads it creates.
-For a private registry, list existing pull Secret names in
-`image.pullSecrets`. Manager synchronizes only those credentials to managed
+Tagged platform images use the Kubernetes `Always` pull policy. Digest-pinned
+images use `IfNotPresent`. For a private registry, list existing pull Secret
+names in `image.pullSecrets`; Manager copies only those credentials to managed
 site namespaces.
 
 ## Verify the installation
 
-The default release creates `Certificate/codespace-gitea-codespace` and asks
-cert-manager to produce `Secret/codespace-gitea-codespace-identity`. Verify the
-issuer, certificate, Secret, and Manager in that order:
+Wait for Manager and verify that the installation CA exists:
 
 ```sh
-kubectl get clusterissuer codespace-identity
-kubectl -n codespace-system get certificate,certificaterequest
-kubectl -n codespace-system wait \
-  --for=condition=Ready certificate \
-  --selector=app.kubernetes.io/instance=codespace \
-  --timeout=120s
-kubectl -n codespace-system get secret,pod
 kubectl -n codespace-system rollout status \
   deployment/codespace-gitea-codespace \
   --timeout=120s
+kubectl -n codespace-system get secret \
+  codespace-gitea-codespace-internal-ca
+kubectl -n codespace-system get pod
 ```
 
-Release name, namespace, and fullname overrides change the generated resource
-names. The chart labels remain available for selecting the corresponding
-Certificate and workload.
+The internal CA Secret is not owned by the Helm release because it must survive
+ordinary upgrades and reinstalling the same release. Keep the release resource
+name stable while managed resources exist. Deleting the management namespace
+removes the installation and its trust root.
 
-## Administration access
+## Administration access and HTTPS
 
 The administration Service defaults to `ClusterIP`. Open a local session with:
 
@@ -140,45 +114,37 @@ kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-Then open <http://127.0.0.1:18080>. To publish the page, enable
-`admin.ingress`, set an HTTPS `admin.publicURL`, and provide the host and TLS
-Secret. Restrict direct Service access with `networkPolicy.adminIngressCIDRs`
-when cluster networking requires additional sources.
+To publish the page, enable `admin.ingress`, set an HTTPS `admin.publicURL`,
+and provide `admin.ingress.host` and `admin.ingress.tlsSecret`. The Secret can
+be created by cert-manager, a cloud certificate controller, or the cluster
+operator. The chart only references it and does not couple public TLS to the
+internal component CA.
 
 ## Gateway API
 
-Set `gatewayAPI.parent.name` to an existing Gateway when the Manager should
-create managed HTTPRoute and TCPRoute resources for Gateway workloads. The
-parent namespace defaults to the chart namespace. Listener names are selected
-with `gatewayAPI.parent.httpListener` and `gatewayAPI.parent.sshListener`.
+Set `gatewayAPI.parent.name` to an existing Gateway when Manager should create
+HTTPRoute and TCPRoute resources for Gateway workloads. The parent namespace
+defaults to the chart namespace. Listener names are selected with
+`gatewayAPI.parent.httpListener` and `gatewayAPI.parent.sshListener`.
+
+HTTPS certificates for Codespace endpoint hostnames belong to the external
+Gateway listener and its `certificateRefs`. The cluster operator can use
+cert-manager to maintain that Secret. SSH uses the Gateway SSH host key and is
+not part of the X.509 certificate hierarchy.
 
 Leaving the parent name empty keeps public route creation under the cluster
-operator's control. This is useful when the ingress implementation does not
-support TCPRoute or uses an external provisioning workflow.
+operator's control.
 
-## Certificate troubleshooting
+## Internal CA recovery
 
-An event such as:
+Back up `Secret/<release>-internal-ca` with the other management resources.
+Manager reports an explicit startup error when the Secret is missing or
+invalid while managed state exists. Restore the original Secret and restart
+Manager; Agent, Gateway, and Cache will reconnect using the same root.
 
-```text
-MountVolume.SetUp failed ... secret "...-identity" not found
-```
-
-means the Pod is waiting for cert-manager to create the Secret named by
-`Certificate.spec.secretName`. Inspect the certificate chain from the issuer
-downward:
-
-```sh
-kubectl get clusterissuer
-kubectl -n codespace-system describe certificate
-kubectl -n codespace-system get certificaterequest
-kubectl -n cert-manager logs deployment/cert-manager --tail=100
-```
-
-Once the issuer and Certificate become Ready, cert-manager creates the Secret
-and kubelet mounts it without reinstalling the chart. Letting cert-manager own
-this Secret preserves the CA chain and certificate rotation expected by all
-Codespace components.
+Creating a replacement CA is appropriate only for an empty installation. This
+distinction prevents a deleted Secret from turning into an undetected second
+trust domain.
 
 ## Configuration and validation
 

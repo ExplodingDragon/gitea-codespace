@@ -6,13 +6,10 @@ package cluster
 import (
 	"bytes"
 	"context"
-	"crypto/x509"
 	"encoding/json"
-	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -33,21 +30,14 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	cluster := newE2ECluster(t, 2*time.Minute)
 	namespace := cluster.createNamespace(t, "manager-e2e")
 	directory := t.TempDir()
-	fixture := httptest.NewTLSServer(http.NotFoundHandler())
-	key, err := x509.MarshalPKCS8PrivateKey(fixture.TLS.Certificates[0].PrivateKey)
-	require.NoError(t, err)
-	certificate := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: fixture.TLS.Certificates[0].Certificate[0]})
-	fixture.Close()
 	token := strings.Repeat("test-administrator-", 4)
-	for name, data := range map[string][]byte{"tls.crt": certificate, "ca.crt": certificate, "tls.key": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: key}), "token": []byte(token)} {
-		require.NoError(t, os.WriteFile(filepath.Join(directory, name), data, 0o600))
-	}
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "token"), []byte(token), 0o600))
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	address := listener.Addr().String()
 	require.NoError(t, listener.Close())
 	managerHost := "manager." + namespace.Name + ".svc"
-	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentityIssuer: "test-issuer", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0", CertificateDirectory: directory}
+	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentitySecretName: "test-internal-ca", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0"}
 	log.SetLogger(logr.Discard())
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)

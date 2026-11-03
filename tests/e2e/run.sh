@@ -10,7 +10,6 @@ RUN_ID=${CODESPACE_E2E_RUN_ID:-"$(date -u +%Y%m%d%H%M%S)-$$"}
 MANAGEMENT_NAMESPACE=${CODESPACE_E2E_MANAGEMENT_NAMESPACE:-"codespace-e2e-${RUN_ID}"}
 RELEASE=${CODESPACE_E2E_RELEASE:-codespace-e2e}
 MANAGER_NAME=${CODESPACE_E2E_MANAGER_NAME:-"codespace-manager-${RUN_ID}"}
-ISSUER=${CODESPACE_E2E_IDENTITY_ISSUER:-codespace-identity}
 ARTIFACTS=${CODESPACE_E2E_ARTIFACTS:-".tmp/e2e/${RUN_ID}"}
 RUN_LABEL=codespace.gitea.dev/e2e-run
 PORT_FORWARD_PID=
@@ -28,6 +27,7 @@ for command_name in "${required_commands[@]}"; do
 done
 
 required_variables=(
+	KUBECONFIG
 	CODESPACE_E2E_PLATFORM_IMAGE
 	CODESPACE_E2E_RUNTIME_ISOLATION
 	CODESPACE_E2E_RUNTIME_CLASS
@@ -66,6 +66,12 @@ mkdir -p "$ARTIFACTS/bin" "$ARTIFACTS/diagnostics"
 
 collect_diagnostics() {
 	set +e
+	"$KUBECTL_BIN" get nodes -o wide >"$ARTIFACTS/diagnostics/nodes.txt" 2>&1
+	"$KUBECTL_BIN" get nodes -o yaml >"$ARTIFACTS/diagnostics/nodes.yaml" 2>&1
+	"$KUBECTL_BIN" describe nodes >"$ARTIFACTS/diagnostics/nodes.describe.txt" 2>&1
+	"$KUBECTL_BIN" get runtimeclasses -o yaml >"$ARTIFACTS/diagnostics/runtimeclasses.yaml" 2>&1
+	"$KUBECTL_BIN" get storageclasses -o yaml >"$ARTIFACTS/diagnostics/storageclasses.yaml" 2>&1
+	"$HELM_BIN" status "$RELEASE" -n "$MANAGEMENT_NAMESPACE" >"$ARTIFACTS/diagnostics/helm.txt" 2>&1
 	"$KUBECTL_BIN" get giteasites -l "$RUN_LABEL=$RUN_ID" -o yaml >"$ARTIFACTS/diagnostics/giteasites.yaml" 2>&1
 	"$KUBECTL_BIN" get environmenttemplates -l "$RUN_LABEL=$RUN_ID" -o yaml >"$ARTIFACTS/diagnostics/environmenttemplates.yaml" 2>&1
 	for namespace in "$@"; do
@@ -73,7 +79,7 @@ collect_diagnostics() {
 		directory="$ARTIFACTS/diagnostics/$namespace"
 		mkdir -p "$directory"
 		"$KUBECTL_BIN" get namespace "$namespace" -o yaml >"$directory/namespace.yaml" 2>&1
-		"$KUBECTL_BIN" get all,pvc,networkpolicy,certificate -n "$namespace" -o wide >"$directory/resources.txt" 2>&1
+		"$KUBECTL_BIN" get all,pvc,networkpolicy -n "$namespace" -o wide >"$directory/resources.txt" 2>&1
 		"$KUBECTL_BIN" get events -n "$namespace" --sort-by=.lastTimestamp >"$directory/events.txt" 2>&1
 		while IFS= read -r pod; do
 			[[ -n $pod ]] || continue
@@ -138,10 +144,6 @@ trap 'exit 143' TERM
 echo "Checking Kubernetes prerequisites"
 "$KUBECTL_BIN" version >/dev/null
 for resource in \
-	customresourcedefinition/giteasites.codespace.gitea.dev \
-	customresourcedefinition/environmenttemplates.codespace.gitea.dev \
-	customresourcedefinition/codespaces.codespace.gitea.dev \
-	"clusterissuer/$ISSUER" \
 	"runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
 	"storageclass/$CODESPACE_E2E_STORAGE_CLASS"; do
 	"$KUBECTL_BIN" get "$resource" >/dev/null
@@ -164,12 +166,16 @@ echo "Deploying isolated Manager release"
 	--set-string fullnameOverride="$MANAGER_NAME" \
 	--set-string image.repository="$image_repository" \
 	--set-string image.digest="$image_digest" \
-	--set-string image.pullPolicy=IfNotPresent \
-	--set-string identity.clusterIssuer="$ISSUER" \
 	--set-string admin.tokenSecret.name=codespace-admin \
 	--set replicaCount="${CODESPACE_E2E_MANAGER_REPLICAS:-2}" \
 	--wait --timeout 5m
 "$KUBECTL_BIN" rollout status -n "$MANAGEMENT_NAMESPACE" "deployment/$MANAGER_NAME" --timeout=5m
+for resource in \
+	customresourcedefinition/giteasites.codespace.gitea.dev \
+	customresourcedefinition/environmenttemplates.codespace.gitea.dev \
+	customresourcedefinition/codespaces.codespace.gitea.dev; do
+	"$KUBECTL_BIN" get "$resource" >/dev/null
+done
 
 export CODESPACE_E2E=1
 export CODESPACE_E2E_RUN_ID="$RUN_ID"

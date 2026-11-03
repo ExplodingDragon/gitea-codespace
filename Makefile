@@ -92,7 +92,8 @@ helm-check:
 	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin
 	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
-	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'
+	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'; \
+	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'
 	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
 	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000"'; \
@@ -109,6 +110,7 @@ scripts-check:
 	bash -n internal/devcontainerruntime/builtin/configure-git.sh
 	bash -n internal/devcontainerruntime/builtin/start-web-ide.sh
 	bash -n tests/e2e/run.sh
+	bash -n tests/e2e/setup-k3s.sh
 	sh -n devcontainer/docker/builtin/update-user.sh
 
 .PHONY: test-smoke

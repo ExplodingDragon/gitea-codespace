@@ -15,10 +15,17 @@ import (
 
 type IdentityCheck func(*url.URL) error
 
+// CertificateSource supplies the current leaf certificate and trust roots for
+// one TLS handshake. File-backed workloads and the in-memory Manager identity
+// use the same verification path.
+type CertificateSource interface {
+	Load() (tls.Certificate, *x509.CertPool, error)
+}
+
 // Certificates reads kubelet-projected files at each handshake to pick up rotation.
 type Certificates struct{ Directory string }
 
-func (c Certificates) load() (tls.Certificate, *x509.CertPool, error) {
+func (c Certificates) Load() (tls.Certificate, *x509.CertPool, error) {
 	pair, err := tls.LoadX509KeyPair(filepath.Join(c.Directory, "tls.crt"), filepath.Join(c.Directory, "tls.key"))
 	if err != nil {
 		return tls.Certificate{}, nil, fmt.Errorf("load component certificate: %w", err)
@@ -35,14 +42,18 @@ func (c Certificates) load() (tls.Certificate, *x509.CertPool, error) {
 }
 
 func (c Certificates) Server(check IdentityCheck) (*tls.Config, error) {
+	return Server(c, check)
+}
+
+func Server(source CertificateSource, check IdentityCheck) (*tls.Config, error) {
 	if check == nil {
 		return nil, fmt.Errorf("peer identity check is required")
 	}
-	if _, _, err := c.load(); err != nil {
+	if _, _, err := source.Load(); err != nil {
 		return nil, err
 	}
 	return &tls.Config{MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"}, GetConfigForClient: func(*tls.ClientHelloInfo) (*tls.Config, error) {
-		certificate, roots, err := c.load()
+		certificate, roots, err := source.Load()
 		if err != nil {
 			return nil, err
 		}
@@ -53,16 +64,20 @@ func (c Certificates) Server(check IdentityCheck) (*tls.Config, error) {
 }
 
 func (c Certificates) Client(check IdentityCheck) (*tls.Config, error) {
+	return Client(c, check)
+}
+
+func Client(source CertificateSource, check IdentityCheck) (*tls.Config, error) {
 	if check == nil {
 		return nil, fmt.Errorf("peer identity check is required")
 	}
-	if _, _, err := c.load(); err != nil {
+	if _, _, err := source.Load(); err != nil {
 		return nil, err
 	}
 	return &tls.Config{
 		MinVersion: tls.VersionTLS13, NextProtos: []string{"h2"},
 		GetClientCertificate: func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
-			certificate, _, err := c.load()
+			certificate, _, err := source.Load()
 			return &certificate, err
 		},
 		// Pod IPs are reusable. Verify the CA chain and application URI instead of DNS.
@@ -71,7 +86,7 @@ func (c Certificates) Client(check IdentityCheck) (*tls.Config, error) {
 			if len(state.PeerCertificates) == 0 {
 				return fmt.Errorf("peer did not present a certificate")
 			}
-			_, roots, err := c.load()
+			_, roots, err := source.Load()
 			if err != nil {
 				return err
 			}

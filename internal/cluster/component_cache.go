@@ -111,19 +111,27 @@ func (s *ComponentServer) cacheAvailable(ctx context.Context, material *cacheMat
 	}
 	holder := strings.Split(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
 	duration := time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second
-	return lease.Labels[ComponentUIDLabel] == string(material.component.UID) && metav1.IsControlledBy(&lease, material.component) && lease.Spec.RenewTime != nil && duration > 0 && time.Now().Before(lease.Spec.RenewTime.Add(duration)) && len(holder) == 4 && holder[0] == string(material.component.UID) && holder[1] != "" && holder[2] != "" && holder[3] == strconv.FormatInt(material.config.Revision, 10), nil
+	return lease.Labels[ComponentUIDLabel] == string(material.component.UID) && metav1.IsControlledBy(&lease, material.component) && lease.Spec.RenewTime != nil && duration > 0 && time.Now().Before(lease.Spec.RenewTime.Add(duration)) && len(holder) == 3 && holder[0] == string(material.component.UID) && holder[1] != "" && holder[2] == strconv.FormatInt(material.config.Revision, 10), nil
 }
 
 func (s *ComponentServer) cacheByUID(ctx context.Context, uid string) (*cacheMaterial, error) {
+	reader := s.IdentityIndex
+	if reader == nil {
+		reader = s.Client
+	}
 	var components corev1.ConfigMapList
-	if err := s.Client.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: uid}); err != nil {
+	if err := reader.List(ctx, &components, client.InNamespace(s.ManagementNamespace), client.MatchingFields{IdentityUIDIndex: uid}); err != nil {
 		return nil, err
 	}
 	if len(components.Items) != 1 {
 		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 	}
-	component := &components.Items[0]
-	if string(component.UID) != uid || component.Labels[ComponentLabel] != "cache" || !component.DeletionTimestamp.IsZero() {
+	indexedUID := components.Items[0].UID
+	component := &corev1.ConfigMap{}
+	if err := s.Client.Get(ctx, client.ObjectKeyFromObject(&components.Items[0]), component); err != nil {
+		return nil, err
+	}
+	if component.UID != indexedUID || string(component.UID) != uid || component.Labels[ComponentLabel] != "cache" || !component.DeletionTimestamp.IsZero() {
 		return nil, connect.NewError(connect.CodePermissionDenied, "cache component identity is no longer configured")
 	}
 	return s.cacheMaterial(ctx, component)
@@ -185,7 +193,7 @@ func (s *ComponentServer) cacheForRequest(ctx context.Context, cacheID string) (
 }
 
 func cacheOwnerHolder(identity componentIdentity, sessionID string, revision int64) string {
-	return strings.Join([]string{identity.UID, identity.Instance, sessionID, strconv.FormatInt(revision, 10)}, "/")
+	return strings.Join([]string{identity.UID, sessionID, strconv.FormatInt(revision, 10)}, "/")
 }
 
 func (s *ComponentServer) claimCache(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) error {
@@ -220,7 +228,7 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 		return err
 	}
 	holder := strings.Split(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
-	if lease.Labels[ComponentUIDLabel] != identity.UID || len(holder) != 4 || holder[0] != identity.UID || holder[1] != identity.Instance || holder[2] != sessionID {
+	if lease.Labels[ComponentUIDLabel] != identity.UID || len(holder) != 3 || holder[0] != identity.UID || holder[1] != sessionID {
 		return connect.NewError(connect.CodeFailedPrecondition, "cache owner lease is no longer current")
 	}
 	now := metav1.NowMicro()

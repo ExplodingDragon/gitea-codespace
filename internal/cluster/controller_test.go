@@ -24,9 +24,7 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -39,8 +37,6 @@ func testScheme(t *testing.T) *runtime.Scheme {
 	s := runtime.NewScheme()
 	require.NoError(t, scheme.AddToScheme(s))
 	require.NoError(t, api.AddToScheme(s))
-	s.AddKnownTypeWithName(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"}, &unstructured.Unstructured{})
-	s.AddKnownTypeWithName(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "CertificateList"}, &unstructured.UnstructuredList{})
 	return s
 }
 
@@ -193,7 +189,7 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 	unusable.Spec.Operation.Type = "delete"
 	require.NoError(t, unusable.Validate("codespace-system"))
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}, &api.Codespace{}).WithObjects(site, ns, cs).Build()
-	r := &RuntimeReconciler{Client: c, ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", ImagePullSecrets: []string{"registry"}}
+	r := &RuntimeReconciler{Client: c, Identity: newTestIdentityAuthority(t), ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", ManagerIdentity: "spiffe://codespace/manager/namespace-uid", ImagePullSecrets: []string{"registry"}}
 	r.Authority = &ExecutionAuthority{}
 	r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
 	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)}
@@ -270,9 +266,9 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
-		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}, IdentitySecretName: "runtime-identity"},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.True(t, *container.SecurityContext.Privileged)
@@ -296,7 +292,7 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			if settled {
 				cs.Status.SettledOperationVersion = 3
 			}
-			pod, err := runtimePod(cs, "https://manager.example", nil)
+			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 			require.NoError(t, err)
 			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodFailed
 			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}}}}
@@ -362,7 +358,7 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodRunning
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
@@ -433,21 +429,18 @@ func TestRuntimeRecoveryConfirmationUnblocksMissingWriter(t *testing.T) {
 }
 
 func TestRuntimeCertificateOwnership(t *testing.T) {
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}}, Status: api.CodespaceStatus{IdentitySecretName: "pod-identity"}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}}, Status: api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}}}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runtime-pod", Namespace: cs.Namespace, UID: "pod-uid"}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
-	r := &RuntimeReconciler{Client: c, IdentityIssuer: "codespace-internal"}
+	r := &RuntimeReconciler{Client: c, Identity: newTestIdentityAuthority(t)}
 	require.NoError(t, r.ensureIdentity(t.Context(), cs, pod))
 	require.NoError(t, r.ensureIdentity(t.Context(), cs, pod))
 	var secret corev1.Secret
-	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.IdentitySecretName}, &secret))
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: cs.Namespace, Name: runtimeIdentitySecretName(cs)}, &secret))
 	require.Equal(t, pod.UID, secret.OwnerReferences[0].UID)
-	certificate := &unstructured.Unstructured{}
-	certificate.SetGroupVersionKind(schema.GroupVersionKind{Group: "cert-manager.io", Version: "v1", Kind: "Certificate"})
-	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(&secret), certificate))
-	require.NoError(t, unstructured.SetNestedField(certificate.Object, "another-secret", "spec", "secretName"))
-	require.NoError(t, c.Update(t.Context(), certificate))
-	require.ErrorContains(t, r.ensureIdentity(t.Context(), cs, pod), "secretName")
+	secret.OwnerReferences[0].UID = "another-pod"
+	require.NoError(t, c.Update(t.Context(), &secret))
+	require.ErrorContains(t, r.ensureIdentity(t.Context(), cs, pod), "does not belong")
 }
 
 func TestGiteaCredentialRedirect(t *testing.T) {

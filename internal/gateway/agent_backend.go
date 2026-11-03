@@ -17,6 +17,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
@@ -105,7 +106,7 @@ func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 	if directory == "" {
 		directory = "/var/run/codespace/identity"
 	}
-	expected := "spiffe://codespace/agent/" + route.SiteUid + "/" + route.ResourceUid + "/" + route.PodUid
+	expected := identitypkg.AgentURI(route.SiteUid, route.ResourceUid, route.PodUid)
 	tlsConfig, err := (transport.Certificates{Directory: directory}).Client(func(identity *url.URL) error {
 		if identity.String() != expected {
 			return fmt.Errorf("agent identity does not match the current Runtime Pod")

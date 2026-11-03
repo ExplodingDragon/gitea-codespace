@@ -4,7 +4,9 @@
 package cluster
 
 import (
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"strings"
 	"testing"
 	"time"
@@ -44,7 +46,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	cacheKey := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cache-key", Namespace: namespace, UID: "cache-key-uid", Labels: map[string]string{pendingComponentLabel: cache.Name}}, Data: map[string][]byte{"registryKey": make([]byte, 32), "tokenKey": make([]byte, 32)}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(gateway, gatewayKey, cache, cacheKey).Build()
 	reconciler := &ComponentReconciler{
-		Client: c, ManagementNamespace: namespace, ManagerURL: "https://manager.codespace-system.svc:8443", IdentityIssuer: "codespace-internal", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64),
+		Client: c, Identity: newTestIdentityAuthority(t), ManagementNamespace: namespace, ManagerURL: "https://manager.codespace-system.svc:8443", ManagerIdentity: "spiffe://codespace/manager/namespace-uid", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64),
 		PlatformRevision:  "sha-test",
 		ImagePullSecrets:  []string{"registry"},
 		GatewayParentName: "public", GatewayHTTPSectionName: "https", GatewaySSHSectionName: "ssh",
@@ -81,22 +83,14 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(component), &policy))
 		require.Equal(t, string(component.UID), policy.Spec.PodSelector.MatchLabels[ComponentUIDLabel])
 
-		certificate := &unstructured.Unstructured{}
-		certificate.SetAPIVersion("cert-manager.io/v1")
-		certificate.SetKind("Certificate")
-		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(component), certificate))
-		uris, found, err := unstructured.NestedStringSlice(certificate.Object, "spec", "uris")
-		require.NoError(t, err)
-		require.True(t, found)
-		require.Equal(t, []string{"spiffe://codespace/" + component.Labels[ComponentLabel] + "/" + string(component.UID) + "/deployment"}, uris)
-
 		identity := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: component.Name + "-identity", Namespace: component.Namespace}}
-		require.NoError(t, c.Create(ctx, identity))
-		result, err = reconciler.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(component)})
-		require.NoError(t, err)
-		require.Zero(t, result.RequeueAfter)
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(identity), identity))
 		require.True(t, metav1.IsControlledBy(identity, component))
+		block, _ := pem.Decode(identity.Data["tls.crt"])
+		require.NotNil(t, block)
+		certificate, err := x509.ParseCertificate(block.Bytes)
+		require.NoError(t, err)
+		require.Equal(t, "spiffe://codespace/"+component.Labels[ComponentLabel]+"/"+string(component.UID), certificate.URIs[0].String())
 	}
 
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: gatewayKey.Name}, gatewayKey))
@@ -125,7 +119,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	require.Equal(t, resource.MustParse("1Gi"), claim.Spec.Resources.Requests[corev1.ResourceStorage])
 }
 
-func TestComponentReconcilerDeletesGeneratedIdentity(t *testing.T) {
+func TestComponentReconcilerChecksOwnershipBeforeDeletion(t *testing.T) {
 	now := metav1.Now()
 	component := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{
 		Name: "cache", Namespace: "codespace-system", UID: "cache-uid", Labels: map[string]string{ComponentLabel: "cache"},
@@ -134,23 +128,18 @@ func TestComponentReconcilerDeletesGeneratedIdentity(t *testing.T) {
 	owner := *metav1.NewControllerRef(component, corev1.SchemeGroupVersion.WithKind("ConfigMap"))
 	identity := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "cache-identity", Namespace: component.Namespace}}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: component.Namespace, OwnerReferences: []metav1.OwnerReference{owner}}}
-	certificate := &unstructured.Unstructured{}
-	certificate.SetAPIVersion("cert-manager.io/v1")
-	certificate.SetKind("Certificate")
-	certificate.SetName(component.Name)
-	certificate.SetNamespace(component.Namespace)
-	certificate.SetOwnerReferences([]metav1.OwnerReference{owner})
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, identity, deployment, certificate).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, identity, deployment).Build()
 	reconciler := &ComponentReconciler{Client: c, ManagementNamespace: component.Namespace}
 
-	result, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(component)})
-	require.NoError(t, err)
-	require.NotZero(t, result.RequeueAfter)
-	require.Error(t, c.Get(t.Context(), client.ObjectKeyFromObject(deployment), deployment))
-	require.Error(t, c.Get(t.Context(), client.ObjectKeyFromObject(certificate), certificate))
+	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(component)})
+	require.ErrorContains(t, err, "identity Secret ownership conflicts")
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(deployment), deployment))
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(identity), identity))
 
+	identity.OwnerReferences = []metav1.OwnerReference{owner}
+	require.NoError(t, c.Update(t.Context(), identity))
 	_, err = reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(component)})
 	require.NoError(t, err)
+	require.Error(t, c.Get(t.Context(), client.ObjectKeyFromObject(deployment), deployment))
 	require.Error(t, c.Get(t.Context(), client.ObjectKeyFromObject(identity), identity))
 }

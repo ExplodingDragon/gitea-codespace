@@ -48,7 +48,7 @@ func TestApplicationIdentityTLSAndRotation(t *testing.T) {
 		}
 	}
 	serverDirectory, clientDirectory := t.TempDir(), t.TempDir()
-	serverIdentity, clientIdentity := "spiffe://codespace/agent/site/runtime/pod-1", "spiffe://codespace/gateway/component/pod"
+	serverIdentity, clientIdentity := "spiffe://codespace/agent/site/runtime/pod-1", "spiffe://codespace/gateway/component-uid"
 	issue(serverDirectory, serverIdentity)
 	issue(clientDirectory, clientIdentity)
 	exactIdentity := func(expected string) IdentityCheck {

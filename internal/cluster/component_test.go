@@ -90,7 +90,7 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 	}).Build()
 	tracker := &RuntimeActivityTracker{}
 	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Activity: tracker}
-	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: "gateway-uid", Instance: "gateway-pod"})
+	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: "gateway-uid"})
 
 	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
 	require.NoError(t, err)
@@ -143,8 +143,8 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: component.Namespace, Tickets: &AccessTickets{privateKey: signingKey}}
-	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
-	snapshot, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: string(component.UID)})
+	snapshot, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.NoError(t, err)
 	require.Len(t, snapshot.Runtimes, 1)
 	route := snapshot.Runtimes[0]
@@ -202,7 +202,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 			if unavailable != "missing pod" {
 				require.NoError(t, index.Create(ctx, otherPod))
 			}
-			result, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+			result, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 			require.NoError(t, err)
 			require.Len(t, result.Runtimes, 1)
 			require.Equal(t, cs.Spec.RuntimeUUID, result.Runtimes[0].RuntimeUuid)
@@ -221,14 +221,14 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 			return c.Get(ctx, key, obj, opts...)
 		},
 	})
-	_, err = server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+	_, err = server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.ErrorContains(t, err, "apiserver read failed")
 	server.IdentityIndex = index
 
 	require.NoError(t, c.Delete(t.Context(), component))
 	component.ResourceVersion, component.UID = "", types.UID("replacement")
 	require.NoError(t, c.Create(t.Context(), component))
-	_, err = server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID), Instance: "gateway-pod"})
+	_, err = server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.Error(t, err)
 }
 
@@ -257,10 +257,11 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{
 		Site: api.ResourceReference{Name: site.Name, UID: site.UID}, Runtime: testRuntime(),
 	}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs).
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component, secret, site, cs).Build()
+	identityIndex := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(component).
 		WithIndex(&corev1.ConfigMap{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).Build()
-	server := &ComponentServer{Client: c, ManagementNamespace: namespace}
-	cacheContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: string(component.UID), Instance: "cache-pod"})
+	server := &ComponentServer{Client: c, IdentityIndex: identityIndex, ManagementNamespace: namespace}
+	cacheContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: string(component.UID)})
 
 	identity, material, err := server.cacheForRequest(cacheContext, component.Name)
 	require.NoError(t, err)
@@ -306,7 +307,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	err = server.completeCacheGC(cacheContext, identity, component.Name, sessionID, grant.Id)
 	require.NoError(t, err)
 
-	wrongContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: "other-cache", Instance: "cache-pod"})
+	wrongContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: "other-cache"})
 	_, _, err = server.cacheForRequest(wrongContext, component.Name)
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))

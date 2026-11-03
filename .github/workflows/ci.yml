@@ -72,11 +72,12 @@ jobs:
           retention-days: 1
           compression-level: 0
 
-  image-check:
-    name: Verify platform image
-    if: github.event_name == 'pull_request'
+  image:
+    name: Build platform image
     needs: validate
     runs-on: ubuntu-24.04
+    env:
+      TEST_IMAGE: localhost/gitea-codespace:ci-${{ github.sha }}
     steps:
       - name: Check out source
         uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
@@ -99,19 +100,147 @@ jobs:
           platforms: linux/amd64
           load: true
           push: false
-          tags: gitea-codespace:ci
+          tags: ${{ env.TEST_IMAGE }}
           cache-from: type=gha,scope=platform-image
           cache-to: type=gha,mode=max,scope=platform-image,ignore-error=true
       - name: Verify image contents
         run: |
-          docker run --rm gitea-codespace:ci --help >/dev/null
-          docker run --rm --entrypoint /bin/sh gitea-codespace:ci -ec \
+          docker run --rm "$TEST_IMAGE" --help >/dev/null
+          docker run --rm --entrypoint /bin/sh "$TEST_IMAGE" -ec \
             'command -v dockerd; command -v git; command -v ssh; command -v useradd; command -v groupadd'
+      - name: Export image for E2E
+        run: |
+          mkdir -p .tmp/platform-image
+          docker image save --output .tmp/platform-image/platform-image.tar "$TEST_IMAGE"
+          printf '%s\n' "$TEST_IMAGE" >.tmp/platform-image/tag
+      - name: Upload platform image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: gitea-codespace-platform-image
+          path: .tmp/platform-image
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
+          include-hidden-files: true
+
+  e2e:
+    name: E2E (${{ matrix.runtime }})
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository)
+    needs: image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runtime: sysbox
+            runtime_class: sysbox-runc
+            storage_class: local-path
+          - runtime: kata
+            runtime_class: kata-qemu-runtime-rs
+            storage_class: rawfile-localpv
+    env:
+      KUBECONFIG: /etc/rancher/k3s/k3s.yaml
+      CODESPACE_E2E_GITEA_URL: ${{ vars.CODESPACE_E2E_GITEA_URL }}
+      CODESPACE_E2E_GITEA_MANAGER_ID: ${{ vars.CODESPACE_E2E_GITEA_MANAGER_ID }}
+      CODESPACE_E2E_HTTP_PROXY: ${{ vars.CODESPACE_E2E_HTTP_PROXY }}
+      CODESPACE_E2E_S3MOCK_IMAGE: ${{ vars.CODESPACE_E2E_S3MOCK_IMAGE }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5
+        with:
+          version: v4.3.0
+      - name: Download platform image
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: gitea-codespace-platform-image
+          path: .tmp/platform-image
+      - name: Install k3s runtime
+        env:
+          RUNTIME: ${{ matrix.runtime }}
+        run: tests/e2e/setup-k3s.sh "$RUNTIME"
+      - name: Prepare E2E inputs
+        env:
+          GITEA_MANAGER_SECRET: ${{ secrets.CODESPACE_E2E_GITEA_MANAGER_SECRET }}
+          RUNTIME: ${{ matrix.runtime }}
+          RUNTIME_CLASS: ${{ matrix.runtime_class }}
+          STORAGE_CLASS: ${{ matrix.storage_class }}
+        run: |
+          test -r "$KUBECONFIG"
+          test -n "$CODESPACE_E2E_GITEA_URL"
+          test -n "$CODESPACE_E2E_GITEA_MANAGER_ID"
+          test -n "$GITEA_MANAGER_SECRET"
+
+          image_tag="$(cat .tmp/platform-image/tag)"
+          sudo k3s ctr --namespace k8s.io images import .tmp/platform-image/platform-image.tar
+          image_digest="$(sudo k3s ctr --namespace k8s.io images list | awk -v ref="$image_tag" '$1 == ref {print $3}')"
+          case "$image_digest" in
+            sha256:????????????????????????????????????????????????????????????????) ;;
+            *) echo "imported image has no sha256 digest" >&2; exit 1 ;;
+          esac
+
+          node_address="$(kubectl get node -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')"
+          test -n "$node_address"
+
+          umask 077
+          secret_file="$RUNNER_TEMP/gitea-codespace-manager-secret"
+          printf '%s' "$GITEA_MANAGER_SECRET" >"$secret_file"
+          {
+            echo "CODESPACE_IMAGE=$image_tag@$image_digest"
+            echo "CODESPACE_E2E_GITEA_MANAGER_SECRET_FILE=$secret_file"
+            echo "CODESPACE_E2E_GITEA_LISTEN=$node_address:0"
+            echo "CODESPACE_E2E_NODE_ADDRESS=$node_address"
+            echo "KUBERNETES_RUNTIME_ISOLATION=$RUNTIME"
+            echo "KUBERNETES_RUNTIME_CLASS=$RUNTIME_CLASS"
+            echo "KUBERNETES_STORAGE_CLASS=$STORAGE_CLASS"
+          } >>"$GITHUB_ENV"
+      - name: Run complete E2E suite
+        run: make test-e2e
+      - name: Collect cluster diagnostics
+        if: failure()
+        run: |
+          directory=.tmp/e2e/ci/diagnostics
+          mkdir -p "$directory"
+          sudo journalctl -u k3s --no-pager >"$directory/k3s.log" 2>&1 || true
+          sudo journalctl -u sysbox-mgr -u sysbox-fs --no-pager >"$directory/sysbox.log" 2>&1 || true
+          kubectl get nodes,runtimeclasses,storageclasses,pods -A -o wide >"$directory/cluster.txt" 2>&1 || true
+          kubectl get events -A --sort-by=.lastTimestamp >"$directory/events.txt" 2>&1 || true
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: e2e-${{ matrix.runtime }}-diagnostics
+          path: .tmp/e2e/*/diagnostics
+          if-no-files-found: ignore
+          retention-days: 7
+          include-hidden-files: true
+      - name: Remove runner credentials and image archive
+        if: always()
+        run: |
+          rm -f "$RUNNER_TEMP/gitea-codespace-manager-secret"
+          rm -rf .tmp/platform-image
+          if test -x /usr/local/bin/k3s-uninstall.sh; then
+            sudo /usr/local/bin/k3s-uninstall.sh
+          fi
 
   publish:
     name: Publish artifacts
     if: github.event_name == 'push'
-    needs: validate
+    needs:
+      - validate
+      - image
+      - e2e
     runs-on: ubuntu-24.04
     permissions:
       attestations: write

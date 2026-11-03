@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+K3S_VERSION=v1.36.5+k3s1
+K3S_INSTALL_COMMIT=3461a87f36257bee62fafc980e43ef8b23514145
+KATA_VERSION=4.3.1
+RAWFILE_VERSION=0.15.3
+SYSBOX_VERSION=0.7.1
+SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
+
+runtime=${1:-}
+if [[ $runtime != kata && $runtime != sysbox ]]; then
+	echo "usage: $0 <kata|sysbox>" >&2
+	exit 2
+fi
+
+for command_name in curl helm kubectl sha256sum; do
+	if ! command -v "$command_name" >/dev/null 2>&1; then
+		echo "required command is unavailable: $command_name" >&2
+		exit 1
+	fi
+done
+
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+
+if [[ $runtime == sysbox ]]; then
+	echo "Installing Sysbox $SYSBOX_VERSION"
+	package="$work/sysbox.deb"
+	curl -fsSL "https://github.com/nestybox/sysbox/releases/download/v$SYSBOX_VERSION/sysbox-ce_$SYSBOX_VERSION.linux_amd64.deb" -o "$package"
+	printf '%s  %s\n' "$SYSBOX_SHA256" "$package" | sha256sum --check
+	sudo apt-get update
+	sudo apt-get install -y "$package"
+	sudo systemctl is-active --quiet sysbox-mgr sysbox-fs
+else
+	echo "Checking Kata hardware virtualization"
+	test -c /dev/kvm
+	sudo chmod 0666 /dev/kvm
+	test -r /dev/kvm
+	test -w /dev/kvm
+fi
+
+echo "Installing k3s $K3S_VERSION"
+installer="$work/install-k3s.sh"
+curl -fsSL "https://raw.githubusercontent.com/k3s-io/k3s/$K3S_INSTALL_COMMIT/install.sh" -o "$installer"
+sudo env \
+	INSTALL_K3S_VERSION="$K3S_VERSION" \
+	INSTALL_K3S_EXEC='server --disable=servicelb --disable=traefik --write-kubeconfig-mode=0644' \
+	sh "$installer"
+
+export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+kubectl wait --for=condition=Ready node --all --timeout=3m
+
+if [[ $runtime == sysbox ]]; then
+	echo "Registering Sysbox with k3s containerd"
+	sudo install -d -m 0755 /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d
+	sudo tee /var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/codespace-sysbox.toml >/dev/null <<'EOF'
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.sysbox-runc]
+  runtime_type = "io.containerd.runc.v2"
+  pod_annotations = ["io.kubernetes.cri-o.userns-mode", "io.kubernetes.cri-o.Devices"]
+
+[plugins.'io.containerd.cri.v1.runtime'.containerd.runtimes.sysbox-runc.options]
+  BinaryName = "/usr/bin/sysbox-runc"
+  SystemdCgroup = true
+EOF
+	sudo systemctl restart k3s
+	kubectl wait --for=condition=Ready node --all --timeout=3m
+	kubectl apply -f - <<'EOF'
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: sysbox-runc
+handler: sysbox-runc
+EOF
+	kubectl get runtimeclass/sysbox-runc >/dev/null
+	kubectl get storageclass/local-path >/dev/null
+	exit 0
+fi
+
+echo "Installing Kata Containers $KATA_VERSION"
+helm upgrade --install kata-deploy \
+	oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+	--version "$KATA_VERSION" \
+	--namespace kube-system \
+	--set k8sDistribution=k3s \
+	--set shims.disableAll=true \
+	--set shims.qemu-runtime-rs.enabled=true \
+	--wait \
+	--timeout 10m
+kubectl get runtimeclass/kata-qemu-runtime-rs >/dev/null
+
+echo "Installing RawFile LocalPV $RAWFILE_VERSION"
+helm repo add rawfile-localpv https://openebs.github.io/rawfile-localpv
+helm repo update rawfile-localpv
+helm upgrade --install rawfile-localpv rawfile-localpv/rawfile-localpv \
+	--version "$RAWFILE_VERSION" \
+	--namespace openebs \
+	--create-namespace \
+	--set global.analytics.enabled=false \
+	--set capabilities.snapshots.enabled=false \
+	--set capabilities.resize.enabled=false \
+	--set capabilities.apiServer.enabled=false \
+	--set metrics.enabled=false \
+	--set-string storageClasses[0].thinProvision=true \
+	--wait \
+	--timeout 5m
+kubectl get storageclass/rawfile-localpv >/dev/null

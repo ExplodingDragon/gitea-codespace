@@ -9,9 +9,6 @@ image:
 nameOverride: ""
 fullnameOverride: ""
 
-identity:
-  clusterIssuer: codespace-identity
-
 admin:
   publicURL: http://127.0.0.1:18080
   tokenSecret:

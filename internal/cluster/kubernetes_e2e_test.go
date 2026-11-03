@@ -13,12 +13,12 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
@@ -220,42 +220,31 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 func TestKubernetesE2EAgentCertificate(t *testing.T) {
 	cluster := newE2ECluster(t, 2*time.Minute)
 	c, ctx := cluster.Client, cluster.ctx
+	caName := requireE2EEnvironment(t, "CODESPACE_E2E_MANAGER_NAME") + "-internal-ca"
+	authority, err := LoadIdentityAuthority(ctx, c, cluster.managementNamespace, caName)
+	require.NoError(t, err)
 	name := "identity-" + uuid.NewV4().String()
 	ns := cluster.createNamespace(t, name)
-	issuer := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "cert-manager.io/v1", "kind": "ClusterIssuer",
-		"metadata": map[string]any{"name": name},
-		"spec":     map[string]any{"selfSigned": map[string]any{}},
-	}}
-	require.NoError(t, c.Create(ctx, issuer))
-	t.Cleanup(func() {
-		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
-		defer stop()
-		uid := issuer.GetUID()
-		if err := client.IgnoreNotFound(c.Delete(cleanup, issuer, client.Preconditions{UID: &uid})); err != nil {
-			t.Errorf("delete E2E ClusterIssuer %s: %v", issuer.GetName(), err)
-		}
-	})
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: ns.Name, UID: "codespace-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "test", UID: "site-uid"}},
-		Status:     api.CodespaceStatus{IdentitySecretName: "runtime-identity"},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "identity"}},
 	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "identity", Namespace: ns.Name},
 		Spec: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{Name: "fixture", Image: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE"), ImagePullPolicy: corev1.PullNever, Command: []string{"sleep", "3600"}, VolumeMounts: []corev1.VolumeMount{{Name: "identity", MountPath: "/run/identity", ReadOnly: true}}}},
-			Volumes:    []corev1.Volume{{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: cs.Status.IdentitySecretName, Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "tls.crt"}, {Key: "tls.key", Path: "tls.key"}, {Key: "ca.crt", Path: "ca.crt"}}}}}},
+			Volumes:    []corev1.Volume{{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: runtimeIdentitySecretName(cs), Items: []corev1.KeyToPath{{Key: "tls.crt", Path: "tls.crt"}, {Key: "tls.key", Path: "tls.key"}, {Key: "ca.crt", Path: "ca.crt"}}}}}},
 		},
 	}
 	require.NoError(t, c.Create(ctx, pod))
 	require.NotEmpty(t, pod.UID)
-	r := &RuntimeReconciler{Client: c, IdentityIssuer: name}
+	r := &RuntimeReconciler{Client: c, Identity: authority}
 	require.NoError(t, r.ensureIdentity(ctx, cs, pod))
 	var secret corev1.Secret
 	require.Eventually(t, func() bool {
-		return c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: cs.Status.IdentitySecretName}, &secret) == nil && len(secret.Data["tls.crt"]) > 0
+		return c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: runtimeIdentitySecretName(cs)}, &secret) == nil && len(secret.Data["tls.crt"]) > 0
 	}, time.Minute, 200*time.Millisecond)
 	block, _ := pem.Decode(secret.Data["tls.crt"])
 	require.NotNil(t, block)
@@ -263,6 +252,9 @@ func TestKubernetesE2EAgentCertificate(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, certificate.URIs, 1)
 	require.Equal(t, "spiffe://codespace/agent/site-uid/codespace-uid/"+string(pod.UID), certificate.URIs[0].String())
+	var ca corev1.Secret
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: cluster.managementNamespace, Name: caName}, &ca))
+	require.Equal(t, ca.Data[identitypkg.RootCertificateKey], secret.Data[identitypkg.RootCertificateKey])
 	require.NoError(t, r.ensureIdentity(ctx, cs, pod))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(pod), pod) == nil && pod.Status.Phase == corev1.PodRunning

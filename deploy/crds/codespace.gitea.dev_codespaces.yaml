@@ -356,8 +356,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              identitySecretName:
-                type: string
               lastNodeName:
                 type: string
               metadataGeneration:

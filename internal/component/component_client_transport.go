@@ -14,6 +14,7 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"gitea.dev/codespace/internal/transport"
 )
@@ -33,10 +34,13 @@ func NewComponentRPCClient() (componentv1connect.ComponentServiceClient, *http.C
 	if certificateDirectory == "" {
 		certificateDirectory = "/var/run/codespace/identity"
 	}
+	managerIdentity := strings.TrimSpace(os.Getenv("GITEA_CODESPACE_MANAGER_IDENTITY"))
+	if _, err := identitypkg.ParseManagerURI(managerIdentity); err != nil {
+		return nil, nil, fmt.Errorf("GITEA_CODESPACE_MANAGER_IDENTITY: %w", err)
+	}
 	tlsConfig, err := (transport.Certificates{Directory: certificateDirectory}).Client(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 2 || parts[0] != "manager" || parts[1] == "" {
-			return fmt.Errorf("manager identity is invalid")
+		if identity.String() != managerIdentity {
+			return fmt.Errorf("manager identity does not match this Codespace installation")
 		}
 		return nil
 	})

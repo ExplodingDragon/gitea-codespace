@@ -55,11 +55,10 @@ spec:
             - --manager-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8443
             - --component-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8445
             - --platform-image={{ include "gitea-codespace.image" . }}
-            - --identity-issuer={{ .Values.identity.clusterIssuer }}
+            - --identity-secret={{ $fullname }}-internal-ca
             - --admin-address=:18080
             - --admin-public-url={{ .Values.admin.publicURL }}
             - --admin-token-file=/var/run/codespace/admin/token
-            - --certificate-directory=/var/run/codespace/identity
             {{- range .Values.image.pullSecrets }}
             - --image-pull-secret={{ . }}
             {{- end }}
@@ -98,13 +97,8 @@ spec:
             capabilities:
               drop: ["ALL"]
           volumeMounts:
-            - {name: identity, mountPath: /var/run/codespace/identity, readOnly: true}
             - {name: admin-token, mountPath: /var/run/codespace/admin, readOnly: true}
       volumes:
-        - name: identity
-          secret:
-            secretName: {{ $fullname }}-identity
-            defaultMode: 0440
         - name: admin-token
           secret:
             secretName: {{ .Values.admin.tokenSecret.name }}

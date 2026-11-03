@@ -23,6 +23,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	agentpkg "gitea.dev/codespace/internal/agent"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -76,10 +77,13 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
+	managerIdentity := strings.TrimSpace(os.Getenv("CODESPACE_MANAGER_IDENTITY"))
+	if _, err := identitypkg.ParseManagerURI(managerIdentity); err != nil {
+		return fmt.Errorf("CODESPACE_MANAGER_IDENTITY: %w", err)
+	}
 	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Client(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 2 || parts[0] != "manager" || parts[1] == "" {
-			return fmt.Errorf("manager identity is invalid")
+		if identity.String() != managerIdentity {
+			return fmt.Errorf("manager identity does not match this Codespace installation")
 		}
 		return nil
 	})
@@ -185,8 +189,8 @@ func serveEndpointServer(ctx context.Context, listener net.Listener, server *htt
 
 func runAccessServer(ctx context.Context, runtime *agentpkg.Runtime) error {
 	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Server(func(identity *url.URL) error {
-		parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-		if len(parts) != 3 || parts[0] != "gateway" || parts[1] == "" || parts[2] == "" {
+		component, err := identitypkg.ParseComponentURI(identity)
+		if err != nil || component.Role != "gateway" {
 			return fmt.Errorf("gateway identity is invalid")
 		}
 		return nil

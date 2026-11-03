@@ -62,6 +62,14 @@ exec dockerd "$@" --mtu="$mtu"`
 			Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: volume.Name}}}},
 		},
 	}
+	if proxy := strings.TrimSpace(os.Getenv("CODESPACE_E2E_HTTP_PROXY")); proxy != "" {
+		pod.Spec.Containers[0].Env = []corev1.EnvVar{
+			{Name: "HTTP_PROXY", Value: proxy},
+			{Name: "HTTPS_PROXY", Value: proxy},
+			{Name: "http_proxy", Value: proxy},
+			{Name: "https_proxy", Value: proxy},
+		}
+	}
 	if runtime.isolation == "kata" {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
 		pod.Spec.Containers[0].Command = []string{"sh", "-ec"}
@@ -116,6 +124,21 @@ mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 	}
 	require.NoError(t, cluster.Create(cluster.ctx, pod))
 	awaitDocker()
+	node := &corev1.Node{}
+	require.NoError(t, cluster.Get(cluster.ctx, client.ObjectKey{Name: pod.Spec.NodeName}, node))
+	switch runtime.isolation {
+	case "kata":
+		guestKernel, err := execPod(nil, "uname", "-r")
+		require.NoError(t, err)
+		require.NotEqual(t, node.Status.NodeInfo.KernelVersion, guestKernel, "Kata RuntimeClass must use a guest kernel")
+	case "sysbox":
+		uidMap, err := execPod(nil, "cat", "/proc/self/uid_map")
+		require.NoError(t, err)
+		fields := strings.Fields(uidMap)
+		require.GreaterOrEqual(t, len(fields), 3)
+		require.Equal(t, "0", fields[0])
+		require.NotEqual(t, "0", fields[1], "Sysbox RuntimeClass must isolate the container root user")
+	}
 	output, err := execPod(nil, "docker", "info", "--format", "{{.Driver}} {{.DockerRootDir}} {{json .DriverStatus}}")
 	require.NoError(t, err)
 	require.Contains(t, output, "overlayfs /var/lib/codespace/docker")

@@ -7,9 +7,9 @@ import (
 	"context"
 	"crypto/x509"
 	"fmt"
-	"strings"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,13 +30,12 @@ func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate 
 	if certificate == nil || len(certificate.URIs) != 1 {
 		return nil, nil, fmt.Errorf("agent certificate requires one application identity")
 	}
-	identity := certificate.URIs[0]
-	parts := strings.Split(strings.TrimPrefix(identity.Path, "/"), "/")
-	if identity.Scheme != "spiffe" || identity.Host != "codespace" || identity.User != nil || identity.RawQuery != "" || identity.Fragment != "" || identity.RawPath != "" || len(parts) != 4 || parts[0] != "agent" || parts[1] == "" || parts[2] == "" || parts[3] == "" {
+	identity, err := identitypkg.ParseAgentURI(certificate.URIs[0])
+	if err != nil {
 		return nil, nil, fmt.Errorf("invalid Agent application identity")
 	}
 	var sites api.GiteaSiteList
-	if err := index.List(ctx, &sites, client.MatchingFields{IdentityUIDIndex: parts[1]}); err != nil {
+	if err := index.List(ctx, &sites, client.MatchingFields{IdentityUIDIndex: identity.SiteUID}); err != nil {
 		return nil, nil, err
 	}
 	if len(sites.Items) != 1 {
@@ -48,7 +47,7 @@ func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate 
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(site), site); err != nil {
 		return nil, nil, err
 	}
-	if site.UID != types.UID(parts[1]) || !site.DeletionTimestamp.IsZero() {
+	if site.UID != types.UID(identity.SiteUID) || !site.DeletionTimestamp.IsZero() {
 		return nil, nil, fmt.Errorf("agent site identity changed")
 	}
 	var namespace corev1.Namespace
@@ -59,7 +58,7 @@ func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate 
 		return nil, nil, fmt.Errorf("agent namespace identity changed")
 	}
 	var runtimes api.CodespaceList
-	if err := index.List(ctx, &runtimes, client.InNamespace(namespace.Name), client.MatchingFields{IdentityUIDIndex: parts[2]}); err != nil {
+	if err := index.List(ctx, &runtimes, client.InNamespace(namespace.Name), client.MatchingFields{IdentityUIDIndex: identity.RuntimeUID}); err != nil {
 		return nil, nil, err
 	}
 	if len(runtimes.Items) != 1 {
@@ -69,7 +68,7 @@ func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate 
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(cs), cs); err != nil {
 		return nil, nil, err
 	}
-	if cs.UID != types.UID(parts[2]) || cs.Spec.Site.UID != site.UID || cs.Spec.Site.Name != site.Name || !cs.Status.Bound || cs.Status.Pod.UID != types.UID(parts[3]) {
+	if cs.UID != types.UID(identity.RuntimeUID) || cs.Spec.Site.UID != site.UID || cs.Spec.Site.Name != site.Name || !cs.Status.Bound || cs.Status.Pod.UID != types.UID(identity.PodUID) {
 		return nil, nil, fmt.Errorf("agent runtime or Pod identity changed")
 	}
 	var pod corev1.Pod

@@ -19,6 +19,7 @@ import (
 	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	identitypkg "gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
@@ -35,7 +36,7 @@ import (
 const RuntimeUUIDIndex = "codespace.gitea.dev/runtime-uuid"
 
 type componentIdentity struct {
-	Role, UID, Instance string
+	Role, UID string
 }
 
 type componentIdentityContextKey struct{}
@@ -46,13 +47,12 @@ func componentIdentityHandler(next http.Handler) http.Handler {
 			http.Error(w, "component identity is required", http.StatusUnauthorized)
 			return
 		}
-		uri := r.TLS.PeerCertificates[0].URIs[0]
-		parts := strings.Split(strings.TrimPrefix(uri.Path, "/"), "/")
-		if uri.Scheme != "spiffe" || uri.Host != "codespace" || len(parts) != 3 || (parts[0] != "gateway" && parts[0] != "cache") || parts[1] == "" || parts[2] == "" {
+		parsed, err := identitypkg.ParseComponentURI(r.TLS.PeerCertificates[0].URIs[0])
+		if err != nil {
 			http.Error(w, "component identity is invalid", http.StatusUnauthorized)
 			return
 		}
-		identity := componentIdentity{Role: parts[0], UID: parts[1], Instance: parts[2]}
+		identity := componentIdentity{Role: parsed.Role, UID: parsed.UID}
 		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), componentIdentityContextKey{}, identity)))
 	})
 }
@@ -80,7 +80,7 @@ func (s *ComponentServer) Handler() (string, http.Handler) {
 
 func componentIdentityFromContext(ctx context.Context, role string) (componentIdentity, error) {
 	identity, ok := ctx.Value(componentIdentityContextKey{}).(componentIdentity)
-	if !ok || identity.Role != role || identity.UID == "" || identity.Instance == "" {
+	if !ok || identity.Role != role || identity.UID == "" {
 		return componentIdentity{}, connect.Errorf(connect.CodePermissionDenied, "component identity is not authorized for %s", role)
 	}
 	return identity, nil
@@ -230,7 +230,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	if first.ProtocolVersion != 1 || strings.TrimSpace(first.SessionId) == "" || first.Sequence == 0 {
 		return connect.NewError(connect.CodeInvalidArgument, "gateway control identity is invalid")
 	}
-	session := identity.Instance + "/" + first.SessionId
+	session := first.SessionId
 	if err := s.replaceGatewayActivity(ctx, identity, session, first.ActiveSessions); err != nil {
 		return err
 	}

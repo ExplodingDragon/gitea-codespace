@@ -38,7 +38,7 @@ type ManagerOptions struct {
 	ComponentURL           string
 	PlatformImage          string
 	ImagePullSecrets       []string
-	IdentityIssuer         string
+	IdentitySecretName     string
 	HealthAddress          string
 	GatewayParentName      string
 	GatewayParentNamespace string
@@ -52,6 +52,7 @@ type Manager struct {
 	Leadership   *Leadership
 	AgentControl *AgentControlServer
 	Components   *ComponentServer
+	Identity     *IdentityAuthority
 }
 
 // Leadership ties request cancellation to the elected term, including open streams.
@@ -159,8 +160,11 @@ func (l *Leadership) Handler(next http.Handler) http.Handler {
 }
 
 func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
-	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.PlatformImage == "" || options.IdentityIssuer == "" {
-		return nil, fmt.Errorf("management namespace, Manager and component URLs, platform image and identity issuer are required")
+	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.PlatformImage == "" || options.IdentitySecretName == "" {
+		return nil, fmt.Errorf("management namespace, Manager and component URLs, platform image and internal CA Secret name are required")
+	}
+	if len(validation.IsDNS1123Subdomain(options.IdentitySecretName)) != 0 {
+		return nil, fmt.Errorf("internal CA Secret name %q is not a valid Kubernetes name", options.IdentitySecretName)
 	}
 	if _, err := platformImagePullPolicy(options.PlatformImage); err != nil {
 		return nil, err
@@ -260,6 +264,15 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 	leadership.Client, leadership.Namespace, leadership.PodName = liveClient, options.Namespace, options.PodName
+	identityContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	identityAuthority, err := LoadIdentityAuthority(identityContext, liveClient, options.Namespace, options.IdentitySecretName)
+	cancel()
+	if err != nil {
+		return nil, err
+	}
+	if err := mgr.Add(identityAuthority); err != nil {
+		return nil, err
+	}
 	keyContext, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	tickets, err := LoadAccessTickets(keyContext, liveClient, options.Namespace)
 	cancel()
@@ -317,10 +330,10 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.EnvironmentTemplate{}).Complete(&TemplateReconciler{Client: liveClient}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, IdentityIssuer: options.IdentityIssuer, ImagePullSecrets: options.ImagePullSecrets}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets}); err != nil {
 		return nil, err
 	}
-	componentController := ctrl.NewControllerManagedBy(mgr).For(&corev1.ConfigMap{}).Owns(&appsv1.Deployment{})
+	componentController := ctrl.NewControllerManagedBy(mgr).For(&corev1.ConfigMap{}).Owns(&appsv1.Deployment{}).Owns(&corev1.Secret{})
 	if options.GatewayParentName != "" {
 		for _, routeType := range []struct{ version, kind string }{{"v1", "HTTPRoute"}, {"v1alpha2", "TCPRoute"}} {
 			route := &unstructured.Unstructured{}
@@ -329,11 +342,11 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		}
 	}
 	if err := componentController.Complete(&ComponentReconciler{
-		Client: liveClient, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, IdentityIssuer: options.IdentityIssuer, PlatformImage: options.PlatformImage, PlatformRevision: controlplane.BuildVersion(), ImagePullSecrets: options.ImagePullSecrets,
+		Client: liveClient, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, ManagerIdentity: identityAuthority.ManagerIdentity(), PlatformImage: options.PlatformImage, PlatformRevision: controlplane.BuildVersion(), ImagePullSecrets: options.ImagePullSecrets,
 		GatewayParentName: options.GatewayParentName, GatewayParentNamespace: options.GatewayParentNamespace,
 		GatewayHTTPSectionName: options.GatewayHTTPSectionName, GatewaySSHSectionName: options.GatewaySSHSectionName,
 	}); err != nil {
 		return nil, err
 	}
-	return &Manager{Manager: mgr, Leadership: leadership, AgentControl: control, Components: components}, nil
+	return &Manager{Manager: mgr, Leadership: leadership, AgentControl: control, Components: components, Identity: identityAuthority}, nil
 }
