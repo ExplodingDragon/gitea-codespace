@@ -18,6 +18,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -29,6 +30,7 @@ import (
 
 func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	cluster := newE2ECluster(t, time.Minute)
+	e2eRuntime := requireE2ERuntime(t)
 	c, ctx := cluster.Client, cluster.ctx
 	name := "e2e-" + uuid.NewV4().String()
 	site := testSite(name, "")
@@ -145,7 +147,15 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	}, 30*time.Second, 200*time.Millisecond)
 	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{})))
 
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
+	environment := testEnvironment()
+	environment.Isolation = e2eRuntime.isolation
+	environment.RuntimeClassName = e2eRuntime.runtimeClass
+	environment.StorageClassName = e2eRuntime.storageClass
+	if e2eRuntime.isolation == "kata" {
+		environment.VolumeMode = corev1.PersistentVolumeBlock
+		environment.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
+	}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: environment}}
 	require.NoError(t, c.Create(ctx, template))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
