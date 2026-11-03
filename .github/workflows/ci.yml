@@ -175,16 +175,14 @@ jobs:
 
           image_tag="$(cat .tmp/platform-image/tag)"
           image_repository="${image_tag%:*}"
-          sudo k3s ctr --namespace k8s.io images import \
-            --base-name "$image_repository" \
-            --digests \
-            .tmp/platform-image/platform-image.tar
+          sudo k3s ctr --namespace k8s.io images import .tmp/platform-image/platform-image.tar
           image_digest="$(sudo k3s ctr --namespace k8s.io images list | awk -v ref="$image_tag" '$1 == ref {print $3}')"
           case "$image_digest" in
             sha256:????????????????????????????????????????????????????????????????) ;;
             *) echo "imported image has no sha256 digest" >&2; exit 1 ;;
           esac
           image_reference="$image_repository@$image_digest"
+          sudo k3s ctr --namespace k8s.io images tag --local "$image_tag" "$image_reference"
           sudo k3s ctr --namespace k8s.io images list | \
             awk -v ref="$image_reference" '$1 == ref {found = 1} END {exit !found}'
 
