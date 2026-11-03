@@ -74,7 +74,7 @@ metadata:
 handler: sysbox-runc
 EOF
 	kubectl get runtimeclass/sysbox-runc >/dev/null
-	kubectl get storageclass/local-path >/dev/null
+	kubectl wait --for=create storageclass/local-path --timeout=2m
 	exit 0
 fi
 
