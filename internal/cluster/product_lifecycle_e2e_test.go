@@ -506,7 +506,9 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	remote.mu.Unlock()
 	require.Contains(t, createLog, "Dev Container Feature ghcr.io/devcontainers/features/common-utils:2 fetched through mirror")
 	require.Contains(t, createLog, "Dev Container Feature ghcr.io/coder/devcontainer-features/code-server:2.0.0 fetched through mirror")
-	require.Contains(t, createLog, "Dev Container features image cache published")
+	if !strings.Contains(createLog, "Dev Container features image cache published") {
+		t.Fatalf("Dev Container feature image cache was not published; create log:\n%s", createLog)
+	}
 	if !strings.Contains(createLog, "Dev Container features build cache published") {
 		t.Fatalf("BuildKit registry cache was not published; create log:\n%s", createLog)
 	}
