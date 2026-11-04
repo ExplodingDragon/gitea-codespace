@@ -51,8 +51,6 @@ spec:
                     type: string
                   maxSize:
                     type: string
-                  publicURL:
-                    type: string
                   storage:
                     properties:
                       driver:
@@ -101,7 +99,6 @@ spec:
                 - enabled
                 - gcInterval
                 - maxAge
-                - publicURL
                 - storage
                 type: object
               displayName:
@@ -110,6 +107,52 @@ spec:
                 type: string
               gateway:
                 properties:
+                  endpointBaseURL:
+                    type: string
+                  httpExposure:
+                    properties:
+                      ingress:
+                        properties:
+                          className:
+                            type: string
+                          tls:
+                            properties:
+                              issuer:
+                                properties:
+                                  kind:
+                                    enum:
+                                    - Issuer
+                                    - ClusterIssuer
+                                    type: string
+                                  name:
+                                    type: string
+                                required:
+                                - kind
+                                - name
+                                type: object
+                              secretName:
+                                type: string
+                              source:
+                                enum:
+                                - none
+                                - secret
+                                - certManager
+                                type: string
+                            required:
+                            - source
+                            type: object
+                        required:
+                        - className
+                        - tls
+                        type: object
+                      mode:
+                        enum:
+                        - external
+                        - ingress
+                        type: string
+                    required:
+                    - mode
+                    type: object
                   limits:
                     properties:
                       maxInflightPerSession:
@@ -144,24 +187,12 @@ spec:
                     - publicMaxConnectionsPerIP
                     - validationMaxInflight
                     type: object
-                  parent:
-                    description: |-
-                      GatewayParent selects the existing Gateway API listeners that expose a
-                      managed Gateway component. An empty parent leaves exposure to the cluster
-                      operator. When a parent is selected, HTTP is required because every public
-                      endpoint uses HTTP; SSH remains optional.
-                    properties:
-                      httpSectionName:
-                        type: string
-                      name:
-                        type: string
-                      namespace:
-                        type: string
-                      sshSectionName:
-                        type: string
-                    type: object
-                  publicURL:
-                    type: string
+                  replicas:
+                    default: 2
+                    format: int32
+                    maximum: 64
+                    minimum: 1
+                    type: integer
                   sessions:
                     properties:
                       idleTimeout:
@@ -233,15 +264,32 @@ spec:
                     - handshakeTimeout
                     - maxChannelsPerConnection
                     type: object
-                  sshPublicAddress:
+                  sshExposure:
+                    properties:
+                      mode:
+                        enum:
+                        - external
+                        - loadBalancer
+                        type: string
+                    required:
+                    - mode
+                    type: object
+                  sshExternalAddress:
                     type: string
+                  trustedProxyCIDRs:
+                    items:
+                      type: string
+                    maxItems: 64
+                    type: array
                 required:
+                - endpointBaseURL
+                - httpExposure
                 - limits
-                - parent
-                - publicURL
+                - replicas
                 - sessions
                 - ssh
-                - sshPublicAddress
+                - sshExposure
+                - sshExternalAddress
                 type: object
               resources:
                 description: ResourceRequirements describes the compute resource requirements.
@@ -384,8 +432,8 @@ spec:
         - spec
         type: object
         x-kubernetes-validations:
-        - message: component name must be a Kubernetes DNS label
-          rule: size(self.metadata.name) <= 63 && !self.metadata.name.contains('.')
+        - message: component name must be a Kubernetes DNS label of at most 50 characters
+          rule: size(self.metadata.name) <= 50 && !self.metadata.name.contains('.')
         - message: component role must select exactly one configuration
           rule: 'self.spec.role == ''gateway'' ? has(self.spec.gateway) && !has(self.spec.cache)
             : has(self.spec.cache) && !has(self.spec.gateway)'

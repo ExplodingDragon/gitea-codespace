@@ -39,6 +39,26 @@ func TestAuthorityPersistsAndIssuesExactIdentity(t *testing.T) {
 	require.ErrorContains(t, err, "usages")
 }
 
+func TestAuthorityIssuesExactServiceDNSName(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	authority, err := NewAuthority(now)
+	require.NoError(t, err)
+	const dnsName = "cache.codespace-system.svc"
+	leaf, err := authority.IssueServerCertificate(dnsName, now)
+	require.NoError(t, err)
+	secretData := map[string][]byte{TLSCertificateKey: leaf.Certificate, TLSPrivateKeyKey: leaf.PrivateKey, RootCertificateKey: leaf.Root}
+	renewAt, err := authority.ValidateServerCertificate(secretData, dnsName, now)
+	require.NoError(t, err)
+	require.Equal(t, leaf.NotAfter.Add(-LeafRenewBefore), renewAt)
+
+	_, err = authority.ValidateServerCertificate(secretData, "other.codespace-system.svc", now)
+	require.ErrorContains(t, err, "identity")
+	_, err = authority.IssueServerCertificate("Cache.invalid", now)
+	require.ErrorContains(t, err, "DNS")
+	_, err = authority.ValidateLeaf(secretData, "spiffe://codespace/cache/component", []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}, now)
+	require.ErrorContains(t, err, "URI")
+}
+
 func TestApplicationIdentityShapes(t *testing.T) {
 	managerURI, err := ParseManagerURI(ManagerURI("namespace"))
 	require.NoError(t, err)

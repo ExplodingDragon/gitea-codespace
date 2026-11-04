@@ -38,6 +38,7 @@ const dirty = useDirtyForm(() => ({
   quotaEnabled: quotaEnabled.value,
   quota: quotaDraft.value,
 }));
+const siteUsesHTTPS = computed(() => form.value?.url.trim().toLowerCase().startsWith('https://') ?? false);
 const quotaFields = computed<{key: string; label: string; kind: MeasurementKind}[]>(() => [
   {key: 'pods', label: t('site.pods'), kind: 'count'},
   {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count'},
@@ -78,6 +79,7 @@ function edit(site?: Resource<Site>) {
     : {
         displayName: '',
         url: '',
+        caBundle: '',
         enabled: false,
         acceptCreates: true,
         startupConcurrency: 1,
@@ -112,6 +114,7 @@ async function save() {
       }
     }
     const spec = structuredClone(toRaw(form.value!));
+    if (!siteUsesHTTPS.value) spec.caBundle = '';
     spec.quota = quotaEnabled.value ? structuredClone(toRaw(quotaDraft.value)) : {};
     const saved = await request<Resource<Site>>(
       `sites${selected.value ? `/${name.value}` : ''}`,
@@ -193,15 +196,6 @@ function remove(site: Resource<Site>) {
   >
     <h2>{{ t('site.registrationSection') }}</h2>
     <div class="fields">
-      <NFormItem
-        v-if="selected"
-        :label="t('common.resourceName')"
-      >
-        <NInput
-          v-model:value="name"
-          disabled
-        />
-      </NFormItem>
       <NFormItem :label="t('site.displayName')">
         <NInput
           v-model:value="form.displayName"
@@ -213,6 +207,19 @@ function remove(site: Resource<Site>) {
           v-model:value="form.url"
           placeholder="https://gitea.example.com"
           required
+        />
+      </NFormItem>
+      <NFormItem
+        class="field-wide"
+        :label="t('site.caBundle')"
+        :feedback="siteUsesHTTPS ? t('site.caBundleHelp') : t('site.caBundleHTTPS')"
+      >
+        <NInput
+          v-model:value="form.caBundle"
+          type="textarea"
+          :autosize="{minRows: 5, maxRows: 14}"
+          :disabled="!siteUsesHTTPS"
+          placeholder="-----BEGIN CERTIFICATE-----"
         />
       </NFormItem>
     </div>

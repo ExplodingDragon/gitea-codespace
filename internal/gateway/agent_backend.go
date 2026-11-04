@@ -28,8 +28,8 @@ import (
 // AgentBackend adapts Gateway sessions to the current Runtime Agent. It asks
 // Manager for a fresh target-bound ticket for every new data stream.
 type AgentBackend struct {
-	Manager              componentv1connect.ComponentServiceClient
-	CertificateDirectory string
+	Manager      componentv1connect.ComponentServiceClient
+	Certificates *transport.FileCertificates
 
 	mu      sync.Mutex
 	clients map[string]*agentClient
@@ -102,12 +102,11 @@ func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 		client.transport.CloseIdleConnections()
 		delete(b.clients, route.PodUid)
 	}
-	directory := b.CertificateDirectory
-	if directory == "" {
-		directory = "/var/run/codespace/identity"
+	if b.Certificates == nil {
+		return nil, fmt.Errorf("gateway certificate source is unavailable")
 	}
 	expected := identitypkg.AgentURI(route.SiteUid, route.ResourceUid, route.PodUid)
-	tlsConfig, err := (transport.Certificates{Directory: directory}).Client(func(identity *url.URL) error {
+	tlsConfig, err := b.Certificates.Client(func(identity *url.URL) error {
 		if identity.String() != expected {
 			return fmt.Errorf("agent identity does not match the current Runtime Pod")
 		}

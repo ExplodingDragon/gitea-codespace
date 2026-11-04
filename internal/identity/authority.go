@@ -17,6 +17,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"net"
 	"net/url"
 	"slices"
 	"strings"
@@ -202,6 +203,38 @@ func (a *Authority) Issue(rawIdentity string, usages []x509.ExtKeyUsage, now tim
 	if len(usages) == 0 {
 		return nil, fmt.Errorf("identity certificate requires at least one extended key usage")
 	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: rawIdentity},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: slices.Clone(usages),
+		BasicConstraintsValid: true, URIs: []*url.URL{identity},
+	}
+	return a.issue(template, now)
+}
+
+// IssueServerCertificate creates a short-lived TLS certificate for one
+// internal Kubernetes Service DNS name. It carries no application identity and
+// therefore cannot be used to call the Manager component API.
+func (a *Authority) IssueServerCertificate(dnsName string, now time.Time) (*Leaf, error) {
+	if !validDNSName(dnsName) {
+		return nil, fmt.Errorf("invalid internal service DNS name")
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return nil, err
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial, Subject: pkix.Name{CommonName: dnsName},
+		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true, DNSNames: []string{dnsName},
+	}
+	return a.issue(template, now)
+}
+
+func (a *Authority) issue(template *x509.Certificate, now time.Time) (*Leaf, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate identity key: %w", err)
@@ -210,16 +243,7 @@ func (a *Authority) Issue(rawIdentity string, usages []x509.ExtKeyUsage, now tim
 	if !notAfter.After(now) {
 		return nil, fmt.Errorf("identity issuer certificate has expired")
 	}
-	serial, err := randomSerial()
-	if err != nil {
-		return nil, err
-	}
-	template := &x509.Certificate{
-		SerialNumber: serial, Subject: pkix.Name{CommonName: rawIdentity},
-		NotBefore: now.Add(-ClockSkew), NotAfter: notAfter,
-		KeyUsage: x509.KeyUsageDigitalSignature, ExtKeyUsage: slices.Clone(usages),
-		BasicConstraintsValid: true, URIs: []*url.URL{identity},
-	}
+	template.NotBefore, template.NotAfter = now.Add(-ClockSkew), notAfter
 	certificateDER, err := x509.CreateCertificate(rand.Reader, template, a.issuer, key.Public(), a.issuerKey)
 	if err != nil {
 		return nil, fmt.Errorf("create identity certificate: %w", err)
@@ -235,19 +259,9 @@ func (a *Authority) Issue(rawIdentity string, usages []x509.ExtKeyUsage, now tim
 
 // ValidateLeaf verifies persisted leaf material and returns its renewal time.
 func (a *Authority) ValidateLeaf(data map[string][]byte, rawIdentity string, usages []x509.ExtKeyUsage, now time.Time) (time.Time, error) {
-	pair, err := tls.X509KeyPair(data[TLSCertificateKey], data[TLSPrivateKeyKey])
+	leaf, intermediates, err := a.validatePair(data)
 	if err != nil {
-		return time.Time{}, fmt.Errorf("load identity certificate pair: %w", err)
-	}
-	if !bytes.Equal(data[RootCertificateKey], a.rootPEM) {
-		return time.Time{}, fmt.Errorf("identity certificate has a different trust root")
-	}
-	if len(pair.Certificate) < 2 {
-		return time.Time{}, fmt.Errorf("identity certificate chain does not include its issuer")
-	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		return time.Time{}, fmt.Errorf("parse identity certificate: %w", err)
+		return time.Time{}, err
 	}
 	if len(leaf.URIs) != 1 || leaf.URIs[0].String() != rawIdentity {
 		return time.Time{}, fmt.Errorf("identity certificate URI does not match its workload")
@@ -257,20 +271,76 @@ func (a *Authority) ValidateLeaf(data map[string][]byte, rawIdentity string, usa
 	}
 	roots := x509.NewCertPool()
 	roots.AddCert(a.root)
-	intermediates := x509.NewCertPool()
-	for _, encoded := range pair.Certificate[1:] {
-		certificate, err := x509.ParseCertificate(encoded)
-		if err != nil {
-			return time.Time{}, fmt.Errorf("parse identity certificate chain: %w", err)
-		}
-		intermediates.AddCert(certificate)
-	}
 	for _, usage := range usages {
 		if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{usage}}); err != nil {
 			return time.Time{}, fmt.Errorf("verify identity certificate: %w", err)
 		}
 	}
 	return leaf.NotAfter.Add(-LeafRenewBefore), nil
+}
+
+// ValidateServerCertificate verifies a persisted internal Service certificate
+// and returns the time at which it should be renewed.
+func (a *Authority) ValidateServerCertificate(data map[string][]byte, dnsName string, now time.Time) (time.Time, error) {
+	if !validDNSName(dnsName) {
+		return time.Time{}, fmt.Errorf("invalid internal service DNS name")
+	}
+	leaf, intermediates, err := a.validatePair(data)
+	if err != nil {
+		return time.Time{}, err
+	}
+	if len(leaf.URIs) != 0 || !slices.Equal(leaf.DNSNames, []string{dnsName}) || !sameUsages(leaf.ExtKeyUsage, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}) {
+		return time.Time{}, fmt.Errorf("internal service certificate identity does not match its workload")
+	}
+	roots := x509.NewCertPool()
+	roots.AddCert(a.root)
+	if _, err := leaf.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: now, DNSName: dnsName, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}}); err != nil {
+		return time.Time{}, fmt.Errorf("verify internal service certificate: %w", err)
+	}
+	return leaf.NotAfter.Add(-LeafRenewBefore), nil
+}
+
+func (a *Authority) validatePair(data map[string][]byte) (*x509.Certificate, *x509.CertPool, error) {
+	pair, err := tls.X509KeyPair(data[TLSCertificateKey], data[TLSPrivateKeyKey])
+	if err != nil {
+		return nil, nil, fmt.Errorf("load identity certificate pair: %w", err)
+	}
+	if !bytes.Equal(data[RootCertificateKey], a.rootPEM) {
+		return nil, nil, fmt.Errorf("identity certificate has a different trust root")
+	}
+	if len(pair.Certificate) < 2 {
+		return nil, nil, fmt.Errorf("identity certificate chain does not include its issuer")
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return nil, nil, fmt.Errorf("parse identity certificate: %w", err)
+	}
+	intermediates := x509.NewCertPool()
+	for _, encoded := range pair.Certificate[1:] {
+		certificate, err := x509.ParseCertificate(encoded)
+		if err != nil {
+			return nil, nil, fmt.Errorf("parse identity certificate chain: %w", err)
+		}
+		intermediates.AddCert(certificate)
+	}
+	return leaf, intermediates, nil
+}
+
+func validDNSName(value string) bool {
+	if value == "" || len(value) > 253 || strings.HasSuffix(value, ".") || net.ParseIP(value) != nil {
+		return false
+	}
+	for label := range strings.SplitSeq(value, ".") {
+		if label == "" || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, character := range label {
+			if (character < 'a' || character > 'z') && (character < '0' || character > '9') && character != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func parseURI(raw string) (*url.URL, error) {

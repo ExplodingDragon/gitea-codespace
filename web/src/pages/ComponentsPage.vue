@@ -17,7 +17,13 @@ import MeasurementInput from '../components/MeasurementInput.vue';
 import {measurementBaseValue} from '../utils/measurement';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
-const cluster = ref<ClusterOptions>({runtimeClasses: [], storageClasses: [], gateways: []});
+const cluster = ref<ClusterOptions>({
+  runtimeClasses: [],
+  storageClasses: [],
+  ingressClasses: [],
+  tlsSecrets: [],
+  issuers: [],
+});
 const {t} = useI18n();
 const selected = ref<Resource<Component, ComponentStatus>>();
 const editing = ref(false);
@@ -26,72 +32,33 @@ const form = ref<Component>();
 const s3AccessKey = ref('');
 const s3SecretKey = ref('');
 const upstreams = ref<{host: string; allow: string}[]>([]);
+const trustedProxyCIDRs = ref('');
 const error = ref('');
 const loading = ref(false);
 const saving = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
-  name: name.value,
   form: form.value,
   s3AccessKey: s3AccessKey.value,
   s3SecretKey: s3SecretKey.value,
   upstreams: upstreams.value,
+  trustedProxyCIDRs: trustedProxyCIDRs.value,
 }));
-const gatewaySelection = computed(() => {
-  const parent = form.value?.gateway?.parent;
-  return parent?.name ? `${parent.namespace}/${parent.name}` : '__external__';
-});
-const selectedGateway = computed(() =>
-  cluster.value.gateways.find(
-    ({name: gatewayName, namespace}) => `${namespace}/${gatewayName}` === gatewaySelection.value,
-  ),
+const ingressClassOptions = computed(() =>
+  cluster.value.ingressClasses.map(({name: className, controller, default: isDefault}) => ({
+    label: `${className} (${isDefault ? t('component.defaultIngressClass') : controller})`,
+    value: className,
+  })),
 );
-const gatewayOptions = computed(() => {
-  const options = [
-    {label: t('component.externalExposure'), value: '__external__', disabled: false},
-    ...cluster.value.gateways.map(({name: gatewayName, namespace}) => ({
-      label: `${namespace}/${gatewayName}`,
-      value: `${namespace}/${gatewayName}`,
-      disabled: false,
-    })),
-  ];
-  if (gatewaySelection.value !== '__external__' && !options.some(({value}) => value === gatewaySelection.value))
-    options.push({
-      label: t('common.unavailableOption', {name: gatewaySelection.value}),
-      value: gatewaySelection.value,
-      disabled: true,
-    });
-  return options;
-});
-const httpListenerOptions = computed(() => {
-  const options = (selectedGateway.value?.listeners ?? [])
-    .filter(({protocol}) => protocol === 'HTTP' || protocol === 'HTTPS')
-    .map(({name: listenerName, protocol, port}) => ({
-      label: `${listenerName} (${protocol}${port ? ` :${port}` : ''})`,
-      value: listenerName,
-      disabled: false,
-    }));
-  const current = form.value?.gateway?.parent.httpSectionName;
-  if (current && !options.some(({value}) => value === current))
-    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
-  return options;
-});
-const sshListenerOptions = computed(() => {
-  const options = [
-    {label: t('component.noSSHListener'), value: '', disabled: false},
-    ...(selectedGateway.value?.listeners ?? [])
-      .filter(({protocol}) => protocol === 'TCP')
-      .map(({name: listenerName, port}) => ({
-        label: `${listenerName} (TCP${port ? ` :${port}` : ''})`,
-        value: listenerName,
-        disabled: false,
-      })),
-  ];
-  const current = form.value?.gateway?.parent.sshSectionName;
-  if (current && !options.some(({value}) => value === current))
-    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
-  return options;
-});
+const tlsSecretOptions = computed(() =>
+  cluster.value.tlsSecrets.map((secretName) => ({label: secretName, value: secretName})),
+);
+const issuerOptions = computed(() =>
+  cluster.value.issuers.map(({kind, name: issuerName}) => ({
+    label: `${kind}/${issuerName}`,
+    value: `${kind}/${issuerName}`,
+  })),
+);
 const storageOptions = computed(() => {
   const hasDefaultStorage = cluster.value.storageClasses.some(({default: isDefault}) => isDefault);
   const options = [
@@ -136,9 +103,12 @@ function defaultGateway(): Component {
     displayName: '',
     resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
     gateway: {
-      publicURL: '',
-      sshPublicAddress: '',
-      parent: {name: '', namespace: '', httpSectionName: '', sshSectionName: ''},
+      replicas: 2,
+      endpointBaseURL: '',
+      sshExternalAddress: '',
+      httpExposure: {mode: 'external'},
+      sshExposure: {mode: 'external'},
+      trustedProxyCIDRs: [],
       ssh: {
         handshakeTimeout: '30s',
         maxChannelsPerConnection: 32,
@@ -168,7 +138,6 @@ function defaultCache(): Component {
     resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
     cache: {
       enabled: true,
-      publicURL: '',
       storage: {
         driver: 'filesystem',
         volumeSize: '50Gi',
@@ -190,15 +159,7 @@ function edit(item?: Resource<Component, ComponentStatus>) {
   s3AccessKey.value = '';
   s3SecretKey.value = '';
   form.value = item ? structuredClone(toRaw(item.spec)) : defaultGateway();
-  if (form.value.gateway) {
-    form.value.gateway.parent = {
-      name: '',
-      namespace: '',
-      httpSectionName: '',
-      sshSectionName: '',
-      ...form.value.gateway.parent,
-    };
-  }
+  trustedProxyCIDRs.value = form.value.gateway?.trustedProxyCIDRs?.join('\n') ?? '';
   upstreams.value = Object.entries(form.value.cache?.upstreams ?? {}).map(([host, config]) => ({
     host,
     allow: config.allow.join('\n'),
@@ -213,25 +174,34 @@ function setRole(role: 'gateway' | 'cache') {
   form.value.displayName = displayName;
   if (resources) form.value.resources = resources;
   upstreams.value = [];
+  trustedProxyCIDRs.value = '';
 }
-function setGateway(value: string) {
+function setHTTPExposure(value: 'external' | 'ingress') {
   if (!form.value?.gateway) return;
-  if (value === '__external__') {
-    form.value.gateway.parent = {name: '', namespace: '', httpSectionName: '', sshSectionName: ''};
-    return;
-  }
-  const gateway = cluster.value.gateways.find(
-    ({name: gatewayName, namespace}) => `${namespace}/${gatewayName}` === value,
-  );
-  if (!gateway) return;
-  const httpListeners = gateway.listeners.filter(({protocol}) => protocol === 'HTTP' || protocol === 'HTTPS');
-  const sshListeners = gateway.listeners.filter(({protocol}) => protocol === 'TCP');
-  form.value.gateway.parent = {
-    name: gateway.name,
-    namespace: gateway.namespace,
-    httpSectionName: httpListeners.length === 1 ? httpListeners[0].name : '',
-    sshSectionName: sshListeners.length === 1 ? sshListeners[0].name : '',
-  };
+  form.value.gateway.httpExposure =
+    value === 'external'
+      ? {mode: 'external'}
+      : {
+          mode: 'ingress',
+          ingress: {
+            className: cluster.value.ingressClasses.find(({default: isDefault}) => isDefault)?.name ?? '',
+            tls: {source: form.value.gateway.endpointBaseURL.startsWith('https://') ? 'secret' : 'none'},
+          },
+        };
+}
+function setTLS(source: 'none' | 'secret' | 'certManager') {
+  if (!form.value?.gateway?.httpExposure.ingress) return;
+  form.value.gateway.httpExposure.ingress.tls = {source};
+}
+function setIssuer(value: string) {
+  const tls = form.value?.gateway?.httpExposure.ingress?.tls;
+  if (!tls) return;
+  const [kind, ...nameParts] = value.split('/');
+  tls.issuer = {kind: kind as 'Issuer' | 'ClusterIssuer', name: nameParts.join('/')};
+}
+function setSSHExposure(value: 'external' | 'loadBalancer') {
+  if (!form.value?.gateway) return;
+  form.value.gateway.sshExposure = {mode: value};
 }
 function close() {
   if (!dirty.confirmDiscard()) return;
@@ -249,26 +219,27 @@ async function save() {
       if (request === null || limit === null || request <= 0 || request > limit)
         throw new Error(t('component.invalidResourceRange', {resource: t(`units.${kind}`)}));
     }
-    if (spec.gateway && !spec.gateway.parent.name?.trim()) {
-      spec.gateway.parent = {name: '', namespace: '', httpSectionName: '', sshSectionName: ''};
-    } else if (spec.gateway) {
-      const gateway = cluster.value.gateways.find(
-        ({name: gatewayName, namespace}) =>
-          gatewayName === spec.gateway!.parent.name && namespace === spec.gateway!.parent.namespace,
-      );
-      if (
-        !gateway ||
-        !gateway.listeners.some(
-          ({name: listenerName, protocol}) =>
-            listenerName === spec.gateway!.parent.httpSectionName && (protocol === 'HTTP' || protocol === 'HTTPS'),
-        ) ||
-        (spec.gateway.parent.sshSectionName &&
-          !gateway.listeners.some(
-            ({name: listenerName, protocol}) =>
-              listenerName === spec.gateway!.parent.sshSectionName && protocol === 'TCP',
-          ))
-      )
-        throw new Error(t('component.invalidGatewaySelection'));
+    if (spec.gateway) {
+      if (!Number.isInteger(spec.gateway.replicas) || spec.gateway.replicas < 1 || spec.gateway.replicas > 64)
+        throw new Error(t('component.invalidReplicas'));
+      spec.gateway.trustedProxyCIDRs = trustedProxyCIDRs.value
+        .split(/[\n,]/)
+        .map((value) => value.trim())
+        .filter(Boolean);
+      const ingress = spec.gateway.httpExposure.ingress;
+      if (spec.gateway.httpExposure.mode === 'ingress') {
+        if (!ingress || !cluster.value.ingressClasses.some(({name: className}) => className === ingress.className))
+          throw new Error(t('component.invalidIngressClass'));
+        if (ingress.tls.source === 'secret' && !cluster.value.tlsSecrets.includes(ingress.tls.secretName ?? ''))
+          throw new Error(t('component.invalidTLSSecret'));
+        if (
+          ingress.tls.source === 'certManager' &&
+          !cluster.value.issuers.some(
+            ({kind, name: issuerName}) => kind === ingress.tls.issuer?.kind && issuerName === ingress.tls.issuer?.name,
+          )
+        )
+          throw new Error(t('component.invalidIssuer'));
+      }
     }
     if (spec.cache) {
       if (spec.cache.storage.driver === 'filesystem') {
@@ -297,11 +268,13 @@ async function save() {
       for (const item of upstreams.value) {
         const host = item.host.trim().toLowerCase();
         if (!host || spec.cache.upstreams[host]) throw new Error(t('component.duplicateRegistry'));
+        const allow = item.allow
+          .split(/[\n,]/)
+          .map((value) => value.trim())
+          .filter(Boolean);
+        if (!allow.length) throw new Error(t('component.emptyMirrorRepositories'));
         spec.cache.upstreams[host] = {
-          allow: item.allow
-            .split(/[\n,]/)
-            .map((value) => value.trim())
-            .filter(Boolean),
+          allow,
         };
       }
     }
@@ -309,7 +282,7 @@ async function save() {
       `components${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',
       {
-        name: name.value,
+        name: selected.value ? name.value : '',
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
@@ -405,13 +378,6 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
   >
     <h2>{{ t('component.basicSection') }}</h2>
     <div class="fields">
-      <NFormItem :label="t('common.resourceName')">
-        <NInput
-          v-model:value="name"
-          :disabled="!!selected"
-          required
-        />
-      </NFormItem>
       <NFormItem :label="t('component.displayName')">
         <NInput
           v-model:value="form.displayName"
@@ -433,6 +399,18 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     <h2>{{ t('component.computeSection') }}</h2>
     <p class="section-help">{{ t('component.computeHelp') }}</p>
     <div class="fields">
+      <NFormItem
+        v-if="form.gateway"
+        :label="t('component.gatewayReplicas')"
+        :feedback="t('component.gatewayReplicasHelp')"
+      >
+        <NInputNumber
+          v-model:value="form.gateway.replicas"
+          :min="1"
+          :max="64"
+          :precision="0"
+        />
+      </NFormItem>
       <NFormItem :label="t('component.cpuRequest')">
         <MeasurementInput
           v-model="form.resources.requests.cpu"
@@ -467,14 +445,14 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <div class="fields">
         <NFormItem :label="t('component.publicHTTPS')">
           <NInput
-            v-model:value="form.gateway.publicURL"
+            v-model:value="form.gateway.endpointBaseURL"
             placeholder="https://codespace.example.com"
             required
           />
         </NFormItem>
         <NFormItem :label="t('component.publicSSH')">
           <NInput
-            v-model:value="form.gateway.sshPublicAddress"
+            v-model:value="form.gateway.sshExternalAddress"
             placeholder="codespace.example.com:22"
             required
           />
@@ -483,32 +461,83 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <h2>{{ t('component.publicExposure') }}</h2>
       <p class="section-help">{{ t('component.publicExposureHelp') }}</p>
       <div class="fields">
-        <NFormItem :label="t('component.gatewayParent')">
+        <NFormItem :label="t('component.httpExposure')">
           <NSelect
-            :value="gatewaySelection"
-            :options="gatewayOptions"
-            @update:value="setGateway"
+            :value="form.gateway.httpExposure.mode"
+            :options="[
+              {label: t('component.externalExposure'), value: 'external'},
+              {label: t('component.ingressExposure'), value: 'ingress'},
+            ]"
+            @update:value="setHTTPExposure"
           />
         </NFormItem>
-        <NFormItem
-          v-if="gatewaySelection !== '__external__'"
-          :label="t('component.httpListener')"
-        >
+        <NFormItem :label="t('component.sshExposure')">
           <NSelect
-            v-model:value="form.gateway.parent.httpSectionName"
-            :options="httpListenerOptions"
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="gatewaySelection !== '__external__'"
-          :label="t('component.sshListener')"
-        >
-          <NSelect
-            v-model:value="form.gateway.parent.sshSectionName"
-            :options="sshListenerOptions"
+            :value="form.gateway.sshExposure.mode"
+            :options="[
+              {label: t('component.externalExposure'), value: 'external'},
+              {label: t('component.loadBalancerExposure'), value: 'loadBalancer'},
+            ]"
+            @update:value="setSSHExposure"
           />
         </NFormItem>
       </div>
+      <div
+        v-if="form.gateway.httpExposure.ingress"
+        class="fields"
+      >
+        <NFormItem :label="t('component.ingressClass')">
+          <NSelect
+            v-model:value="form.gateway.httpExposure.ingress.className"
+            :options="ingressClassOptions"
+          />
+        </NFormItem>
+        <NFormItem :label="t('component.tlsSource')">
+          <NSelect
+            :value="form.gateway.httpExposure.ingress.tls.source"
+            :options="[
+              {label: t('component.noTLS'), value: 'none'},
+              {label: t('component.existingTLSSecret'), value: 'secret'},
+              {label: t('component.certManagerIssuer'), value: 'certManager'},
+            ]"
+            @update:value="setTLS"
+          />
+        </NFormItem>
+        <NFormItem
+          v-if="form.gateway.httpExposure.ingress.tls.source === 'secret'"
+          :label="t('component.tlsSecret')"
+        >
+          <NSelect
+            v-model:value="form.gateway.httpExposure.ingress.tls.secretName"
+            :options="tlsSecretOptions"
+          />
+        </NFormItem>
+        <NFormItem
+          v-if="form.gateway.httpExposure.ingress.tls.source === 'certManager'"
+          :label="t('component.issuer')"
+        >
+          <NSelect
+            :value="
+              form.gateway.httpExposure.ingress.tls.issuer
+                ? `${form.gateway.httpExposure.ingress.tls.issuer.kind}/${form.gateway.httpExposure.ingress.tls.issuer.name}`
+                : ''
+            "
+            :options="issuerOptions"
+            @update:value="setIssuer"
+          />
+        </NFormItem>
+      </div>
+      <NFormItem
+        :label="t('component.trustedProxies')"
+        :feedback="t('component.trustedProxiesHelp')"
+      >
+        <NInput
+          v-model:value="trustedProxyCIDRs"
+          type="textarea"
+          :autosize="{minRows: 2, maxRows: 5}"
+          placeholder="10.0.0.0/8"
+        />
+      </NFormItem>
       <h2>{{ t('component.sessions') }}</h2>
       <div class="fields">
         <NFormItem :label="t('component.sessionLifetime')">
@@ -567,13 +596,6 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     <template v-if="form.cache">
       <h2>{{ t('component.cacheSection') }}</h2>
       <div class="fields">
-        <NFormItem :label="t('component.publicRegistry')">
-          <NInput
-            v-model:value="form.cache.publicURL"
-            placeholder="https://cache.example.com"
-            required
-          />
-        </NFormItem>
         <NFormItem :label="t('component.storageDriver')">
           <NSelect
             v-model:value="form.cache.storage.driver"
@@ -743,7 +765,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         <tr>
           <th>{{ t('component.component') }}</th>
           <th>{{ t('component.role') }}</th>
-          <th>{{ t('component.publicAddress') }}</th>
+          <th>{{ t('component.address') }}</th>
           <th>{{ t('component.state') }}</th>
           <th>{{ t('common.actions') }}</th>
         </tr>
@@ -759,12 +781,29 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           </td>
           <td>{{ item.spec.role === 'gateway' ? t('component.gateway') : t('component.cache') }}</td>
           <td>
-            {{ item.spec.gateway?.publicURL || item.spec.cache?.publicURL }}
+            <template v-if="item.spec.gateway">{{ item.spec.gateway.endpointBaseURL }}</template>
+            <template v-else-if="item.status?.serviceName">
+              https://{{ item.status.serviceName }}.{{ item.status.serviceNamespace }}.svc
+            </template>
             <p
               v-if="item.spec.gateway"
               class="muted"
             >
-              {{ t('component.sshAddress', {address: item.spec.gateway.sshPublicAddress}) }}
+              {{ t('component.sshAddress', {address: item.spec.gateway.sshExternalAddress}) }}
+            </p>
+            <p
+              v-if="item.spec.gateway && item.status?.serviceName"
+              class="muted"
+            >
+              {{
+                t('component.serviceAddress', {namespace: item.status.serviceNamespace, name: item.status.serviceName})
+              }}
+            </p>
+            <p
+              v-if="item.spec.gateway && item.status?.sshLoadBalancerAddresses?.length"
+              class="muted"
+            >
+              {{ t('component.sshLoadBalancerAddress', {address: item.status.sshLoadBalancerAddresses.join(', ')}) }}
             </p>
           </td>
           <td>
@@ -784,15 +823,47 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             <NTag
               v-else
               size="small"
-              :type="item.status?.available ? 'success' : 'warning'"
+              :type="
+                item.status?.available && item.status.readyReplicas >= item.status.desiredReplicas
+                  ? 'success'
+                  : 'warning'
+              "
             >
-              {{ item.status?.available ? t('common.available') : t('common.pending') }}
+              {{
+                item.status?.available
+                  ? item.status.readyReplicas < item.status.desiredReplicas
+                    ? t('component.degraded')
+                    : t('common.available')
+                  : t('common.pending')
+              }}
             </NTag>
+            <p
+              v-if="item.spec.gateway && item.status"
+              class="muted"
+            >
+              {{
+                t('component.replicaState', {
+                  ready: item.status.readyReplicas,
+                  desired: item.status.desiredReplicas,
+                })
+              }}
+            </p>
             <p
               v-if="item.spec.cache && item.status?.lastHeartbeat"
               class="muted"
             >
               {{ t('component.heartbeat') }}
+            </p>
+            <p
+              v-if="item.spec.gateway"
+              class="muted"
+            >
+              {{
+                t('component.publicationState', {
+                  http: item.status?.httpExposureConfigured ? t('common.available') : t('common.pending'),
+                  ssh: item.status?.sshExposureConfigured ? t('common.available') : t('common.pending'),
+                })
+              }}
             </p>
           </td>
           <td>

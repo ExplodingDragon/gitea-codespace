@@ -81,7 +81,11 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if _, err := identitypkg.ParseManagerURI(managerIdentity); err != nil {
 		return fmt.Errorf("CODESPACE_MANAGER_IDENTITY: %w", err)
 	}
-	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Client(func(identity *url.URL) error {
+	certificates, err := transport.NewFileCertificates("/run/identity")
+	if err != nil {
+		return err
+	}
+	tlsConfig, err := certificates.Client(func(identity *url.URL) error {
 		if identity.String() != managerIdentity {
 			return fmt.Errorf("manager identity does not match this Codespace installation")
 		}
@@ -131,7 +135,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	sampler := &agentpkg.ResourceSampler{}
 	client := &agentpkg.ControlClient{Journal: journal, Remote: remote, Execute: runtime.Execute, Sample: sampler.Sample, TargetChanges: runtime.TargetChanges(), CurrentTarget: runtime.CurrentAccessTarget}
 	group, groupCtx := errgroup.WithContext(ctx)
-	group.Go(func() error { return runAccessServer(groupCtx, runtime) })
+	group.Go(func() error { return runAccessServer(groupCtx, runtime, certificates) })
 	group.Go(func() error { return serveEndpointServer(groupCtx, endpointListener, endpointServer) })
 	group.Go(func() error { return client.Run(groupCtx) })
 	err = group.Wait()
@@ -187,8 +191,8 @@ func serveEndpointServer(ctx context.Context, listener net.Listener, server *htt
 	return err
 }
 
-func runAccessServer(ctx context.Context, runtime *agentpkg.Runtime) error {
-	tlsConfig, err := (transport.Certificates{Directory: "/run/identity"}).Server(func(identity *url.URL) error {
+func runAccessServer(ctx context.Context, runtime *agentpkg.Runtime, certificates *transport.FileCertificates) error {
+	tlsConfig, err := certificates.Server(func(identity *url.URL) error {
 		component, err := identitypkg.ParseComponentURI(identity)
 		if err != nil || component.Role != "gateway" {
 			return fmt.Errorf("gateway identity is invalid")

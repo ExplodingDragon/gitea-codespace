@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -150,10 +151,11 @@ func TestAgentControlRecovery(t *testing.T) {
 	path := "/" + codespacev1connect.ManagerServiceName + "/"
 
 	giteaMux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", giteaHandler))
-	gitea := httptest.NewServer(giteaMux)
+	gitea := httptest.NewTLSServer(giteaMux)
 	defer gitea.Close()
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(site), site))
 	site.Spec.URL = gitea.URL
+	site.Spec.CABundle = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: gitea.Certificate().Raw}))
 	site.Status.CanonicalURL = "https://gitea.example.com"
 	// Site status is not registered separately in this fixture.
 	require.NoError(t, c.Update(t.Context(), site))
@@ -175,6 +177,8 @@ func TestAgentControlRecovery(t *testing.T) {
 	response, err = startup.Receive()
 	require.NoError(t, err)
 	require.Equal(t, "rsa-4096", response.Runtime.GitSshKeyType)
+	require.Equal(t, "https://gitea.example.com", response.Runtime.GiteaUrl)
+	require.Equal(t, site.Spec.CABundle, response.Runtime.GiteaCaBundle)
 	require.EqualValues(t, 4, response.Operation.OperationRversion)
 	require.Zero(t, response.AcknowledgedResultVersion)
 	require.True(t, response.CancelExecution)

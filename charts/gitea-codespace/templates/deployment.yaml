@@ -57,7 +57,6 @@ spec:
             - --platform-image={{ include "gitea-codespace.image" . }}
             - --identity-secret={{ $fullname }}-internal-ca
             - --admin-address=:18080
-            - --admin-public-url={{ .Values.admin.publicURL }}
             - --admin-token-file=/var/run/codespace/admin/token
             {{- range .Values.image.pullSecrets }}
             - --image-pull-secret={{ . }}

@@ -229,6 +229,7 @@ type CacheOptions struct {
 	Mirrors       map[string]string             `json:"mirrors,omitempty"`
 	BuildScope    string                        `json:"build_scope,omitempty"`
 	Credentials   map[string]RegistryCredential `json:"credentials,omitempty"`
+	RootCAPEM     []byte                        `json:"-"`
 }
 
 // RegistryCredential stores one short-lived credential for a cache registry host.

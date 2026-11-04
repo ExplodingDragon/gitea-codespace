@@ -8,6 +8,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -16,6 +17,37 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestFeatureRegistryClientUsesConfiguredRootCA(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		response.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	client, err := featureRegistryClient(root)
+	if err != nil {
+		t.Fatalf("create Feature registry client: %v", err)
+	}
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("create Feature registry request: %v", err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("request Feature registry with configured CA: %v", err)
+	}
+	if err := response.Body.Close(); err != nil {
+		t.Fatalf("close Feature registry response: %v", err)
+	}
+	if response.StatusCode != http.StatusNoContent {
+		t.Fatalf("Feature registry status = %s", response.Status)
+	}
+	if _, err := featureRegistryClient([]byte("not a certificate")); err == nil {
+		t.Fatal("invalid Feature registry CA was accepted")
+	}
+}
 
 func TestExtractFeatureLayerAcceptsArchiveRoot(t *testing.T) {
 	t.Parallel()

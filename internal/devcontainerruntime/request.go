@@ -5,6 +5,7 @@ package devcontainerruntime
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 
 	"gitea.dev/codespace/devcontainer"
@@ -20,6 +21,8 @@ type Request struct {
 	HostUser         devcontainer.HostUser
 	GitUserName      string
 	GitUserEmail     string
+	GiteaURL         string
+	GiteaCustomCA    bool
 	LocalEnvironment map[string]string
 	Secrets          map[string]string
 	DevContainer     Configuration
@@ -31,6 +34,15 @@ type Request struct {
 func (r Request) Validate() error {
 	if strings.TrimSpace(r.CodespaceUUID) == "" {
 		return fmt.Errorf("codespace uuid is empty")
+	}
+	if r.Action == "create" || r.Action == "resume" {
+		giteaURL, err := url.Parse(strings.TrimSpace(r.GiteaURL))
+		if err != nil || (giteaURL.Scheme != "http" && giteaURL.Scheme != "https") || giteaURL.Host == "" || giteaURL.User != nil || giteaURL.RawQuery != "" || giteaURL.Fragment != "" {
+			return fmt.Errorf("invalid Gitea URL")
+		}
+		if r.GiteaCustomCA && giteaURL.Scheme != "https" {
+			return fmt.Errorf("custom Gitea CA requires HTTPS")
+		}
 	}
 	switch r.Action {
 	case "create":

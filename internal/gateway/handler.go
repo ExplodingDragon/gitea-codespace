@@ -246,6 +246,7 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, http.StatusForbidden, "Codespace is unavailable", "Gitea reports that this codespace endpoint is not currently available for this session.", decision.DeniedCategory)
 		return
 	}
+	setGatewaySessionCookie(writer, session.token, originPolicy)
 	requestContext, cancelRequest := context.WithCancel(request.Context())
 	defer cancelRequest()
 	request = request.WithContext(requestContext)
@@ -536,6 +537,9 @@ func gatewayExternalScheme(request *http.Request, originPolicy OriginPolicy) str
 func gatewayPeerIP(request *http.Request) string {
 	if request == nil {
 		return ""
+	}
+	if address, ok := request.Context().Value(gatewayClientIPContextKey{}).(string); ok {
+		return address
 	}
 	host, _, err := net.SplitHostPort(request.RemoteAddr)
 	if err == nil {

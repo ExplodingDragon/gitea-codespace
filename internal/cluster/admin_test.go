@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"encoding/pem"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -25,14 +26,13 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -45,9 +45,8 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	token := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(tokenFile, []byte(token), 0o600))
-	admin, err := NewAdminServer(c, "codespace-system", "https://Manager.Example.COM:443/", tokenFile)
+	admin, err := NewAdminServer(c, "codespace-system", tokenFile)
 	require.NoError(t, err)
-	require.Equal(t, "https://manager.example.com", admin.PublicURL.String())
 	request := func(server *AdminServer, method, path, origin, csrf string, cookie *http.Cookie, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
 		r.Header.Set("Origin", origin)
@@ -60,14 +59,7 @@ func TestAdminSessionLifecycle(t *testing.T) {
 		server.Handler().ServeHTTP(w, r)
 		return w
 	}
-	invalidOrigin := request(admin, "POST", "/api/admin/login", "https://attacker.example", "", nil, `{"token":"`+token+`"}`)
-	require.Equal(t, http.StatusForbidden, invalidOrigin.Code)
-	var problem adminProblem
-	require.NoError(t, json.Unmarshal(invalidOrigin.Body.Bytes(), &problem))
-	require.Equal(t, "invalid_origin", problem.Code)
-	require.Equal(t, "请求来源与管理地址不一致。", problem.Message)
-	require.Empty(t, problem.Detail)
-	login := request(admin, "POST", "/api/admin/login", admin.PublicURL.String(), "", nil, `{"token":"`+token+`"}`)
+	login := request(admin, "POST", "/api/admin/login", "https://manager.example.com", "", nil, `{"token":"`+token+`"}`)
 	require.Equal(t, http.StatusOK, login.Code, login.Body.String())
 	cookies := login.Result().Cookies()
 	require.Len(t, cookies, 1)
@@ -82,15 +74,16 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(stored), cookies[0].Value)
 
-	other, err := NewAdminServer(c, admin.Namespace, admin.PublicURL.String(), tokenFile)
+	other, err := NewAdminServer(c, admin.Namespace, tokenFile)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, request(other, "GET", "/api/admin/session", "", "", cookies[0], "").Code)
-	require.Equal(t, http.StatusForbidden, request(other, "DELETE", "/api/admin/session", admin.PublicURL.String(), "incorrect", cookies[0], "").Code)
-	require.Equal(t, http.StatusNoContent, request(other, "DELETE", "/api/admin/session", admin.PublicURL.String(), session["csrf"], cookies[0], "").Code)
+	require.Equal(t, http.StatusForbidden, request(other, "DELETE", "/api/admin/session", "http://127.0.0.1:18080", "incorrect", cookies[0], "").Code)
+	require.Equal(t, http.StatusNoContent, request(other, "DELETE", "/api/admin/session", "http://127.0.0.1:18080", session["csrf"], cookies[0], "").Code)
 	require.Equal(t, http.StatusUnauthorized, request(admin, "GET", "/api/admin/session", "", "", cookies[0], "").Code)
 
-	login = request(admin, "POST", "/api/admin/login", admin.PublicURL.String(), "", nil, `{"token":"`+token+`"}`)
+	login = request(admin, "POST", "/api/admin/login", "http://127.0.0.1:18080", "", nil, `{"token":"`+token+`"}`)
 	require.Equal(t, http.StatusOK, login.Code)
+	require.False(t, login.Result().Cookies()[0].Secure)
 	require.NoError(t, os.WriteFile(tokenFile, []byte(strings.Repeat("b", 64)), 0o600))
 	require.Equal(t, http.StatusUnauthorized, request(other, "GET", "/api/admin/session", "", "", login.Result().Cookies()[0], "").Code)
 	require.NoError(t, other.pruneSessions(t.Context()))
@@ -103,35 +96,23 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "sysbox-runc", Labels: map[string]string{api.RuntimeIsolationLabel: api.IsolationSysbox}}, Handler: "sysbox-runc"}
 	unmanagedRuntime := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "runc"}, Handler: "runc"}
 	storageClass := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "local-path", Annotations: map[string]string{"storageclass.kubernetes.io/is-default-class": defaultClass}}, Provisioner: "rancher.io/local-path"}
-	gateway := &unstructured.Unstructured{}
-	gateway.SetAPIVersion("gateway.networking.k8s.io/v1")
-	gateway.SetKind("Gateway")
-	gateway.SetName("public")
-	gateway.SetNamespace("ingress")
-	gateway.Object["spec"] = map[string]any{"listeners": []any{
-		map[string]any{"name": "https", "protocol": "HTTPS", "port": int64(443)},
-		map[string]any{"name": "ssh", "protocol": "TCP", "port": int64(22)},
-		map[string]any{"name": "tls", "protocol": "TLS", "port": int64(8443)},
-	}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass, gateway).Build()
+	ingressClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: "nginx", Annotations: map[string]string{"ingressclass.kubernetes.io/is-default-class": "true"}}, Spec: networkingv1.IngressClassSpec{Controller: "k8s.io/ingress-nginx"}}
+	tlsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "wildcard-tls", Namespace: "codespace-system"}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{corev1.TLSCertKey: []byte("certificate"), corev1.TLSPrivateKeyKey: []byte("private-key")}}
+	issuer := &unstructured.Unstructured{}
+	issuer.SetAPIVersion("cert-manager.io/v1")
+	issuer.SetKind("Issuer")
+	issuer.SetName("letsencrypt")
+	issuer.SetNamespace("codespace-system")
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass, ingressClass, tlsSecret, issuer).Build()
 	server := &AdminServer{Client: c, Namespace: "codespace-system"}
 
 	options, err := server.clusterOptions(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []adminRuntimeClass{{Name: "sysbox-runc", Handler: "sysbox-runc", Isolation: api.IsolationSysbox}}, options.RuntimeClasses)
 	require.Equal(t, []adminStorageClass{{Name: "local-path", Provisioner: "rancher.io/local-path", Default: true}}, options.StorageClasses)
-	require.Equal(t, []adminGateway{{Name: "public", Namespace: "ingress", Listeners: []adminGatewayListener{{Name: "https", Protocol: "HTTPS", Port: 443}, {Name: "ssh", Protocol: "TCP", Port: 22}}}}, options.Gateways)
-	withoutGatewayAPI := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, storageClass).WithInterceptorFuncs(interceptor.Funcs{
-		List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
-			if list.GetObjectKind().GroupVersionKind().Kind == "GatewayList" {
-				return &meta.NoKindMatchError{GroupKind: schema.GroupKind{Group: "gateway.networking.k8s.io", Kind: "Gateway"}}
-			}
-			return c.List(ctx, list, opts...)
-		},
-	}).Build()
-	options, err = (&AdminServer{Client: withoutGatewayAPI}).clusterOptions(t.Context())
-	require.NoError(t, err)
-	require.Empty(t, options.Gateways)
+	require.Equal(t, []adminIngressClass{{Name: "nginx", Controller: "k8s.io/ingress-nginx", Default: true}}, options.IngressClasses)
+	require.Equal(t, []string{"wildcard-tls"}, options.TLSSecrets)
+	require.Equal(t, []adminIssuer{{Kind: "Issuer", Name: "letsencrypt"}}, options.Issuers)
 	w := httptest.NewRecorder()
 	server.handleResources(w, httptest.NewRequest(http.MethodGet, "/api/admin/cluster-options", nil))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
@@ -161,7 +142,7 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	path := "/" + codespacev1connect.ManagerServiceName + "/"
 	mux := http.NewServeMux()
 	mux.Handle("/api/codespace"+path, http.StripPrefix("/api/codespace", rpcHandler))
-	gitea := httptest.NewServer(mux)
+	gitea := httptest.NewTLSServer(mux)
 	t.Cleanup(gitea.Close)
 	registration.webURL = "https://gitea.example.com"
 
@@ -175,9 +156,10 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	server := &AdminServer{Client: c, Namespace: "codespace-system", RegistrationHTTPClient: gitea.Client()}
 	site := testSite("example", "")
 	site.Spec.URL = gitea.URL
+	site.Spec.CABundle = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: gitea.Certificate().Raw}))
 	site.ResourceVersion, site.Spec.Credential = "", api.ResourceReference{}
 	spec := adminSiteSpec{
-		DisplayName: site.Spec.DisplayName, URL: site.Spec.URL, Enabled: site.Spec.Enabled, AcceptCreates: site.Spec.AcceptCreates,
+		DisplayName: site.Spec.DisplayName, URL: site.Spec.URL, CABundle: site.Spec.CABundle, Enabled: site.Spec.Enabled, AcceptCreates: site.Spec.AcceptCreates,
 		StartupConcurrency: site.Spec.StartupConcurrency, CleanupConcurrency: site.Spec.CleanupConcurrency,
 		Templates: site.Spec.Templates, Gateway: site.Spec.Gateway, Caches: site.Spec.Caches, Quota: site.Spec.Quota,
 		Upstreams: site.Spec.Upstreams,
@@ -282,6 +264,10 @@ func (s *adminRegistrationService) RegisterManager(_ context.Context, request *c
 	}, nil
 }
 
+func (s *adminRegistrationService) CheckManager(context.Context, *codespacev1.CheckManagerRequest) (*codespacev1.CheckManagerResponse, error) {
+	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.webURL, ManagerName: s.name}, nil
+}
+
 func TestAdminConfirmsMissingRuntimeWriterByExactIdentity(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", ResourceVersion: "1"},
@@ -349,15 +335,16 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	server := &AdminServer{Client: c, Namespace: namespace}
 
 	gatewaySpec := testGatewayComponent("gateway", "").Spec
-	gatewaySpec.Gateway.Parent = api.GatewayParent{}
 	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway"}}
 	require.NoError(t, server.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
 	gatewaySecret := testComponentCredential(gateway, nil)
 	generated, err := newGatewayHostKeySecret(gatewaySecret.Name, namespace)
 	require.NoError(t, err)
 	gatewaySecret.Data = generated.Data
+	gatewaySecret.Data[gatewaySessionKey] = []byte("0123456789abcdef0123456789abcdef")
 	require.NoError(t, c.Create(ctx, gatewaySecret))
 	originalHostKey := append([]byte(nil), gatewaySecret.Data["hostKey"]...)
+	originalSessionKey := append([]byte(nil), gatewaySecret.Data[gatewaySessionKey]...)
 	rotation, err := json.Marshal(adminWriteIdentity{Name: gateway.Name, UID: gateway.UID, ResourceVersion: gateway.ResourceVersion})
 	require.NoError(t, err)
 	w := httptest.NewRecorder()
@@ -366,6 +353,7 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(gatewaySecret), gatewaySecret))
 	require.Equal(t, gateway.UID, gatewaySecret.OwnerReferences[0].UID)
 	require.NotEqual(t, originalHostKey, gatewaySecret.Data["hostKey"])
+	require.Equal(t, originalSessionKey, gatewaySecret.Data[gatewaySessionKey])
 
 	cacheSpec := testCacheComponent("cache", "").Spec
 	cacheSpec.Cache.Storage = api.CacheStorage{Driver: "s3", S3: api.CacheS3Storage{Endpoint: "https://s3.example.com", Region: "test", Bucket: "codespace"}}

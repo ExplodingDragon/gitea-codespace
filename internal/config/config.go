@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/netip"
 	"net/url"
 	"regexp"
 	"strconv"
@@ -21,10 +22,12 @@ var gatewayDNSLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z
 // Duration stores one configuration duration value.
 type Duration time.Duration
 
+// MarshalJSON encodes a duration with Go duration syntax.
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return json.Marshal(time.Duration(d).String())
 }
 
+// UnmarshalJSON decodes a duration written with Go duration syntax.
 func (d *Duration) UnmarshalJSON(data []byte) error {
 	var text string
 	if err := json.Unmarshal(data, &text); err != nil {
@@ -53,8 +56,9 @@ type GatewayConfig struct {
 
 // GatewayHTTPConfig stores the Gateway HTTP listener and public URL.
 type GatewayHTTPConfig struct {
-	Listen    string `json:"listen"`
-	PublicURL string `json:"public_url"`
+	Listen            string   `json:"listen"`
+	PublicURL         string   `json:"public_url"`
+	TrustedProxyCIDRs []string `json:"trusted_proxy_cidrs,omitempty"`
 }
 
 // GatewaySSHConfig stores the Gateway SSH listener, public address, and limits.
@@ -98,7 +102,7 @@ type RuntimeCacheUpstreamConfig struct {
 	Allow []string `json:"allow"`
 }
 
-// DefaultGatewayConfig returns usable defaults for one independently deployed Gateway.
+// DefaultGatewayConfig returns the values used when an administrator creates a Gateway.
 func DefaultGatewayConfig() GatewayConfig {
 	return GatewayConfig{
 		HTTP: GatewayHTTPConfig{Listen: ":18081", PublicURL: "http://gateway.example.com:18081"},
@@ -113,52 +117,85 @@ func DefaultGatewayConfig() GatewayConfig {
 
 // Validate checks whether the Gateway can start and expose stable public addresses.
 func (c GatewayConfig) Validate() error {
-	if err := validateListenAddress(c.HTTP.Listen); err != nil {
+	if err := c.HTTP.validate(); err != nil {
+		return err
+	}
+	if err := c.SSH.validate(); err != nil {
+		return err
+	}
+	if err := c.Sessions.validate(); err != nil {
+		return err
+	}
+	return c.Limits.validate()
+}
+
+func (c GatewayHTTPConfig) validate() error {
+	if err := validateListenAddress(c.Listen); err != nil {
 		return fmt.Errorf("gateway.http.listen: %w", err)
 	}
-	if err := validateListenAddress(c.SSH.Listen); err != nil {
-		return fmt.Errorf("gateway.ssh.listen: %w", err)
-	}
-	if _, err := normalizeGatewayURL(c.HTTP.PublicURL); err != nil {
+	if _, err := normalizeGatewayURL(c.PublicURL); err != nil {
 		return fmt.Errorf("gateway.http.public_url: %w", err)
 	}
-	if _, err := normalizeGatewaySSHAddress(c.SSH.PublicAddr); err != nil {
+	if len(c.TrustedProxyCIDRs) > 64 {
+		return fmt.Errorf("gateway.http.trusted_proxy_cidrs: at most 64 entries are allowed")
+	}
+	for _, prefix := range c.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(prefix); err != nil {
+			return fmt.Errorf("gateway.http.trusted_proxy_cidrs: %q is invalid", prefix)
+		}
+	}
+	return nil
+}
+
+func (c GatewaySSHConfig) validate() error {
+	if err := validateListenAddress(c.Listen); err != nil {
+		return fmt.Errorf("gateway.ssh.listen: %w", err)
+	}
+	if _, err := normalizeGatewaySSHAddress(c.PublicAddr); err != nil {
 		return fmt.Errorf("gateway.ssh.public_addr: %w", err)
 	}
-	if c.Limits.MaxInflightTotal < 1 || c.Limits.MaxInflightTotal > 1_000_000 {
-		return fmt.Errorf("gateway.limits.max_inflight_total must be between 1 and 1000000")
-	}
-	if c.Limits.MaxInflightPerSession < 1 || c.Limits.MaxInflightPerSession > 1024 || c.Limits.MaxInflightPerSession > c.Limits.MaxInflightTotal {
-		return fmt.Errorf("gateway.limits.max_inflight_per_session must be between 1 and 1024 and not exceed the total")
-	}
-	if c.SSH.MaxChannelsPerConnection < 1 || c.SSH.MaxChannelsPerConnection > 1024 {
+	if c.MaxChannelsPerConnection < 1 || c.MaxChannelsPerConnection > 1024 {
 		return fmt.Errorf("gateway.ssh.max_channels_per_connection must be between 1 and 1024")
 	}
-	if timeout := c.SSH.HandshakeTimeout.ToStdlib(); timeout < time.Second || timeout > time.Minute {
+	if timeout := c.HandshakeTimeout.ToStdlib(); timeout < time.Second || timeout > time.Minute {
 		return fmt.Errorf("gateway.ssh.handshake_timeout must be between 1s and 1m")
 	}
-	if c.SSH.Auth.MaxAttemptsPerIP < 1 || c.SSH.Auth.MaxAttemptsPerCodespace < 1 || c.SSH.Auth.MaxAttemptsPerIPCodespace < 1 || c.SSH.Auth.MaxAttemptsPerPublicKey < 1 {
+	if c.Auth.MaxAttemptsPerIP < 1 || c.Auth.MaxAttemptsPerCodespace < 1 || c.Auth.MaxAttemptsPerIPCodespace < 1 || c.Auth.MaxAttemptsPerPublicKey < 1 {
 		return fmt.Errorf("gateway.ssh.auth limits must be positive")
 	}
-	if c.SSH.Auth.FailureWindow.ToStdlib() < time.Minute {
+	if c.Auth.FailureWindow.ToStdlib() < time.Minute {
 		return fmt.Errorf("gateway.ssh.auth.failure_window must be at least 1m")
 	}
-	if c.Sessions.IdleTimeout.ToStdlib() < time.Second {
+	return nil
+}
+
+func (c GatewaySessionConfig) validate() error {
+	if c.IdleTimeout.ToStdlib() < time.Second {
 		return fmt.Errorf("gateway.sessions.idle_timeout must be at least 1s")
 	}
-	if c.Sessions.TTL.ToStdlib() < time.Minute {
+	if c.TTL.ToStdlib() < time.Minute {
 		return fmt.Errorf("gateway.sessions.ttl must be at least 1m")
 	}
-	if interval := c.Sessions.RevalidateInterval.ToStdlib(); interval < time.Second || interval > time.Hour {
+	if interval := c.RevalidateInterval.ToStdlib(); interval < time.Second || interval > time.Hour {
 		return fmt.Errorf("gateway.sessions.revalidate_interval must be between 1s and 1h")
 	}
-	if c.Sessions.MaxPerCodespace < 1 || c.Sessions.MaxPerCodespace > 10_000 || c.Sessions.MaxPerUser < 1 || c.Sessions.MaxPerUser > 10_000 {
+	if c.MaxPerCodespace < 1 || c.MaxPerCodespace > 10_000 || c.MaxPerUser < 1 || c.MaxPerUser > 10_000 {
 		return fmt.Errorf("gateway session limits must be between 1 and 10000")
 	}
-	if c.Limits.PublicMaxConnectionsPerEndpoint < 1 || c.Limits.PublicMaxConnectionsPerEndpoint > 10_000 || c.Limits.PublicMaxConnectionsPerIP < 1 || c.Limits.PublicMaxConnectionsPerIP > c.Limits.PublicMaxConnectionsPerEndpoint {
+	return nil
+}
+
+func (c GatewayLimitsConfig) validate() error {
+	if c.MaxInflightTotal < 1 || c.MaxInflightTotal > 1_000_000 {
+		return fmt.Errorf("gateway.limits.max_inflight_total must be between 1 and 1000000")
+	}
+	if c.MaxInflightPerSession < 1 || c.MaxInflightPerSession > 1024 || c.MaxInflightPerSession > c.MaxInflightTotal {
+		return fmt.Errorf("gateway.limits.max_inflight_per_session must be between 1 and 1024 and not exceed the total")
+	}
+	if c.PublicMaxConnectionsPerEndpoint < 1 || c.PublicMaxConnectionsPerEndpoint > 10_000 || c.PublicMaxConnectionsPerIP < 1 || c.PublicMaxConnectionsPerIP > c.PublicMaxConnectionsPerEndpoint {
 		return fmt.Errorf("gateway public connection limits are invalid")
 	}
-	if c.Limits.ValidationMaxInflight < 1 || c.Limits.ValidationMaxInflight > 4096 {
+	if c.ValidationMaxInflight < 1 || c.ValidationMaxInflight > 4096 {
 		return fmt.Errorf("gateway.limits.validation_max_inflight must be between 1 and 4096")
 	}
 	return nil
@@ -237,9 +274,6 @@ func (registry CacheConfig) validateRegistry() error {
 	if err := validateListenAddress(registry.Listen); err != nil {
 		return fmt.Errorf("cache.listen: %w", err)
 	}
-	if err := ValidateRegistryRootURL(strings.TrimRight(strings.TrimSpace(registry.PublicURL), "/")); err != nil {
-		return fmt.Errorf("cache.public_url: %w", err)
-	}
 	if strings.TrimSpace(registry.MaxSize) != "" {
 		maxBytes, err := dockerunits.RAMInBytes(registry.MaxSize)
 		if err != nil {
@@ -255,25 +289,36 @@ func (registry CacheConfig) validateRegistry() error {
 			return fmt.Errorf("cache min_free_space must be a positive size")
 		}
 	}
-	if registry.MaxAge.ToStdlib() < 0 || registry.GCInterval.ToStdlib() < 0 {
-		return fmt.Errorf("cache retention durations must not be negative")
+	if registry.MaxAge.ToStdlib() <= 0 || registry.GCInterval.ToStdlib() <= 0 {
+		return fmt.Errorf("cache retention durations must be positive")
 	}
 	for host, upstream := range registry.Upstreams {
-		if host != strings.ToLower(strings.TrimSpace(host)) || strings.Contains(host, "://") {
-			return fmt.Errorf("cache.upstreams registry %q must be a lowercase registry host", host)
+		if err := ValidateCacheUpstream(host, upstream.Allow); err != nil {
+			return fmt.Errorf("cache.upstreams: %w", err)
 		}
-		parsedRegistry, err := url.Parse("https://" + host)
-		if err != nil || parsedRegistry.Host != host || parsedRegistry.Path != "" || strings.Trim(parsedRegistry.Hostname(), ".") == "" {
-			return fmt.Errorf("cache.upstreams registry %q is invalid", host)
+	}
+	return nil
+}
+
+// ValidateCacheUpstream checks one mirror host and its repository allow patterns.
+func ValidateCacheUpstream(host string, allow []string) error {
+	if host != strings.ToLower(strings.TrimSpace(host)) || strings.Contains(host, "://") {
+		return fmt.Errorf("registry %q must be a lowercase registry host", host)
+	}
+	parsedRegistry, err := url.Parse("https://" + host)
+	if err != nil || parsedRegistry.Host != host || parsedRegistry.Path != "" || strings.Trim(parsedRegistry.Hostname(), ".") == "" {
+		return fmt.Errorf("registry %q is invalid", host)
+	}
+	if len(allow) == 0 {
+		return fmt.Errorf("registry %q requires at least one repository pattern", host)
+	}
+	for _, pattern := range allow {
+		trimmed := strings.TrimSpace(pattern)
+		if pattern != trimmed || pattern == "" || strings.HasPrefix(pattern, "/") || strings.Contains(pattern, "..") {
+			return fmt.Errorf("registry %q contains invalid pattern %q", host, pattern)
 		}
-		for _, pattern := range upstream.Allow {
-			pattern = strings.TrimSpace(pattern)
-			if pattern == "" || strings.HasPrefix(pattern, "/") || strings.Contains(pattern, "..") {
-				return fmt.Errorf("cache.upstreams.%s.allow contains invalid pattern %q", host, pattern)
-			}
-			if strings.Count(pattern, "*") > 1 || strings.Contains(pattern, "*") && !strings.HasSuffix(pattern, "*") {
-				return fmt.Errorf("cache.upstreams.%s.allow pattern %q must only use a trailing wildcard", host, pattern)
-			}
+		if strings.Count(pattern, "*") > 1 || strings.Contains(pattern, "*") && !strings.HasSuffix(pattern, "*") {
+			return fmt.Errorf("registry %q pattern %q must only use a trailing wildcard", host, pattern)
 		}
 	}
 	return nil

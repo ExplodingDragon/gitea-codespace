@@ -305,15 +305,37 @@ func declareManager(ctx context.Context, remote codespacev1connect.ManagerServic
 }
 
 func siteManagerClient(ctx context.Context, c client.Client, managementNamespace string, site *api.GiteaSite) (codespacev1connect.ManagerServiceClient, error) {
-	var secret corev1.Secret
-	if err := c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: site.Spec.Credential.Name}, &secret); err != nil {
+	return siteManagerClientWithHTTPClient(ctx, c, managementNamespace, site, nil)
+}
+
+func siteManagerClientWithHTTPClient(ctx context.Context, c client.Client, managementNamespace string, site *api.GiteaSite, base *http.Client) (codespacev1connect.ManagerServiceClient, error) {
+	remote, secret, err := siteManagerClientForCheck(ctx, c, managementNamespace, site, base)
+	if err != nil {
 		return nil, err
 	}
-	if secret.UID != site.Spec.Credential.UID || secret.Labels[SiteUIDLabel] != string(site.UID) || len(secret.Data["managerSecret"]) == 0 || !secret.DeletionTimestamp.IsZero() || site.Status.CanonicalURL == "" {
+	if secret.Labels[SiteUIDLabel] != string(site.UID) || site.Status.CanonicalURL == "" {
 		return nil, fmt.Errorf("site credential ownership or identity is invalid")
 	}
-	transport := &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	return controlplane.NewManagerServiceClient(transport, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(secret.Data["managerSecret"])), nil
+	return remote, nil
+}
+
+// siteManagerClientForCheck verifies the persisted credential reference and
+// constructs a client before the site controller has observed a configuration
+// edit. Runtime callers use siteManagerClientWithHTTPClient, which also requires
+// the controller-owned binding and canonical site identity.
+func siteManagerClientForCheck(ctx context.Context, c client.Client, managementNamespace string, site *api.GiteaSite, base *http.Client) (codespacev1connect.ManagerServiceClient, *corev1.Secret, error) {
+	var secret corev1.Secret
+	if err := c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: site.Spec.Credential.Name}, &secret); err != nil {
+		return nil, nil, err
+	}
+	if secret.UID != site.Spec.Credential.UID || len(secret.Data["managerSecret"]) == 0 || !secret.DeletionTimestamp.IsZero() {
+		return nil, nil, fmt.Errorf("site credential reference or value is invalid")
+	}
+	transport, err := giteaHTTPClient(base, site.Spec.CABundle)
+	if err != nil {
+		return nil, nil, err
+	}
+	return controlplane.NewManagerServiceClient(transport, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(secret.Data["managerSecret"])), &secret, nil
 }
 
 func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) (*codespacev1.DeclareManagerRequest, []string, error) {

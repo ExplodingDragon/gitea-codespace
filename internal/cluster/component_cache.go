@@ -79,8 +79,8 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		if err != nil {
 			return nil, err
 		}
-		registryAddress := fmt.Sprintf("%s.%s.svc:%d", material.component.Name, s.ManagementNamespace, cachePort)
-		registryURL := "http://" + registryAddress
+		registryAddress := fmt.Sprintf("%s.%s.svc", material.component.Name, s.ManagementNamespace)
+		registryURL := "https://" + registryAddress
 		result := &agentv1.RuntimeCache{
 			BuildRegistry: registryURL + "/cache/" + namespace,
 			Mirrors:       make(map[string]string, len(material.config.Upstreams)),

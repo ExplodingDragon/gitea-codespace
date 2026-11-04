@@ -9,6 +9,8 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,7 +23,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/distribution/reference"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
@@ -148,7 +149,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err != nil {
 		return "", nil, err
 	}
-	inspect, err := e.client.ImageInspect(ctx, baseImage)
+	inspect, err := e.inspectImage(ctx, baseImage)
 	if err != nil {
 		return "", nil, fmt.Errorf("inspect Dev Container base image: %w", err)
 	}
@@ -331,14 +332,12 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 	if err != nil {
 		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
 	}
+	registryClient, err := featureRegistryClient(cache.RootCAPEM)
+	if err != nil {
+		return nil, fmt.Errorf("configure OCI client for Dev Container Feature %s: %w", featureReference, err)
+	}
 	if mirrored {
-		plainHTTP := false
-		if named, parseErr := reference.ParseNormalizedNamed(resolveReference); parseErr == nil {
-			if mirrorURL, parseErr := parseOCIRepositoryBase(cache.Mirrors[reference.Domain(named)], false); parseErr == nil {
-				plainHTTP = mirrorURL.Scheme == "http"
-			}
-		}
-		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, plainHTTP, cache.Credentials)
+		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, registryClient)
 		if err == nil {
 			_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
@@ -348,10 +347,26 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 			return nil, err
 		}
 	}
-	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, false, cache.Credentials)
+	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, registryClient)
 }
 
-func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, plainHTTP bool, registryCredentials map[string]devcontainer.RegistryCredential) (*resolvedFeature, error) {
+func featureRegistryClient(rootCAPEM []byte) (*http.Client, error) {
+	if len(rootCAPEM) == 0 {
+		return retry.DefaultClient, nil
+	}
+	roots, err := x509.SystemCertPool()
+	if err != nil {
+		return nil, fmt.Errorf("load system CA pool: %w", err)
+	}
+	if !roots.AppendCertsFromPEM(rootCAPEM) {
+		return nil, fmt.Errorf("internal registry CA is invalid")
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+	return &http.Client{Transport: retry.NewTransport(transport)}, nil
+}
+
+func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, registryCredentials map[string]devcontainer.RegistryCredential, registryClient *http.Client) (*resolvedFeature, error) {
 	original, err := registry.ParseReference(featureReference)
 	if err != nil {
 		return nil, fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err)
@@ -375,8 +390,7 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if configured, ok := registryCredentials[parsed.Registry]; ok {
 		credential = auth.StaticCredential(parsed.Registry, auth.Credential{Username: configured.Username, Password: configured.Password})
 	}
-	repository.Client = &auth.Client{Client: retry.DefaultClient, Cache: auth.NewCache(), Credential: credential}
-	repository.PlainHTTP = plainHTTP
+	repository.Client = &auth.Client{Client: registryClient, Cache: auth.NewCache(), Credential: credential}
 	descriptor, err := repository.Resolve(ctx, parsed.Reference)
 	if err != nil {
 		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", featureReference, err)

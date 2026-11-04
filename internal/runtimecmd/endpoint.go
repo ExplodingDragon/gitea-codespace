@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package runtimecmd implements commands injected into a Dev Container.
 package runtimecmd
 
 import (

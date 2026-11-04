@@ -68,31 +68,6 @@ func newGatewaySSHAuthLimiterFromConfig(config configpkg.GatewayConfig) *gateway
 }
 
 func newGatewaySSHAuthLimiter(config gatewaySSHAuthLimitConfig) *gatewaySSHAuthLimiter {
-	defaults := configpkg.DefaultGatewayConfig().SSH.Auth
-	if config.maxPerIP <= 0 {
-		config.maxPerIP = defaults.MaxAttemptsPerIP
-	}
-	if config.maxPerCodespace <= 0 {
-		config.maxPerCodespace = defaults.MaxAttemptsPerCodespace
-	}
-	if config.maxPerIPCodespace <= 0 {
-		config.maxPerIPCodespace = defaults.MaxAttemptsPerIPCodespace
-	}
-	if config.maxPerPublicKey <= 0 {
-		config.maxPerPublicKey = defaults.MaxAttemptsPerPublicKey
-	}
-	if config.backoffBase <= 0 {
-		config.backoffBase = gatewaySSHAuthBackoffBase
-	}
-	if config.backoffMax <= 0 {
-		config.backoffMax = gatewaySSHAuthBackoffMax
-	}
-	if config.failureWindow <= 0 {
-		config.failureWindow = defaults.FailureWindow.ToStdlib()
-	}
-	if config.maxKeys <= 0 {
-		config.maxKeys = maxGatewaySSHAuthLimitKeys
-	}
 	return &gatewaySSHAuthLimiter{
 		config:  config,
 		records: make(map[gatewaySSHAuthLimitKey]*gatewaySSHAuthLimitRecord),

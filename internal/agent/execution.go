@@ -11,6 +11,8 @@ import (
 	"io"
 	"maps"
 	"net/url"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -18,6 +20,7 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/certificates"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -35,11 +38,13 @@ var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 // Runtime executes one Gitea lifecycle operation against the Pod-local Docker
 // daemon. Persistent facts are owned by Journal; credentials stay in tmpfs.
 type Runtime struct {
-	Journal         *Journal
-	PodUID          string
-	DockerDirectory string
-	Diagnostics     io.Writer
-	DevContainer    devcontainerruntime.Configuration
+	Journal                    *Journal
+	PodUID                     string
+	DockerDirectory            string
+	IdentityDirectory          string
+	DockerCertificateDirectory string
+	Diagnostics                io.Writer
+	DevContainer               devcontainerruntime.Configuration
 
 	dockerMu        sync.Mutex
 	mu              sync.RWMutex
@@ -65,7 +70,8 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	if r.Journal == nil || r.PodUID == "" || response == nil || response.Operation == nil || response.Runtime == nil {
 		return fmt.Errorf("runtime execution input is incomplete")
 	}
-	if err := r.ensureDocker(ctx, response.Runtime.Cache); err != nil {
+	cacheRootCA, err := r.ensureDocker(ctx, response.Runtime.Cache)
+	if err != nil {
 		return err
 	}
 	operation := response.Operation
@@ -99,7 +105,7 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	executor := &Executor{Journal: r.Journal, PodUID: r.PodUID, Stdout: stdout, Stderr: stderr}
 	switch {
 	case operation.GetCreate() != nil:
-		return r.create(ctx, executor, response, report, stdout, stderr)
+		return r.create(ctx, executor, response, cacheRootCA, report, stdout, stderr)
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, report)
 	case operation.GetStop() != nil:
@@ -115,13 +121,30 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	}
 }
 
-func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache) error {
+func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache) ([]byte, error) {
 	r.dockerMu.Lock()
 	defer r.dockerMu.Unlock()
-	if r.docker != nil {
-		return nil
+	root, err := r.prepareDockerCacheTrust(cache)
+	if err != nil {
+		return nil, err
 	}
-	registries := []string{}
+	if r.docker != nil {
+		return root, nil
+	}
+	directory := r.DockerDirectory
+	if directory == "" {
+		directory = runtimeVolume
+	}
+	daemon, err := StartDocker(ctx, directory, r.Diagnostics)
+	if err != nil {
+		return nil, err
+	}
+	r.docker = daemon
+	return root, nil
+}
+
+func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, error) {
+	registries := map[string]struct{}{}
 	if cache != nil {
 		values := []string{cache.BuildRegistry}
 		for _, mirror := range cache.Mirrors {
@@ -130,24 +153,42 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache)
 		for _, value := range values {
 			parsed, err := url.Parse(value)
 			if err != nil {
-				return fmt.Errorf("parse runtime cache registry: %w", err)
+				return nil, fmt.Errorf("parse runtime cache registry: %w", err)
 			}
-			if parsed.Scheme == "http" {
-				parsed.Path, parsed.RawPath = "", ""
-				registries = append(registries, parsed.String())
+			if parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
+				return nil, fmt.Errorf("runtime cache registry must be an absolute HTTPS URL without credentials, query, or fragment")
 			}
+			registries[parsed.Host] = struct{}{}
 		}
 	}
-	directory := r.DockerDirectory
-	if directory == "" {
-		directory = runtimeVolume
+	if len(registries) > 0 {
+		identityDirectory := r.IdentityDirectory
+		if identityDirectory == "" {
+			identityDirectory = "/run/identity"
+		}
+		root, err := os.ReadFile(filepath.Join(identityDirectory, "ca.crt"))
+		if err != nil {
+			return nil, fmt.Errorf("read internal cache CA: %w", err)
+		}
+		if parsed, err := certificates.ParseCABundle(string(root)); err != nil || len(parsed) != 1 {
+			return nil, fmt.Errorf("internal cache CA is invalid")
+		}
+		certificateDirectory := r.DockerCertificateDirectory
+		if certificateDirectory == "" {
+			certificateDirectory = "/etc/docker/certs.d"
+		}
+		for registry := range registries {
+			directory := filepath.Join(certificateDirectory, registry)
+			if err := os.MkdirAll(directory, 0o755); err != nil {
+				return nil, fmt.Errorf("create Docker registry trust directory: %w", err)
+			}
+			if err := replaceCAFile(filepath.Join(directory, "ca.crt"), root); err != nil {
+				return nil, fmt.Errorf("install Docker registry CA: %w", err)
+			}
+		}
+		return root, nil
 	}
-	daemon, err := StartDocker(ctx, directory, registries, r.Diagnostics)
-	if err != nil {
-		return err
-	}
-	r.docker = daemon
-	return nil
+	return nil, nil
 }
 
 // Close stops Docker before the caller releases the Runtime volume lock.
@@ -162,7 +203,7 @@ func (r *Runtime) Close() error {
 	return docker.Close()
 }
 
-func (r *Runtime) create(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget), stdout, stderr io.Writer) error {
+func (r *Runtime) create(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, cacheRootCA []byte, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget), stdout, stderr io.Writer) error {
 	operation, payload, access := response.Operation, response.Operation.GetCreate(), response.Access
 	if access == nil || payload.Repository == nil || payload.GitIdentity == nil || payload.DevContainer == nil {
 		return fmt.Errorf("create input is incomplete")
@@ -179,6 +220,10 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		return err
 	}
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM, nil)
+	trust, err := prepareSiteTrust(response.Runtime, access.GiteaServerUrl, r.IdentityDirectory)
+	if err != nil {
+		return err
+	}
 	secrets, err := r.prepareAccess(access, response.Runtime.GitSshKeyType, hostUser)
 	if err != nil {
 		return err
@@ -187,7 +232,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	if err := ensureWorkspace(ctx, operation, payload.Repository, hostUser, stdout, stderr); err != nil {
+	if err := ensureWorkspace(ctx, operation, payload.Repository, hostUser, trust, stdout, stderr); err != nil {
 		return err
 	}
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)
@@ -208,6 +253,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if value := response.Runtime.Cache; value != nil {
 		cache.BuildRegistry, cache.BuildScope = value.BuildRegistry, value.BuildScope
 		cache.Mirrors = maps.Clone(value.Mirrors)
+		cache.RootCAPEM = append([]byte(nil), cacheRootCA...)
 		cache.Credentials = make(map[string]devcontainer.RegistryCredential, len(value.Credentials))
 		for registry, credential := range value.Credentials {
 			if credential == nil || credential.Username == "" || credential.Password == "" {
@@ -220,7 +266,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
-		Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
+		GiteaURL: trust.url, GiteaCustomCA: trust.customCA, Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
 	})
 	if err != nil {
 		return err
@@ -253,6 +299,10 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	if _, err := ensureRuntimeUser(hostUser.Name, &hostUser); err != nil {
 		return err
 	}
+	trust, err := prepareSiteTrust(response.Runtime, response.Access.GiteaServerUrl, r.IdentityDirectory)
+	if err != nil {
+		return err
+	}
 	secrets, err := r.prepareAccess(response.Access, response.Runtime.GitSshKeyType, hostUser)
 	if err != nil {
 		return err
@@ -262,7 +312,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
-		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, Secrets: secrets, DevContainer: r.DevContainer,
+		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.url, GiteaCustomCA: trust.customCA, Secrets: secrets, DevContainer: r.DevContainer,
 	})
 	if err != nil {
 		return err

@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -97,7 +96,7 @@ type DockerDaemon struct {
 	err     error
 }
 
-func StartDocker(ctx context.Context, directory string, insecureRegistries []string, output io.Writer) (*DockerDaemon, error) {
+func StartDocker(ctx context.Context, directory string, output io.Writer) (*DockerDaemon, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("inspect Runtime network interfaces: %w", err)
@@ -109,18 +108,6 @@ func StartDocker(ctx context.Context, directory string, insecureRegistries []str
 	arguments := []string{"--host=" + DockerHost, "--data-root=" + directory + "/docker",
 		"--exec-root=/run/codespace/docker", "--pidfile=/run/codespace/docker.pid",
 		"--feature=containerd-snapshotter=true", "--live-restore=false", "--shutdown-timeout=30", fmt.Sprintf("--mtu=%d", mtu)}
-	seen := make(map[string]struct{}, len(insecureRegistries))
-	for _, value := range insecureRegistries {
-		parsed, err := url.Parse(value)
-		if err != nil || parsed.Scheme != "http" || parsed.Host == "" || parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-			return nil, fmt.Errorf("invalid internal cache registry %q", value)
-		}
-		if _, ok := seen[parsed.Host]; ok {
-			continue
-		}
-		seen[parsed.Host] = struct{}{}
-		arguments = append(arguments, "--insecure-registry="+parsed.Host)
-	}
 	command := exec.Command("dockerd", arguments...)
 	command.Stdout, command.Stderr = output, output
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

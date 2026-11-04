@@ -48,6 +48,8 @@ type GiteaSiteSpec struct {
 	// +kubebuilder:validation:MaxLength=255
 	DisplayName string `json:"displayName"`
 	URL         string `json:"url"`
+	// CABundle extends the system trust store for this Gitea site.
+	CABundle string `json:"caBundle,omitempty"`
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Gitea Manager identity is immutable"
 	ManagerID     int64             `json:"managerID"`
@@ -170,15 +172,33 @@ type EnvironmentTemplateList struct {
 	Items           []EnvironmentTemplate `json:"items"`
 }
 
-// GatewayParent selects the existing Gateway API listeners that expose a
-// managed Gateway component. An empty parent leaves exposure to the cluster
-// operator. When a parent is selected, HTTP is required because every public
-// endpoint uses HTTP; SSH remains optional.
-type GatewayParent struct {
-	Name            string `json:"name,omitempty"`
-	Namespace       string `json:"namespace,omitempty"`
-	HTTPSectionName string `json:"httpSectionName,omitempty"`
-	SSHSectionName  string `json:"sshSectionName,omitempty"`
+type GatewayIssuerReference struct {
+	// +kubebuilder:validation:Enum=Issuer;ClusterIssuer
+	Kind string `json:"kind"`
+	Name string `json:"name"`
+}
+
+type GatewayIngressTLS struct {
+	// +kubebuilder:validation:Enum=none;secret;certManager
+	Source     string                  `json:"source"`
+	SecretName string                  `json:"secretName,omitempty"`
+	Issuer     *GatewayIssuerReference `json:"issuer,omitempty"`
+}
+
+type GatewayIngressExposure struct {
+	ClassName string            `json:"className"`
+	TLS       GatewayIngressTLS `json:"tls"`
+}
+
+type GatewayHTTPExposure struct {
+	// +kubebuilder:validation:Enum=external;ingress
+	Mode    string                  `json:"mode"`
+	Ingress *GatewayIngressExposure `json:"ingress,omitempty"`
+}
+
+type GatewaySSHExposure struct {
+	// +kubebuilder:validation:Enum=external;loadBalancer
+	Mode string `json:"mode"`
 }
 
 type GatewaySSHAuth struct {
@@ -237,12 +257,19 @@ type GatewayLimits struct {
 }
 
 type GatewayComponentSpec struct {
-	PublicURL        string             `json:"publicURL"`
-	SSHPublicAddress string             `json:"sshPublicAddress"`
-	Parent           GatewayParent      `json:"parent"`
-	SSH              GatewaySSHSettings `json:"ssh"`
-	Sessions         GatewaySessions    `json:"sessions"`
-	Limits           GatewayLimits      `json:"limits"`
+	// +kubebuilder:default=2
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=64
+	Replicas           int32               `json:"replicas"`
+	EndpointBaseURL    string              `json:"endpointBaseURL"`
+	SSHExternalAddress string              `json:"sshExternalAddress"`
+	HTTPExposure       GatewayHTTPExposure `json:"httpExposure"`
+	SSHExposure        GatewaySSHExposure  `json:"sshExposure"`
+	// +kubebuilder:validation:MaxItems=64
+	TrustedProxyCIDRs []string           `json:"trustedProxyCIDRs,omitempty"`
+	SSH               GatewaySSHSettings `json:"ssh"`
+	Sessions          GatewaySessions    `json:"sessions"`
+	Limits            GatewayLimits      `json:"limits"`
 }
 
 type CacheS3Storage struct {
@@ -270,10 +297,9 @@ type CacheUpstream struct {
 }
 
 type CacheComponentSpec struct {
-	Enabled   bool         `json:"enabled"`
-	PublicURL string       `json:"publicURL"`
-	Storage   CacheStorage `json:"storage"`
-	MaxSize   string       `json:"maxSize,omitempty"`
+	Enabled bool         `json:"enabled"`
+	Storage CacheStorage `json:"storage"`
+	MaxSize string       `json:"maxSize,omitempty"`
 	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
 	MaxAge string `json:"maxAge"`
 	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
@@ -303,7 +329,7 @@ type CodespaceComponentStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=cscomp
 // +kubebuilder:subresource:status
-// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63 && !self.metadata.name.contains('.')",message="component name must be a Kubernetes DNS label"
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 50 && !self.metadata.name.contains('.')",message="component name must be a Kubernetes DNS label of at most 50 characters"
 // +kubebuilder:validation:XValidation:rule="self.spec.role == 'gateway' ? has(self.spec.gateway) && !has(self.spec.cache) : has(self.spec.cache) && !has(self.spec.gateway)",message="component role must select exactly one configuration"
 type CodespaceComponent struct {
 	metav1.TypeMeta   `json:",inline"`

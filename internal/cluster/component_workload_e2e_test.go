@@ -30,14 +30,13 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway-" + suffix}}
 	gatewaySpec := testGatewayComponent(gateway.Name, "").Spec
 	gatewaySpec.DisplayName = "E2E gateway"
-	gatewaySpec.Gateway.PublicURL = "https://gateway-" + suffix + ".example.test"
-	gatewaySpec.Gateway.SSHPublicAddress = "gateway-" + suffix + ".example.test:22"
-	gatewaySpec.Gateway.Parent = api.GatewayParent{}
+	gatewaySpec.Gateway.EndpointBaseURL = "https://gateway-" + suffix + ".example.test"
+	gatewaySpec.Gateway.SSHExternalAddress = "gateway-" + suffix + ".example.test:22"
 	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
 
 	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "cache-" + suffix}}
 	cacheSpec := testCacheComponent(cache.Name, "").Spec
-	cacheSpec.DisplayName, cacheSpec.Cache.PublicURL, cacheSpec.Cache.MaxSize = "E2E cache", "http://cache-"+suffix+".example.test", "512MiB"
+	cacheSpec.DisplayName, cacheSpec.Cache.MaxSize = "E2E cache", "512MiB"
 	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: cacheSpec}, true))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
@@ -66,12 +65,16 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	})
 
 	for _, component := range []*api.CodespaceComponent{gateway, cache} {
+		desired := int32(1)
+		if component.Spec.Gateway != nil {
+			desired = component.Spec.Gateway.Replicas
+		}
 		require.Eventually(t, func() bool {
 			var deployment appsv1.Deployment
 			if cluster.Get(cluster.ctx, types.NamespacedName{Namespace: namespace, Name: component.Name}, &deployment) != nil {
 				return false
 			}
-			return deployment.Status.ReadyReplicas == 1 && deployment.Status.AvailableReplicas == 1
+			return deployment.Status.ReadyReplicas == desired && deployment.Status.AvailableReplicas == desired
 		}, 2*time.Minute, time.Second)
 		var service corev1.Service
 		require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Namespace: namespace, Name: component.Name}, &service))

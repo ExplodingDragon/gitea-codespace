@@ -34,24 +34,33 @@ func TestCacheConfigValidation(t *testing.T) {
 	t.Parallel()
 
 	config := configpkg.CacheConfig{
-		ID: "test", Name: "Test", Revision: 1, Enabled: true, Listen: "127.0.0.1:15000", PublicURL: "http://cache.example.com",
-		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "cache-registry"}, MaxSize: "10GiB",
+		ID: "test", Name: "Test", Revision: 1, Enabled: true, Listen: "127.0.0.1:15000",
+		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: "cache-registry", MinFreeSpace: "1GiB"}, MaxSize: "10GiB",
+		MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
 		Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{"ghcr.io": {Allow: []string{"devcontainers/*"}}},
 	}
 	require.NoError(t, config.Validate())
+	config.MaxAge = 0
+	require.ErrorContains(t, config.Validate(), "retention durations must be positive")
+	config.MaxAge = configpkg.Duration(24 * time.Hour)
+	config.Storage.MinFreeSpace = ""
+	require.ErrorContains(t, config.Validate(), "minimum free space are required")
+	config.Storage.MinFreeSpace = "1GiB"
 	config.Revision = 0
 	require.ErrorContains(t, config.Validate(), "revision must be positive")
 	config.Revision = 1
 
-	config.PublicURL = "https://registry.example.com/cache"
-	require.ErrorContains(t, config.Validate(), "must not contain a path")
-	config.PublicURL = "http://cache.example.com"
 	config.MaxSize = "0"
 	require.ErrorContains(t, config.Validate(), "max_size must be positive")
 	config.MaxSize = "10GiB"
 	config.Upstreams["ghcr.io"] = configpkg.RuntimeCacheUpstreamConfig{Allow: []string{"*/invalid"}}
 	require.ErrorContains(t, config.Validate(), "trailing wildcard")
 	config.Upstreams["ghcr.io"] = configpkg.RuntimeCacheUpstreamConfig{Allow: []string{"devcontainers/*"}}
-	config.Upstreams["GHCR.IO"] = configpkg.RuntimeCacheUpstreamConfig{}
+	config.Upstreams["ghcr.io"] = configpkg.RuntimeCacheUpstreamConfig{}
+	require.ErrorContains(t, config.Validate(), "at least one repository pattern")
+	config.Upstreams["ghcr.io"] = configpkg.RuntimeCacheUpstreamConfig{Allow: []string{" devcontainers/*"}}
+	require.ErrorContains(t, config.Validate(), "invalid pattern")
+	config.Upstreams["ghcr.io"] = configpkg.RuntimeCacheUpstreamConfig{Allow: []string{"devcontainers/*"}}
+	config.Upstreams["GHCR.IO"] = configpkg.RuntimeCacheUpstreamConfig{Allow: []string{"devcontainers/*"}}
 	require.ErrorContains(t, config.Validate(), "lowercase registry host")
 }

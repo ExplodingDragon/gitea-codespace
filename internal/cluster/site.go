@@ -13,7 +13,6 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"gitea.dev/codespace/internal/controlplane"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -77,22 +76,14 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if !site.Spec.Enabled {
 		return r.condition(ctx, &site, "Disabled", fmt.Errorf("site is disabled"))
 	}
-	var credential corev1.Secret
-	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.ManagementNamespace, Name: site.Spec.Credential.Name}, &credential); err != nil {
+	remote, credential, err := siteManagerClientForCheck(ctx, r.Client, r.ManagementNamespace, &site, r.HTTPClient)
+	if err != nil {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("read site credential: %w", err))
 	}
-	if credential.UID != site.Spec.Credential.UID || credential.Labels[SiteUIDLabel] != string(site.UID) || len(credential.Data["managerSecret"]) == 0 {
+	if credential.Labels[SiteUIDLabel] != string(site.UID) {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("site credential ownership or value is invalid"))
 	}
 	check := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
-	httpClient := r.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second}
-	}
-	// Manager credentials in custom headers must never follow redirects.
-	rpcClient := *httpClient
-	rpcClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	remote := controlplane.NewManagerServiceClient(&rpcClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace", site.Spec.ManagerID, string(credential.Data["managerSecret"]))
 	response, err := remote.CheckManager(ctx, check)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))

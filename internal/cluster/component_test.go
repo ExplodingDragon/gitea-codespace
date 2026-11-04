@@ -119,8 +119,8 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	require.NoError(t, err)
 	hostKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})
 	component := testGatewayComponent("gateway", "gateway-uid")
-	component.Spec.Gateway.PublicURL = "https://workspace.example"
-	component.Spec.Gateway.SSHPublicAddress = "workspace.example:2222"
+	component.Spec.Gateway.EndpointBaseURL = "https://workspace.example"
+	component.Spec.Gateway.SSHExternalAddress = "workspace.example:2222"
 	secret := testComponentCredential(component, map[string][]byte{"hostKey": hostKey})
 	site := testSite("example", "site-uid")
 	site.Status.CanonicalURL = "https://gitea.example"
@@ -147,6 +147,15 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: string(component.UID)})
 	snapshot, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.NoError(t, err)
+	require.EqualValues(t, 30_000, snapshot.Config.SshHandshakeTimeoutMilliseconds)
+	require.EqualValues(t, 30, snapshot.Config.SshAuthMaxAttemptsPerIp)
+	require.EqualValues(t, 20, snapshot.Config.SshAuthMaxAttemptsPerCodespace)
+	require.EqualValues(t, 10, snapshot.Config.SshAuthMaxAttemptsPerIpCodespace)
+	require.EqualValues(t, 30, snapshot.Config.SshAuthMaxAttemptsPerPublicKey)
+	require.EqualValues(t, 600_000, snapshot.Config.SshAuthFailureWindowMilliseconds)
+	require.EqualValues(t, 64, snapshot.Config.PublicMaxConnectionsPerEndpoint)
+	require.EqualValues(t, 16, snapshot.Config.PublicMaxConnectionsPerIp)
+	require.EqualValues(t, 128, snapshot.Config.ValidationMaxInflight)
 	require.Len(t, snapshot.Runtimes, 1)
 	route := snapshot.Runtimes[0]
 	require.Equal(t, "10.1.2.3:8444", route.AgentAddress)
@@ -285,8 +294,8 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	runtimeCache, err := server.runtimeCache(ctx, cs, operation)
 	require.NoError(t, err)
 	cacheNamespace := cachepkg.Namespace(secret.Data["registryKey"], string(site.UID), 7, 9)
-	require.Equal(t, "http://cache.codespace-system.svc:5000/cache/"+cacheNamespace, runtimeCache.BuildRegistry)
-	credential := runtimeCache.Credentials["cache.codespace-system.svc:5000"]
+	require.Equal(t, "https://cache.codespace-system.svc/cache/"+cacheNamespace, runtimeCache.BuildRegistry)
+	credential := runtimeCache.Credentials["cache.codespace-system.svc"]
 	require.NotNil(t, credential)
 	require.Equal(t, cachepkg.Username, credential.Username)
 	verified, err := cachepkg.VerifyCredential(secret.Data["tokenKey"], component.Name, credential.Password, time.Now())

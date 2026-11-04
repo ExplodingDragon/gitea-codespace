@@ -12,10 +12,11 @@ import (
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 )
 
+// CacheConfigToProto serializes Manager cache configuration for a managed Cache workload.
 func CacheConfigToProto(config configpkg.CacheConfig) *componentv1.CacheConfiguration {
 	result := &componentv1.CacheConfiguration{
 		Id: config.ID, Name: config.Name, Revision: config.Revision, Enabled: config.Enabled,
-		Listen: config.Listen, PublicUrl: config.PublicURL, MaxSize: config.MaxSize,
+		Listen: config.Listen, MaxSize: config.MaxSize,
 		MaxAgeMilliseconds: time.Duration(config.MaxAge).Milliseconds(), GcIntervalMilliseconds: time.Duration(config.GCInterval).Milliseconds(),
 		Storage:   &componentv1.CacheStorageConfiguration{Driver: config.Storage.Driver, Path: config.Storage.Path, MinFreeSpace: config.Storage.MinFreeSpace},
 		Upstreams: make(map[string]*componentv1.CacheUpstreamConfiguration, len(config.Upstreams)),
@@ -38,7 +39,7 @@ func cacheConfigFromProto(config *componentv1.CacheConfiguration) (configpkg.Cac
 	}
 	result := configpkg.CacheConfig{
 		ID: config.Id, Name: config.Name, Revision: config.Revision, Enabled: config.Enabled, Listen: config.Listen,
-		PublicURL: config.PublicUrl, MaxSize: config.MaxSize,
+		MaxSize:    config.MaxSize,
 		MaxAge:     configpkg.Duration(time.Duration(config.MaxAgeMilliseconds) * time.Millisecond),
 		GCInterval: configpkg.Duration(time.Duration(config.GcIntervalMilliseconds) * time.Millisecond),
 		Storage:    configpkg.CacheStorageConfig{Driver: config.Storage.Driver, Path: config.Storage.Path, MinFreeSpace: config.Storage.MinFreeSpace},
@@ -61,7 +62,7 @@ func cacheConfigFromProto(config *componentv1.CacheConfiguration) (configpkg.Cac
 
 func cacheStatusToProto(status cachepkg.Status) *componentv1.CacheStatus {
 	return &componentv1.CacheStatus{
-		PublicUrl: status.PublicURL, ConfigRevision: status.ConfigRevision, CacheBytes: status.CacheBytes,
+		ConfigRevision: status.ConfigRevision, CacheBytes: status.CacheBytes,
 		MirrorBytes: status.MirrorBytes, ScannedAtUnixMilliseconds: status.ScannedAt.UnixMilli(),
 		LastCleanupUnixMilliseconds: status.LastCleanup.UnixMilli(), CleanupResult: status.CleanupResult,
 	}

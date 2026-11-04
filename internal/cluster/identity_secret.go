@@ -21,21 +21,40 @@ func reconcileIdentitySecret(ctx context.Context, kubeClient client.Client, auth
 	if authority == nil {
 		return 0, fmt.Errorf("internal certificate authority is required")
 	}
+	return reconcileCertificateSecret(ctx, kubeClient, owner, namespace, name, role, labels,
+		func(data map[string][]byte) (time.Time, error) { return authority.validate(data, rawIdentity, usages) },
+		func() (*identitypkg.Leaf, error) { return authority.issue(rawIdentity, usages) },
+	)
+}
+
+func reconcileServerCertificateSecret(ctx context.Context, kubeClient client.Client, authority *IdentityAuthority, owner client.Object, namespace, name, dnsName string, labels map[string]string) (time.Duration, error) {
+	if authority == nil {
+		return 0, fmt.Errorf("internal certificate authority is required")
+	}
+	return reconcileCertificateSecret(ctx, kubeClient, owner, namespace, name, "cache-registry", labels,
+		func(data map[string][]byte) (time.Time, error) {
+			return authority.validateServerCertificate(data, dnsName)
+		},
+		func() (*identitypkg.Leaf, error) { return authority.issueServerCertificate(dnsName) },
+	)
+}
+
+func reconcileCertificateSecret(ctx context.Context, kubeClient client.Client, owner client.Object, namespace, name, role string, labels map[string]string, validate func(map[string][]byte) (time.Time, error), issue func() (*identitypkg.Leaf, error)) (time.Duration, error) {
 	key := client.ObjectKey{Namespace: namespace, Name: name}
 	var secret corev1.Secret
 	err := kubeClient.Get(ctx, key, &secret)
 	notFound := apierrors.IsNotFound(err)
-	if err != nil && !apierrors.IsNotFound(err) {
+	if err != nil && !notFound {
 		return 0, err
 	}
 	if err == nil && !metav1.IsControlledBy(&secret, owner) {
-		return 0, fmt.Errorf("identity Secret %s does not belong to the current %s", name, owner.GetObjectKind().GroupVersionKind().Kind)
+		return 0, fmt.Errorf("certificate Secret %s does not belong to the current %s", name, owner.GetObjectKind().GroupVersionKind().Kind)
 	}
-	renewal, validationErr := authority.validate(secret.Data, rawIdentity, usages)
+	renewal, validationErr := validate(secret.Data)
 	if err == nil && validationErr == nil && time.Until(renewal) > 0 {
 		return time.Until(renewal), nil
 	}
-	leaf, err := authority.issue(rawIdentity, usages)
+	leaf, err := issue()
 	if err != nil {
 		return 0, err
 	}

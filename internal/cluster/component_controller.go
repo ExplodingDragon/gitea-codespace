@@ -18,6 +18,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -49,10 +50,15 @@ const (
 	platformRevisionAnnotation            = "codespace.gitea.dev/platform-revision"
 	componentCredentialRevisionAnnotation = "codespace.gitea.dev/credential-revision"
 	componentReconcileInterval            = 5 * time.Minute
+	gatewaySessionKey                     = "sessionKey"
 )
 
 func gatewayHostKeySecretName(componentName string) string {
 	return componentName + "-ssh-host-key"
+}
+
+func cacheRegistryTLSSecretName(componentName string) string {
+	return componentName + "-registry-tls"
 }
 
 func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -73,14 +79,11 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 		return ctrl.Result{}, err
 	}
 	role := component.Spec.Role
-	var gatewayConfig *configpkg.GatewayConfig
 	var cacheConfig *configpkg.CacheConfig
 	if role == "gateway" {
-		config, err := gatewayComponentConfig(&component)
-		if err != nil {
+		if _, err := gatewayComponentConfig(&component); err != nil {
 			return ctrl.Result{}, err
 		}
-		gatewayConfig = &config
 	} else {
 		config, err := cacheComponentConfig(&component)
 		if err != nil {
@@ -99,6 +102,17 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	if err != nil {
 		return ctrl.Result{}, err
 	}
+	registryTLSSecret := ""
+	if role == "cache" {
+		registryTLSSecret = cacheRegistryTLSSecretName(component.Name)
+		dnsName := component.Name + "." + r.ManagementNamespace + ".svc"
+		registryRenewAfter, err := reconcileServerCertificateSecret(ctx, r.Client, r.Identity, &component, r.ManagementNamespace, registryTLSSecret, dnsName,
+			map[string]string{ComponentLabel: role, ComponentUIDLabel: string(component.UID)})
+		if err != nil {
+			return ctrl.Result{}, err
+		}
+		renewAfter = min(renewAfter, registryRenewAfter)
+	}
 	ports, err := r.reconcileService(ctx, &component, role)
 	if err != nil {
 		return ctrl.Result{}, err
@@ -112,23 +126,18 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 			return ctrl.Result{}, err
 		}
 	}
-	if err := r.reconcileDeployment(ctx, &component, role, identitySecret, credential, ports, cacheConfig); err != nil {
+	if err := r.reconcileDeployment(ctx, &component, role, identitySecret, registryTLSSecret, credential, ports, cacheConfig); err != nil {
 		return ctrl.Result{}, err
 	}
-	if role == "gateway" && component.Spec.Gateway.Parent.Name != "" {
-		if err := r.reconcileGatewayRoutes(ctx, &component, ports, gatewayConfig); err != nil {
+	if err := r.reconcileGatewayDisruptionBudget(ctx, &component); err != nil {
+		return ctrl.Result{}, err
+	}
+	var exposureConditions []metav1.Condition
+	if role == "gateway" {
+		var err error
+		exposureConditions, err = r.reconcileGatewayExposure(ctx, &component)
+		if err != nil {
 			return ctrl.Result{}, err
-		}
-	} else if role == "gateway" {
-		for _, routeType := range []struct{ version, kind string }{{"v1", "HTTPRoute"}, {"v1alpha2", "TCPRoute"}} {
-			route := &unstructured.Unstructured{}
-			route.SetAPIVersion("gateway.networking.k8s.io/" + routeType.version)
-			route.SetKind(routeType.kind)
-			route.SetName(component.Name)
-			route.SetNamespace(r.ManagementNamespace)
-			if err := r.deleteOwned(ctx, &component, route); err != nil {
-				return ctrl.Result{}, err
-			}
 		}
 	}
 	if err := r.reconcileNetworkPolicy(ctx, &component, role, ports); err != nil {
@@ -138,12 +147,20 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 	if err := r.Client.Get(ctx, types.NamespacedName{Namespace: r.ManagementNamespace, Name: component.Name}, &deployment); err != nil {
 		return ctrl.Result{}, err
 	}
-	available := deployment.Status.ReadyReplicas == 1
-	condition := metav1.Condition{Type: "Available", Status: metav1.ConditionFalse, Reason: "DeploymentPending", Message: "Component workload is not ready", ObservedGeneration: component.Generation}
+	desired := ptr.Deref(deployment.Spec.Replicas, int32(1))
+	available := role == "gateway" && deployment.Status.ReadyReplicas > 0 || role == "cache" && deployment.Status.ReadyReplicas == 1
+	condition := metav1.Condition{Type: "Available", Status: metav1.ConditionFalse, Reason: "DeploymentPending", Message: fmt.Sprintf("Component workload has %d of %d replicas ready", deployment.Status.ReadyReplicas, desired), ObservedGeneration: component.Generation}
 	if available {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionTrue, "DeploymentReady", "Component workload is ready"
+		condition.Status, condition.Reason = metav1.ConditionTrue, "DeploymentReady"
+		if deployment.Status.ReadyReplicas < desired {
+			condition.Reason = "DeploymentDegraded"
+		}
+		condition.Message = fmt.Sprintf("Component workload has %d of %d replicas ready", deployment.Status.ReadyReplicas, desired)
 	}
 	changed := meta.SetStatusCondition(&component.Status.Conditions, condition)
+	for _, exposure := range exposureConditions {
+		changed = meta.SetStatusCondition(&component.Status.Conditions, exposure) || changed
+	}
 	if component.Status.ObservedGeneration != component.Generation {
 		component.Status.ObservedGeneration = component.Generation
 		changed = true
@@ -167,6 +184,20 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 		if !metav1.IsControlledBy(secret, component) || secret.Labels[ComponentUIDLabel] != string(component.UID) {
 			return nil, fmt.Errorf("component credential ownership conflicts")
 		}
+		if role != "gateway" || len(secret.Data[gatewaySessionKey]) == 32 {
+			return secret, nil
+		}
+		if secret.Data == nil {
+			secret.Data = make(map[string][]byte)
+		}
+		sessionKey := make([]byte, 32)
+		if _, err := rand.Read(sessionKey); err != nil {
+			return nil, err
+		}
+		secret.Data[gatewaySessionKey] = sessionKey
+		if err := r.Client.Update(ctx, secret); err != nil {
+			return nil, err
+		}
 		return secret, nil
 	}
 	if !apierrors.IsNotFound(err) {
@@ -179,6 +210,11 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 			return nil, err
 		}
 		secret.Data = generated.Data
+		sessionKey := make([]byte, 32)
+		if _, err := rand.Read(sessionKey); err != nil {
+			return nil, err
+		}
+		secret.Data[gatewaySessionKey] = sessionKey
 	} else {
 		registryKey, tokenKey := make([]byte, 32), make([]byte, 32)
 		if _, err := rand.Read(registryKey); err != nil {
@@ -198,88 +234,6 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 	return secret, nil
 }
 
-func (r *ComponentReconciler) reconcileGatewayRoutes(ctx context.Context, component *api.CodespaceComponent, ports []int32, config *configpkg.GatewayConfig) error {
-	if len(ports) != 2 {
-		return fmt.Errorf("gateway routes require HTTP and SSH Service ports")
-	}
-	publicURL, err := url.Parse(config.HTTP.PublicURL)
-	if err != nil || publicURL.Hostname() == "" {
-		return fmt.Errorf("gateway public URL is invalid")
-	}
-	parent := component.Spec.Gateway.Parent
-	if err := validateGatewayParent(ctx, r.Client, parent); err != nil {
-		return err
-	}
-	parentRef := map[string]any{
-		"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": parent.Name, "namespace": parent.Namespace,
-	}
-	parentRef["sectionName"] = parent.HTTPSectionName
-	host := strings.ToLower(publicURL.Hostname())
-	httpRoute := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "gateway.networking.k8s.io/v1", "kind": "HTTPRoute",
-		"metadata": map[string]any{"name": component.Name, "namespace": r.ManagementNamespace},
-		"spec": map[string]any{
-			"parentRefs": []any{parentRef}, "hostnames": []any{host, "*." + host},
-			"rules": []any{map[string]any{"backendRefs": []any{map[string]any{"group": "", "kind": "Service", "name": component.Name, "port": int64(ports[0])}}}},
-		},
-	}}
-	if err := r.reconcileRoute(ctx, component, httpRoute); err != nil {
-		return err
-	}
-	if parent.SSHSectionName == "" {
-		tcpRoute := &unstructured.Unstructured{}
-		tcpRoute.SetAPIVersion("gateway.networking.k8s.io/v1alpha2")
-		tcpRoute.SetKind("TCPRoute")
-		tcpRoute.SetName(component.Name)
-		tcpRoute.SetNamespace(r.ManagementNamespace)
-		return r.deleteOwned(ctx, component, tcpRoute)
-	}
-	sshParentRef := map[string]any{
-		"group": "gateway.networking.k8s.io", "kind": "Gateway", "name": parent.Name, "namespace": parent.Namespace, "sectionName": parent.SSHSectionName,
-	}
-	tcpRoute := &unstructured.Unstructured{Object: map[string]any{
-		"apiVersion": "gateway.networking.k8s.io/v1alpha2", "kind": "TCPRoute",
-		"metadata": map[string]any{"name": component.Name, "namespace": r.ManagementNamespace},
-		"spec": map[string]any{
-			"parentRefs": []any{sshParentRef},
-			"rules":      []any{map[string]any{"backendRefs": []any{map[string]any{"group": "", "kind": "Service", "name": component.Name, "port": int64(ports[1])}}}},
-		},
-	}}
-	return r.reconcileRoute(ctx, component, tcpRoute)
-}
-
-func validateGatewayParent(ctx context.Context, reader client.Reader, parent api.GatewayParent) error {
-	parentResource := &unstructured.Unstructured{}
-	parentResource.SetAPIVersion("gateway.networking.k8s.io/v1")
-	parentResource.SetKind("Gateway")
-	if err := reader.Get(ctx, types.NamespacedName{Namespace: parent.Namespace, Name: parent.Name}, parentResource); err != nil {
-		return fmt.Errorf("get parent Gateway: %w", err)
-	}
-	listeners, found, err := unstructured.NestedSlice(parentResource.Object, "spec", "listeners")
-	if err != nil || !found {
-		return fmt.Errorf("parent Gateway has no listeners")
-	}
-	required := map[string]map[string]bool{parent.HTTPSectionName: {"HTTP": true, "HTTPS": true}}
-	if parent.SSHSectionName != "" {
-		required[parent.SSHSectionName] = map[string]bool{"TCP": true}
-	}
-	for _, raw := range listeners {
-		listener, ok := raw.(map[string]any)
-		if !ok {
-			continue
-		}
-		name, _ := listener["name"].(string)
-		protocol, _ := listener["protocol"].(string)
-		if protocols, ok := required[name]; ok && protocols[protocol] {
-			delete(required, name)
-		}
-	}
-	for name := range required {
-		return fmt.Errorf("parent Gateway listener %s is missing or uses an incompatible protocol", name)
-	}
-	return nil
-}
-
 func (r *ComponentReconciler) deleteOwned(ctx context.Context, component *api.CodespaceComponent, object client.Object) error {
 	err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), object)
 	if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) {
@@ -294,22 +248,139 @@ func (r *ComponentReconciler) deleteOwned(ctx context.Context, component *api.Co
 	return client.IgnoreNotFound(r.Client.Delete(ctx, object))
 }
 
-func (r *ComponentReconciler) reconcileRoute(ctx context.Context, component *api.CodespaceComponent, desired *unstructured.Unstructured) error {
-	existing := &unstructured.Unstructured{}
-	existing.SetGroupVersionKind(desired.GroupVersionKind())
-	err := r.Client.Get(ctx, client.ObjectKeyFromObject(desired), existing)
-	if apierrors.IsNotFound(err) {
-		desired.SetOwnerReferences([]metav1.OwnerReference{*metav1.NewControllerRef(component, api.GroupVersion.WithKind("CodespaceComponent"))})
-		return r.Client.Create(ctx, desired)
+func (r *ComponentReconciler) reconcileGatewayExposure(ctx context.Context, component *api.CodespaceComponent) ([]metav1.Condition, error) {
+	gateway := component.Spec.Gateway
+	httpCondition := metav1.Condition{Type: "HTTPExposureConfigured", Status: metav1.ConditionFalse, Reason: "ReconcilePending", Message: "HTTP exposure is pending", ObservedGeneration: component.Generation}
+	sshCondition := metav1.Condition{Type: "SSHExposureConfigured", Status: metav1.ConditionFalse, Reason: "ReconcilePending", Message: "SSH exposure is pending", ObservedGeneration: component.Generation}
+
+	ingress := &networkingv1.Ingress{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
+	if gateway.HTTPExposure.Mode == "external" {
+		if err := r.deleteOwned(ctx, component, ingress); err != nil {
+			return nil, err
+		}
+		httpCondition.Status, httpCondition.Reason, httpCondition.Message = metav1.ConditionTrue, "ExternalManagement", "HTTP exposure uses the component Service"
+	} else {
+		ready, err := r.reconcileGatewayIngress(ctx, component, ingress)
+		if err != nil {
+			return nil, err
+		}
+		if ready {
+			httpCondition.Status, httpCondition.Reason, httpCondition.Message = metav1.ConditionTrue, "IngressConfigured", "HTTP Ingress is configured"
+		} else {
+			httpCondition.Reason, httpCondition.Message = "TLSSecretPending", "HTTP Ingress is waiting for its TLS Secret"
+		}
 	}
+
+	loadBalancer := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: component.Name + "-ssh", Namespace: r.ManagementNamespace}}
+	if gateway.SSHExposure.Mode == "external" {
+		if err := r.deleteOwned(ctx, component, loadBalancer); err != nil {
+			return nil, err
+		}
+		sshCondition.Status, sshCondition.Reason, sshCondition.Message = metav1.ConditionTrue, "ExternalManagement", "SSH exposure uses the component Service"
+	} else {
+		if err := r.reconcileGatewaySSHLoadBalancer(ctx, component, loadBalancer); err != nil {
+			return nil, err
+		}
+		sshCondition.Status, sshCondition.Reason, sshCondition.Message = metav1.ConditionTrue, "LoadBalancerConfigured", "SSH LoadBalancer is configured"
+	}
+	return []metav1.Condition{httpCondition, sshCondition}, nil
+}
+
+func (r *ComponentReconciler) reconcileGatewayIngress(ctx context.Context, component *api.CodespaceComponent, ingress *networkingv1.Ingress) (bool, error) {
+	spec := component.Spec.Gateway
+	parsed, err := url.Parse(spec.EndpointBaseURL)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if !metav1.IsControlledBy(existing, component) {
-		return fmt.Errorf("component %s ownership conflicts", desired.GetKind())
+	if err := gatewayIngressClassAvailable(ctx, r.Client, spec.HTTPExposure.Ingress.ClassName); err != nil {
+		return false, err
 	}
-	existing.Object["spec"] = desired.Object["spec"]
-	return r.Client.Update(ctx, existing)
+	host := "*." + strings.ToLower(parsed.Hostname())
+	tlsSecret := ""
+	annotations := map[string]string{}
+	switch tls := spec.HTTPExposure.Ingress.TLS; tls.Source {
+	case "secret":
+		tlsSecret = tls.SecretName
+	case "certManager":
+		if err := gatewayIssuerAvailable(ctx, r.Client, r.ManagementNamespace, tls.Issuer); err != nil {
+			return false, err
+		}
+		tlsSecret = component.Name + "-tls"
+		if tls.Issuer.Kind == "Issuer" {
+			annotations["cert-manager.io/issuer"] = tls.Issuer.Name
+		} else {
+			annotations["cert-manager.io/cluster-issuer"] = tls.Issuer.Name
+		}
+	}
+	pathType := networkingv1.PathTypePrefix
+	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
+		if err := controllerutil.SetControllerReference(component, ingress, r.Client.Scheme()); err != nil {
+			return err
+		}
+		ingress.Labels = map[string]string{ComponentLabel: "gateway", ComponentUIDLabel: string(component.UID)}
+		ingress.Annotations = annotations
+		ingress.Spec = networkingv1.IngressSpec{
+			IngressClassName: ptr.To(spec.HTTPExposure.Ingress.ClassName),
+			Rules: []networkingv1.IngressRule{{Host: host, IngressRuleValue: networkingv1.IngressRuleValue{HTTP: &networkingv1.HTTPIngressRuleValue{Paths: []networkingv1.HTTPIngressPath{{
+				Path: "/", PathType: &pathType, Backend: networkingv1.IngressBackend{Service: &networkingv1.IngressServiceBackend{Name: component.Name, Port: networkingv1.ServiceBackendPort{Name: "http"}}},
+			}}}}}},
+		}
+		if tlsSecret != "" {
+			ingress.Spec.TLS = []networkingv1.IngressTLS{{Hosts: []string{host}, SecretName: tlsSecret}}
+		}
+		return nil
+	})
+	if err != nil || tlsSecret == "" {
+		return err == nil, err
+	}
+	return gatewayTLSSecretReady(ctx, r.Client, r.ManagementNamespace, tlsSecret)
+}
+
+func (r *ComponentReconciler) reconcileGatewaySSHLoadBalancer(ctx context.Context, component *api.CodespaceComponent, service *corev1.Service) error {
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
+		if err := controllerutil.SetControllerReference(component, service, r.Client.Scheme()); err != nil {
+			return err
+		}
+		service.Labels = map[string]string{ComponentLabel: "gateway", ComponentUIDLabel: string(component.UID)}
+		service.Spec.Type = corev1.ServiceTypeLoadBalancer
+		service.Spec.ExternalTrafficPolicy = corev1.ServiceExternalTrafficPolicyLocal
+		service.Spec.Selector = map[string]string{ComponentLabel: "gateway", ComponentUIDLabel: string(component.UID)}
+		service.Spec.Ports = []corev1.ServicePort{{Name: "ssh", Port: gatewaySSHServicePort, TargetPort: intstr.FromString("ssh")}}
+		return nil
+	})
+	return err
+}
+
+func gatewayIngressClassAvailable(ctx context.Context, reader client.Reader, name string) error {
+	var ingressClass networkingv1.IngressClass
+	if err := reader.Get(ctx, types.NamespacedName{Name: name}, &ingressClass); err != nil {
+		return fmt.Errorf("get IngressClass %q: %w", name, err)
+	}
+	return nil
+}
+
+func gatewayIssuerAvailable(ctx context.Context, reader client.Reader, namespace string, reference *api.GatewayIssuerReference) error {
+	issuer := &unstructured.Unstructured{}
+	issuer.SetAPIVersion("cert-manager.io/v1")
+	issuer.SetKind(reference.Kind)
+	key := types.NamespacedName{Name: reference.Name}
+	if reference.Kind == "Issuer" {
+		key.Namespace = namespace
+	}
+	if err := reader.Get(ctx, key, issuer); err != nil {
+		return fmt.Errorf("get cert-manager %s %q: %w", reference.Kind, reference.Name, err)
+	}
+	return nil
+}
+
+func gatewayTLSSecretReady(ctx context.Context, reader client.Reader, namespace, name string) (bool, error) {
+	var secret corev1.Secret
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: name}, &secret); apierrors.IsNotFound(err) {
+		return false, nil
+	} else if err != nil {
+		return false, err
+	}
+	return secret.Type == corev1.SecretTypeTLS && len(secret.Data[corev1.TLSCertKey]) > 0 && len(secret.Data[corev1.TLSPrivateKeyKey]) > 0, nil
 }
 
 func (r *ComponentReconciler) reconcileService(ctx context.Context, component *api.CodespaceComponent, role string) ([]int32, error) {
@@ -317,10 +388,15 @@ func (r *ComponentReconciler) reconcileService(ctx context.Context, component *a
 	var containerPorts []int32
 	if role == "gateway" {
 		containerPorts = []int32{gatewayHTTPPort, gatewaySSHPort}
-		ports = []corev1.ServicePort{{Name: "http", Port: gatewayHTTPPort, TargetPort: intstr.FromInt32(gatewayHTTPPort)}, {Name: "ssh", Port: gatewaySSHPort, TargetPort: intstr.FromInt32(gatewaySSHPort)}}
+		http := "http"
+		ports = []corev1.ServicePort{
+			{Name: "http", Port: gatewayHTTPServicePort, TargetPort: intstr.FromString("http"), AppProtocol: &http},
+			{Name: "ssh", Port: gatewaySSHServicePort, TargetPort: intstr.FromString("ssh")},
+		}
 	} else {
-		containerPorts = []int32{cachePort}
-		ports = []corev1.ServicePort{{Name: "registry", Port: cachePort, TargetPort: intstr.FromInt32(cachePort)}}
+		containerPorts = []int32{cacheContainerPort}
+		https := "https"
+		ports = []corev1.ServicePort{{Name: "https", Port: cacheServicePort, TargetPort: intstr.FromString("https"), AppProtocol: &https}}
 	}
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
@@ -329,6 +405,7 @@ func (r *ComponentReconciler) reconcileService(ctx context.Context, component *a
 		}
 		service.Labels = map[string]string{ComponentLabel: role, ComponentUIDLabel: string(component.UID)}
 		service.Spec.Selector = map[string]string{ComponentLabel: role, ComponentUIDLabel: string(component.UID)}
+		service.Spec.Type = corev1.ServiceTypeClusterIP
 		service.Spec.Ports = ports
 		return nil
 	})
@@ -360,7 +437,7 @@ func (r *ComponentReconciler) reconcileCacheVolume(ctx context.Context, componen
 	return err
 }
 
-func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component *api.CodespaceComponent, role, identitySecret string, credential *corev1.Secret, ports []int32, cache *configpkg.CacheConfig) error {
+func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component *api.CodespaceComponent, role, identitySecret, registryTLSSecret string, credential *corev1.Secret, ports []int32, cache *configpkg.CacheConfig) error {
 	pullPolicy, err := platformImagePullPolicy(r.PlatformImage)
 	if err != nil {
 		return err
@@ -373,6 +450,27 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 		}
 		deployment.Labels = labels
 		deployment.Spec.Replicas = ptr.To(int32(1))
+		deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
+		var affinity *corev1.Affinity
+		if role == "gateway" {
+			deployment.Spec.Replicas = ptr.To(component.Spec.Gateway.Replicas)
+			deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+				Type: appsv1.RollingUpdateDeploymentStrategyType,
+				RollingUpdate: &appsv1.RollingUpdateDeployment{
+					MaxUnavailable: ptr.To(intstr.FromInt(0)),
+					MaxSurge:       ptr.To(intstr.FromInt(1)),
+				},
+			}
+			if component.Spec.Gateway.Replicas > 1 {
+				affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+					Weight: 100,
+					PodAffinityTerm: corev1.PodAffinityTerm{
+						LabelSelector: &metav1.LabelSelector{MatchLabels: labels},
+						TopologyKey:   corev1.LabelHostname,
+					},
+				}}}}
+			}
+		}
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
 		args := []string{role}
 		if role == "cache" {
@@ -390,7 +488,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			VolumeMounts:    []corev1.VolumeMount{{Name: "identity", MountPath: "/var/run/codespace/identity", ReadOnly: true}},
 		}
 		for index, port := range ports {
-			name := "service"
+			name := "https"
 			if role == "gateway" {
 				name = []string{"http", "ssh"}[index]
 			}
@@ -412,15 +510,22 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "ssh-host-key", MountPath: "/var/run/codespace/gateway", ReadOnly: true})
 			volumes = append(volumes, corev1.Volume{Name: "ssh-host-key", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
 				SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)),
-				Items: []corev1.KeyToPath{{Key: "hostKey", Path: "ssh-host-key"}},
+				Items: []corev1.KeyToPath{{Key: "hostKey", Path: "ssh-host-key"}, {Key: gatewaySessionKey, Path: "session-key"}},
 			}}})
 		} else {
 			items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
 			if cache.Storage.Driver == "s3" {
 				items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})
 			}
-			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true})
+			container.VolumeMounts = append(container.VolumeMounts,
+				corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true},
+				corev1.VolumeMount{Name: "registry-tls", MountPath: "/var/run/codespace/registry-tls", ReadOnly: true},
+			)
 			volumes = append(volumes, corev1.Volume{Name: "cache-secret", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)), Items: items}}})
+			volumes = append(volumes, corev1.Volume{Name: "registry-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: registryTLSSecret, DefaultMode: ptr.To(int32(0o440)),
+				Items: []corev1.KeyToPath{{Key: identitypkg.TLSCertificateKey, Path: "tls.crt"}, {Key: identitypkg.TLSPrivateKeyKey, Path: "tls.key"}},
+			}}})
 			if cache.Storage.Driver == "filesystem" {
 				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "storage", MountPath: cache.Storage.Path})
 				volumes = append(volumes, corev1.Volume{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: component.Name}}})
@@ -428,10 +533,29 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 		}
 		deployment.Spec.Template = corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{platformRevisionAnnotation: r.PlatformRevision, componentCredentialRevisionAnnotation: credential.ResourceVersion}}, Spec: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), TerminationGracePeriodSeconds: ptr.To(int64(30)),
-			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets),
-			SecurityContext:  &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-			Containers:       []corev1.Container{container}, Volumes: volumes,
+			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets), Affinity: affinity,
+			SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+			Containers:      []corev1.Container{container}, Volumes: volumes,
 		}}
+		return nil
+	})
+	return err
+}
+
+func (r *ComponentReconciler) reconcileGatewayDisruptionBudget(ctx context.Context, component *api.CodespaceComponent) error {
+	budget := &policyv1.PodDisruptionBudget{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
+	if component.Spec.Role != "gateway" || component.Spec.Gateway.Replicas <= 1 {
+		return r.deleteOwned(ctx, component, budget)
+	}
+	labels := map[string]string{"app.kubernetes.io/name": "codespace", ComponentLabel: "gateway", ComponentUIDLabel: string(component.UID)}
+	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, budget, func() error {
+		if err := controllerutil.SetControllerReference(component, budget, r.Client.Scheme()); err != nil {
+			return err
+		}
+		budget.Labels = labels
+		budget.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
+		budget.Spec.MinAvailable = nil
+		budget.Spec.MaxUnavailable = ptr.To(intstr.FromInt(1))
 		return nil
 	})
 	return err

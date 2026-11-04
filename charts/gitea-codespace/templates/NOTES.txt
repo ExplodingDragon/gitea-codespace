@@ -6,4 +6,4 @@ Open the administration UI locally:
 
   kubectl -n {{ .Release.Namespace }} port-forward service/{{ include "gitea-codespace.fullname" . }}-admin 18080:{{ .Values.admin.service.port }}
 
-Then browse to {{ .Values.admin.publicURL }}.
+Then browse to http://127.0.0.1:18080.

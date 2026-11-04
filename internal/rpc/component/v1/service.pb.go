@@ -183,21 +183,31 @@ func (x *GatewayControlResponse) GetRuntimes() []*GatewayRuntimeRoute {
 }
 
 type GatewayConfigurationSnapshot struct {
-	state                          protoimpl.MessageState `protogen:"open.v1"`
-	HttpListen                     string                 `protobuf:"bytes,1,opt,name=http_listen,json=httpListen,proto3" json:"http_listen,omitempty"`
-	PublicUrl                      string                 `protobuf:"bytes,2,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
-	SshListen                      string                 `protobuf:"bytes,3,opt,name=ssh_listen,json=sshListen,proto3" json:"ssh_listen,omitempty"`
-	SshPublicAddress               string                 `protobuf:"bytes,4,opt,name=ssh_public_address,json=sshPublicAddress,proto3" json:"ssh_public_address,omitempty"`
-	SessionTtlMilliseconds         int64                  `protobuf:"varint,5,opt,name=session_ttl_milliseconds,json=sessionTtlMilliseconds,proto3" json:"session_ttl_milliseconds,omitempty"`
-	SessionIdleTimeoutMilliseconds int64                  `protobuf:"varint,6,opt,name=session_idle_timeout_milliseconds,json=sessionIdleTimeoutMilliseconds,proto3" json:"session_idle_timeout_milliseconds,omitempty"`
-	RevalidateIntervalMilliseconds int64                  `protobuf:"varint,7,opt,name=revalidate_interval_milliseconds,json=revalidateIntervalMilliseconds,proto3" json:"revalidate_interval_milliseconds,omitempty"`
-	MaxSessionsPerCodespace        int32                  `protobuf:"varint,8,opt,name=max_sessions_per_codespace,json=maxSessionsPerCodespace,proto3" json:"max_sessions_per_codespace,omitempty"`
-	MaxSessionsPerUser             int32                  `protobuf:"varint,9,opt,name=max_sessions_per_user,json=maxSessionsPerUser,proto3" json:"max_sessions_per_user,omitempty"`
-	MaxInflight                    int32                  `protobuf:"varint,10,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
-	MaxInflightPerSession          int32                  `protobuf:"varint,11,opt,name=max_inflight_per_session,json=maxInflightPerSession,proto3" json:"max_inflight_per_session,omitempty"`
-	MaxChannelsPerSshConnection    int32                  `protobuf:"varint,12,opt,name=max_channels_per_ssh_connection,json=maxChannelsPerSshConnection,proto3" json:"max_channels_per_ssh_connection,omitempty"`
-	unknownFields                  protoimpl.UnknownFields
-	sizeCache                      protoimpl.SizeCache
+	state                            protoimpl.MessageState `protogen:"open.v1"`
+	HttpListen                       string                 `protobuf:"bytes,1,opt,name=http_listen,json=httpListen,proto3" json:"http_listen,omitempty"`
+	PublicUrl                        string                 `protobuf:"bytes,2,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
+	SshListen                        string                 `protobuf:"bytes,3,opt,name=ssh_listen,json=sshListen,proto3" json:"ssh_listen,omitempty"`
+	SshPublicAddress                 string                 `protobuf:"bytes,4,opt,name=ssh_public_address,json=sshPublicAddress,proto3" json:"ssh_public_address,omitempty"`
+	SessionTtlMilliseconds           int64                  `protobuf:"varint,5,opt,name=session_ttl_milliseconds,json=sessionTtlMilliseconds,proto3" json:"session_ttl_milliseconds,omitempty"`
+	SessionIdleTimeoutMilliseconds   int64                  `protobuf:"varint,6,opt,name=session_idle_timeout_milliseconds,json=sessionIdleTimeoutMilliseconds,proto3" json:"session_idle_timeout_milliseconds,omitempty"`
+	RevalidateIntervalMilliseconds   int64                  `protobuf:"varint,7,opt,name=revalidate_interval_milliseconds,json=revalidateIntervalMilliseconds,proto3" json:"revalidate_interval_milliseconds,omitempty"`
+	MaxSessionsPerCodespace          int32                  `protobuf:"varint,8,opt,name=max_sessions_per_codespace,json=maxSessionsPerCodespace,proto3" json:"max_sessions_per_codespace,omitempty"`
+	MaxSessionsPerUser               int32                  `protobuf:"varint,9,opt,name=max_sessions_per_user,json=maxSessionsPerUser,proto3" json:"max_sessions_per_user,omitempty"`
+	MaxInflight                      int32                  `protobuf:"varint,10,opt,name=max_inflight,json=maxInflight,proto3" json:"max_inflight,omitempty"`
+	MaxInflightPerSession            int32                  `protobuf:"varint,11,opt,name=max_inflight_per_session,json=maxInflightPerSession,proto3" json:"max_inflight_per_session,omitempty"`
+	MaxChannelsPerSshConnection      int32                  `protobuf:"varint,12,opt,name=max_channels_per_ssh_connection,json=maxChannelsPerSshConnection,proto3" json:"max_channels_per_ssh_connection,omitempty"`
+	TrustedProxyCidrs                []string               `protobuf:"bytes,13,rep,name=trusted_proxy_cidrs,json=trustedProxyCidrs,proto3" json:"trusted_proxy_cidrs,omitempty"`
+	SshHandshakeTimeoutMilliseconds  int64                  `protobuf:"varint,14,opt,name=ssh_handshake_timeout_milliseconds,json=sshHandshakeTimeoutMilliseconds,proto3" json:"ssh_handshake_timeout_milliseconds,omitempty"`
+	SshAuthMaxAttemptsPerIp          int32                  `protobuf:"varint,15,opt,name=ssh_auth_max_attempts_per_ip,json=sshAuthMaxAttemptsPerIp,proto3" json:"ssh_auth_max_attempts_per_ip,omitempty"`
+	SshAuthMaxAttemptsPerCodespace   int32                  `protobuf:"varint,16,opt,name=ssh_auth_max_attempts_per_codespace,json=sshAuthMaxAttemptsPerCodespace,proto3" json:"ssh_auth_max_attempts_per_codespace,omitempty"`
+	SshAuthMaxAttemptsPerIpCodespace int32                  `protobuf:"varint,17,opt,name=ssh_auth_max_attempts_per_ip_codespace,json=sshAuthMaxAttemptsPerIpCodespace,proto3" json:"ssh_auth_max_attempts_per_ip_codespace,omitempty"`
+	SshAuthMaxAttemptsPerPublicKey   int32                  `protobuf:"varint,18,opt,name=ssh_auth_max_attempts_per_public_key,json=sshAuthMaxAttemptsPerPublicKey,proto3" json:"ssh_auth_max_attempts_per_public_key,omitempty"`
+	SshAuthFailureWindowMilliseconds int64                  `protobuf:"varint,19,opt,name=ssh_auth_failure_window_milliseconds,json=sshAuthFailureWindowMilliseconds,proto3" json:"ssh_auth_failure_window_milliseconds,omitempty"`
+	PublicMaxConnectionsPerEndpoint  int32                  `protobuf:"varint,20,opt,name=public_max_connections_per_endpoint,json=publicMaxConnectionsPerEndpoint,proto3" json:"public_max_connections_per_endpoint,omitempty"`
+	PublicMaxConnectionsPerIp        int32                  `protobuf:"varint,21,opt,name=public_max_connections_per_ip,json=publicMaxConnectionsPerIp,proto3" json:"public_max_connections_per_ip,omitempty"`
+	ValidationMaxInflight            int32                  `protobuf:"varint,22,opt,name=validation_max_inflight,json=validationMaxInflight,proto3" json:"validation_max_inflight,omitempty"`
+	unknownFields                    protoimpl.UnknownFields
+	sizeCache                        protoimpl.SizeCache
 }
 
 func (x *GatewayConfigurationSnapshot) Reset() {
@@ -310,6 +320,76 @@ func (x *GatewayConfigurationSnapshot) GetMaxInflightPerSession() int32 {
 func (x *GatewayConfigurationSnapshot) GetMaxChannelsPerSshConnection() int32 {
 	if x != nil {
 		return x.MaxChannelsPerSshConnection
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetTrustedProxyCidrs() []string {
+	if x != nil {
+		return x.TrustedProxyCidrs
+	}
+	return nil
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshHandshakeTimeoutMilliseconds() int64 {
+	if x != nil {
+		return x.SshHandshakeTimeoutMilliseconds
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshAuthMaxAttemptsPerIp() int32 {
+	if x != nil {
+		return x.SshAuthMaxAttemptsPerIp
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshAuthMaxAttemptsPerCodespace() int32 {
+	if x != nil {
+		return x.SshAuthMaxAttemptsPerCodespace
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshAuthMaxAttemptsPerIpCodespace() int32 {
+	if x != nil {
+		return x.SshAuthMaxAttemptsPerIpCodespace
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshAuthMaxAttemptsPerPublicKey() int32 {
+	if x != nil {
+		return x.SshAuthMaxAttemptsPerPublicKey
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetSshAuthFailureWindowMilliseconds() int64 {
+	if x != nil {
+		return x.SshAuthFailureWindowMilliseconds
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetPublicMaxConnectionsPerEndpoint() int32 {
+	if x != nil {
+		return x.PublicMaxConnectionsPerEndpoint
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetPublicMaxConnectionsPerIp() int32 {
+	if x != nil {
+		return x.PublicMaxConnectionsPerIp
+	}
+	return 0
+}
+
+func (x *GatewayConfigurationSnapshot) GetValidationMaxInflight() int32 {
+	if x != nil {
+		return x.ValidationMaxInflight
 	}
 	return 0
 }
@@ -1317,12 +1397,11 @@ type CacheConfiguration struct {
 	Revision               int64                                  `protobuf:"varint,3,opt,name=revision,proto3" json:"revision,omitempty"`
 	Enabled                bool                                   `protobuf:"varint,4,opt,name=enabled,proto3" json:"enabled,omitempty"`
 	Listen                 string                                 `protobuf:"bytes,5,opt,name=listen,proto3" json:"listen,omitempty"`
-	PublicUrl              string                                 `protobuf:"bytes,6,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
-	Storage                *CacheStorageConfiguration             `protobuf:"bytes,7,opt,name=storage,proto3" json:"storage,omitempty"`
-	MaxSize                string                                 `protobuf:"bytes,8,opt,name=max_size,json=maxSize,proto3" json:"max_size,omitempty"`
-	MaxAgeMilliseconds     int64                                  `protobuf:"varint,9,opt,name=max_age_milliseconds,json=maxAgeMilliseconds,proto3" json:"max_age_milliseconds,omitempty"`
-	GcIntervalMilliseconds int64                                  `protobuf:"varint,10,opt,name=gc_interval_milliseconds,json=gcIntervalMilliseconds,proto3" json:"gc_interval_milliseconds,omitempty"`
-	Upstreams              map[string]*CacheUpstreamConfiguration `protobuf:"bytes,11,rep,name=upstreams,proto3" json:"upstreams,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
+	Storage                *CacheStorageConfiguration             `protobuf:"bytes,6,opt,name=storage,proto3" json:"storage,omitempty"`
+	MaxSize                string                                 `protobuf:"bytes,7,opt,name=max_size,json=maxSize,proto3" json:"max_size,omitempty"`
+	MaxAgeMilliseconds     int64                                  `protobuf:"varint,8,opt,name=max_age_milliseconds,json=maxAgeMilliseconds,proto3" json:"max_age_milliseconds,omitempty"`
+	GcIntervalMilliseconds int64                                  `protobuf:"varint,9,opt,name=gc_interval_milliseconds,json=gcIntervalMilliseconds,proto3" json:"gc_interval_milliseconds,omitempty"`
+	Upstreams              map[string]*CacheUpstreamConfiguration `protobuf:"bytes,10,rep,name=upstreams,proto3" json:"upstreams,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"bytes,2,opt,name=value"`
 	unknownFields          protoimpl.UnknownFields
 	sizeCache              protoimpl.SizeCache
 }
@@ -1388,13 +1467,6 @@ func (x *CacheConfiguration) GetEnabled() bool {
 func (x *CacheConfiguration) GetListen() string {
 	if x != nil {
 		return x.Listen
-	}
-	return ""
-}
-
-func (x *CacheConfiguration) GetPublicUrl() string {
-	if x != nil {
-		return x.PublicUrl
 	}
 	return ""
 }
@@ -1624,13 +1696,12 @@ func (x *CacheUpstreamConfiguration) GetAllow() []string {
 
 type CacheStatus struct {
 	state                       protoimpl.MessageState `protogen:"open.v1"`
-	PublicUrl                   string                 `protobuf:"bytes,1,opt,name=public_url,json=publicUrl,proto3" json:"public_url,omitempty"`
-	ConfigRevision              int64                  `protobuf:"varint,2,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
-	CacheBytes                  int64                  `protobuf:"varint,3,opt,name=cache_bytes,json=cacheBytes,proto3" json:"cache_bytes,omitempty"`
-	MirrorBytes                 int64                  `protobuf:"varint,4,opt,name=mirror_bytes,json=mirrorBytes,proto3" json:"mirror_bytes,omitempty"`
-	ScannedAtUnixMilliseconds   int64                  `protobuf:"varint,5,opt,name=scanned_at_unix_milliseconds,json=scannedAtUnixMilliseconds,proto3" json:"scanned_at_unix_milliseconds,omitempty"`
-	LastCleanupUnixMilliseconds int64                  `protobuf:"varint,6,opt,name=last_cleanup_unix_milliseconds,json=lastCleanupUnixMilliseconds,proto3" json:"last_cleanup_unix_milliseconds,omitempty"`
-	CleanupResult               string                 `protobuf:"bytes,7,opt,name=cleanup_result,json=cleanupResult,proto3" json:"cleanup_result,omitempty"`
+	ConfigRevision              int64                  `protobuf:"varint,1,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
+	CacheBytes                  int64                  `protobuf:"varint,2,opt,name=cache_bytes,json=cacheBytes,proto3" json:"cache_bytes,omitempty"`
+	MirrorBytes                 int64                  `protobuf:"varint,3,opt,name=mirror_bytes,json=mirrorBytes,proto3" json:"mirror_bytes,omitempty"`
+	ScannedAtUnixMilliseconds   int64                  `protobuf:"varint,4,opt,name=scanned_at_unix_milliseconds,json=scannedAtUnixMilliseconds,proto3" json:"scanned_at_unix_milliseconds,omitempty"`
+	LastCleanupUnixMilliseconds int64                  `protobuf:"varint,5,opt,name=last_cleanup_unix_milliseconds,json=lastCleanupUnixMilliseconds,proto3" json:"last_cleanup_unix_milliseconds,omitempty"`
+	CleanupResult               string                 `protobuf:"bytes,6,opt,name=cleanup_result,json=cleanupResult,proto3" json:"cleanup_result,omitempty"`
 	unknownFields               protoimpl.UnknownFields
 	sizeCache                   protoimpl.SizeCache
 }
@@ -1663,13 +1734,6 @@ func (x *CacheStatus) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CacheStatus.ProtoReflect.Descriptor instead.
 func (*CacheStatus) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{20}
-}
-
-func (x *CacheStatus) GetPublicUrl() string {
-	if x != nil {
-		return x.PublicUrl
-	}
-	return ""
 }
 
 func (x *CacheStatus) GetConfigRevision() int64 {
@@ -1883,7 +1947,8 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x06cursor\x18\x04 \x01(\tR\x06cursor\x12\x1a\n" +
 	"\bsnapshot\x18\x05 \x01(\bR\bsnapshot\x12B\n" +
 	"\x06config\x18\x06 \x01(\v2*.component.v1.GatewayConfigurationSnapshotR\x06config\x12=\n" +
-	"\bruntimes\x18\a \x03(\v2!.component.v1.GatewayRuntimeRouteR\bruntimes\"\x8c\x05\n" +
+	"\bruntimes\x18\a \x03(\v2!.component.v1.GatewayRuntimeRouteR\bruntimes\"\xcd\n" +
+	"\n" +
 	"\x1cGatewayConfigurationSnapshot\x12\x1f\n" +
 	"\vhttp_listen\x18\x01 \x01(\tR\n" +
 	"httpListen\x12\x1d\n" +
@@ -1900,7 +1965,17 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\fmax_inflight\x18\n" +
 	" \x01(\x05R\vmaxInflight\x127\n" +
 	"\x18max_inflight_per_session\x18\v \x01(\x05R\x15maxInflightPerSession\x12D\n" +
-	"\x1fmax_channels_per_ssh_connection\x18\f \x01(\x05R\x1bmaxChannelsPerSshConnection\"\xbc\x02\n" +
+	"\x1fmax_channels_per_ssh_connection\x18\f \x01(\x05R\x1bmaxChannelsPerSshConnection\x12.\n" +
+	"\x13trusted_proxy_cidrs\x18\r \x03(\tR\x11trustedProxyCidrs\x12K\n" +
+	"\"ssh_handshake_timeout_milliseconds\x18\x0e \x01(\x03R\x1fsshHandshakeTimeoutMilliseconds\x12=\n" +
+	"\x1cssh_auth_max_attempts_per_ip\x18\x0f \x01(\x05R\x17sshAuthMaxAttemptsPerIp\x12K\n" +
+	"#ssh_auth_max_attempts_per_codespace\x18\x10 \x01(\x05R\x1esshAuthMaxAttemptsPerCodespace\x12P\n" +
+	"&ssh_auth_max_attempts_per_ip_codespace\x18\x11 \x01(\x05R sshAuthMaxAttemptsPerIpCodespace\x12L\n" +
+	"$ssh_auth_max_attempts_per_public_key\x18\x12 \x01(\x05R\x1esshAuthMaxAttemptsPerPublicKey\x12N\n" +
+	"$ssh_auth_failure_window_milliseconds\x18\x13 \x01(\x03R sshAuthFailureWindowMilliseconds\x12L\n" +
+	"#public_max_connections_per_endpoint\x18\x14 \x01(\x05R\x1fpublicMaxConnectionsPerEndpoint\x12@\n" +
+	"\x1dpublic_max_connections_per_ip\x18\x15 \x01(\x05R\x19publicMaxConnectionsPerIp\x126\n" +
+	"\x17validation_max_inflight\x18\x16 \x01(\x05R\x15validationMaxInflight\"\xbc\x02\n" +
 	"\x13GatewayRuntimeRoute\x12\x19\n" +
 	"\bsite_uid\x18\x01 \x01(\tR\asiteUid\x12!\n" +
 	"\fresource_uid\x18\x02 \x01(\tR\vresourceUid\x12!\n" +
@@ -1982,21 +2057,19 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
 	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x128\n" +
 	"\x06config\x18\x04 \x01(\v2 .component.v1.CacheConfigurationR\x06config\x125\n" +
-	"\bgc_grant\x18\x05 \x01(\v2\x1a.component.v1.CacheGCGrantR\agcGrant\"\xa6\x04\n" +
+	"\bgc_grant\x18\x05 \x01(\v2\x1a.component.v1.CacheGCGrantR\agcGrant\"\x87\x04\n" +
 	"\x12CacheConfiguration\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1a\n" +
 	"\brevision\x18\x03 \x01(\x03R\brevision\x12\x18\n" +
 	"\aenabled\x18\x04 \x01(\bR\aenabled\x12\x16\n" +
-	"\x06listen\x18\x05 \x01(\tR\x06listen\x12\x1d\n" +
-	"\n" +
-	"public_url\x18\x06 \x01(\tR\tpublicUrl\x12A\n" +
-	"\astorage\x18\a \x01(\v2'.component.v1.CacheStorageConfigurationR\astorage\x12\x19\n" +
-	"\bmax_size\x18\b \x01(\tR\amaxSize\x120\n" +
-	"\x14max_age_milliseconds\x18\t \x01(\x03R\x12maxAgeMilliseconds\x128\n" +
-	"\x18gc_interval_milliseconds\x18\n" +
-	" \x01(\x03R\x16gcIntervalMilliseconds\x12M\n" +
-	"\tupstreams\x18\v \x03(\v2/.component.v1.CacheConfiguration.UpstreamsEntryR\tupstreams\x1af\n" +
+	"\x06listen\x18\x05 \x01(\tR\x06listen\x12A\n" +
+	"\astorage\x18\x06 \x01(\v2'.component.v1.CacheStorageConfigurationR\astorage\x12\x19\n" +
+	"\bmax_size\x18\a \x01(\tR\amaxSize\x120\n" +
+	"\x14max_age_milliseconds\x18\b \x01(\x03R\x12maxAgeMilliseconds\x128\n" +
+	"\x18gc_interval_milliseconds\x18\t \x01(\x03R\x16gcIntervalMilliseconds\x12M\n" +
+	"\tupstreams\x18\n" +
+	" \x03(\v2/.component.v1.CacheConfiguration.UpstreamsEntryR\tupstreams\x1af\n" +
 	"\x0eUpstreamsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12>\n" +
 	"\x05value\x18\x02 \x01(\v2(.component.v1.CacheUpstreamConfigurationR\x05value:\x028\x01\"\xa1\x01\n" +
@@ -2012,17 +2085,15 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x06prefix\x18\x04 \x01(\tR\x06prefix\x12(\n" +
 	"\x10force_path_style\x18\x05 \x01(\bR\x0eforcePathStyle\"2\n" +
 	"\x1aCacheUpstreamConfiguration\x12\x14\n" +
-	"\x05allow\x18\x01 \x03(\tR\x05allow\"\xc6\x02\n" +
-	"\vCacheStatus\x12\x1d\n" +
-	"\n" +
-	"public_url\x18\x01 \x01(\tR\tpublicUrl\x12'\n" +
-	"\x0fconfig_revision\x18\x02 \x01(\x03R\x0econfigRevision\x12\x1f\n" +
-	"\vcache_bytes\x18\x03 \x01(\x03R\n" +
+	"\x05allow\x18\x01 \x03(\tR\x05allow\"\xa7\x02\n" +
+	"\vCacheStatus\x12'\n" +
+	"\x0fconfig_revision\x18\x01 \x01(\x03R\x0econfigRevision\x12\x1f\n" +
+	"\vcache_bytes\x18\x02 \x01(\x03R\n" +
 	"cacheBytes\x12!\n" +
-	"\fmirror_bytes\x18\x04 \x01(\x03R\vmirrorBytes\x12?\n" +
-	"\x1cscanned_at_unix_milliseconds\x18\x05 \x01(\x03R\x19scannedAtUnixMilliseconds\x12C\n" +
-	"\x1elast_cleanup_unix_milliseconds\x18\x06 \x01(\x03R\x1blastCleanupUnixMilliseconds\x12%\n" +
-	"\x0ecleanup_result\x18\a \x01(\tR\rcleanupResult\"\xa3\x01\n" +
+	"\fmirror_bytes\x18\x03 \x01(\x03R\vmirrorBytes\x12?\n" +
+	"\x1cscanned_at_unix_milliseconds\x18\x04 \x01(\x03R\x19scannedAtUnixMilliseconds\x12C\n" +
+	"\x1elast_cleanup_unix_milliseconds\x18\x05 \x01(\x03R\x1blastCleanupUnixMilliseconds\x12%\n" +
+	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResult\"\xa3\x01\n" +
 	"\fCacheGCGrant\x12\x19\n" +
 	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12'\n" +

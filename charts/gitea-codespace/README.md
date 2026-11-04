@@ -36,9 +36,14 @@ defined in the [deployment requirements](https://github.com/ExplodingDragon/gite
 
 Manager maintains an installation-specific root and issuing CA in
 `Secret/<release>-internal-ca`. It directly issues 24-hour certificates for
-Manager, Agent, Gateway, and Cache mutual TLS. The root remains stable while
-the issuing CA and workload certificates rotate, so normal rotation does not
-restart workloads or require another cluster service.
+Manager, Agent, Gateway, and Cache control connections. It also issues a
+separate HTTPS server certificate for each Cache Service DNS name. The root
+remains stable while the issuing CA and workload certificates rotate, so new
+TLS connections use the renewed files without restarting workloads or
+requiring another cluster service. File-backed identities are validated at
+startup and cached in memory. New connections check the projected files at
+most once per minute, so normal traffic does not read certificate files for
+every TLS handshake.
 
 The root is valid for ten years. The issuing CA is valid for one year and is
 replaced 30 days before expiry. Workload certificates are replaced eight hours
@@ -53,9 +58,12 @@ CA. Include this Secret in cluster backups and enable Kubernetes Secret
 encryption at rest. If the Secret is lost while managed resources exist,
 Manager stops instead of silently creating a different trust hierarchy.
 
-This internal CA is separate from browser-facing HTTPS. cert-manager is
-optional and can populate the TLS Secret referenced by an Ingress or an
-external Gateway listener.
+Cache control identities and Cache Registry server certificates are stored in
+separate Secrets and carry different certificate purposes. Runtime Pods receive
+only the public root certificate and use it to verify Cache HTTPS; the CA
+private keys remain in the Manager-owned CA Secret. This internal CA is
+separate from browser-facing HTTPS. cert-manager is optional and can populate
+the TLS Secret referenced by a managed Ingress.
 
 ## Install
 
@@ -126,33 +134,79 @@ kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-To publish the page, enable `admin.ingress`, set an HTTPS `admin.publicURL`,
-and provide `admin.ingress.host` and `admin.ingress.tlsSecret`. The Secret can
-be created by cert-manager, a cloud certificate controller, or the cluster
-operator. The chart only references it and does not couple public TLS to the
-internal component CA.
+To publish the page, enable `admin.ingress`. The host and TLS Secret are
+optional, so the Ingress can use a controller default host, terminate TLS with
+an existing Secret, or remain HTTP behind another trusted proxy. The chart
+only references a configured TLS Secret and does not couple public TLS to the
+internal component CA. The page uses same-origin API requests, so switching
+between port-forward, a reverse proxy, and Ingress does not require a Manager
+public URL setting.
 
-## Gateway API
+## Gitea site certificates
 
-Select an existing parent Gateway and its listeners on each Gateway component
-in the administration page. The page discovers these resources from the
-cluster and only presents HTTP or HTTPS listeners for endpoint traffic and TCP
-listeners for SSH. Manager reads the resources again when saving, then
-maintains that component's HTTPRoute and TCPRoute. Per-component selection
-allows separate Gateway components to use different public domains and
-listeners without changing the Helm release. A route exposes the shared
-Gateway Service rather than an individual site or Codespace. The Gateway keeps
-authorization and session limits separate by site identity, so multiple Gitea
-sites can safely use the same component.
+Leave the site CA field empty when Gitea uses a publicly trusted certificate.
+For an HTTPS Gitea installation with an internal CA, paste its PEM CA bundle
+into the site form. Manager adds that bundle to the system trust roots for
+registration and coordination, and passes it to the Runtime Agent for Git and
+the primary Dev Container. This site-specific bundle is separate from both
+the internal component CA and the public Gateway certificate.
 
-HTTPS certificates for Codespace endpoint hostnames belong to the external
-Gateway listener and its `certificateRefs`. The cluster operator can use
-cert-manager to maintain that Secret. SSH uses the Gateway SSH host key and is
-not part of the X.509 certificate hierarchy.
+## Cache access
 
-Leaving the parent name empty keeps public route creation under the cluster
-operator's control. The component Service remains available inside the
-cluster for an operator-managed Ingress, Gateway route, or port-forward.
+Each Cache component creates a same-name ClusterIP Service on port `443` and a
+`<component>-registry-tls` Secret for that Service DNS name. The Cache process
+listens on container port `8443`, and the Service DNS name is its canonical
+registry address.
+The Manager renews the certificate before expiry. Cache keeps the last valid
+key pair in memory and checks the projected files at most once per minute when
+new TLS connections arrive. A successful check replaces the complete key pair;
+a failed check keeps the previous pair only while its certificate remains
+valid.
+
+Runtime Docker installs the public internal root under the Cache host in its
+`certs.d` directory. BuildKit and Docker therefore use standard HTTPS rather
+than an insecure registry exception. Every Registry request also uses a
+short-lived Manager-signed credential. Mirror paths allow pulls, while build
+cache paths allow the scoped pull and push operations needed by the current
+Codespace.
+
+## Gateway publication
+
+Every Gateway component has a same-name ClusterIP Service. Port `80` forwards
+HTTP and WebSocket traffic to the Gateway HTTP process, while port `22`
+forwards SSH and SFTP traffic. This stable Service is the boundary between
+Codespace authorization and cluster networking, so changing the public entry
+point does not replace the Gateway workload or expose individual Codespaces.
+
+HTTP publication can stay under operator control or use a Manager-owned
+Ingress. The administration page discovers IngressClasses from the cluster.
+For HTTPS, select an existing TLS Secret or an installed cert-manager Issuer;
+Manager then configures the wildcard host for the endpoint base domain. The
+Gateway process receives plain HTTP from the Service and never mounts the
+public TLS private key.
+
+SSH publication can stay under operator control or use a separate
+`<component>-ssh` LoadBalancer Service. That Service publishes only port `22`
+and preserves the client source address. SSH uses the component's host key,
+which is independent from the HTTPS certificate. In operator-managed mode,
+route external traffic to ports `80` and `22` of the same-name Service.
+
+Configure trusted proxy CIDRs only when an HTTP proxy connects directly to the
+Gateway Service. Gateway ignores forwarded client-address headers from every
+other source, which keeps per-address limits from trusting user input.
+
+Gateway replica count is configured on the component in the administration
+page, not as a Helm value. Two replicas are the default. Manager creates a
+rolling Deployment, a soft cross-node anti-affinity rule, and a
+PodDisruptionBudget when more than one replica is selected. All replicas share
+the component session key, so an authenticated browser request can move between
+ready Pods without a sticky-session setting. Connection limits remain per Pod
+and protect each Gateway process independently.
+
+Cache components always use one replica and the Recreate Deployment strategy.
+This matches the exclusive maintenance lease and ReadWriteOnce storage model;
+the cache is disposable performance data, so Runtime falls back to the allowed
+upstream while the Cache Pod is being replaced.
 
 ## Internal CA recovery
 

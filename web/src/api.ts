@@ -116,11 +116,9 @@ export type Runtime = {
 export type ClusterOptions = {
   runtimeClasses: {name: string; handler: string; isolation: 'kata' | 'sysbox'}[];
   storageClasses: {name: string; provisioner: string; default: boolean}[];
-  gateways: {
-    name: string;
-    namespace: string;
-    listeners: {name: string; protocol: 'HTTP' | 'HTTPS' | 'TCP'; port: number}[];
-  }[];
+  ingressClasses: {name: string; controller: string; default: boolean}[];
+  tlsSecrets: string[];
+  issuers: {kind: 'Issuer' | 'ClusterIssuer'; name: string}[];
 };
 
 export type Environment = {
@@ -132,6 +130,7 @@ export type Environment = {
 export type Site = {
   displayName: string;
   url: string;
+  caBundle?: string;
   enabled: boolean;
   acceptCreates: boolean;
   startupConcurrency: number;
@@ -148,9 +147,22 @@ export type Component = {
   displayName: string;
   resources: {requests: Record<string, string>; limits: Record<string, string>};
   gateway?: {
-    publicURL: string;
-    sshPublicAddress: string;
-    parent: {name?: string; namespace?: string; httpSectionName?: string; sshSectionName?: string};
+    replicas: number;
+    endpointBaseURL: string;
+    sshExternalAddress: string;
+    httpExposure: {
+      mode: 'external' | 'ingress';
+      ingress?: {
+        className: string;
+        tls: {
+          source: 'none' | 'secret' | 'certManager';
+          secretName?: string;
+          issuer?: {kind: 'Issuer' | 'ClusterIssuer'; name: string};
+        };
+      };
+    };
+    sshExposure: {mode: 'external' | 'loadBalancer'};
+    trustedProxyCIDRs?: string[];
     ssh: {
       handshakeTimeout: string;
       maxChannelsPerConnection: number;
@@ -179,7 +191,6 @@ export type Component = {
   };
   cache?: {
     enabled: boolean;
-    publicURL: string;
     storage: {
       driver: 'filesystem' | 's3';
       volumeSize?: string;
@@ -198,6 +209,11 @@ export type ComponentStatus = {
   available: boolean;
   readyReplicas: number;
   desiredReplicas: number;
+  httpExposureConfigured?: boolean;
+  sshExposureConfigured?: boolean;
+  serviceNamespace?: string;
+  serviceName?: string;
+  sshLoadBalancerAddresses?: string[];
   lastHeartbeat?: string;
   cacheBytes?: number;
   mirrorBytes?: number;

@@ -12,7 +12,13 @@ import {measurementBaseValue} from '../utils/measurement';
 
 const {t} = useI18n();
 const items = ref<Resource<Environment>[]>([]);
-const cluster = ref<ClusterOptions>({runtimeClasses: [], storageClasses: [], gateways: []});
+const cluster = ref<ClusterOptions>({
+  runtimeClasses: [],
+  storageClasses: [],
+  ingressClasses: [],
+  tlsSecrets: [],
+  issuers: [],
+});
 const editing = ref(false);
 const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
@@ -27,7 +33,6 @@ const limitsEnabled = ref(false);
 const limitsDraft = ref({cpu: '1', memory: '1Gi'});
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
-  name: name.value,
   form: form.value,
   verification: verification.value,
   extensions: extensionsJSON.value,
@@ -208,7 +213,7 @@ async function save() {
       `environments${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',
       {
-        name: name.value,
+        name: selected.value ? name.value : '',
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
@@ -300,22 +305,14 @@ function remove(item: Resource<Environment>) {
   >
     <h2>{{ t('environment.basicSection') }}</h2>
     <div class="fields">
-      <NFormItem :label="t('common.resourceName')">
-        <NInput
-          v-model:value="name"
-          :disabled="!!selected"
-          required
-        />
-      </NFormItem>
       <NFormItem :label="t('environment.tag')">
         <NInput
           v-model:value="form.tag"
           required
         />
       </NFormItem>
+      <NFormItem :label="t('environment.description')"><NInput v-model:value="form.description" /></NFormItem>
     </div>
-    <NFormItem :label="t('environment.description')"><NInput v-model:value="form.description" /></NFormItem>
-
     <h2>{{ t('environment.runtimeSection') }}</h2>
     <div class="fields">
       <NFormItem

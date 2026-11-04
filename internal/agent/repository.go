@@ -27,7 +27,7 @@ func repositoryWorkspace(repository *codespacev1.RepositoryCheckout) (string, er
 	return filepath.Join(workspaceRoot, parts[1]), nil
 }
 
-func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, stdout, stderr io.Writer) error {
+func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, trust siteTrust, stdout, stderr io.Writer) error {
 	target, err := repositoryWorkspace(repository)
 	if err != nil {
 		return err
@@ -61,7 +61,7 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 		if err := os.RemoveAll(temporary); err != nil {
 			return err
 		}
-		if err := runGit(ctx, owner, "", stdout, stderr, cloneURL, "clone", "--no-checkout", cloneURL, temporary); err != nil {
+		if err := runGit(ctx, owner, "", trust, stdout, stderr, cloneURL, "clone", "--no-checkout", cloneURL, temporary); err != nil {
 			failures = append(failures, err)
 			continue
 		}
@@ -70,7 +70,7 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 			_ = os.RemoveAll(temporary)
 			continue
 		}
-		if err := checkoutRepository(ctx, owner, temporary, repository, stdout, stderr); err != nil {
+		if err := checkoutRepository(ctx, owner, temporary, repository, trust, stdout, stderr); err != nil {
 			failures = append(failures, err)
 			_ = os.RemoveAll(temporary)
 			continue
@@ -99,7 +99,7 @@ func configureRepositoryCredentials(ctx context.Context, owner devcontainer.Host
 		key, value = "core.sshCommand", runtimeRunDirectory+"/bin/gitea-codespace-git-ssh"
 	}
 	command := exec.CommandContext(ctx, "git", "-C", directory, "config", key, value)
-	configureGitCommand(command, owner, "")
+	configureGitCommand(command, owner, "", siteTrust{})
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("configure repository credentials: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -108,7 +108,7 @@ func configureRepositoryCredentials(ctx context.Context, owner devcontainer.Host
 
 func verifyWorkspace(ctx context.Context, owner devcontainer.HostUser, directory, commit string) error {
 	command := exec.CommandContext(ctx, "git", "-C", directory, "rev-parse", "HEAD")
-	configureGitCommand(command, owner, "")
+	configureGitCommand(command, owner, "", siteTrust{})
 	output, err := command.Output()
 	if err != nil || strings.TrimSpace(string(output)) != strings.ToLower(commit) {
 		return fmt.Errorf("workspace commit does not match create input")
@@ -116,10 +116,10 @@ func verifyWorkspace(ctx context.Context, owner devcontainer.HostUser, directory
 	return nil
 }
 
-func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, directory string, repository *codespacev1.RepositoryCheckout, stdout, stderr io.Writer) error {
+func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, directory string, repository *codespacev1.RepositoryCheckout, trust siteTrust, stdout, stderr io.Writer) error {
 	ref, commit := strings.TrimSpace(repository.StartRef), strings.ToLower(repository.CommitSha)
 	run := func(arguments ...string) error {
-		return runGit(ctx, owner, directory, stdout, stderr, "", arguments...)
+		return runGit(ctx, owner, directory, trust, stdout, stderr, "", arguments...)
 	}
 	switch {
 	case strings.HasPrefix(ref, "refs/heads/"):
@@ -156,12 +156,12 @@ func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, direct
 	return verifyWorkspace(ctx, owner, directory, commit)
 }
 
-func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, stdout, stderr io.Writer, cloneURL string, arguments ...string) error {
+func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, trust siteTrust, stdout, stderr io.Writer, cloneURL string, arguments ...string) error {
 	if directory != "" {
 		arguments = append([]string{"-C", directory}, arguments...)
 	}
 	command := exec.CommandContext(ctx, "git", arguments...)
-	configureGitCommand(command, owner, cloneURL)
+	configureGitCommand(command, owner, cloneURL, trust)
 	command.Stdout, command.Stderr = stdout, stderr
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("git %s failed: %w", arguments[0], err)
@@ -169,12 +169,12 @@ func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, 
 	return nil
 }
 
-func configureGitCommand(command *exec.Cmd, owner devcontainer.HostUser, cloneURL string) {
+func configureGitCommand(command *exec.Cmd, owner devcontainer.HostUser, cloneURL string, trust siteTrust) {
 	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: owner.UID, Gid: owner.GID}}
 	command.Env = append(os.Environ(), "HOME="+owner.Home)
-	if strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://") {
-		command.Env = append(command.Env, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=credential.helper", "GIT_CONFIG_VALUE_0=!"+runtimeRunDirectory+"/bin/gitea-codespace-git-credential")
-	} else if cloneURL != "" {
+	httpClone := strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://")
+	command.Env = trust.gitEnvironment(command.Env, httpClone)
+	if cloneURL != "" && !httpClone {
 		command.Env = append(command.Env, "GIT_SSH_COMMAND="+runtimeRunDirectory+"/bin/gitea-codespace-git-ssh")
 	}
 }

@@ -13,6 +13,7 @@ import (
 
 const (
 	gatewayActivityTTL   = 30 * time.Second
+	gatewayPermitTTL     = 30 * time.Second
 	idleStopRetryDelay   = 5 * time.Second
 	idleStopPendingDelay = 30 * time.Second
 )
@@ -23,8 +24,10 @@ type gatewayActivityKey struct {
 }
 
 type gatewayActivityReport struct {
-	counts   map[string]int64
-	reported time.Time
+	counts      map[string]int64
+	reported    time.Time
+	permitUntil time.Time
+	connected   bool
 }
 
 type runtimeActivity struct {
@@ -80,7 +83,10 @@ func (t *RuntimeActivityTracker) ReplaceGateway(componentUID, instance string, c
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if release {
-		delete(t.gateways, key)
+		if report, ok := t.gateways[key]; ok {
+			report.connected = false
+			t.gateways[key] = report
+		}
 		return nil
 	}
 	copyCounts := make(map[string]int64, len(counts))
@@ -95,8 +101,21 @@ func (t *RuntimeActivityTracker) ReplaceGateway(componentUID, instance string, c
 	if t.gateways == nil {
 		t.gateways = make(map[gatewayActivityKey]gatewayActivityReport)
 	}
-	t.gateways[key] = gatewayActivityReport{counts: copyCounts, reported: now}
+	t.gateways[key] = gatewayActivityReport{counts: copyCounts, reported: now, permitUntil: now.Add(gatewayPermitTTL), connected: true}
 	return nil
+}
+
+func (t *RuntimeActivityTracker) RenewGatewayPermit(componentUID, instance string, now time.Time) {
+	if componentUID == "" || instance == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	key := gatewayActivityKey{componentUID: componentUID, instance: instance}
+	if report, ok := t.gateways[key]; ok {
+		report.permitUntil = now.Add(gatewayPermitTTL)
+		t.gateways[key] = report
+	}
 }
 
 func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeUUID, gatewayUID string, eligible bool, now time.Time) (*codespacev1.EffectiveCodespaceRuntimeSettings, bool) {
@@ -110,18 +129,25 @@ func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeUUID, gatewayUID st
 		}
 		return nil, false
 	}
-	fresh, sessions := false, int64(0)
+	fresh, uncertain, sessions := false, false, int64(0)
 	for key, report := range t.gateways {
-		if now.Sub(report.reported) > gatewayActivityTTL {
+		if key.componentUID != gatewayUID {
+			continue
+		}
+		if !report.connected || now.Sub(report.reported) > gatewayActivityTTL {
+			if now.Before(report.permitUntil) {
+				uncertain = true
+				continue
+			}
 			delete(t.gateways, key)
 			continue
 		}
-		if key.componentUID == gatewayUID && !report.reported.Before(state.activityAfter) {
+		if !report.reported.Before(state.activityAfter) {
 			fresh = true
 			sessions += report.counts[runtimeUUID]
 		}
 	}
-	if !fresh || sessions > 0 {
+	if uncertain || !fresh || sessions > 0 {
 		state.idleSince = time.Time{}
 		state.retryAt = time.Time{}
 		return nil, false

@@ -19,16 +19,26 @@ import (
 	"gitea.dev/codespace/internal/transport"
 )
 
-const ComponentRequestTimeout = 5 * time.Second
+const componentRequestTimeout = 5 * time.Second
 
-func NewComponentRPCClient() (componentv1connect.ComponentServiceClient, *http.Client, error) {
+// ManagerConnection owns one component's authenticated connection to Manager.
+// Gateway also reuses Certificates for its Agent mTLS client connections.
+type ManagerConnection struct {
+	Service      componentv1connect.ComponentServiceClient
+	Certificates *transport.FileCertificates
+	httpClient   *http.Client
+}
+
+// NewManagerConnection validates the component environment and constructs the
+// shared mTLS state used by the Manager client and, for Gateway, Agent clients.
+func NewManagerConnection() (*ManagerConnection, error) {
 	address := strings.TrimSpace(os.Getenv("GITEA_CODESPACE_MANAGER_URL"))
 	endpoint, err := url.Parse(address)
 	if err != nil || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
-		return nil, nil, errors.New("GITEA_CODESPACE_MANAGER_URL must be a Manager root URL")
+		return nil, errors.New("GITEA_CODESPACE_MANAGER_URL must be a Manager root URL")
 	}
 	if endpoint.Scheme != "https" {
-		return nil, nil, errors.New("manager component API requires HTTPS")
+		return nil, errors.New("manager component API requires HTTPS")
 	}
 	certificateDirectory := strings.TrimSpace(os.Getenv("GITEA_CODESPACE_CERTIFICATE_DIRECTORY"))
 	if certificateDirectory == "" {
@@ -36,27 +46,38 @@ func NewComponentRPCClient() (componentv1connect.ComponentServiceClient, *http.C
 	}
 	managerIdentity := strings.TrimSpace(os.Getenv("GITEA_CODESPACE_MANAGER_IDENTITY"))
 	if _, err := identitypkg.ParseManagerURI(managerIdentity); err != nil {
-		return nil, nil, fmt.Errorf("GITEA_CODESPACE_MANAGER_IDENTITY: %w", err)
+		return nil, fmt.Errorf("GITEA_CODESPACE_MANAGER_IDENTITY: %w", err)
 	}
-	tlsConfig, err := (transport.Certificates{Directory: certificateDirectory}).Client(func(identity *url.URL) error {
+	certificates, err := transport.NewFileCertificates(certificateDirectory)
+	if err != nil {
+		return nil, err
+	}
+	tlsConfig, err := certificates.Client(func(identity *url.URL) error {
 		if identity.String() != managerIdentity {
 			return fmt.Errorf("manager identity does not match this Codespace installation")
 		}
 		return nil
 	})
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.ResponseHeaderTimeout = 30 * time.Second
-	transport.ForceAttemptHTTP2 = true
-	transport.TLSClientConfig = tlsConfig
+	httpTransport := http.DefaultTransport.(*http.Transport).Clone()
+	httpTransport.ResponseHeaderTimeout = 30 * time.Second
+	httpTransport.ForceAttemptHTTP2 = true
+	httpTransport.TLSClientConfig = tlsConfig
 	httpClient := &http.Client{
-		Transport: transport,
+		Transport: httpTransport,
 		// Component credentials are bound to the configured Manager endpoint.
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
 	}
 	baseURL := strings.TrimRight(address, "/")
-	client := componentv1connect.NewComponentServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithGRPC())))
-	return client, httpClient, nil
+	service := componentv1connect.NewComponentServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, baseURL, connecthttp.WithGRPC())))
+	return &ManagerConnection{Service: service, Certificates: certificates, httpClient: httpClient}, nil
+}
+
+// Close releases idle Manager connections.
+func (c *ManagerConnection) Close() {
+	if c != nil && c.httpClient != nil {
+		c.httpClient.CloseIdleConnections()
+	}
 }

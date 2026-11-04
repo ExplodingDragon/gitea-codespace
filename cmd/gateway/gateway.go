@@ -24,12 +24,12 @@ func NewCommand() *cobra.Command {
 		RunE: func(command *cobra.Command, _ []string) error {
 			ctx, stop := signal.NotifyContext(command.Context(), syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
-			client, httpClient, err := componentpkg.NewComponentRPCClient()
+			connection, err := componentpkg.NewManagerConnection()
 			if err != nil {
 				return err
 			}
-			defer httpClient.CloseIdleConnections()
-			err = gatewaypkg.Run(ctx, command.OutOrStdout(), client, "")
+			defer connection.Close()
+			err = gatewaypkg.Run(ctx, command.OutOrStdout(), connection.Service, connection.Certificates)
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil
 			}

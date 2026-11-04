@@ -174,8 +174,8 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	block, err := ssh.MarshalPrivateKey(private, "")
 	require.NoError(t, err)
 	gateway := testGatewayComponent("gateway", "gateway-uid")
-	gateway.Spec.Gateway.PublicURL = "https://workspace.example"
-	gateway.Spec.Gateway.SSHPublicAddress = "workspace.example:2222"
+	gateway.Spec.Gateway.EndpointBaseURL = "https://workspace.example"
+	gateway.Spec.Gateway.SSHExternalAddress = "workspace.example:2222"
 	hostKey := testComponentCredential(gateway, map[string][]byte{"hostKey": pem.EncodeToMemory(block)})
 	hostKey.CreationTimestamp = metav1.Now()
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "site-credential", Namespace: "codespace-system", UID: "credential-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-secret")}}

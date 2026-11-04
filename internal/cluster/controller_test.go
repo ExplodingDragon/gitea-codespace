@@ -104,6 +104,17 @@ func TestRuntimeConfigurationDerivesStorageVolumeMode(t *testing.T) {
 }
 
 func TestComponentConfigurationValidation(t *testing.T) {
+	gateway := testGatewayComponent("gateway", "gateway-uid")
+	require.NoError(t, gateway.Validate())
+	gateway.Spec.Gateway.Replicas = 0
+	require.EqualError(t, gateway.Validate(), "gateway replicas must be between 1 and 64")
+	gateway.Spec.Gateway.Replicas = 2
+	gateway.Spec.Gateway.HTTPExposure = api.GatewayHTTPExposure{Mode: "ingress", Ingress: &api.GatewayIngressExposure{ClassName: "nginx", TLS: api.GatewayIngressTLS{Source: "secret", SecretName: "wildcard-tls"}}}
+	gateway.Spec.Gateway.TrustedProxyCIDRs = []string{"10.0.0.0/8"}
+	require.NoError(t, gateway.Validate())
+	gateway.Spec.Gateway.EndpointBaseURL = "https://127.0.0.1"
+	require.EqualError(t, gateway.Validate(), "managed Ingress requires a DNS endpoint hostname")
+
 	cache := testCacheComponent("cache", "cache-uid")
 	require.NoError(t, cache.Validate())
 	cache.Name = "cache.invalid"
@@ -114,8 +125,17 @@ func TestComponentConfigurationValidation(t *testing.T) {
 	cache = testCacheComponent("cache", "cache-uid")
 	cache.Spec.Cache.MaxSize = "1GiB"
 	require.EqualError(t, cache.Validate(), "cache maximum size and minimum free space must fit within the volume")
+	cache = testCacheComponent("cache", "cache-uid")
+	cache.Spec.Cache.MaxAge = "0s"
+	require.ErrorContains(t, cache.Validate(), "cache retention durations must be positive")
+	cache.Spec.Cache.MaxAge = "24h"
+	cache.Spec.Cache.Upstreams["docker.io"] = api.CacheUpstream{}
+	require.ErrorContains(t, cache.Validate(), "requires at least one repository pattern")
+	cache = testCacheComponent("cache", "cache-uid")
 	cache.Spec.Cache.Storage = api.CacheStorage{Driver: "s3", VolumeSize: "1Gi", S3: api.CacheS3Storage{Region: "test", Bucket: "cache"}}
 	require.EqualError(t, cache.Validate(), "S3 cache cannot select filesystem storage settings")
+	cache.Spec.Cache.Storage = api.CacheStorage{Driver: "s3", S3: api.CacheS3Storage{Bucket: "cache"}}
+	require.ErrorContains(t, cache.Validate(), "S3 bucket and region are required")
 }
 
 func TestPlatformImagePullPolicy(t *testing.T) {

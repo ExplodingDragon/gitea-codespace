@@ -55,8 +55,8 @@ func validateCacheOptions(cache devcontainer.CacheOptions) error {
 
 func parseOCIRepositoryBase(value string, requirePath bool) (*url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(value))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return nil, fmt.Errorf("must be an absolute http or https URL")
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
+		return nil, fmt.Errorf("must be an absolute HTTPS URL")
 	}
 	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return nil, fmt.Errorf("must not contain credentials, query, or fragment")
@@ -256,10 +256,6 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 	if cacheReference != "" {
 		cacheFrom := "type=registry,ref=" + cacheReference
 		cacheTo := "type=registry,ref=" + cacheReference + ",mode=max,oci-mediatypes=true,image-manifest=true"
-		if endpoint, err := parseOCIRepositoryBase(cache.BuildRegistry, true); err == nil && endpoint.Scheme == "http" {
-			cacheFrom += ",registry.insecure=true"
-			cacheTo += ",registry.insecure=true"
-		}
 		service.Build.CacheFrom = append(service.Build.CacheFrom, cacheFrom)
 		service.Build.CacheTo = append(service.Build.CacheTo, cacheTo)
 		project.Services[serviceName] = service

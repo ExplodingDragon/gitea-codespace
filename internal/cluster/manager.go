@@ -16,6 +16,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -319,7 +320,9 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		Owns(&corev1.Secret{}).
 		Owns(&corev1.Service{}).
 		Owns(&corev1.PersistentVolumeClaim{}).
-		Owns(&networkingv1.NetworkPolicy{})
+		Owns(&networkingv1.Ingress{}).
+		Owns(&networkingv1.NetworkPolicy{}).
+		Owns(&policyv1.PodDisruptionBudget{})
 	if err := componentController.Complete(&ComponentReconciler{
 		Client: liveClient, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ComponentURL, ManagerIdentity: identityAuthority.ManagerIdentity(), PlatformImage: options.PlatformImage, PlatformRevision: controlplane.BuildVersion(), ImagePullSecrets: options.ImagePullSecrets,
 	}); err != nil {

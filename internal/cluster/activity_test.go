@@ -42,6 +42,26 @@ func TestRuntimeActivityTrackerRequiresFreshIdleGateway(t *testing.T) {
 	require.False(t, ready)
 }
 
+func TestRuntimeActivityTrackerWaitsForDisconnectedGatewayPermit(t *testing.T) {
+	tracker := &RuntimeActivityTracker{}
+	start := time.Now()
+	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 1, InteractionGeneration: 1}
+	require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, start))
+	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-1", map[string]int64{"runtime": 1}, false, start))
+	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-2", nil, false, start))
+	tracker.RenewGatewayPermit("gateway", "pod-1", start.Add(5*time.Second))
+	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-1", nil, true, start.Add(6*time.Second)))
+
+	_, ready := tracker.IdleRequest("site", "runtime", "gateway", true, start.Add(gatewayPermitTTL+4*time.Second))
+	require.False(t, ready)
+	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-2", nil, false, start.Add(gatewayPermitTTL+5*time.Second)))
+	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, start.Add(gatewayPermitTTL+5*time.Second))
+	require.False(t, ready)
+	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-2", nil, false, start.Add(gatewayPermitTTL+6*time.Second)))
+	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, start.Add(gatewayPermitTTL+6*time.Second))
+	require.True(t, ready)
+}
+
 func TestRuntimeActivityTrackerAppliesIdleStopOutcomes(t *testing.T) {
 	tracker := &RuntimeActivityTracker{}
 	now := time.Now()

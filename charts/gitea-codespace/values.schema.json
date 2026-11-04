@@ -21,9 +21,8 @@
     "admin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["publicURL", "tokenSecret", "service", "ingress"],
+      "required": ["tokenSecret", "service", "ingress"],
       "properties": {
-        "publicURL": {"type": "string", "pattern": "^https?://"},
         "tokenSecret": {
           "type": "object",
           "additionalProperties": false,

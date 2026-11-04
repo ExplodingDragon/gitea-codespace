@@ -20,12 +20,14 @@ SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
 STATICCHECK_VERSION := v0.8.2
 BASH_SCRIPTS := \
-	internal/devcontainerruntime/builtin/configure-git.sh \
-	internal/devcontainerruntime/builtin/endpoint.sh \
-	internal/devcontainerruntime/builtin/start-web-ide.sh \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
-POSIX_SCRIPTS := devcontainer/docker/builtin/update-user.sh
+POSIX_SCRIPTS := \
+	devcontainer/docker/builtin/update-user.sh \
+	internal/devcontainerruntime/builtin/configure-git.sh \
+	internal/devcontainerruntime/builtin/endpoint.sh \
+	internal/devcontainerruntime/builtin/install-ca.sh \
+	internal/devcontainerruntime/builtin/start-web-ide.sh
 GO_FILES := $(shell find . -type f -name '*.go' -not -path './.git/*' -not -path './.tmp/*' -not -path './web/node_modules/*')
 
 define prepare-proto-workspace

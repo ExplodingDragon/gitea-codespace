@@ -47,7 +47,6 @@ func NewCommand() *cobra.Command {
 	flags.StringVar(&options.IdentitySecretName, "identity-secret", "gitea-codespace-internal-ca", "Kubernetes Secret that persists the Manager internal certificate authority")
 	flags.StringVar(&options.HealthAddress, "health-address", ":8081", "Health and readiness listen address")
 	flags.StringVar(&options.AdminAddress, "admin-address", ":18080", "Administration HTTP listen address")
-	flags.StringVar(&options.AdminPublicURL, "admin-public-url", "http://127.0.0.1:18080", "Browser-facing administration origin")
 	flags.StringVar(&options.AdminTokenFile, "admin-token-file", "/var/run/codespace/admin/token", "Projected administrator token file")
 	flags.StringVar(&options.AgentAddress, "agent-address", ":8443", "Agent mTLS listen address")
 	flags.StringVar(&options.ComponentAddress, "component-address", ":8445", "Gateway and Cache mTLS listen address")

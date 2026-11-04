@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package config defines validated runtime configuration shared across processes.
 package config
 
 import (
@@ -8,14 +9,13 @@ import (
 	"strings"
 )
 
-// CacheConfig is an independently deployed registry's persistent configuration.
+// CacheConfig is the validated runtime configuration for a managed registry cache.
 type CacheConfig struct {
 	ID         string                                `json:"id"`
 	Name       string                                `json:"name"`
 	Revision   int64                                 `json:"revision,string"`
 	Enabled    bool                                  `json:"enabled"`
 	Listen     string                                `json:"listen"`
-	PublicURL  string                                `json:"public_url"`
 	Storage    CacheStorageConfig                    `json:"storage"`
 	MaxSize    string                                `json:"max_size"`
 	MaxAge     Duration                              `json:"max_age"`
@@ -48,6 +48,7 @@ type CachePolicy struct {
 	Build  bool `json:"build"`
 }
 
+// ValidCacheID reports whether an identifier is safe for component routing and storage paths.
 func ValidCacheID(id string) bool {
 	if len(id) == 0 || len(id) > 64 {
 		return false
@@ -60,6 +61,7 @@ func ValidCacheID(id string) bool {
 	return true
 }
 
+// Validate checks a complete cache configuration before it reaches the registry process.
 func (c CacheConfig) Validate() error {
 	if !ValidCacheID(c.ID) || strings.TrimSpace(c.Name) == "" || len(c.Name) > 100 {
 		return fmt.Errorf("cache ID and name are required")
@@ -70,8 +72,13 @@ func (c CacheConfig) Validate() error {
 	if c.Storage.Driver != "filesystem" && c.Storage.Driver != "s3" {
 		return fmt.Errorf("cache storage driver must be filesystem or s3")
 	}
-	if c.Storage.Driver == "filesystem" && c.Storage.Path == "" {
-		return fmt.Errorf("cache storage path is required")
+	if c.Storage.Driver == "filesystem" {
+		if c.Storage.Path == "" {
+			return fmt.Errorf("cache storage path is required")
+		}
+		if strings.TrimSpace(c.MaxSize) == "" || strings.TrimSpace(c.Storage.MinFreeSpace) == "" {
+			return fmt.Errorf("filesystem cache maximum size and minimum free space are required")
+		}
 	}
 	if c.Storage.Driver == "s3" {
 		if c.Storage.S3.Endpoint != "" {

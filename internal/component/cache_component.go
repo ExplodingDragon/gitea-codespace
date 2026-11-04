@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package component connects managed Gateway and Cache workloads to the Manager.
 package component
 
 import (
@@ -91,7 +92,7 @@ func (c *CacheComponentClient) start(ctx context.Context, id string) error {
 		return fmt.Errorf("read cache token key: %w", err)
 	}
 	streamCtx, cancel := context.WithCancel(ctx)
-	timeout := time.AfterFunc(ComponentRequestTimeout, cancel)
+	timeout := time.AfterFunc(componentRequestTimeout, cancel)
 	defer timeout.Stop()
 	stream, err := c.Client.CacheControl(streamCtx)
 	if err != nil {
@@ -190,6 +191,7 @@ func (c *CacheComponentClient) receive(ctx context.Context, stream cacheControlS
 	}
 }
 
+// GetCache waits for the current Manager configuration and execution permit.
 func (c *CacheComponentClient) GetCache(ctx context.Context, id string) (cachepkg.ControlConfig, error) {
 	if err := c.start(ctx, id); err != nil {
 		return cachepkg.ControlConfig{}, fmt.Errorf("start cache control: %w", err)
@@ -197,7 +199,7 @@ func (c *CacheComponentClient) GetCache(ctx context.Context, id string) (cachepk
 	c.mu.Lock()
 	ready := c.ready
 	c.mu.Unlock()
-	timer := time.NewTimer(ComponentRequestTimeout)
+	timer := time.NewTimer(componentRequestTimeout)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
@@ -223,6 +225,7 @@ func (c *CacheComponentClient) GetCache(ctx context.Context, id string) (cachepk
 	return c.config, nil
 }
 
+// ClaimCache returns the ownership established by the active control stream.
 func (c *CacheComponentClient) ClaimCache(ctx context.Context, id string) (cachepkg.Owner, error) {
 	config, err := c.GetCache(ctx, id)
 	if err != nil {
@@ -255,7 +258,7 @@ func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status,
 	c.sent[c.sequence] = time.Now()
 	stream, cancelStream, deadline := c.stream, c.cancelStream, c.permitUntil
 	c.mu.Unlock()
-	if timeout := time.Now().Add(ComponentRequestTimeout); timeout.Before(deadline) {
+	if timeout := time.Now().Add(componentRequestTimeout); timeout.Before(deadline) {
 		deadline = timeout
 	}
 	waitCtx, cancel := context.WithDeadline(ctx, deadline)
@@ -304,6 +307,7 @@ func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status,
 	}
 }
 
+// HeartbeatCache reports registry status and returns the renewed execution deadline.
 func (c *CacheComponentClient) HeartbeatCache(ctx context.Context, _ cachepkg.Owner, status cachepkg.Status) (time.Time, error) {
 	_, err := c.send(ctx, status, &componentv1.CacheControlRequest{})
 	c.mu.Lock()
@@ -311,6 +315,7 @@ func (c *CacheComponentClient) HeartbeatCache(ctx context.Context, _ cachepkg.Ow
 	return c.permitUntil, err
 }
 
+// ReleaseCache closes the active control stream and its execution permit.
 func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) error {
 	c.mu.Lock()
 	if c.stream == nil {
@@ -327,6 +332,7 @@ func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) err
 	return stream.Close()
 }
 
+// BeginCacheGC obtains a time-bounded maintenance grant from Manager.
 func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.Owner) (cachepkg.GCGrant, error) {
 	response, err := c.send(ctx, cachepkg.Status{ConfigRevision: owner.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
 	if err != nil {
@@ -339,6 +345,7 @@ func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.
 	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
 }
 
+// CompleteCacheGC releases a maintenance grant after cleanup.
 func (c *CacheComponentClient) CompleteCacheGC(ctx context.Context, grant cachepkg.GCGrant) error {
 	_, err := c.send(ctx, cachepkg.Status{ConfigRevision: grant.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_CompleteGc{CompleteGc: &componentv1.CacheGCComplete{GrantId: grant.ID}}})
 	return err

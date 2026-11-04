@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -35,6 +34,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
+// Username is the fixed registry username paired with Manager-issued cache credentials.
 const Username = "gitea-codespace"
 
 type registryCache struct {
@@ -42,8 +42,6 @@ type registryCache struct {
 	configRevision int64
 	enabled        bool
 	listen         string
-	publicURL      string
-	host           string
 	storageDir     string
 	storageConfig  configpkg.CacheStorageConfig
 	driver         storagedriver.StorageDriver
@@ -76,9 +74,9 @@ type registryCacheUpstream struct {
 	allow []string
 }
 
-// New opens a registry with scoped authorization supplied by the Manager client.
+// newRegistryCache opens a registry with scoped authorization supplied by the Manager client.
 // The caller must close it to release its storage lock and upstream registries.
-func New(ctx context.Context, config configpkg.CacheConfig, cacheKey string, tokenKey []byte) (*registryCache, error) {
+func newRegistryCache(ctx context.Context, config configpkg.CacheConfig, cacheKey string, tokenKey []byte) (*registryCache, error) {
 	cache, err := newRegistryCacheConfig(config)
 	if err != nil || !cache.enabled {
 		return cache, err
@@ -134,10 +132,7 @@ func newRegistryCacheConfig(registry configpkg.CacheConfig) (*registryCache, err
 	if !registry.Enabled {
 		return &registryCache{}, nil
 	}
-	parsed, err := url.Parse(registry.PublicURL)
-	if err != nil {
-		return nil, fmt.Errorf("parse cache registry public_url: %w", err)
-	}
+	var err error
 	maxBytes := int64(0)
 	if strings.TrimSpace(registry.MaxSize) != "" {
 		maxBytes, err = dockerunits.RAMInBytes(registry.MaxSize)
@@ -149,7 +144,7 @@ func newRegistryCacheConfig(registry configpkg.CacheConfig) (*registryCache, err
 		}
 	}
 	upstreams := make(map[string]registryCacheUpstream, len(registry.Upstreams))
-	minFreeBytes := int64(1 << 30)
+	minFreeBytes := int64(0)
 	if registry.Storage.MinFreeSpace != "" {
 		minFreeBytes, err = dockerunits.RAMInBytes(registry.Storage.MinFreeSpace)
 		if err != nil {
@@ -166,8 +161,6 @@ func newRegistryCacheConfig(registry configpkg.CacheConfig) (*registryCache, err
 		configRevision: registry.Revision,
 		enabled:        true,
 		listen:         registry.Listen,
-		publicURL:      strings.TrimRight(registry.PublicURL, "/"),
-		host:           parsed.Host,
 		storageDir:     filepath.Join(registry.Storage.Path, registry.ID),
 		storageConfig:  registry.Storage,
 		maxBytes:       maxBytes,
@@ -202,7 +195,7 @@ func (c *registryCache) storageParameters(mirror string) map[string]any {
 	return map[string]any{"bucket": s3.Bucket, "region": s3.Region, "regionendpoint": s3.Endpoint, "forcepathstyle": s3.ForcePathStyle, "accesskey": s3.AccessKey, "secretkey": s3.SecretKey, "rootdirectory": path.Join(s3.Prefix, c.id, root)}
 }
 
-func (c *registryCache) OpenListener() (net.Listener, error) {
+func (c *registryCache) openListener() (net.Listener, error) {
 	if c == nil || !c.enabled {
 		return nil, nil
 	}
@@ -213,7 +206,7 @@ func (c *registryCache) OpenListener() (net.Listener, error) {
 	return listener, nil
 }
 
-func (c *registryCache) Handler() http.Handler {
+func (c *registryCache) httpHandler() http.Handler {
 	if c == nil || !c.enabled {
 		return http.NotFoundHandler()
 	}
@@ -268,13 +261,11 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			return
 		}
 		defer c.maintenance.RUnlock()
-		repository, action, ok := registryCacheAccess(request)
-		if ok {
-			if err := c.authorize(request, repository, action); err != nil {
-				writer.Header().Set("WWW-Authenticate", `Basic realm="gitea-codespace-registry"`)
-				http.Error(writer, err.Error(), http.StatusUnauthorized)
-				return
-			}
+		repository, action := registryCacheAccess(request)
+		if err := c.authorize(request, repository, action); err != nil {
+			writer.Header().Set("WWW-Authenticate", `Basic realm="gitea-codespace-registry"`)
+			http.Error(writer, err.Error(), http.StatusUnauthorized)
+			return
 		}
 		if c.storageConfig.Driver == "filesystem" && (action == "push" || strings.HasPrefix(repository, "mirror/")) {
 			var disk unix.Statfs_t
@@ -296,21 +287,21 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 	})
 }
 
-func registryCacheAccess(request *http.Request) (string, string, bool) {
+func registryCacheAccess(request *http.Request) (string, string) {
 	pathValue := strings.TrimPrefix(request.URL.EscapedPath(), "/")
 	if pathValue == "v2" || pathValue == "v2/" {
-		return "", "ping", true
+		return "", "ping"
 	}
 	if !strings.HasPrefix(pathValue, "v2/") {
-		return "", "", false
+		return "", registryCacheAction(request.Method)
 	}
 	pathValue = strings.TrimPrefix(pathValue, "v2/")
 	for _, marker := range []string{"/manifests/", "/blobs/", "/tags/"} {
 		if repository, _, ok := strings.Cut(pathValue, marker); ok {
-			return repository, registryCacheAction(request.Method), true
+			return repository, registryCacheAction(request.Method)
 		}
 	}
-	return "", registryCacheAction(request.Method), true
+	return "", registryCacheAction(request.Method)
 }
 
 func registryCacheAction(method string) string {
@@ -325,12 +316,6 @@ func registryCacheAction(method string) string {
 }
 
 func (c *registryCache) authorize(request *http.Request, repository, action string) error {
-	if value, _, ok := strings.Cut(strings.TrimPrefix(repository, "cache/"), "/"); ok && ValidateNamespace(c.secret, value) {
-		if action != "pull" && action != "push" {
-			return errors.New("cache registry action is not allowed")
-		}
-		return validateRegistryCacheBlobMount(request, repository)
-	}
 	username, password, ok := request.BasicAuth()
 	if !ok || username != Username {
 		return errors.New("cache registry credentials are required")
@@ -387,9 +372,6 @@ func (c *registryCache) upstreamAllows(host, imagePath string) bool {
 	upstream, ok := c.upstreams[host]
 	if !ok {
 		return false
-	}
-	if len(upstream.allow) == 0 {
-		return true
 	}
 	for _, pattern := range upstream.allow {
 		if strings.HasSuffix(pattern, "*") {
@@ -487,41 +469,8 @@ func (c *registryCache) prune(ctx context.Context) (err error) {
 		if !expired && !overCapacity {
 			continue
 		}
-		name, err := reference.WithName(candidate.name)
-		if err != nil {
+		if err := deleteCacheRepository(ctx, driver, registry, candidate.name); err != nil {
 			return err
-		}
-		repository, err := registry.Repository(ctx, name)
-		if err != nil {
-			return err
-		}
-		manifests, err := repository.Manifests(ctx)
-		if err != nil {
-			return err
-		}
-		var digests []digest.Digest
-		if err := manifests.(distribution.ManifestEnumerator).Enumerate(ctx, func(value digest.Digest) error {
-			digests = append(digests, value)
-			return nil
-		}); err != nil {
-			return err
-		}
-		tags, err := repository.Tags(ctx).All(ctx)
-		if err != nil {
-			return err
-		}
-		for _, tag := range tags {
-			if err := repository.Tags(ctx).Untag(ctx, tag); err != nil {
-				return err
-			}
-		}
-		for _, value := range digests {
-			if err := manifests.Delete(ctx, value); err != nil {
-				return err
-			}
-		}
-		if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{}); err != nil {
-			return fmt.Errorf("collect cache registry: %w", err)
 		}
 		total, err = cacheBlobBytes(ctx, driver)
 		if err != nil {
@@ -531,6 +480,46 @@ func (c *registryCache) prune(ctx context.Context) (err error) {
 	// Abandoned uploads can leave committed blobs without any manifest.
 	// Collect them even when retention did not evict a repository this time.
 	return storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{})
+}
+
+func deleteCacheRepository(ctx context.Context, driver storagedriver.StorageDriver, registry distribution.Namespace, repositoryName string) error {
+	name, err := reference.WithName(repositoryName)
+	if err != nil {
+		return err
+	}
+	repository, err := registry.Repository(ctx, name)
+	if err != nil {
+		return err
+	}
+	manifests, err := repository.Manifests(ctx)
+	if err != nil {
+		return err
+	}
+	var digests []digest.Digest
+	if err := manifests.(distribution.ManifestEnumerator).Enumerate(ctx, func(value digest.Digest) error {
+		digests = append(digests, value)
+		return nil
+	}); err != nil {
+		return err
+	}
+	tags, err := repository.Tags(ctx).All(ctx)
+	if err != nil {
+		return err
+	}
+	for _, tag := range tags {
+		if err := repository.Tags(ctx).Untag(ctx, tag); err != nil {
+			return err
+		}
+	}
+	for _, value := range digests {
+		if err := manifests.Delete(ctx, value); err != nil {
+			return err
+		}
+	}
+	if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{}); err != nil {
+		return fmt.Errorf("collect cache registry: %w", err)
+	}
+	return nil
 }
 
 func cacheBlobBytes(ctx context.Context, driver storagedriver.StorageDriver) (int64, error) {

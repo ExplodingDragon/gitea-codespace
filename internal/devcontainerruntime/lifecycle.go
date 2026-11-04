@@ -44,7 +44,12 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		}
 		return state, nil
 	case "resume":
-		state, err := engine.Start(ctx, request.Environment, request.Secrets)
+		state, err := engine.Start(ctx, request.Environment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
+				return err
+			}
+			return configureGitCA(ctx, engine, state, request.GiteaURL, request.GiteaCustomCA)
+		})
 		if err != nil {
 			return nil, err
 		}

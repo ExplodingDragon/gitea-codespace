@@ -6,12 +6,16 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/netip"
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 	"uuid"
 
+	"gitea.dev/codespace/internal/certificates"
+	configpkg "gitea.dev/codespace/internal/config"
 	"github.com/distribution/reference"
 	dockerunits "github.com/docker/go-units"
 	corev1 "k8s.io/api/core/v1"
@@ -44,6 +48,14 @@ func (s *GiteaSite) Validate(managementNamespace string) error {
 	u, err := url.Parse(s.Spec.URL)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
 		return fmt.Errorf("site URL must be an HTTP(S) URL without credentials, query or fragment")
+	}
+	if s.Spec.CABundle != "" {
+		if u.Scheme != "https" {
+			return fmt.Errorf("site CA bundle requires an HTTPS URL")
+		}
+		if _, err := certificates.ParseCABundle(s.Spec.CABundle); err != nil {
+			return err
+		}
 	}
 	refs := append([]ResourceReference{s.Spec.Credential, s.Spec.Gateway}, s.Spec.Templates...)
 	refs = append(refs, s.Spec.Caches...)
@@ -101,7 +113,7 @@ func (t *EnvironmentTemplate) Validate() error {
 }
 
 func (c *CodespaceComponent) Validate() error {
-	if len(validation.IsDNS1123Label(c.Name)) != 0 || strings.TrimSpace(c.Spec.DisplayName) == "" || len(c.Spec.DisplayName) > 100 {
+	if len(c.Name) > 50 || len(validation.IsDNS1123Label(c.Name)) != 0 || strings.TrimSpace(c.Spec.DisplayName) == "" || len(c.Spec.DisplayName) > 100 {
 		return fmt.Errorf("component requires a valid name and display name")
 	}
 	if len(c.Spec.Resources.Claims) != 0 {
@@ -125,56 +137,158 @@ func (c *CodespaceComponent) Validate() error {
 		if c.Spec.Gateway == nil || c.Spec.Cache != nil {
 			return fmt.Errorf("gateway component requires only Gateway settings")
 		}
-		parent := c.Spec.Gateway.Parent
-		if parent.Name == "" {
-			if parent.Namespace != "" || parent.HTTPSectionName != "" || parent.SSHSectionName != "" {
-				return fmt.Errorf("gateway parent name is required when listener settings are configured")
-			}
-		} else {
-			for _, name := range []string{parent.Name, parent.Namespace, parent.HTTPSectionName} {
-				if len(validation.IsDNS1123Subdomain(name)) != 0 {
-					return fmt.Errorf("gateway parent and HTTP listener names are required")
-				}
-			}
-			if parent.SSHSectionName != "" && len(validation.IsDNS1123Subdomain(parent.SSHSectionName)) != 0 {
-				return fmt.Errorf("gateway SSH listener name is invalid")
-			}
+		if err := validateGatewayComponent(c.Spec.Gateway); err != nil {
+			return err
 		}
 	case "cache":
 		if c.Spec.Cache == nil || c.Spec.Gateway != nil {
 			return fmt.Errorf("cache component requires only Cache settings")
 		}
-		switch c.Spec.Cache.Storage.Driver {
-		case "filesystem":
-			volumeSize, err := resource.ParseQuantity(c.Spec.Cache.Storage.VolumeSize)
-			if err != nil || volumeSize.Sign() <= 0 {
-				return fmt.Errorf("filesystem cache requires a positive volume size")
-			}
-			if c.Spec.Cache.Storage.StorageClassName != "" && len(validation.IsDNS1123Subdomain(c.Spec.Cache.Storage.StorageClassName)) != 0 {
-				return fmt.Errorf("cache storage class name is invalid")
-			}
-			maxSize, maxErr := dockerunits.RAMInBytes(c.Spec.Cache.MaxSize)
-			minFreeSpace, minErr := dockerunits.RAMInBytes(c.Spec.Cache.Storage.MinFreeSpace)
-			if maxErr != nil || minErr != nil || maxSize <= 0 || minFreeSpace <= 0 {
-				return fmt.Errorf("filesystem cache sizes must be positive byte quantities")
-			}
-			if maxSize > volumeSize.Value()-minFreeSpace {
-				return fmt.Errorf("cache maximum size and minimum free space must fit within the volume")
-			}
-			if c.Spec.Cache.Storage.S3 != (CacheS3Storage{}) {
-				return fmt.Errorf("filesystem cache cannot select S3 storage settings")
-			}
-		case "s3":
-			if c.Spec.Cache.Storage.VolumeSize != "" || c.Spec.Cache.Storage.StorageClassName != "" || c.Spec.Cache.Storage.MinFreeSpace != "" {
-				return fmt.Errorf("S3 cache cannot select filesystem storage settings")
-			}
-		default:
-			return fmt.Errorf("cache storage driver must be filesystem or s3")
+		if err := validateCacheComponent(c.Spec.Cache); err != nil {
+			return err
 		}
 	default:
 		return fmt.Errorf("component role must be gateway or cache")
 	}
 	return ValidateObjectSize(c)
+}
+
+func validateGatewayComponent(gateway *GatewayComponentSpec) error {
+	if gateway.Replicas < 1 || gateway.Replicas > 64 {
+		return fmt.Errorf("gateway replicas must be between 1 and 64")
+	}
+	endpoint, err := url.Parse(gateway.EndpointBaseURL)
+	if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Hostname() == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || endpoint.Path != "" && endpoint.Path != "/" {
+		return fmt.Errorf("gateway endpoint base URL must be an HTTP(S) origin")
+	}
+	if len(gateway.TrustedProxyCIDRs) > 64 {
+		return fmt.Errorf("gateway supports at most 64 trusted proxy CIDRs")
+	}
+	for _, prefix := range gateway.TrustedProxyCIDRs {
+		if _, err := netip.ParsePrefix(prefix); err != nil {
+			return fmt.Errorf("gateway trusted proxy CIDR %q is invalid", prefix)
+		}
+	}
+	if err := validateGatewayHTTPExposure(gateway, endpoint); err != nil {
+		return err
+	}
+	return validateGatewaySSHExposure(gateway)
+}
+
+func validateCacheComponent(cache *CacheComponentSpec) error {
+	switch cache.Storage.Driver {
+	case "filesystem":
+		volumeSize, err := resource.ParseQuantity(cache.Storage.VolumeSize)
+		if err != nil || volumeSize.Sign() <= 0 {
+			return fmt.Errorf("filesystem cache requires a positive volume size")
+		}
+		if cache.Storage.StorageClassName != "" && len(validation.IsDNS1123Subdomain(cache.Storage.StorageClassName)) != 0 {
+			return fmt.Errorf("cache storage class name is invalid")
+		}
+		maxSize, maxErr := dockerunits.RAMInBytes(cache.MaxSize)
+		minFreeSpace, minErr := dockerunits.RAMInBytes(cache.Storage.MinFreeSpace)
+		if maxErr != nil || minErr != nil || maxSize <= 0 || minFreeSpace <= 0 {
+			return fmt.Errorf("filesystem cache sizes must be positive byte quantities")
+		}
+		if maxSize > volumeSize.Value()-minFreeSpace {
+			return fmt.Errorf("cache maximum size and minimum free space must fit within the volume")
+		}
+		if cache.Storage.S3 != (CacheS3Storage{}) {
+			return fmt.Errorf("filesystem cache cannot select S3 storage settings")
+		}
+	case "s3":
+		if cache.Storage.VolumeSize != "" || cache.Storage.StorageClassName != "" || cache.Storage.MinFreeSpace != "" {
+			return fmt.Errorf("S3 cache cannot select filesystem storage settings")
+		}
+	default:
+		return fmt.Errorf("cache storage driver must be filesystem or s3")
+	}
+	upstreams := make(map[string]configpkg.RuntimeCacheUpstreamConfig, len(cache.Upstreams))
+	for host, upstream := range cache.Upstreams {
+		upstreams[host] = configpkg.RuntimeCacheUpstreamConfig{Allow: upstream.Allow}
+	}
+	runtimeConfig := configpkg.CacheConfig{
+		ID: "cache", Name: "cache", Revision: 1, Enabled: cache.Enabled, Listen: "127.0.0.1:8443",
+		MaxSize: cache.MaxSize, MaxAge: configpkg.Duration(0), GCInterval: configpkg.Duration(0), Upstreams: upstreams,
+		Storage: configpkg.CacheStorageConfig{
+			Driver: cache.Storage.Driver, Path: "cache", MinFreeSpace: cache.Storage.MinFreeSpace,
+			S3: configpkg.CacheS3Config{
+				Endpoint: cache.Storage.S3.Endpoint, Region: cache.Storage.S3.Region, Bucket: cache.Storage.S3.Bucket,
+				Prefix: cache.Storage.S3.Prefix, ForcePathStyle: cache.Storage.S3.ForcePathStyle,
+			},
+		},
+	}
+	maxAge, err := time.ParseDuration(cache.MaxAge)
+	if err != nil {
+		return fmt.Errorf("invalid cache maximum age: %w", err)
+	}
+	gcInterval, err := time.ParseDuration(cache.GCInterval)
+	if err != nil {
+		return fmt.Errorf("invalid cache cleanup interval: %w", err)
+	}
+	runtimeConfig.MaxAge, runtimeConfig.GCInterval = configpkg.Duration(maxAge), configpkg.Duration(gcInterval)
+	if err := runtimeConfig.Validate(); err != nil {
+		return fmt.Errorf("invalid cache configuration: %w", err)
+	}
+	return nil
+}
+
+func validateGatewayHTTPExposure(gateway *GatewayComponentSpec, endpoint *url.URL) error {
+	switch gateway.HTTPExposure.Mode {
+	case "external":
+		if gateway.HTTPExposure.Ingress != nil {
+			return fmt.Errorf("external HTTP exposure cannot include Ingress settings")
+		}
+	case "ingress":
+		ingress := gateway.HTTPExposure.Ingress
+		if ingress == nil || len(validation.IsDNS1123Subdomain(ingress.ClassName)) != 0 {
+			return fmt.Errorf("managed HTTP exposure requires a valid IngressClass")
+		}
+		hostname := strings.ToLower(endpoint.Hostname())
+		if net.ParseIP(hostname) != nil || len(validation.IsDNS1123Subdomain(hostname)) != 0 {
+			return fmt.Errorf("managed Ingress requires a DNS endpoint hostname")
+		}
+		if endpoint.Port() != "" {
+			return fmt.Errorf("managed Ingress uses the standard HTTP or HTTPS port")
+		}
+		switch ingress.TLS.Source {
+		case "none":
+			if endpoint.Scheme != "http" || ingress.TLS.SecretName != "" || ingress.TLS.Issuer != nil {
+				return fmt.Errorf("plain HTTP Ingress requires an HTTP endpoint and no TLS reference")
+			}
+		case "secret":
+			if endpoint.Scheme != "https" || len(validation.IsDNS1123Subdomain(ingress.TLS.SecretName)) != 0 || ingress.TLS.Issuer != nil {
+				return fmt.Errorf("HTTPS Ingress TLS Secret selection is invalid")
+			}
+		case "certManager":
+			issuer := ingress.TLS.Issuer
+			if endpoint.Scheme != "https" || ingress.TLS.SecretName != "" || issuer == nil || issuer.Kind != "Issuer" && issuer.Kind != "ClusterIssuer" || len(validation.IsDNS1123Subdomain(issuer.Name)) != 0 {
+				return fmt.Errorf("HTTPS Ingress cert-manager issuer selection is invalid")
+			}
+		default:
+			return fmt.Errorf("ingress TLS source must be none, secret or certManager")
+		}
+	default:
+		return fmt.Errorf("gateway HTTP exposure must be external or ingress")
+	}
+	return nil
+}
+
+func validateGatewaySSHExposure(gateway *GatewayComponentSpec) error {
+	_, port, err := net.SplitHostPort(gateway.SSHExternalAddress)
+	if err != nil {
+		return fmt.Errorf("gateway SSH external address must use host:port")
+	}
+	switch gateway.SSHExposure.Mode {
+	case "external":
+	case "loadBalancer":
+		if port != "22" {
+			return fmt.Errorf("managed SSH LoadBalancer requires external port 22")
+		}
+	default:
+		return fmt.Errorf("gateway SSH exposure must be external or loadBalancer")
+	}
+	return nil
 }
 
 func (r EnvironmentConfiguration) Validate() error {

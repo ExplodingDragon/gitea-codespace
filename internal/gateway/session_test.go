@@ -13,11 +13,42 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newGatewaySessionRegistry() *SessionRegistry {
-	return NewSessionRegistryFromConfig(configpkg.DefaultGatewayConfig())
+type testGatewaySessionRegistry struct {
+	*SessionRegistry
+}
+
+func newGatewaySessionRegistry(t *testing.T) *testGatewaySessionRegistry {
+	return newGatewaySessionRegistryFromConfig(t, configpkg.DefaultGatewayConfig())
+}
+
+func newGatewaySessionRegistryFromConfig(t *testing.T, config configpkg.GatewayConfig) *testGatewaySessionRegistry {
+	return newGatewaySessionRegistryFromConfigAndKey(t, config, []byte("0123456789abcdef0123456789abcdef"))
+}
+
+func newGatewaySessionRegistryFromConfigAndKey(t *testing.T, config configpkg.GatewayConfig, key []byte) *testGatewaySessionRegistry {
+	t.Helper()
+	registry, err := NewSessionRegistryFromConfig(config, key)
+	require.NoError(t, err)
+	return &testGatewaySessionRegistry{SessionRegistry: registry}
+}
+
+func (r *testGatewaySessionRegistry) Create(binding OpenTokenBinding, now time.Time) (string, error) {
+	return r.CreateReplacingAny(binding, nil, now)
+}
+
+func (r *testGatewaySessionRegistry) CreateReplacing(binding OpenTokenBinding, replaceID string, now time.Time) (string, error) {
+	return r.CreateReplacingAny(binding, []string{replaceID}, now)
+}
+
+func (r *testGatewaySessionRegistry) Authenticate(token, codespaceUUID, endpointID string, now time.Time) (gatewaySession, bool) {
+	session, ok, ambiguous := r.AuthenticateAny([]string{token}, codespaceUUID, endpointID, now)
+	return session, ok && !ambiguous
 }
 
 func gatewaySessionTestConfig(ttl, idleTimeout configpkg.Duration, maxPerCodespace, maxPerUser int) configpkg.GatewayConfig {
+	if idleTimeout == 0 {
+		idleTimeout = ttl
+	}
 	return configpkg.GatewayConfig{Sessions: configpkg.GatewaySessionConfig{
 		TTL:             ttl,
 		IdleTimeout:     idleTimeout,
@@ -26,46 +57,52 @@ func gatewaySessionTestConfig(ttl, idleTimeout configpkg.Duration, maxPerCodespa
 	}}
 }
 
-func TestGatewaySessionRegistryTracksLiveSessions(t *testing.T) {
-	t.Parallel()
+func TestGatewaySessionRegistryRejectsInvalidKey(t *testing.T) {
+	_, err := NewSessionRegistryFromConfig(configpkg.DefaultGatewayConfig(), make([]byte, 31))
+	require.ErrorContains(t, err, "gateway session key must contain 32 bytes")
+}
 
-	registry := newGatewaySessionRegistry()
-	endFirst := registry.Begin("codespace-1")
-	endSecond := registry.Begin("codespace-1")
-	registry.Begin("")()
+func TestGatewaySessionTicketMovesBetweenReplicas(t *testing.T) {
+	config := gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 10, 10)
+	key := []byte("0123456789abcdef0123456789abcdef")
+	first := newGatewaySessionRegistryFromConfigAndKey(t, config, key)
+	second := newGatewaySessionRegistryFromConfigAndKey(t, config, key)
+	now := time.Unix(100, 0)
+	token, err := first.Create(OpenTokenBinding{SiteUID: "site", UserID: 42, CodespaceUUID: "codespace", EndpointID: "workspace"}, now)
+	require.NoError(t, err)
 
-	if live := registry.LiveSessions("codespace-1"); live != 2 {
-		t.Fatalf("live sessions = %d", live)
-	}
-	if live := registry.LiveSessions(""); live != 0 {
-		t.Fatalf("empty uuid live sessions = %d", live)
-	}
+	session, ok := second.Authenticate(token, "codespace", "workspace", now.Add(time.Second))
+	require.True(t, ok)
+	require.Equal(t, int64(42), session.userID)
+	require.NotEqual(t, token, session.token)
+	_, ok = second.Authenticate(session.token, "codespace", "workspace", now.Add(30*time.Second))
+	require.True(t, ok)
+	_, ok = second.Authenticate(token, "codespace", "other", now.Add(time.Second))
+	require.False(t, ok)
 
-	endFirst()
-	endFirst()
-	if live := registry.LiveSessions("codespace-1"); live != 1 {
-		t.Fatalf("live sessions after first end = %d", live)
+	other := newGatewaySessionRegistryFromConfigAndKey(t, config, []byte("fedcba9876543210fedcba9876543210"))
+	_, ok = other.Authenticate(token, "codespace", "workspace", now.Add(time.Second))
+	require.False(t, ok)
+	tamperAt := len(token) / 2
+	tamperedByte := byte('A')
+	if token[tamperAt] == tamperedByte {
+		tamperedByte = 'B'
 	}
-
-	endSecond()
-	if live := registry.LiveSessions("codespace-1"); live != 0 {
-		t.Fatalf("live sessions after second end = %d", live)
-	}
+	tampered := token[:tamperAt] + string(tamperedByte) + token[tamperAt+1:]
+	_, ok = second.Authenticate(tampered, "codespace", "workspace", now.Add(time.Second))
+	require.False(t, ok)
 }
 
 func TestGatewayActivityCountsOnlyAuthenticatedLiveConnections(t *testing.T) {
-	registry := NewSessionRegistryFromConfig(configpkg.DefaultGatewayConfig())
+	registry := newGatewaySessionRegistry(t)
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	releasePublic := registry.Begin(runtimeUUID)
-	t.Cleanup(releasePublic)
-	requireSignal(t, registry.ActivityChanges())
-	require.Empty(t, registry.Activity(time.Now()))
-
 	sessionID, err := registry.Create(OpenTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now())
 	require.NoError(t, err)
 	require.Empty(t, registry.Activity(time.Now()))
+	session, ok := registry.Authenticate(sessionID, runtimeUUID, "workspace", time.Now())
+	require.True(t, ok)
 
-	releaseRequest := registry.BeginSessionCancelable(sessionID, runtimeUUID, nil)
+	releaseRequest := registry.BeginSessionCancelable(session.id, runtimeUUID, nil)
 	requireSignal(t, registry.ActivityChanges())
 	require.Equal(t, map[string]int{runtimeUUID: 1}, registry.Activity(time.Now()))
 	releaseRequest()
@@ -93,28 +130,29 @@ func requireSignal(t *testing.T, changes <-chan struct{}) {
 func TestGatewaySessionRegistryDeleteCodespaceCancelsLiveConnections(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistry()
+	registry := newGatewaySessionRegistry(t)
+	now := time.Now()
+	token, err := registry.Create(OpenTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: "codespace-1", EndpointID: "workspace"}, now)
+	require.NoError(t, err)
+	session, ok := registry.Authenticate(token, "codespace-1", "workspace", now)
+	require.True(t, ok)
 	ctx, cancel := context.WithCancel(context.Background())
-	release := registry.BeginCancelable("codespace-1", cancel)
-	if live := registry.LiveSessions("codespace-1"); live != 1 {
-		t.Fatalf("live sessions before delete = %d", live)
-	}
+	release := registry.BeginSessionCancelable(session.id, "codespace-1", cancel)
+	require.Equal(t, map[string]int{"codespace-1": 1}, registry.Activity(now))
 	registry.DeleteCodespace("codespace-1")
 	select {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
 		t.Fatalf("live connection was not canceled")
 	}
-	if live := registry.LiveSessions("codespace-1"); live != 0 {
-		t.Fatalf("live sessions after delete = %d", live)
-	}
+	require.Empty(t, registry.Activity(now))
 	release()
 }
 
 func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistry()
+	registry := newGatewaySessionRegistry(t)
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -125,10 +163,6 @@ func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create session: %v", err)
 	}
-	if live := registry.liveSessionsAt("codespace-1", now); live != 1 {
-		t.Fatalf("connecting live sessions = %d", live)
-	}
-
 	session, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now.Add(gatewaySessionConnectTimeout))
 	if !ok {
 		t.Fatalf("session was not authenticated")
@@ -144,7 +178,7 @@ func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 	t.Parallel()
 
-	registry := newGatewaySessionRegistry()
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -159,15 +193,17 @@ func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 	if _, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now.Add(gatewaySessionConnectTimeout+time.Nanosecond)); ok {
 		t.Fatalf("expired connecting session authenticated")
 	}
-	if live := registry.liveSessionsAt("codespace-1", now.Add(gatewaySessionConnectTimeout+time.Nanosecond)); live != 0 {
-		t.Fatalf("live sessions after connecting timeout = %d", live)
+	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace",
+	}, now.Add(gatewaySessionConnectTimeout+time.Nanosecond)); err != nil {
+		t.Fatalf("create session after connecting timeout: %v", err)
 	}
 }
 
 func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 10))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 10))
 	now := time.Unix(100, 0)
 	if _, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -186,7 +222,7 @@ func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T)
 func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -225,7 +261,7 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	validID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -249,15 +285,15 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 	if !ok || ambiguous {
 		t.Fatalf("authenticate candidates ok=%v ambiguous=%v", ok, ambiguous)
 	}
-	if session.id != validID {
-		t.Fatalf("matched session id = %q", session.id)
+	if session.codespaceUUID != "codespace-1" || session.endpointID != "workspace" {
+		t.Fatalf("matched session = %#v", session)
 	}
 }
 
 func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -293,7 +329,7 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	now := time.Unix(100, 0)
 	release, ok := registry.BeginSSHSession("site-1", "codespace-1", 42, nil, now)
 	if !ok {
@@ -313,7 +349,7 @@ func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 func TestGatewaySessionRegistrySeparatesUsersBySite(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	now := time.Unix(100, 0)
 	for _, binding := range []OpenTokenBinding{
 		{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace"},
@@ -331,7 +367,7 @@ func TestGatewaySessionRegistrySeparatesUsersBySite(t *testing.T) {
 func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Minute), 0, 1, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Minute), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -366,7 +402,7 @@ func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -396,15 +432,12 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 	}, now.Add(time.Minute+time.Nanosecond)); err != nil {
 		t.Fatalf("create endpoint session after idle timeout: %v", err)
 	}
-	if live := registry.liveSessionsAt("codespace-1", now.Add(time.Minute+time.Nanosecond)); live != 1 {
-		t.Fatalf("live sessions after idle replacement = %d", live)
-	}
 }
 
 func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
 		SiteUID:       "site-1",
@@ -415,16 +448,19 @@ func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create endpoint session: %v", err)
 	}
-	if _, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now); !ok {
+	session, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now)
+	if !ok {
 		t.Fatalf("authenticate endpoint session")
 	}
-	if _, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now.Add(30*time.Second)); !ok {
+	session, ok = registry.Authenticate(session.token, "codespace-1", "workspace", now.Add(30*time.Second))
+	if !ok {
 		t.Fatalf("refresh endpoint session")
 	}
-	if _, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now.Add(90*time.Second)); !ok {
+	session, ok = registry.Authenticate(session.token, "codespace-1", "workspace", now.Add(90*time.Second))
+	if !ok {
 		t.Fatalf("session should still be active after refreshed idle timeout")
 	}
-	if _, ok := registry.Authenticate(sessionID, "codespace-1", "workspace", now.Add(90*time.Second+time.Minute+time.Nanosecond)); ok {
+	if _, ok := registry.Authenticate(session.token, "codespace-1", "workspace", now.Add(90*time.Second+time.Minute+time.Nanosecond)); ok {
 		t.Fatalf("session authenticated after refreshed idle timeout expired")
 	}
 }
@@ -432,7 +468,7 @@ func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 func TestGatewaySessionRegistryDeleteCodespaceReleasesSSHSessionLimit(t *testing.T) {
 	t.Parallel()
 
-	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	ctx, cancel := context.WithCancel(context.Background())
 	release, ok := registry.BeginSSHSession("site-1", "codespace-1", 42, cancel, time.Unix(100, 0))
 	if !ok {

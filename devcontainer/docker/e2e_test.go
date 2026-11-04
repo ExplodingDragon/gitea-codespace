@@ -100,7 +100,7 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 	if _, err := engine.Stop(ctx, state); err != nil {
 		t.Fatalf("stop official interoperability environment: %v", err)
 	}
-	state, err = engine.Start(ctx, state, nil)
+	state, err = engine.Start(ctx, state, nil, nil)
 	if err != nil {
 		t.Fatalf("resume official interoperability environment: %v", err)
 	}

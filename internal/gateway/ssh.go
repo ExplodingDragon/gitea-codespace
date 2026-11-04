@@ -65,22 +65,12 @@ func NewSSHServer(
 	if hostKey == nil {
 		return nil, fmt.Errorf("gateway ssh host key is required")
 	}
-	defaults := configpkg.DefaultGatewayConfig()
 	idleTimeout := gatewayConfig.Sessions.IdleTimeout.ToStdlib()
-	if idleTimeout <= 0 {
-		idleTimeout = defaults.Sessions.IdleTimeout.ToStdlib()
-	}
 	revalidateInterval := gatewayConfig.Sessions.RevalidateInterval.ToStdlib()
-	if revalidateInterval <= 0 {
-		revalidateInterval = defaultGatewaySessionRevalidateInterval
-	}
 	maxChannels := gatewayConfig.SSH.MaxChannelsPerConnection
-	if maxChannels <= 0 {
-		maxChannels = defaults.SSH.MaxChannelsPerConnection
-	}
 	handshakeTimeout := gatewayConfig.SSH.HandshakeTimeout.ToStdlib()
-	if handshakeTimeout <= 0 {
-		handshakeTimeout = defaults.SSH.HandshakeTimeout.ToStdlib()
+	if idleTimeout <= 0 || revalidateInterval <= 0 || maxChannels <= 0 || handshakeTimeout <= 0 {
+		return nil, fmt.Errorf("gateway SSH configuration is incomplete")
 	}
 	server := &SSHServer{
 		state:              state,

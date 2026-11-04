@@ -6,9 +6,12 @@ package cache
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
 	"encoding/hex"
 	"errors"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -45,13 +48,14 @@ func TestCacheAuthenticationExpiry(t *testing.T) {
 
 func TestCacheServiceStopsMaintenanceWhenManagerLeaseIsLost(t *testing.T) {
 	control := &fakeCacheControl{
-		config:       ControlConfig{Config: configpkg.CacheConfig{ID: "test", Enabled: true, Listen: "127.0.0.1:0", PublicURL: "http://cache.example.com", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}, RegistryKey: "test-key", TokenKey: []byte(strings.Repeat("t", 32))},
+		config:       ControlConfig{Config: configpkg.CacheConfig{ID: "test", Enabled: true, Listen: "127.0.0.1:0", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}, RegistryKey: "test-key", TokenKey: []byte(strings.Repeat("t", 32))},
 		heartbeatErr: errors.New("cache service ownership lost"),
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- runCacheInstance(ctx, io.Discard, control, control.config) }()
+	tlsConfig := testCacheTLSConfig(t)
+	go func() { done <- runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig) }()
 	select {
 	case err := <-done:
 		if err == nil || err.Error() != "cache service ownership lost" {
@@ -64,14 +68,15 @@ func TestCacheServiceStopsMaintenanceWhenManagerLeaseIsLost(t *testing.T) {
 
 func TestCacheServiceExpiresWhileHeartbeatIsBlocked(t *testing.T) {
 	control := &fakeCacheControl{
-		config:         ControlConfig{Config: configpkg.CacheConfig{ID: "test", Enabled: true, Listen: "127.0.0.1:0", PublicURL: "http://cache.example.com", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}, RegistryKey: "test-key", TokenKey: []byte(strings.Repeat("t", 32))},
+		config:         ControlConfig{Config: configpkg.CacheConfig{ID: "test", Enabled: true, Listen: "127.0.0.1:0", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}, RegistryKey: "test-key", TokenKey: []byte(strings.Repeat("t", 32))},
 		permitDuration: 50 * time.Millisecond, stallHeartbeat: true,
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
 	defer cancel()
 	released := make(chan struct{})
+	tlsConfig := testCacheTLSConfig(t)
 	go func() {
-		_ = runCacheInstance(ctx, io.Discard, control, control.config)
+		_ = runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig)
 		close(released)
 	}()
 	select {
@@ -84,6 +89,13 @@ func TestCacheServiceExpiresWhileHeartbeatIsBlocked(t *testing.T) {
 	case <-ctx.Done():
 		t.Fatal("blocked heartbeat prevented the cache permit from expiring")
 	}
+}
+
+func testCacheTLSConfig(t *testing.T) *tls.Config {
+	t.Helper()
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	return server.TLS.Clone()
 }
 
 func cacheSessionKey(value string) string {
@@ -112,7 +124,7 @@ func (f *fakeCacheControl) ClaimCache(_ context.Context, id string) (Owner, erro
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.owner.ID != "" {
-		return Owner{}, ErrCacheServiceBusy
+		return Owner{}, errCacheServiceBusy
 	}
 	duration := f.permitDuration
 	if duration == 0 {

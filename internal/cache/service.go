@@ -5,6 +5,7 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"fmt"
 	"io"
@@ -14,9 +15,10 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"gitea.dev/codespace/internal/transport"
 )
 
-var ErrCacheServiceBusy = errors.New("another cache service is active")
+var errCacheServiceBusy = errors.New("another cache service is active")
 
 const cacheStatusScanTimeout = 2 * time.Second
 
@@ -36,9 +38,23 @@ func isCacheAuthorizationError(err error) bool {
 	return code == connect.CodeUnauthenticated || code == connect.CodePermissionDenied
 }
 
-func Run(ctx context.Context, output io.Writer, control Control, id string) error {
+// RunOptions identifies the cache component and its mounted TLS identity.
+type RunOptions struct {
+	ID                   string
+	CertificateDirectory string
+}
+
+// Run keeps one cache component synchronized with its Manager configuration.
+func Run(ctx context.Context, output io.Writer, control Control, options RunOptions) error {
+	if options.ID == "" || options.CertificateDirectory == "" {
+		return fmt.Errorf("cache ID and Registry certificate directory are required")
+	}
+	tlsConfig, err := transport.ServerCertificate(options.CertificateDirectory)
+	if err != nil {
+		return err
+	}
 	for ctx.Err() == nil {
-		controlConfig, err := control.GetCache(ctx, id)
+		controlConfig, err := control.GetCache(ctx, options.ID)
 		if err != nil {
 			if isCacheAuthorizationError(err) {
 				return fmt.Errorf("cache Manager authorization failed: %w", err)
@@ -49,7 +65,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 			continue
 		}
 		config := controlConfig.Config
-		if config.ID != id || controlConfig.RegistryKey == "" || len(controlConfig.TokenKey) < 32 {
+		if config.ID != options.ID || controlConfig.RegistryKey == "" || len(controlConfig.TokenKey) < 32 {
 			return fmt.Errorf("manager returned an invalid cache configuration")
 		}
 		if !config.Enabled {
@@ -60,7 +76,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 		}
 		instanceCtx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
-		go func() { done <- runCacheInstance(instanceCtx, output, control, controlConfig) }()
+		go func() { done <- runCacheInstance(instanceCtx, output, control, controlConfig, tlsConfig) }()
 		ticker := time.NewTicker(2 * time.Second)
 		watching := true
 		var terminalErr error
@@ -71,7 +87,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 			case err := <-done:
 				done = nil
 				watching = false
-				if err != nil && !errors.Is(err, ErrCacheServiceBusy) && ctx.Err() == nil {
+				if err != nil && !errors.Is(err, errCacheServiceBusy) && ctx.Err() == nil {
 					if isCacheAuthorizationError(err) {
 						terminalErr = fmt.Errorf("cache Manager authorization failed: %w", err)
 					} else {
@@ -79,7 +95,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 					}
 				}
 			case <-ticker.C:
-				updated, loadErr := control.GetCache(ctx, id)
+				updated, loadErr := control.GetCache(ctx, options.ID)
 				if loadErr != nil {
 					if isCacheAuthorizationError(loadErr) {
 						terminalErr = fmt.Errorf("cache Manager authorization failed: %w", loadErr)
@@ -89,7 +105,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 					// Manager lease still fences the process after its TTL.
 					continue
 				}
-				if updated.Config.ID != id || updated.RegistryKey == "" || len(updated.TokenKey) < 32 {
+				if updated.Config.ID != options.ID || updated.RegistryKey == "" || len(updated.TokenKey) < 32 {
 					terminalErr = fmt.Errorf("manager returned an invalid cache configuration")
 					watching = false
 					continue
@@ -113,7 +129,7 @@ func Run(ctx context.Context, output io.Writer, control Control, id string) erro
 	return nil
 }
 
-func runCacheInstance(ctx context.Context, output io.Writer, control Control, controlConfig ControlConfig) (resultErr error) {
+func runCacheInstance(ctx context.Context, output io.Writer, control Control, controlConfig ControlConfig, tlsConfig *tls.Config) (resultErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	config := controlConfig.Config
@@ -128,7 +144,7 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 		defer cancel()
 		resultErr = errors.Join(resultErr, control.ReleaseCache(releaseCtx, owner))
 	}()
-	cache, err := New(ctx, config, controlConfig.RegistryKey, controlConfig.TokenKey)
+	cache, err := newRegistryCache(ctx, config, controlConfig.RegistryKey, controlConfig.TokenKey)
 	if err != nil {
 		return err
 	}
@@ -137,13 +153,14 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	listener, err := cache.OpenListener()
+	listener, err := cache.openListener()
 	if err != nil {
 		return err
 	}
 	defer func() { _ = listener.Close() }()
 	server := &http.Server{
-		Handler:           cache.Handler(),
+		Handler:           cache.httpHandler(),
+		TLSConfig:         tlsConfig,
 		ReadHeaderTimeout: 10 * time.Second,
 		MaxHeaderBytes:    64 * 1024,
 	}
@@ -152,13 +169,13 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	stopServer := context.AfterFunc(ctx, func() { _ = server.Close() })
 	defer stopServer()
 	serveDone := make(chan error, 1)
-	go func() { serveDone <- server.Serve(listener) }()
+	go func() { serveDone <- server.ServeTLS(listener, "", "") }()
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); cache.maintain(ctx, control) }()
 	_, _ = fmt.Fprintf(output, "codespace cache registry listening on %s\n", listener.Addr())
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	status := Status{PublicURL: cache.publicURL, ConfigRevision: config.Revision}
+	status := Status{ConfigRevision: config.Revision}
 	var nextScan time.Time
 	running := true
 	for running {
@@ -255,11 +272,11 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 		}
 		// Drain cached authentication before deleting data; stop before the grant expires.
 		deadline := grant.ExpiresAt.Add(-5 * time.Second)
-		if time.Until(deadline) <= AuthenticationTTL {
+		if time.Until(deadline) <= authenticationTTL {
 			_ = control.CompleteCacheGC(ctx, grant)
 			continue
 		}
-		timer := time.NewTimer(AuthenticationTTL)
+		timer := time.NewTimer(authenticationTTL)
 		select {
 		case <-ctx.Done():
 			timer.Stop()

@@ -22,6 +22,9 @@ import (
 //go:embed builtin/configure-git.sh
 var configureGitScript string
 
+//go:embed builtin/install-ca.sh
+var installCAScript string
+
 //go:embed builtin/start-web-ide.sh
 var startWebIDEScript string
 
@@ -32,6 +35,7 @@ const (
 	// ContainerRuntimeBinary is the in-container path used by endpoint and TCP bridges.
 	ContainerRuntimeBinary  = "/usr/local/libexec/gitea-codespace-runtime"
 	containerEndpointBinary = "/usr/local/bin/gitea-codespace-endpoint"
+	containerCABundlePath   = "/var/lib/gitea-codespace/ca/bundle.pem"
 )
 
 var runtimeMounts = [...]struct {
@@ -42,6 +46,7 @@ var runtimeMounts = [...]struct {
 	{source: "/run/codespace/gitea-token", target: "/var/lib/gitea-codespace/gitea-token", readOnly: true},
 	{source: "/run/codespace/git", target: "/var/lib/gitea-codespace/git", readOnly: true},
 	{source: "/run/codespace/bin", target: "/var/lib/gitea-codespace/bin", readOnly: true},
+	{source: "/run/codespace/ca", target: "/var/lib/gitea-codespace/ca", readOnly: true},
 	{source: runtimeendpoint.AgentSocketPath, target: runtimeendpoint.ContainerSocketPath},
 	{source: "/usr/local/bin/gitea-codespace", target: ContainerRuntimeBinary, readOnly: true},
 }
@@ -78,6 +83,13 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			},
 		})
 	}
+	containerEnvironment := map[string]string{
+		"CODESPACE_CA_BUNDLE": containerCABundlePath,
+		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
+	}
+	if request.GiteaCustomCA {
+		containerEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
+	}
 	return containerdocker.CreateOptions{
 		OwnerID:          request.CodespaceUUID,
 		Workspace:        request.Workspace,
@@ -89,11 +101,15 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		Cache:            request.Cache,
 		InjectedFeatures: injected,
 		AdditionalMounts: mounts,
+		ContainerEnv:     containerEnvironment,
 		Labels:           map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
 	}, nil
 }
 
 func configureCreate(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
+	if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
+		return err
+	}
 	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
 		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
 	}
@@ -101,12 +117,47 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 		return err
 	}
 	values := map[string]string{
+		"GITEA_URL":            request.GiteaURL,
 		"GITEA_GIT_USER_NAME":  request.GitUserName,
 		"GITEA_GIT_USER_EMAIL": request.GitUserEmail,
 		"GITEA_WORKSPACE":      state.RemoteWorkdir,
 	}
-	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", configureGitScript}, values, nil); err != nil {
+	if request.GiteaCustomCA {
+		values["GITEA_CA_BUNDLE"] = containerCABundlePath
+	}
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
+	}
+	return nil
+}
+
+func configureCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, giteaCustom bool) error {
+	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"/bin/sh", "-c", installCAScript}, nil, nil); err != nil {
+		return fmt.Errorf("configure platform CA in Dev Container: %w", err)
+	}
+	if state.RemoteEnvironment == nil {
+		state.RemoteEnvironment = map[string]string{}
+	}
+	state.RemoteEnvironment["CODESPACE_CA_BUNDLE"] = containerCABundlePath
+	state.RemoteEnvironment["NODE_EXTRA_CA_CERTS"] = containerCABundlePath
+	if giteaCustom {
+		state.RemoteEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
+	} else {
+		delete(state.RemoteEnvironment, "GITEA_CA_BUNDLE")
+	}
+	return nil
+}
+
+func configureGitCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, giteaURL string, custom bool) error {
+	values := map[string]string{
+		"GITEA_CONFIGURE_CA_ONLY": "true",
+		"GITEA_URL":               giteaURL,
+	}
+	if custom {
+		values["GITEA_CA_BUNDLE"] = containerCABundlePath
+	}
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
+		return fmt.Errorf("configure Gitea CA for Git in Dev Container: %w", err)
 	}
 	return nil
 }
@@ -147,7 +198,7 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		}
 		settingsReader = bytes.NewReader(settings)
 	}
-	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/bash", "-c", startWebIDEScript}, values, settingsReader); err != nil {
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
 	if !initializeWebIDE {

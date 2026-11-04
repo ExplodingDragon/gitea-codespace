@@ -26,9 +26,11 @@ test('administration workflows preserve resource identity and validate cluster-b
         displayName: 'Primary gateway',
         resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
         gateway: {
-          publicURL: 'https://workspace.example.com',
-          sshPublicAddress: 'ssh.example.com:2222',
-          parent: {},
+          replicas: 2,
+          endpointBaseURL: 'https://workspace.example.com',
+          sshExternalAddress: 'ssh.example.com:22',
+          httpExposure: {mode: 'external'},
+          sshExposure: {mode: 'external'},
           ssh: {
             handshakeTimeout: '30s',
             maxChannelsPerConnection: 32,
@@ -56,7 +58,7 @@ test('administration workflows preserve resource identity and validate cluster-b
           },
         },
       },
-      status: {available: true, readyReplicas: 1, desiredReplicas: 1},
+      status: {available: true, readyReplicas: 2, desiredReplicas: 2},
     },
   ];
   const runtimes: Resource<RuntimeInstance>[] = [
@@ -93,16 +95,9 @@ test('administration workflows preserve resource identity and validate cluster-b
   const clusterOptions: ClusterOptions = {
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
-    gateways: [
-      {
-        name: 'public',
-        namespace: 'ingress',
-        listeners: [
-          {name: 'https', protocol: 'HTTPS', port: 443},
-          {name: 'ssh', protocol: 'TCP', port: 22},
-        ],
-      },
-    ],
+    ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
+    tlsSecrets: ['wildcard-tls'],
+    issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
@@ -162,7 +157,7 @@ test('administration workflows preserve resource identity and validate cluster-b
         return;
       }
       environments.push({
-        name: body.name,
+        name: 'environment-generated',
         uid: 'template-uid',
         resourceVersion: '1',
         generation: 1,
@@ -219,12 +214,10 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(selectField('Isolation')).toBeVisible();
   await expect(selectField('RuntimeClass')).toBeVisible();
   await expect(selectField('StorageClass')).toBeVisible();
-  await field('Resource name').fill('standard');
   await field('Tag').fill('standard');
   await field('code-server version').fill('4.121.0');
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Request failed', {exact: false})).toBeVisible();
-  await expect(field('Resource name')).toHaveValue('standard');
   await expect(field('Tag')).toHaveValue('standard');
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
@@ -254,7 +247,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     .filter({hasText: /^Environment templates/})
     .locator('.n-base-selection')
     .click();
-  await page.getByText('standard (standard)', {exact: true}).click();
+  await page.getByText('standard (environment-generated)', {exact: true}).click();
   await page.keyboard.press('Escape');
   await page
     .locator('.n-form-item')
@@ -280,14 +273,28 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.getByRole('link', {name: 'Components', exact: true}).click();
   await expect(page.getByRole('cell', {name: 'https://workspace.example.com'})).toBeVisible();
   await expect(page.getByText('Available', {exact: true})).toBeVisible();
+  await expect(page.getByText('2 of 2 replicas ready', {exact: true})).toBeVisible();
   await page.getByRole('button', {name: 'Rotate SSH host key', exact: true}).click();
   await page.getByRole('button', {name: 'Rotate key', exact: true}).click();
   await expect.poll(() => rotationWrite).toEqual({name: 'gateway', uid: 'gateway-uid', resourceVersion: '1'});
   await page.getByRole('button', {name: 'Edit component', exact: true}).click();
-  await expect(field('Public HTTPS URL')).toHaveValue('https://workspace.example.com');
+  await expect(field('Endpoint base URL')).toHaveValue('https://workspace.example.com');
+  await expect(
+    page
+      .locator('.n-form-item')
+      .filter({hasText: /^Gateway replicas/})
+      .locator('input'),
+  ).toHaveValue('2');
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('button', {name: 'Add component', exact: true}).click();
-  await expect(selectField('Exposure')).toBeVisible();
+  await expect(selectField('HTTP publication')).toBeVisible();
+  await selectField('HTTP publication').click();
+  await page.getByText('Create a Kubernetes Ingress', {exact: true}).click();
+  await expect(selectField('Ingress class')).toBeVisible();
+  await expect(selectField('Ingress TLS')).toBeVisible();
+  await selectField('Ingress TLS').click();
+  await page.getByText('cert-manager issuer', {exact: true}).click();
+  await expect(selectField('Issuer')).toBeVisible();
   await selectField('Role').click();
   await page.getByText('Registry cache', {exact: true}).last().click();
   await expect(selectField('Storage class')).toBeVisible();

@@ -111,8 +111,24 @@ func (s *ComponentServer) gatewayConfig(ctx context.Context, identity componentI
 	}
 	return &componentv1.GatewayConfigurationSnapshot{
 		HttpListen: config.HTTP.Listen, PublicUrl: config.HTTP.PublicURL, SshListen: config.SSH.Listen, SshPublicAddress: config.SSH.PublicAddr,
-		SessionTtlMilliseconds: int64(config.Sessions.TTL.ToStdlib() / time.Millisecond), SessionIdleTimeoutMilliseconds: int64(config.Sessions.IdleTimeout.ToStdlib() / time.Millisecond), RevalidateIntervalMilliseconds: int64(config.Sessions.RevalidateInterval.ToStdlib() / time.Millisecond),
-		MaxSessionsPerCodespace: int32(config.Sessions.MaxPerCodespace), MaxSessionsPerUser: int32(config.Sessions.MaxPerUser), MaxInflight: int32(config.Limits.MaxInflightTotal), MaxInflightPerSession: int32(config.Limits.MaxInflightPerSession), MaxChannelsPerSshConnection: int32(config.SSH.MaxChannelsPerConnection),
+		TrustedProxyCidrs:                append([]string(nil), config.HTTP.TrustedProxyCIDRs...),
+		SessionTtlMilliseconds:           config.Sessions.TTL.ToStdlib().Milliseconds(),
+		SessionIdleTimeoutMilliseconds:   config.Sessions.IdleTimeout.ToStdlib().Milliseconds(),
+		RevalidateIntervalMilliseconds:   config.Sessions.RevalidateInterval.ToStdlib().Milliseconds(),
+		MaxSessionsPerCodespace:          int32(config.Sessions.MaxPerCodespace),
+		MaxSessionsPerUser:               int32(config.Sessions.MaxPerUser),
+		MaxInflight:                      int32(config.Limits.MaxInflightTotal),
+		MaxInflightPerSession:            int32(config.Limits.MaxInflightPerSession),
+		MaxChannelsPerSshConnection:      int32(config.SSH.MaxChannelsPerConnection),
+		SshHandshakeTimeoutMilliseconds:  config.SSH.HandshakeTimeout.ToStdlib().Milliseconds(),
+		SshAuthMaxAttemptsPerIp:          int32(config.SSH.Auth.MaxAttemptsPerIP),
+		SshAuthMaxAttemptsPerCodespace:   int32(config.SSH.Auth.MaxAttemptsPerCodespace),
+		SshAuthMaxAttemptsPerIpCodespace: int32(config.SSH.Auth.MaxAttemptsPerIPCodespace),
+		SshAuthMaxAttemptsPerPublicKey:   int32(config.SSH.Auth.MaxAttemptsPerPublicKey),
+		SshAuthFailureWindowMilliseconds: config.SSH.Auth.FailureWindow.ToStdlib().Milliseconds(),
+		PublicMaxConnectionsPerEndpoint:  int32(config.Limits.PublicMaxConnectionsPerEndpoint),
+		PublicMaxConnectionsPerIp:        int32(config.Limits.PublicMaxConnectionsPerIP),
+		ValidationMaxInflight:            int32(config.Limits.ValidationMaxInflight),
 	}, component.UID, nil
 }
 
@@ -279,9 +295,12 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 			}
 			if snapshot.Cursor != cursor {
 				snapshot.Sequence = sequence
-				snapshot.PermitValidForMilliseconds = 30_000
+				snapshot.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
 				if err := stream.Send(snapshot); err != nil {
 					return err
+				}
+				if s.Activity != nil {
+					s.Activity.RenewGatewayPermit(identity.UID, session, time.Now())
 				}
 				cursor = snapshot.Cursor
 			}
@@ -306,8 +325,11 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 		case <-changes:
 			sendSnapshot = true
 		case <-permitTicker.C:
-			if err := stream.Send(&componentv1.GatewayControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: 30_000, Cursor: cursor}); err != nil {
+			if err := stream.Send(&componentv1.GatewayControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: gatewayPermitTTL.Milliseconds(), Cursor: cursor}); err != nil {
 				return err
+			}
+			if s.Activity != nil {
+				s.Activity.RenewGatewayPermit(identity.UID, session, time.Now())
 			}
 		case <-streamLifetime.C:
 			return nil

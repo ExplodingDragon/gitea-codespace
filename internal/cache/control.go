@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package cache implements the OCI registry cache and its Manager control boundary.
 package cache
 
 import (
@@ -54,7 +55,6 @@ type Owner struct {
 
 // Status is the small, manager-visible status snapshot for one cache.
 type Status struct {
-	PublicURL      string
 	ConfigRevision int64
 	CacheBytes     int64
 	MirrorBytes    int64

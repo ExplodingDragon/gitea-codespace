@@ -21,7 +21,7 @@ import (
 func NewCommand() *cobra.Command {
 	command := &cobra.Command{
 		Use:           "gitea-codespace",
-		Short:         "Run a Gitea Codespace manager",
+		Short:         "Run Gitea Codespace services and tools",
 		Args:          cobra.NoArgs,
 		SilenceErrors: true,
 		SilenceUsage:  true,

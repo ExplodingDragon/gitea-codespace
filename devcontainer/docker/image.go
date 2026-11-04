@@ -17,6 +17,7 @@ import (
 
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/client"
 	dockerunits "github.com/docker/go-units"
 
 	"gitea.dev/codespace/devcontainer"
@@ -103,7 +104,10 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 	if err != nil {
 		return fmt.Errorf("resolve registry credentials for %s: %w", imageName, err)
 	}
-	reader, err := e.client.ImagePull(ctx, imageName, image.PullOptions{RegistryAuth: registryAuth})
+	reader, err := e.client.ImagePull(ctx, imageName, image.PullOptions{
+		RegistryAuth: registryAuth,
+		Platform:     e.imagePlatform(),
+	})
 	if err != nil {
 		return fmt.Errorf("pull Dev Container image %s: %w", imageName, err)
 	}
@@ -266,7 +270,7 @@ func (m imageMetadataEntry) configuration() devcontainer.Configuration {
 }
 
 func (e *Engine) readImageMetadata(ctx context.Context, imageName string) (imageMetadata, error) {
-	inspect, err := e.client.ImageInspect(ctx, imageName)
+	inspect, err := e.inspectImage(ctx, imageName)
 	if err != nil {
 		return imageMetadata{}, fmt.Errorf("inspect Dev Container image metadata: %w", err)
 	}
@@ -278,6 +282,45 @@ func (e *Engine) readImageMetadata(ctx context.Context, imageName string) (image
 		return imageMetadata{}, fmt.Errorf("decode image devcontainer.metadata: %w", err)
 	}
 	return metadata, nil
+}
+
+func (e *Engine) imagePlatform() string {
+	if e.platform == nil {
+		return ""
+	}
+	platform := strings.TrimSpace(e.platform.OS) + "/" + strings.TrimSpace(e.platform.Architecture)
+	if variant := strings.TrimSpace(e.platform.Variant); variant != "" {
+		platform += "/" + variant
+	}
+	return platform
+}
+
+func (e *Engine) inspectImage(ctx context.Context, imageName string) (image.InspectResponse, error) {
+	inspect, err := e.client.ImageInspect(ctx, imageName, client.ImageInspectWithManifests(true))
+	if err != nil || inspect.Config != nil && inspect.Os != "" && inspect.Architecture != "" {
+		return inspect, err
+	}
+	if e.platform == nil {
+		return image.InspectResponse{}, fmt.Errorf("inspect image %s: docker server platform is unavailable", imageName)
+	}
+	for _, manifest := range inspect.Manifests {
+		if !manifest.Available || manifest.Kind != image.ManifestKindImage || manifest.ImageData == nil {
+			continue
+		}
+		platform := manifest.ImageData.Platform
+		if platform.OS != e.platform.OS || platform.Architecture != e.platform.Architecture || e.platform.Variant != "" && platform.Variant != e.platform.Variant {
+			continue
+		}
+		resolved, err := e.client.ImageInspect(ctx, manifest.ID)
+		if err != nil {
+			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: %w", imageName, manifest.ID, err)
+		}
+		if resolved.Config == nil {
+			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: configuration is missing", imageName, manifest.ID)
+		}
+		return resolved, nil
+	}
+	return image.InspectResponse{}, fmt.Errorf("image %s does not provide an available %s/%s configuration", imageName, e.platform.OS, e.platform.Architecture)
 }
 
 func parseImageMetadata(raw []byte) (imageMetadata, error) {

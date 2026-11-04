@@ -76,19 +76,22 @@ func TestRegistryCacheProxyRefreshesTagsAndRejectsWrites(t *testing.T) {
 	defer func() { http.DefaultTransport = transport }()
 	host := strings.TrimPrefix(upstream.URL, "https://")
 	config := configpkg.CacheConfig{ID: "test", Name: "Test",
-		Enabled: true, PublicURL: "http://cache.example.com", Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()},
+		Enabled: true, Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()},
 		MaxAge: configpkg.Duration(time.Hour), Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{host: {Allow: []string{"team/*"}}},
 	}
-	cache, err := New(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
+	cache, err := newRegistryCache(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { require.NoError(t, cache.Close()) }()
 	ping := httptest.NewRecorder()
-	cache.Handler().ServeHTTP(ping, httptest.NewRequest(http.MethodGet, "/v2/", nil))
+	cache.httpHandler().ServeHTTP(ping, httptest.NewRequest(http.MethodGet, "/v2/", nil))
 	if ping.Code != http.StatusUnauthorized || ping.Header().Get("WWW-Authenticate") == "" {
 		t.Fatalf("registry discovery did not advertise authentication: %d", ping.Code)
 	}
+	unknown := httptest.NewRecorder()
+	cache.httpHandler().ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/", nil))
+	require.Equal(t, http.StatusUnauthorized, unknown.Code)
 	path := "/v2/mirror/" + host + "/team/image/manifests/latest"
 	var previous string
 	for i := range 2 {
@@ -96,7 +99,7 @@ func TestRegistryCacheProxyRefreshesTagsAndRejectsWrites(t *testing.T) {
 		request := httptest.NewRequest(http.MethodGet, path, nil)
 		request.SetBasicAuth(Username, testRegistryToken(t, cache, "repository", configpkg.CachePolicy{Public: true, Build: true}))
 		response := httptest.NewRecorder()
-		cache.Handler().ServeHTTP(response, request)
+		cache.httpHandler().ServeHTTP(response, request)
 		if response.Code != http.StatusOK {
 			t.Fatalf("proxy response: %d %s", response.Code, response.Body.String())
 		}
@@ -109,37 +112,37 @@ func TestRegistryCacheProxyRefreshesTagsAndRejectsWrites(t *testing.T) {
 	request := httptest.NewRequest(http.MethodPut, path, strings.NewReader("untrusted image"))
 	request.SetBasicAuth(Username, testRegistryToken(t, cache, "repository", configpkg.CachePolicy{Public: true, Build: true}))
 	response := httptest.NewRecorder()
-	cache.Handler().ServeHTTP(response, request)
+	cache.httpHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("public cache write status: %d", response.Code)
 	}
 	request = httptest.NewRequest(http.MethodGet, path, nil)
 	request.SetBasicAuth(Username, testRegistryToken(t, cache, "repository", configpkg.CachePolicy{Build: true}))
 	response = httptest.NewRecorder()
-	cache.Handler().ServeHTTP(response, request)
+	cache.httpHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusUnauthorized {
 		t.Fatalf("disabled public cache policy: %d", response.Code)
 	}
 	cache.minFreeBytes = 1 << 62
 	request.SetBasicAuth(Username, testRegistryToken(t, cache, "repository", configpkg.CachePolicy{Public: true}))
 	response = httptest.NewRecorder()
-	cache.Handler().ServeHTTP(response, request)
+	cache.httpHandler().ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("cache low-space status: %d", response.Code)
 	}
 }
 
 func TestRegistryCacheServesScopedBuildBlobs(t *testing.T) {
-	config := configpkg.CacheConfig{ID: "test", Name: "Test", Enabled: true, Listen: "127.0.0.1:0", PublicURL: "http://cache.example.com",
+	config := configpkg.CacheConfig{ID: "test", Name: "Test", Enabled: true, Listen: "127.0.0.1:0",
 		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}
-	cache, err := New(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
+	cache, err := newRegistryCache(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { require.NoError(t, cache.Close()) }()
 	cache.minFreeBytes = 0
 	attachTestCacheControl(t, cache)
-	server := httptest.NewServer(cache.Handler())
+	server := httptest.NewServer(cache.httpHandler())
 	defer server.Close()
 	token := testRegistryToken(t, cache, "repository", configpkg.CachePolicy{Build: true})
 
@@ -192,29 +195,27 @@ func TestRegistryCacheServesScopedBuildBlobs(t *testing.T) {
 	}
 }
 
-func TestRegistryCacheAcceptsBuildKitCapabilityPath(t *testing.T) {
-	config := configpkg.CacheConfig{ID: "test", Name: "Test", Enabled: true, PublicURL: "http://cache.example.com",
+func TestRegistryCacheRequiresCredentialsForBuildKitPath(t *testing.T) {
+	config := configpkg.CacheConfig{ID: "test", Name: "Test", Enabled: true,
 		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}
-	cache, err := New(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
+	cache, err := newRegistryCache(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer func() { require.NoError(t, cache.Close()) }()
 	cache.minFreeBytes = 0
 	namespace := Namespace(cache.secret, "site-one", 2, 3)
-	require.True(t, ValidateNamespace(cache.secret, namespace))
-	other := Namespace(cache.secret, "site-two", 2, 3)
-	require.NotEqual(t, namespace, other)
-	require.True(t, ValidateNamespace(cache.secret, other))
-	parts := strings.Split(other, "-")
-	parts[2] = strings.Split(namespace, "-")[2]
-	require.False(t, ValidateNamespace(cache.secret, strings.Join(parts, "-")))
 	request := httptest.NewRequest(http.MethodPost, "/v2/cache/"+namespace+"/build/blobs/uploads/", nil)
+	request.SetBasicAuth(Username, testRegistryToken(t, cache, namespace, configpkg.CachePolicy{Build: true}))
 	response := httptest.NewRecorder()
-	cache.Handler().ServeHTTP(response, request)
+	cache.httpHandler().ServeHTTP(response, request)
 	if response.Code == http.StatusUnauthorized {
-		t.Fatal("BuildKit capability path required HTTP credentials")
+		t.Fatal("BuildKit request with cache credentials was rejected")
 	}
+	request = httptest.NewRequest(http.MethodPost, "/v2/cache/"+namespace+"/build/blobs/uploads/", nil)
+	response = httptest.NewRecorder()
+	cache.httpHandler().ServeHTTP(response, request)
+	require.Equal(t, http.StatusUnauthorized, response.Code)
 }
 
 func TestRegistryCacheCleanupPreservesSharedLayers(t *testing.T) {
@@ -274,7 +275,7 @@ func TestRegistryCacheCleanupPreservesSharedLayers(t *testing.T) {
 	}
 	old := time.Now().Add(-48 * time.Hour)
 	root := filepath.Join(cache.storageDir, "docker/registry/v2/repositories/cache/old")
-	if err := filepath.WalkDir(root, func(path string, entry fs.DirEntry, err error) error {
+	if err := filepath.WalkDir(root, func(path string, _ fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}

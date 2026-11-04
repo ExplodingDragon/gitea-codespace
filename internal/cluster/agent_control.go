@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -192,6 +193,14 @@ func (s *AgentControlServer) PrepareVolume(ctx context.Context, request *agentv1
 }
 
 func (s *AgentControlServer) gitea(ctx context.Context, cs *api.Codespace) (codespacev1connect.ManagerServiceClient, error) {
+	site, err := s.site(ctx, cs)
+	if err != nil {
+		return nil, err
+	}
+	return siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
+}
+
+func (s *AgentControlServer) site(ctx context.Context, cs *api.Codespace) (*api.GiteaSite, error) {
 	var site api.GiteaSite
 	if err := s.Client.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
 		return nil, err
@@ -199,7 +208,7 @@ func (s *AgentControlServer) gitea(ctx context.Context, cs *api.Codespace) (code
 	if site.UID != cs.Spec.Site.UID || site.Status.CanonicalURL == "" {
 		return nil, fmt.Errorf("site identity is not verified")
 	}
-	return siteManagerClient(ctx, s.Client, s.ManagementNamespace, &site)
+	return &site, nil
 }
 
 func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
@@ -270,8 +279,12 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			return connect.NewError(connect.CodeFailedPrecondition, "persisted operation identity does not match Codespace")
 		}
 		if request.AcceptedOperationRversion != cs.Spec.Operation.Version {
+			site, err := s.site(ctx, cs)
+			if err != nil {
+				return err
+			}
 			response.Operation = operation
-			response.Runtime = &agentv1.RuntimeOptions{GitSshKeyType: cs.Spec.Runtime.GitSSHKeyType}
+			response.Runtime = &agentv1.RuntimeOptions{GitSshKeyType: cs.Spec.Runtime.GitSSHKeyType, GiteaUrl: strings.TrimRight(site.Status.CanonicalURL, "/"), GiteaCaBundle: site.Spec.CABundle}
 			if s.Caches != nil && operation.GetCreate() != nil {
 				response.Runtime.Cache, err = s.Caches.runtimeCache(ctx, cs, operation)
 				if err != nil {

@@ -24,13 +24,10 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	corev1 "k8s.io/api/core/v1"
-	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	kruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/util/retry"
@@ -99,6 +96,7 @@ type adminRuntimeRecovery struct {
 type adminSiteSpec struct {
 	DisplayName        string                   `json:"displayName"`
 	URL                string                   `json:"url"`
+	CABundle           string                   `json:"caBundle,omitempty"`
 	Enabled            bool                     `json:"enabled"`
 	AcceptCreates      bool                     `json:"acceptCreates"`
 	StartupConcurrency int32                    `json:"startupConcurrency"`
@@ -117,7 +115,7 @@ func newAdminSiteSpec(spec api.GiteaSiteSpec) adminSiteSpec {
 		spec.Quota = corev1.ResourceList{}
 	}
 	return adminSiteSpec{
-		DisplayName: spec.DisplayName, URL: spec.URL, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
+		DisplayName: spec.DisplayName, URL: spec.URL, CABundle: spec.CABundle, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
 		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
 		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
 		Upstreams: spec.Upstreams,
@@ -126,7 +124,7 @@ func newAdminSiteSpec(spec api.GiteaSiteSpec) adminSiteSpec {
 
 func (spec adminSiteSpec) resourceSpec() api.GiteaSiteSpec {
 	return api.GiteaSiteSpec{
-		DisplayName: spec.DisplayName, URL: spec.URL, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
+		DisplayName: spec.DisplayName, URL: spec.URL, CABundle: spec.CABundle, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
 		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
 		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
 		Upstreams: spec.Upstreams,
@@ -134,70 +132,23 @@ func (spec adminSiteSpec) resourceSpec() api.GiteaSiteSpec {
 }
 
 type adminComponentStatus struct {
-	Available       bool              `json:"available"`
-	ReadyReplicas   int32             `json:"readyReplicas"`
-	DesiredReplicas int32             `json:"desiredReplicas"`
-	LastHeartbeat   *metav1.MicroTime `json:"lastHeartbeat,omitempty"`
-	CacheBytes      int64             `json:"cacheBytes,omitempty"`
-	MirrorBytes     int64             `json:"mirrorBytes,omitempty"`
-	CleanupResult   string            `json:"cleanupResult,omitempty"`
-}
-
-type adminClusterOptions struct {
-	RuntimeClasses []adminRuntimeClass `json:"runtimeClasses"`
-	StorageClasses []adminStorageClass `json:"storageClasses"`
-	Gateways       []adminGateway      `json:"gateways"`
-}
-
-type adminRuntimeClass struct {
-	Name      string `json:"name"`
-	Handler   string `json:"handler"`
-	Isolation string `json:"isolation"`
-}
-
-type adminStorageClass struct {
-	Name        string `json:"name"`
-	Provisioner string `json:"provisioner"`
-	Default     bool   `json:"default"`
-}
-
-type adminGateway struct {
-	Name      string                 `json:"name"`
-	Namespace string                 `json:"namespace"`
-	Listeners []adminGatewayListener `json:"listeners"`
-}
-
-type adminGatewayListener struct {
-	Name     string `json:"name"`
-	Protocol string `json:"protocol"`
-	Port     int64  `json:"port"`
-}
-
-func isDefaultStorageClass(annotations map[string]string) bool {
-	return annotations["storageclass.kubernetes.io/is-default-class"] == "true" || annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"
+	Available                bool              `json:"available"`
+	ReadyReplicas            int32             `json:"readyReplicas"`
+	DesiredReplicas          int32             `json:"desiredReplicas"`
+	HTTPExposureConfigured   bool              `json:"httpExposureConfigured,omitempty"`
+	SSHExposureConfigured    bool              `json:"sshExposureConfigured,omitempty"`
+	ServiceNamespace         string            `json:"serviceNamespace,omitempty"`
+	ServiceName              string            `json:"serviceName,omitempty"`
+	SSHLoadBalancerAddresses []string          `json:"sshLoadBalancerAddresses,omitempty"`
+	LastHeartbeat            *metav1.MicroTime `json:"lastHeartbeat,omitempty"`
+	CacheBytes               int64             `json:"cacheBytes,omitempty"`
+	MirrorBytes              int64             `json:"mirrorBytes,omitempty"`
+	CleanupResult            string            `json:"cleanupResult,omitempty"`
 }
 
 func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/admin/"), "/")
-	if len(parts) == 1 && parts[0] == "cluster-options" && r.Method == http.MethodGet {
-		options, err := s.clusterOptions(r.Context())
-		if err != nil {
-			writeAdminError(w, r, err)
-			return
-		}
-		writeAdminJSON(w, http.StatusOK, options)
-		return
-	}
-	if len(parts) == 3 && parts[0] == "runtimes" && r.Method == http.MethodDelete {
-		s.deleteRuntime(w, r, parts[1], parts[2])
-		return
-	}
-	if len(parts) == 4 && parts[0] == "runtimes" && parts[3] == "confirm-writer-stopped" {
-		s.confirmRuntimeWriterStopped(w, r, parts[1], parts[2])
-		return
-	}
-	if len(parts) == 3 && parts[0] == "components" && parts[2] == "rotate-ssh-host-key" {
-		s.rotateGatewayHostKey(w, r, parts[1])
+	if s.handleAdminAction(w, r, parts) {
 		return
 	}
 	if len(parts) > 2 || len(parts) == 0 {
@@ -233,9 +184,39 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
+	s.handleResourceWrite(w, r, kind, name)
+}
+
+func (s *AdminServer) handleAdminAction(w http.ResponseWriter, r *http.Request, parts []string) bool {
+	if len(parts) == 1 && parts[0] == "cluster-options" && r.Method == http.MethodGet {
+		options, err := s.clusterOptions(r.Context())
+		if err != nil {
+			writeAdminError(w, r, err)
+			return true
+		}
+		writeAdminJSON(w, http.StatusOK, options)
+		return true
+	}
+	if len(parts) == 3 && parts[0] == "runtimes" && r.Method == http.MethodDelete {
+		s.deleteRuntime(w, r, parts[1], parts[2])
+		return true
+	}
+	if len(parts) == 4 && parts[0] == "runtimes" && parts[3] == "confirm-writer-stopped" {
+		s.confirmRuntimeWriterStopped(w, r, parts[1], parts[2])
+		return true
+	}
+	if len(parts) == 3 && parts[0] == "components" && parts[2] == "rotate-ssh-host-key" {
+		s.rotateGatewayHostKey(w, r, parts[1])
+		return true
+	}
+	return false
+}
+
+func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request, kind, name string) {
 	var identity adminWriteIdentity
 	var object client.Object
 	var save func(context.Context, client.Object, bool) error
+	var prefix string
 	switch kind {
 	case "sites":
 		var body adminSiteWrite
@@ -247,6 +228,7 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		save = func(ctx context.Context, object client.Object, creating bool) error {
 			return s.saveSite(ctx, object.(*api.GiteaSite), body, creating)
 		}
+		prefix = "site-"
 	case "environments":
 		var body adminTemplateWrite
 		if !decodeAdminJSON(w, r, &body) {
@@ -257,6 +239,7 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		save = func(ctx context.Context, object client.Object, creating bool) error {
 			return s.saveTemplate(ctx, object.(*api.EnvironmentTemplate), body, creating)
 		}
+		prefix = "environment-"
 	case "components":
 		var body adminComponentWrite
 		if !decodeAdminJSON(w, r, &body) {
@@ -267,18 +250,15 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		save = func(ctx context.Context, object client.Object, creating bool) error {
 			return s.saveComponent(ctx, object.(*api.CodespaceComponent), body, creating)
 		}
+		prefix = "component-"
 	}
 	if r.Method == http.MethodPost {
-		if kind == "sites" {
-			if identity.Name != "" {
-				writeAdminProblem(w, r, http.StatusBadRequest, "invalid_request", "site resource names are generated by the server")
-				return
-			}
-			name = "site-" + uuid.NewV4().String()
-			identity.Name = name
-		} else {
-			name = identity.Name
+		if identity.Name != "" {
+			writeAdminProblem(w, r, http.StatusBadRequest, "invalid_request", "resource names are generated by the server")
+			return
 		}
+		name = prefix + uuid.NewV4().String()
+		identity.Name = name
 		if identity.UID != "" || identity.ResourceVersion != "" {
 			writeAdminProblem(w, r, http.StatusBadRequest, "invalid_request", "new resources must not specify an existing UID or revision")
 			return
@@ -326,7 +306,11 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		// Component status is a projection of Deployment and Lease state. The
 		// controller has not observed this generation yet, so the write response
 		// reports its initial state without adding fallible reads after the write.
-		resource = newAdminResource(current, current.Spec, adminComponentStatus{DesiredReplicas: 1})
+		desired := int32(1)
+		if current.Spec.Gateway != nil {
+			desired = current.Spec.Gateway.Replicas
+		}
+		resource = newAdminResource(current, current.Spec, adminComponentStatus{DesiredReplicas: desired})
 	}
 	writeAdminJSON(w, http.StatusOK, resource)
 }
@@ -367,7 +351,10 @@ func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Reques
 		writeAdminError(w, r, err)
 		return
 	}
-	secret.Data = generated.Data
+	if secret.Data == nil {
+		secret.Data = make(map[string][]byte)
+	}
+	secret.Data["hostKey"] = generated.Data["hostKey"]
 	if err := s.Client.Update(r.Context(), &secret); err != nil {
 		writeAdminError(w, r, err)
 		return
@@ -455,76 +442,6 @@ func (s *AdminServer) confirmRuntimeWriterStopped(w http.ResponseWriter, r *http
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, error) {
-	options := adminClusterOptions{RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}, Gateways: []adminGateway{}}
-	var runtimes nodev1.RuntimeClassList
-	if err := s.Client.List(ctx, &runtimes); err != nil {
-		return options, err
-	}
-	for _, runtime := range runtimes.Items {
-		isolation := runtime.Labels[api.RuntimeIsolationLabel]
-		if isolation != api.IsolationKata && isolation != api.IsolationSysbox {
-			continue
-		}
-		options.RuntimeClasses = append(options.RuntimeClasses, adminRuntimeClass{Name: runtime.Name, Handler: runtime.Handler, Isolation: isolation})
-	}
-	var storages storagev1.StorageClassList
-	if err := s.Client.List(ctx, &storages); err != nil {
-		return options, err
-	}
-	for _, storage := range storages.Items {
-		options.StorageClasses = append(options.StorageClasses, adminStorageClass{
-			Name: storage.Name, Provisioner: storage.Provisioner,
-			Default: isDefaultStorageClass(storage.Annotations),
-		})
-	}
-	gateways := &unstructured.UnstructuredList{}
-	gateways.SetAPIVersion("gateway.networking.k8s.io/v1")
-	gateways.SetKind("GatewayList")
-	if err := s.Client.List(ctx, gateways); err != nil {
-		if !meta.IsNoMatchError(err) && !kruntime.IsNotRegisteredError(err) {
-			return options, err
-		}
-	} else {
-		for _, gateway := range gateways.Items {
-			option := adminGateway{Name: gateway.GetName(), Namespace: gateway.GetNamespace(), Listeners: []adminGatewayListener{}}
-			listeners, _, err := unstructured.NestedSlice(gateway.Object, "spec", "listeners")
-			if err != nil {
-				return options, fmt.Errorf("read Gateway %s/%s listeners: %w", option.Namespace, option.Name, err)
-			}
-			for _, value := range listeners {
-				listener, ok := value.(map[string]any)
-				if !ok {
-					continue
-				}
-				name, _, _ := unstructured.NestedString(listener, "name")
-				protocol, _, _ := unstructured.NestedString(listener, "protocol")
-				port, _, _ := unstructured.NestedInt64(listener, "port")
-				if name == "" || (protocol != "HTTP" && protocol != "HTTPS" && protocol != "TCP") {
-					continue
-				}
-				option.Listeners = append(option.Listeners, adminGatewayListener{Name: name, Protocol: protocol, Port: port})
-			}
-			sort.Slice(option.Listeners, func(i, j int) bool { return option.Listeners[i].Name < option.Listeners[j].Name })
-			options.Gateways = append(options.Gateways, option)
-		}
-	}
-	sort.Slice(options.RuntimeClasses, func(i, j int) bool { return options.RuntimeClasses[i].Name < options.RuntimeClasses[j].Name })
-	sort.Slice(options.StorageClasses, func(i, j int) bool {
-		if options.StorageClasses[i].Default != options.StorageClasses[j].Default {
-			return options.StorageClasses[i].Default
-		}
-		return options.StorageClasses[i].Name < options.StorageClasses[j].Name
-	})
-	sort.Slice(options.Gateways, func(i, j int) bool {
-		if options.Gateways[i].Namespace != options.Gateways[j].Namespace {
-			return options.Gateways[i].Namespace < options.Gateways[j].Namespace
-		}
-		return options.Gateways[i].Name < options.Gateways[j].Name
-	})
-	return options, nil
-}
-
 func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminResource, error) {
 	items := []adminResource{}
 	switch kind {
@@ -592,9 +509,34 @@ func (s *AdminServer) componentStatus(ctx context.Context, component *api.Codesp
 	if err == nil && metav1.IsControlledBy(&deployment, component) {
 		status.DesiredReplicas = ptr.Deref(deployment.Spec.Replicas, int32(1))
 		status.ReadyReplicas = deployment.Status.ReadyReplicas
-		status.Available = status.DesiredReplicas > 0 && status.ReadyReplicas == status.DesiredReplicas
+		if component.Spec.Role == "gateway" {
+			status.Available = status.ReadyReplicas > 0
+		} else {
+			status.Available = status.ReadyReplicas == 1
+		}
+	}
+	var service corev1.Service
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &service); err != nil && !apierrors.IsNotFound(err) {
+		return status, err
+	} else if err == nil && metav1.IsControlledBy(&service, component) {
+		status.ServiceNamespace, status.ServiceName = service.Namespace, service.Name
 	}
 	if component.Spec.Role != "cache" {
+		status.HTTPExposureConfigured = meta.IsStatusConditionTrue(component.Status.Conditions, "HTTPExposureConfigured")
+		status.SSHExposureConfigured = meta.IsStatusConditionTrue(component.Status.Conditions, "SSHExposureConfigured")
+		var loadBalancer corev1.Service
+		if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name + "-ssh"}, &loadBalancer); err != nil && !apierrors.IsNotFound(err) {
+			return status, err
+		} else if err == nil && metav1.IsControlledBy(&loadBalancer, component) {
+			for _, ingress := range loadBalancer.Status.LoadBalancer.Ingress {
+				if ingress.IP != "" {
+					status.SSHLoadBalancerAddresses = append(status.SSHLoadBalancerAddresses, ingress.IP)
+				} else if ingress.Hostname != "" {
+					status.SSHLoadBalancerAddresses = append(status.SSHLoadBalancerAddresses, ingress.Hostname)
+				}
+			}
+			sort.Strings(status.SSHLoadBalancerAddresses)
+		}
 		return status, nil
 	}
 	deploymentAvailable := status.Available
@@ -638,6 +580,21 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 		if err := s.checkSiteReferences(ctx, site); err != nil {
 			return err
 		}
+		remote, _, err := siteManagerClientForCheck(ctx, s.Client, s.Namespace, site, s.RegistrationHTTPClient)
+		if err != nil {
+			return err
+		}
+		checked, err := remote.CheckManager(ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: controlplane.ProtocolVersion})
+		if err != nil {
+			return apierrors.NewBadRequest("Gitea Manager connection check failed: " + err.Error())
+		}
+		canonical, err := canonicalGiteaURL(checked.GiteaWebUrl)
+		if err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
+		if previous.Status.CanonicalURL != "" && previous.Status.CanonicalURL != canonical {
+			return apierrors.NewBadRequest("Gitea Manager connection resolves to a different site identity")
+		}
 		return s.Client.Update(ctx, site)
 	}
 	if len(body.RegistrationToken) != 40 {
@@ -651,9 +608,9 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 	if err := s.checkSiteReferences(ctx, site); err != nil {
 		return err
 	}
-	httpClient := s.RegistrationHTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 15 * time.Second, CheckRedirect: func(_ *http.Request, _ []*http.Request) error { return http.ErrUseLastResponse }}
+	httpClient, err := giteaHTTPClient(s.RegistrationHTTPClient, site.Spec.CABundle)
+	if err != nil {
+		return apierrors.NewBadRequest(err.Error())
 	}
 	registration, err := controlplane.NewManagerRegistrationClient(httpClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace").RegisterManager(ctx, &codespacev1.RegisterManagerRequest{
 		ProtocolVersion: controlplane.ProtocolVersion,
@@ -767,9 +724,24 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 		if _, err := gatewayComponentConfig(component); err != nil {
 			return apierrors.NewBadRequest(err.Error())
 		}
-		if component.Spec.Gateway.Parent.Name != "" {
-			if err := validateGatewayParent(ctx, s.Client, component.Spec.Gateway.Parent); err != nil {
+		gateway := component.Spec.Gateway
+		if gateway.HTTPExposure.Mode == "ingress" {
+			if err := gatewayIngressClassAvailable(ctx, s.Client, gateway.HTTPExposure.Ingress.ClassName); err != nil {
 				return apierrors.NewBadRequest(err.Error())
+			}
+			switch tls := gateway.HTTPExposure.Ingress.TLS; tls.Source {
+			case "secret":
+				ready, err := gatewayTLSSecretReady(ctx, s.Client, s.Namespace, tls.SecretName)
+				if err != nil {
+					return err
+				}
+				if !ready {
+					return apierrors.NewBadRequest(fmt.Sprintf("TLS secret %q is unavailable or incomplete", tls.SecretName))
+				}
+			case "certManager":
+				if err := gatewayIssuerAvailable(ctx, s.Client, s.Namespace, tls.Issuer); err != nil {
+					return apierrors.NewBadRequest(err.Error())
+				}
 			}
 		}
 	} else {

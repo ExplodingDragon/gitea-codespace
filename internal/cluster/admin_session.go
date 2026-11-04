@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/netip"
 	"net/url"
 	"os"
 	"strconv"
@@ -44,33 +43,14 @@ type adminProblem struct {
 type AdminServer struct {
 	Client                 client.Client
 	Namespace              string
-	PublicURL              *url.URL
 	TokenFile              string
 	RegistrationHTTPClient *http.Client
 	loginLimit             *rate.Limiter
 }
 
-func NewAdminServer(reader client.Client, namespace, publicURL, tokenFile string) (*AdminServer, error) {
-	u, err := url.Parse(publicURL)
-	if err != nil || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.RawPath != "" || (u.Path != "" && u.Path != "/") {
-		return nil, fmt.Errorf("admin public URL must be an absolute origin")
-	}
-	if u.Scheme != "https" {
-		address, err := netip.ParseAddr(u.Hostname())
-		if u.Scheme != "http" || err != nil || !address.IsLoopback() {
-			return nil, fmt.Errorf("admin public URL requires HTTPS except on a loopback address")
-		}
-	}
-	u.Host = strings.ToLower(u.Host)
-	if (u.Scheme == "https" && u.Port() == "443") || (u.Scheme == "http" && u.Port() == "80") {
-		u.Host = u.Hostname()
-		if strings.Contains(u.Host, ":") {
-			u.Host = "[" + u.Host + "]"
-		}
-	}
-	u.Path = ""
+func NewAdminServer(reader client.Client, namespace, tokenFile string) (*AdminServer, error) {
 	s := &AdminServer{
-		Client: reader, Namespace: namespace, PublicURL: u, TokenFile: tokenFile,
+		Client: reader, Namespace: namespace, TokenFile: tokenFile,
 		RegistrationHTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
@@ -113,12 +93,16 @@ func (s *AdminServer) Handler() http.Handler {
 		r = r.WithContext(ctx)
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		if r.Method != http.MethodGet && r.Method != http.MethodHead && r.Header.Get("Origin") != s.PublicURL.String() {
-			writeAdminProblem(w, r, http.StatusForbidden, "invalid_origin", "")
-			return
-		}
 		mux.ServeHTTP(w, r)
 	})
+}
+
+func adminRequestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	origin, err := url.Parse(r.Header.Get("Origin"))
+	return err == nil && origin.Scheme == "https"
 }
 
 func (s *AdminServer) login(w http.ResponseWriter, r *http.Request) {
@@ -156,7 +140,7 @@ func (s *AdminServer) login(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, err)
 		return
 	}
-	http.SetCookie(w, &http.Cookie{Name: "codespace_admin_session", Value: token, Path: "/api/admin", HttpOnly: true, Secure: s.PublicURL.Scheme == "https", SameSite: http.SameSiteStrictMode, MaxAge: 12 * 60 * 60})
+	http.SetCookie(w, &http.Cookie{Name: "codespace_admin_session", Value: token, Path: "/api/admin", HttpOnly: true, Secure: adminRequestIsHTTPS(r), SameSite: http.SameSiteStrictMode, MaxAge: 12 * 60 * 60})
 	mac := hmac.New(sha256.New, key)
 	_, _ = mac.Write([]byte(token))
 	writeAdminJSON(w, http.StatusOK, map[string]string{"csrf": hex.EncodeToString(mac.Sum(nil))})
@@ -207,7 +191,7 @@ func (s *AdminServer) authenticate(next http.Handler) http.Handler {
 					writeAdminError(w, r, err)
 					return
 				}
-				http.SetCookie(w, &http.Cookie{Name: cookie.Name, Path: "/api/admin", MaxAge: -1, HttpOnly: true, Secure: s.PublicURL.Scheme == "https", SameSite: http.SameSiteStrictMode})
+				http.SetCookie(w, &http.Cookie{Name: cookie.Name, Path: "/api/admin", MaxAge: -1, HttpOnly: true, Secure: adminRequestIsHTTPS(r), SameSite: http.SameSiteStrictMode})
 				w.WriteHeader(http.StatusNoContent)
 			default:
 				w.WriteHeader(http.StatusMethodNotAllowed)

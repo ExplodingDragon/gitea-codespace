@@ -110,6 +110,8 @@ message RuntimeOptions {
   string git_ssh_key_type = 1;
   // cache contains one Manager-authorized registry endpoint for this runtime.
   RuntimeCache cache = 2;
+  string gitea_url = 3;
+  string gitea_ca_bundle = 4;
 }
 
 message RuntimeCache {

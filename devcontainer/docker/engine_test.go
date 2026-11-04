@@ -131,7 +131,7 @@ func TestCacheReferences(t *testing.T) {
 
 	mirrors := map[string]string{
 		"docker.io": "https://cache.example.com/docker",
-		"ghcr.io":   "http://cache.example.com/ghcr",
+		"ghcr.io":   "https://cache.example.com/ghcr",
 	}
 	image, mirrored, err := mirroredReference("ubuntu:24.04", mirrors)
 	if err != nil || !mirrored || image != "cache.example.com/docker/library/ubuntu:24.04" {
@@ -181,16 +181,16 @@ func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
 			CacheTo:   composetypes.StringList{"type=local,dest=/cache/export"},
 		},
 	}}}
-	cache := devcontainer.CacheOptions{BuildRegistry: "http://registry.example.com/codespace", BuildScope: "scope"}
+	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
 	reference := buildCacheReference(cache, "repository")
 	if err := engine.buildService(t.Context(), project, "image", cache, "repository"); err != nil {
 		t.Fatal(err)
 	}
-	registryImport := "type=registry,ref=" + reference + ",registry.insecure=true"
+	registryImport := "type=registry,ref=" + reference
 	if len(compose.cacheFrom) != 2 || !slices.Contains(compose.cacheFrom[0], registryImport) || slices.Contains(compose.cacheFrom[1], registryImport) {
 		t.Fatalf("cache import attempts = %#v", compose.cacheFrom)
 	}
-	registryExport := "type=registry,ref=" + reference + ",mode=max,oci-mediatypes=true,image-manifest=true,registry.insecure=true"
+	registryExport := "type=registry,ref=" + reference + ",mode=max,oci-mediatypes=true,image-manifest=true"
 	if len(compose.cacheTo) != 2 || !slices.Contains(compose.cacheTo[0], registryExport) || slices.Contains(compose.cacheTo[1], registryExport) || !slices.Contains(compose.cacheTo[1], "type=local,dest=/cache/export") {
 		t.Fatalf("cache export attempts = %#v", compose.cacheTo)
 	}

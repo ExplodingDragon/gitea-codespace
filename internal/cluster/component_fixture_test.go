@@ -24,8 +24,9 @@ func testGatewayComponent(name string, uid types.UID) *api.CodespaceComponent {
 		Spec: api.CodespaceComponentSpec{
 			Role: "gateway", DisplayName: "Primary gateway", Resources: testComponentResources(),
 			Gateway: &api.GatewayComponentSpec{
-				PublicURL: "https://gateway.example.com", SSHPublicAddress: "gateway.example.com:22",
-				Parent: api.GatewayParent{Name: "public", Namespace: "codespace-system", HTTPSectionName: "https", SSHSectionName: "ssh"},
+				Replicas:        2,
+				EndpointBaseURL: "https://gateway.example.com", SSHExternalAddress: "gateway.example.com:22",
+				HTTPExposure: api.GatewayHTTPExposure{Mode: "external"}, SSHExposure: api.GatewaySSHExposure{Mode: "external"},
 				SSH: api.GatewaySSHSettings{HandshakeTimeout: "30s", MaxChannelsPerConnection: 32, Auth: api.GatewaySSHAuth{
 					MaxAttemptsPerIP: 30, MaxAttemptsPerCodespace: 20, MaxAttemptsPerIPCodespace: 10, MaxAttemptsPerPublicKey: 30, FailureWindow: "10m",
 				}},
@@ -42,7 +43,7 @@ func testCacheComponent(name string, uid types.UID) *api.CodespaceComponent {
 		Spec: api.CodespaceComponentSpec{
 			Role: "cache", DisplayName: "Build cache", Resources: testComponentResources(),
 			Cache: &api.CacheComponentSpec{
-				Enabled: true, PublicURL: "https://cache.example.com", MaxSize: "768MiB", MaxAge: "24h", GCInterval: "1h",
+				Enabled: true, MaxSize: "768MiB", MaxAge: "24h", GCInterval: "1h",
 				Storage:   api.CacheStorage{Driver: "filesystem", VolumeSize: "1Gi", MinFreeSpace: "128MiB"},
 				Upstreams: map[string]api.CacheUpstream{"docker.io": {Allow: []string{"library/*"}}},
 			},

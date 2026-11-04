@@ -51,6 +51,16 @@ message GatewayConfigurationSnapshot {
   int32 max_inflight = 10;
   int32 max_inflight_per_session = 11;
   int32 max_channels_per_ssh_connection = 12;
+  repeated string trusted_proxy_cidrs = 13;
+  int64 ssh_handshake_timeout_milliseconds = 14;
+  int32 ssh_auth_max_attempts_per_ip = 15;
+  int32 ssh_auth_max_attempts_per_codespace = 16;
+  int32 ssh_auth_max_attempts_per_ip_codespace = 17;
+  int32 ssh_auth_max_attempts_per_public_key = 18;
+  int64 ssh_auth_failure_window_milliseconds = 19;
+  int32 public_max_connections_per_endpoint = 20;
+  int32 public_max_connections_per_ip = 21;
+  int32 validation_max_inflight = 22;
 }
 
 message GatewayRuntimeRoute {
@@ -161,12 +171,11 @@ message CacheConfiguration {
   int64 revision = 3;
   bool enabled = 4;
   string listen = 5;
-  string public_url = 6;
-  CacheStorageConfiguration storage = 7;
-  string max_size = 8;
-  int64 max_age_milliseconds = 9;
-  int64 gc_interval_milliseconds = 10;
-  map<string, CacheUpstreamConfiguration> upstreams = 11;
+  CacheStorageConfiguration storage = 6;
+  string max_size = 7;
+  int64 max_age_milliseconds = 8;
+  int64 gc_interval_milliseconds = 9;
+  map<string, CacheUpstreamConfiguration> upstreams = 10;
 }
 
 message CacheStorageConfiguration {
@@ -189,13 +198,12 @@ message CacheUpstreamConfiguration {
 }
 
 message CacheStatus {
-  string public_url = 1;
-  int64 config_revision = 2;
-  int64 cache_bytes = 3;
-  int64 mirror_bytes = 4;
-  int64 scanned_at_unix_milliseconds = 5;
-  int64 last_cleanup_unix_milliseconds = 6;
-  string cleanup_result = 7;
+  int64 config_revision = 1;
+  int64 cache_bytes = 2;
+  int64 mirror_bytes = 3;
+  int64 scanned_at_unix_milliseconds = 4;
+  int64 last_cleanup_unix_milliseconds = 5;
+  string cleanup_result = 6;
 }
 
 message CacheGCGrant {

@@ -18,14 +18,17 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
+	"gitea.dev/codespace/internal/transport"
 	"golang.org/x/crypto/ssh"
 	"google.golang.org/protobuf/proto"
 )
 
+const gatewayInitialControlResponseTimeout = 30 * time.Second
+
 // Run serves the external HTTP and SSH protocols while Manager supplies
 // configuration, authorization and current Runtime targets.
-func Run(ctx context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificateDirectory string) error {
-	if client == nil || output == nil {
+func Run(ctx context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates) error {
+	if client == nil || output == nil || certificates == nil {
 		return fmt.Errorf("gateway dependencies are incomplete")
 	}
 	var runtime *runningGateway
@@ -33,12 +36,17 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 	sessionID := uuid.NewV4().String()
 	var sequence uint64
 	var responseSequence uint64
+	var permitUntil time.Time
 	defer func() {
 		if runtime != nil {
 			runtime.stop()
 		}
 	}()
 	for ctx.Err() == nil {
+		if runtime != nil && !permitUntil.IsZero() && !time.Now().Before(permitUntil) {
+			runtime.stop()
+			runtime, config = nil, nil
+		}
 		streamCtx, cancelStream := context.WithCancel(ctx)
 		stream, err := client.GatewayControl(streamCtx)
 		if err != nil {
@@ -78,7 +86,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 			}
 		}()
 		heartbeat := time.NewTicker(10 * time.Second)
-		permit := time.NewTimer(30 * time.Second)
+		permit := time.NewTimer(time.Until(gatewayControlDeadline(runtime != nil, permitUntil, time.Now())))
 		connected := true
 		var terminalErr error
 		for ctx.Err() == nil {
@@ -90,6 +98,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 					break
 				}
 				responseSequence = response.Sequence
+				permitUntil = time.Now().Add(time.Duration(response.PermitValidForMilliseconds) * time.Millisecond)
 				if !permit.Stop() {
 					select {
 					case <-permit.C:
@@ -117,7 +126,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 				if runtime != nil {
 					runtime.stop()
 				}
-				started, err := startGateway(ctx, output, client, certificateDirectory, response)
+				started, err := startGateway(ctx, output, client, certificates, response)
 				if err != nil {
 					terminalErr = err
 					connected = false
@@ -134,6 +143,10 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 					connected = false
 				}
 			case <-permit.C:
+				if runtime != nil {
+					runtime.stop()
+					runtime, config = nil, nil
+				}
 				connected = false
 			case <-errors:
 				connected = false
@@ -162,6 +175,13 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 		}
 	}
 	return nil
+}
+
+func gatewayControlDeadline(runtimeActive bool, permitUntil, now time.Time) time.Time {
+	if runtimeActive && !permitUntil.IsZero() {
+		return permitUntil
+	}
+	return now.Add(gatewayInitialControlResponseTimeout)
 }
 
 func gatewayActivityChanges(runtime *runningGateway) <-chan struct{} {
@@ -206,11 +226,14 @@ type runningGateway struct {
 	stopOnce sync.Once
 }
 
-func startGateway(parent context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificateDirectory string, snapshot *componentv1.GatewayControlResponse) (*runningGateway, error) {
+func startGateway(parent context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, snapshot *componentv1.GatewayControlResponse) (*runningGateway, error) {
 	if snapshot == nil || snapshot.Config == nil || snapshot.Cursor == "" {
 		return nil, fmt.Errorf("gateway snapshot is incomplete")
 	}
-	config := gatewayConfig(snapshot.Config)
+	config, err := gatewayConfig(snapshot.Config)
+	if err != nil {
+		return nil, err
+	}
 	hostKey, err := os.ReadFile("/var/run/codespace/gateway/ssh-host-key")
 	if err != nil {
 		return nil, fmt.Errorf("read Gateway SSH host key: %w", err)
@@ -218,6 +241,10 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 	signer, err := ssh.ParsePrivateKey(hostKey)
 	if err != nil {
 		return nil, fmt.Errorf("parse Gateway SSH host key: %w", err)
+	}
+	sessionKey, err := os.ReadFile("/var/run/codespace/gateway/session-key")
+	if err != nil {
+		return nil, fmt.Errorf("read Gateway session key: %w", err)
 	}
 	httpLn, err := net.Listen("tcp", config.HTTP.Listen)
 	if err != nil {
@@ -229,9 +256,16 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	backend := &AgentBackend{Manager: client, CertificateDirectory: certificateDirectory}
+	backend := &AgentBackend{Manager: client, Certificates: certificates}
 	routes := NewRouteStore(backend)
-	sessions := NewSessionRegistryFromConfig(config)
+	sessions, err := NewSessionRegistryFromConfig(config, sessionKey)
+	if err != nil {
+		cancel()
+		routes.Close()
+		_ = httpLn.Close()
+		_ = sshLn.Close()
+		return nil, fmt.Errorf("initialize Gateway sessions: %w", err)
+	}
 	routes.SetSessionRegistry(sessions)
 	access := NewAccessControllerFromConfig(config)
 	control := &ComponentControlPlane{Client: client}
@@ -250,7 +284,7 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 	}
 	health := NewProcessHealth()
 	httpServer := &http.Server{
-		Handler:           NewHandler(health, sessions, access, control, origin, NewBrowserAuth(routes), routes),
+		Handler:           gatewayClientIPMiddleware(NewHandler(health, sessions, access, control, origin, NewBrowserAuth(routes), routes), config.HTTP.TrustedProxyCIDRs),
 		ReadHeaderTimeout: HTTPReadHeaderTime,
 		MaxHeaderBytes:    HTTPMaxHeaderBytes,
 	}
@@ -302,17 +336,44 @@ func (r *runningGateway) stop() {
 	})
 }
 
-func gatewayConfig(value *componentv1.GatewayConfigurationSnapshot) configpkg.GatewayConfig {
-	config := configpkg.DefaultGatewayConfig()
-	config.HTTP.Listen, config.HTTP.PublicURL = value.HttpListen, value.PublicUrl
-	config.SSH.Listen, config.SSH.PublicAddr = value.SshListen, value.SshPublicAddress
-	config.SSH.MaxChannelsPerConnection = int(value.MaxChannelsPerSshConnection)
-	config.Sessions.TTL = configpkg.Duration(time.Duration(value.SessionTtlMilliseconds) * time.Millisecond)
-	config.Sessions.IdleTimeout = configpkg.Duration(time.Duration(value.SessionIdleTimeoutMilliseconds) * time.Millisecond)
-	config.Sessions.RevalidateInterval = configpkg.Duration(time.Duration(value.RevalidateIntervalMilliseconds) * time.Millisecond)
-	config.Sessions.MaxPerCodespace, config.Sessions.MaxPerUser = int(value.MaxSessionsPerCodespace), int(value.MaxSessionsPerUser)
-	config.Limits.MaxInflightTotal, config.Limits.MaxInflightPerSession = int(value.MaxInflight), int(value.MaxInflightPerSession)
-	return config
+func gatewayConfig(value *componentv1.GatewayConfigurationSnapshot) (configpkg.GatewayConfig, error) {
+	if value == nil {
+		return configpkg.GatewayConfig{}, fmt.Errorf("gateway configuration is missing")
+	}
+	config := configpkg.GatewayConfig{
+		HTTP: configpkg.GatewayHTTPConfig{
+			Listen: value.HttpListen, PublicURL: value.PublicUrl,
+			TrustedProxyCIDRs: append([]string(nil), value.TrustedProxyCidrs...),
+		},
+		SSH: configpkg.GatewaySSHConfig{
+			Listen: value.SshListen, PublicAddr: value.SshPublicAddress,
+			HandshakeTimeout:         configpkg.Duration(time.Duration(value.SshHandshakeTimeoutMilliseconds) * time.Millisecond),
+			MaxChannelsPerConnection: int(value.MaxChannelsPerSshConnection),
+			Auth: configpkg.GatewaySSHAuthConfig{
+				MaxAttemptsPerIP:          int(value.SshAuthMaxAttemptsPerIp),
+				MaxAttemptsPerCodespace:   int(value.SshAuthMaxAttemptsPerCodespace),
+				MaxAttemptsPerIPCodespace: int(value.SshAuthMaxAttemptsPerIpCodespace),
+				MaxAttemptsPerPublicKey:   int(value.SshAuthMaxAttemptsPerPublicKey),
+				FailureWindow:             configpkg.Duration(time.Duration(value.SshAuthFailureWindowMilliseconds) * time.Millisecond),
+			},
+		},
+		Sessions: configpkg.GatewaySessionConfig{
+			TTL:                configpkg.Duration(time.Duration(value.SessionTtlMilliseconds) * time.Millisecond),
+			IdleTimeout:        configpkg.Duration(time.Duration(value.SessionIdleTimeoutMilliseconds) * time.Millisecond),
+			RevalidateInterval: configpkg.Duration(time.Duration(value.RevalidateIntervalMilliseconds) * time.Millisecond),
+			MaxPerCodespace:    int(value.MaxSessionsPerCodespace), MaxPerUser: int(value.MaxSessionsPerUser),
+		},
+		Limits: configpkg.GatewayLimitsConfig{
+			MaxInflightTotal: int(value.MaxInflight), MaxInflightPerSession: int(value.MaxInflightPerSession),
+			PublicMaxConnectionsPerEndpoint: int(value.PublicMaxConnectionsPerEndpoint),
+			PublicMaxConnectionsPerIP:       int(value.PublicMaxConnectionsPerIp),
+			ValidationMaxInflight:           int(value.ValidationMaxInflight),
+		},
+	}
+	if err := config.Validate(); err != nil {
+		return configpkg.GatewayConfig{}, fmt.Errorf("invalid Gateway configuration snapshot: %w", err)
+	}
+	return config, nil
 }
 
 func gatewayRuntimes(routes []*componentv1.GatewayRuntimeRoute) []RuntimeSnapshot {

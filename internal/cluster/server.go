@@ -22,7 +22,6 @@ import (
 type ServerOptions struct {
 	ManagerOptions
 	AdminAddress     string
-	AdminPublicURL   string
 	AdminTokenFile   string
 	AgentAddress     string
 	ComponentAddress string
@@ -47,7 +46,7 @@ func Run(ctx context.Context, config *rest.Config, options ServerOptions) error 
 	if err != nil {
 		return err
 	}
-	admin, err := NewAdminServer(reader, options.Namespace, options.AdminPublicURL, options.AdminTokenFile)
+	admin, err := NewAdminServer(reader, options.Namespace, options.AdminTokenFile)
 	if err != nil {
 		return err
 	}

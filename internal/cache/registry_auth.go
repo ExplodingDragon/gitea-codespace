@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-const AuthenticationTTL = 30 * time.Second
+const authenticationTTL = 30 * time.Second
 const cacheAuthenticationCapacity = 1024
 
 func (c *registryCache) verifyToken(value string) (Session, error) {
@@ -49,7 +49,7 @@ func (c *registryCache) verifyToken(value string) (Session, error) {
 			break
 		}
 	}
-	expires := now.Add(AuthenticationTTL)
+	expires := now.Add(authenticationTTL)
 	if session.ExpiresAt.Before(expires) {
 		expires = session.ExpiresAt
 	}

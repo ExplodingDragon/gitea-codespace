@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package runtimeendpoint defines the endpoint contract shared by Agent, Gateway, and injected commands.
 package runtimeendpoint
 
 import (
@@ -11,16 +12,28 @@ import (
 	"unicode/utf8"
 )
 
-const (
-	AgentSocketPath          = "/run/codespace/endpoint.sock"
-	ContainerSocketPath      = "/var/run/gitea-codespace/endpoint.sock"
-	MaxEndpointCount         = 64
-	MaxDeclaredEndpointCount = MaxEndpointCount - 1
-	WorkspaceEndpointID      = "workspace"
-	WorkspaceEndpointLabel   = "Workspace"
-	WorkspaceEndpointPort    = 13337
-)
+// AgentSocketPath is the endpoint socket owned by Agent.
+const AgentSocketPath = "/run/codespace/endpoint.sock"
 
+// ContainerSocketPath is the socket's read-write bind mount in the Dev Container.
+const ContainerSocketPath = "/var/run/gitea-codespace/endpoint.sock"
+
+// MaxEndpointCount includes the platform-managed workspace endpoint.
+const MaxEndpointCount = 64
+
+// MaxDeclaredEndpointCount is the number of endpoints a user can add.
+const MaxDeclaredEndpointCount = MaxEndpointCount - 1
+
+// WorkspaceEndpointID identifies the platform-managed Web IDE endpoint.
+const WorkspaceEndpointID = "workspace"
+
+// WorkspaceEndpointLabel is the user-facing label for the Web IDE endpoint.
+const WorkspaceEndpointLabel = "Workspace"
+
+// WorkspaceEndpointPort is the fixed Web IDE port inside the Dev Container.
+const WorkspaceEndpointPort = 13337
+
+// PortEndpointID returns the stable identifier for a user-declared port.
 func PortEndpointID(port uint16) string {
 	return "port-" + strconv.Itoa(int(port))
 }

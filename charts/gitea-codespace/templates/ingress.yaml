@@ -1,7 +1,4 @@
 {{- if .Values.admin.ingress.enabled }}
-{{- if not (hasPrefix "https://" .Values.admin.publicURL) }}{{ fail "admin.publicURL must use HTTPS when the administration Ingress is enabled" }}{{ end }}
-{{- if not .Values.admin.ingress.host }}{{ fail "admin.ingress.host is required when the administration Ingress is enabled" }}{{ end }}
-{{- if not .Values.admin.ingress.tlsSecret }}{{ fail "admin.ingress.tlsSecret is required when the administration Ingress is enabled" }}{{ end }}
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
@@ -17,11 +14,19 @@ spec:
   {{- with .Values.admin.ingress.className }}
   ingressClassName: {{ . }}
   {{- end }}
+  {{- with .Values.admin.ingress.tlsSecret }}
   tls:
-    - hosts: [{{ .Values.admin.ingress.host | quote }}]
-      secretName: {{ .Values.admin.ingress.tlsSecret }}
+    - secretName: {{ . }}
+      {{- with $.Values.admin.ingress.host }}
+      hosts: [{{ . | quote }}]
+      {{- end }}
+  {{- end }}
   rules:
+    {{- if .Values.admin.ingress.host }}
     - host: {{ .Values.admin.ingress.host | quote }}
+    {{- else }}
+    -
+    {{- end }}
       http:
         paths:
           - path: /

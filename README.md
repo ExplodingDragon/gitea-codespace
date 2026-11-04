@@ -82,25 +82,38 @@ Visit <http://127.0.0.1:18080> and sign in with the administration token. Comple
 
 Users can then create Codespaces from supported repository pages in Gitea.
 
-The administration page discovers RuntimeClasses, StorageClasses, Gateways,
-and compatible listeners from the current cluster. Resource references are
-selected from these results and revalidated when saved. CPU, memory, storage,
-cache limits, and durations use numeric fields with explicit units so the
-stored Kubernetes quantities remain valid without requiring administrators to
-write quantity syntax directly. Environment templates always reserve CPU and
-memory requests; limits are optional. Site quotas are also optional, allowing
-clusters with existing capacity policies to keep Kubernetes as the admission
-authority.
+The administration page discovers RuntimeClasses, StorageClasses,
+IngressClasses, TLS Secrets, and cert-manager Issuers from the current
+cluster. Resource references are selected from these results and revalidated
+when saved. CPU, memory, storage, cache limits, and durations use numeric
+fields with explicit units so the stored Kubernetes quantities remain valid
+without requiring administrators to write quantity syntax directly.
+Environment templates always reserve CPU and memory requests; limits are
+optional. Site quotas are also optional, allowing clusters with existing
+capacity policies to keep Kubernetes as the admission authority.
 
 Components are cluster-scoped resources managed through this page. The Manager
-creates their Deployments, Services, credentials, network policies, and cache
-storage in the management namespace. A site selects components by Kubernetes
-identity, so deleting and recreating a component with the same name does not
-silently reuse its former authorization.
+creates their Deployments, Services, credentials, network policies, optional
+Ingress or SSH LoadBalancer, and cache storage in the management namespace. A
+site selects components by Kubernetes identity, so deleting and recreating a
+component with the same name does not silently reuse its former authorization.
+Gateway components default to two replicas and can be scaled from the component
+form. Browser sessions remain valid across healthy replicas, and the component
+list reports both ready and desired replicas. Cache components stay at one
+replica because each cache has a single active writer and may use a
+ReadWriteOnce volume.
+
+Cache components are private cluster services. Manager creates a same-name
+`443/https` Service and a short-lived certificate for its Kubernetes DNS name;
+Runtime Docker and Dev Containers receive the public internal CA needed to
+verify it. Registry requests also carry short-lived, repository-scoped
+credentials, so multiple sites can share a Cache without sharing cached
+private data. A site CA bundle, when configured, is appended to the same
+runtime trust bundle for Gitea access.
 
 ## Operations
 
-The Manager creates an installation identity in `Secret/codespace-gitea-codespace-internal-ca`. Back up this Secret and enable Kubernetes Secret encryption at rest. It must remain available across upgrades and Manager restarts.
+The Manager creates an installation identity in `Secret/codespace-gitea-codespace-internal-ca`. Back up this Secret and enable Kubernetes Secret encryption at rest. It must remain available across upgrades and Manager restarts. Cache HTTPS certificates and component identities rotate automatically from this stable trust root. Workloads validate the projected files at startup and keep a valid certificate snapshot in memory, checking for rotation at most once per minute on new TLS connections.
 
 Public administration access, Codespace endpoint routing, HTTPS, private image registries, identity recovery, and all Helm values are documented in the [Helm installation guide](charts/gitea-codespace/README.md).
 

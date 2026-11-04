@@ -12,13 +12,16 @@ import (
 )
 
 const (
-	gatewayHTTPListen = ":8080"
-	gatewaySSHListen  = ":2222"
-	cacheListen       = ":5000"
-	cacheStoragePath  = "/var/lib/codespace-cache"
-	gatewayHTTPPort   = int32(8080)
-	gatewaySSHPort    = int32(2222)
-	cachePort         = int32(5000)
+	gatewayHTTPListen      = ":8080"
+	gatewaySSHListen       = ":2222"
+	cacheListen            = ":8443"
+	cacheStoragePath       = "/var/lib/codespace-cache"
+	gatewayHTTPPort        = int32(8080)
+	gatewaySSHPort         = int32(2222)
+	gatewayHTTPServicePort = int32(80)
+	gatewaySSHServicePort  = int32(22)
+	cacheContainerPort     = int32(8443)
+	cacheServicePort       = int32(443)
 )
 
 func componentDuration(value, field string) (configpkg.Duration, error) {
@@ -55,9 +58,9 @@ func gatewayComponentConfig(component *api.CodespaceComponent) (configpkg.Gatewa
 		return configpkg.GatewayConfig{}, err
 	}
 	config := configpkg.GatewayConfig{
-		HTTP: configpkg.GatewayHTTPConfig{Listen: gatewayHTTPListen, PublicURL: spec.PublicURL},
+		HTTP: configpkg.GatewayHTTPConfig{Listen: gatewayHTTPListen, PublicURL: spec.EndpointBaseURL, TrustedProxyCIDRs: append([]string(nil), spec.TrustedProxyCIDRs...)},
 		SSH: configpkg.GatewaySSHConfig{
-			Listen: gatewaySSHListen, PublicAddr: spec.SSHPublicAddress, HandshakeTimeout: handshakeTimeout,
+			Listen: gatewaySSHListen, PublicAddr: spec.SSHExternalAddress, HandshakeTimeout: handshakeTimeout,
 			MaxChannelsPerConnection: int(spec.SSH.MaxChannelsPerConnection),
 			Auth: configpkg.GatewaySSHAuthConfig{
 				MaxAttemptsPerIP: int(spec.SSH.Auth.MaxAttemptsPerIP), MaxAttemptsPerCodespace: int(spec.SSH.Auth.MaxAttemptsPerCodespace),
@@ -103,7 +106,7 @@ func cacheComponentConfig(component *api.CodespaceComponent) (configpkg.CacheCon
 	}
 	config := configpkg.CacheConfig{
 		ID: component.Name, Name: component.Spec.DisplayName, Revision: revision, Enabled: spec.Enabled,
-		Listen: cacheListen, PublicURL: spec.PublicURL, MaxSize: spec.MaxSize, MaxAge: maxAge, GCInterval: gcInterval, Upstreams: upstreams,
+		Listen: cacheListen, MaxSize: spec.MaxSize, MaxAge: maxAge, GCInterval: gcInterval, Upstreams: upstreams,
 		Storage: configpkg.CacheStorageConfig{
 			Driver: spec.Storage.Driver, Path: cacheStoragePath, MinFreeSpace: spec.Storage.MinFreeSpace,
 			S3: configpkg.CacheS3Config{

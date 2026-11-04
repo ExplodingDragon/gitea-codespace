@@ -38,7 +38,8 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	address := listener.Addr().String()
 	require.NoError(t, listener.Close())
 	managerHost := "manager." + namespace.Name + ".svc"
-	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentitySecretName: "test-internal-ca", HealthAddress: "0"}, AdminAddress: address, AdminPublicURL: "http://" + address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0"}
+	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentitySecretName: "test-internal-ca", HealthAddress: "0"}, AdminAddress: address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0"}
+	adminURL := "http://" + address
 	log.SetLogger(logr.Discard())
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
@@ -57,7 +58,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	httpClient := &http.Client{Timeout: 3 * time.Second}
 	t.Cleanup(httpClient.CloseIdleConnections)
 	require.Eventually(t, func() bool {
-		response, err := httpClient.Get(options.AdminPublicURL + "/api/admin/session")
+		response, err := httpClient.Get(adminURL + "/api/admin/session")
 		if err != nil {
 			return false
 		}
@@ -68,9 +69,9 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Namespace: namespace.Name, Name: "codespace-manager"}, &lease))
 	require.NotNil(t, lease.Spec.HolderIdentity)
 	require.NotEmpty(t, *lease.Spec.HolderIdentity)
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, options.AdminPublicURL+"/api/admin/login", strings.NewReader(`{"token":"`+token+`"}`))
+	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost, adminURL+"/api/admin/login", strings.NewReader(`{"token":"`+token+`"}`))
 	require.NoError(t, err)
-	request.Header.Set("Origin", options.AdminPublicURL)
+	request.Header.Set("Origin", adminURL)
 	response, err := httpClient.Do(request)
 	require.NoError(t, err)
 	data, err := io.ReadAll(response.Body)
@@ -84,11 +85,11 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	var sessions corev1.SecretList
 	require.NoError(t, cluster.List(cluster.ctx, &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
-	body, err := json.Marshal(adminTemplateWrite{adminWriteIdentity: adminWriteIdentity{Name: namespace.Name}, Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: runtime.environmentConfiguration()}})
+	body, err := json.Marshal(adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: runtime.environmentConfiguration()}})
 	require.NoError(t, err)
-	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, options.AdminPublicURL+"/api/admin/environments", bytes.NewReader(body))
+	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, adminURL+"/api/admin/environments", bytes.NewReader(body))
 	require.NoError(t, err)
-	request.Header.Set("Origin", options.AdminPublicURL)
+	request.Header.Set("Origin", adminURL)
 	request.Header.Set("X-CSRF-Token", session["csrf"])
 	request.AddCookie(cookies[0])
 	response, err = httpClient.Do(request)
@@ -97,8 +98,11 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, response.Body.Close())
 	require.Equal(t, http.StatusOK, response.StatusCode, string(data))
+	var created adminResource
+	require.NoError(t, json.Unmarshal(data, &created))
+	require.Regexp(t, `^environment-[0-9a-f-]{36}$`, created.Name)
 	var template api.EnvironmentTemplate
-	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Name: namespace.Name}, &template))
+	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Name: created.Name}, &template))
 	t.Cleanup(func() {
 		ctx, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()

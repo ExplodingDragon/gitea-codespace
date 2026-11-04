@@ -235,3 +235,21 @@ func (a *IdentityAuthority) validate(data map[string][]byte, rawIdentity string,
 	}
 	return a.authority.ValidateLeaf(data, rawIdentity, usages, time.Now())
 }
+
+func (a *IdentityAuthority) issueServerCertificate(dnsName string) (*identitypkg.Leaf, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.authority == nil {
+		return nil, fmt.Errorf("internal certificate authority is not initialized")
+	}
+	return a.authority.IssueServerCertificate(dnsName, time.Now())
+}
+
+func (a *IdentityAuthority) validateServerCertificate(data map[string][]byte, dnsName string) (time.Time, error) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.authority == nil {
+		return time.Time{}, fmt.Errorf("internal certificate authority is not initialized")
+	}
+	return a.authority.ValidateServerCertificate(data, dnsName, time.Now())
+}

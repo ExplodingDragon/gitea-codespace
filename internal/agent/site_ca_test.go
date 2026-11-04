@@ -1,0 +1,90 @@
+// Copyright 2026 The Gitea Authors. All rights reserved.
+// SPDX-License-Identifier: MIT
+
+package agent
+
+import (
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"gitea.dev/codespace/internal/identity"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"github.com/stretchr/testify/require"
+)
+
+func TestWritePlatformCABundleRotation(t *testing.T) {
+	certificate := func() string {
+		authority, err := identity.NewAuthority(time.Now())
+		require.NoError(t, err)
+		return string(authority.RootPEM())
+	}
+	internal, first, second := certificate(), certificate(), certificate()
+	directory := t.TempDir()
+
+	active, err := writePlatformCABundle(directory, internal, first)
+	require.NoError(t, err)
+	require.True(t, active)
+	entries, err := os.ReadDir(directory)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+
+	active, err = writePlatformCABundle(directory, internal, second)
+	require.NoError(t, err)
+	require.True(t, active)
+	entries, err = os.ReadDir(directory)
+	require.NoError(t, err)
+	require.Len(t, entries, 3)
+	bundle, err := os.ReadFile(filepath.Join(directory, "bundle.pem"))
+	require.NoError(t, err)
+	require.Equal(t, internal+second, string(bundle))
+	info, err := os.Stat(filepath.Join(directory, "bundle.pem"))
+	require.NoError(t, err)
+	require.Equal(t, os.FileMode(0o444), info.Mode().Perm())
+
+	environment := siteTrust{url: "https://gitea.example.com", customCA: true}.gitEnvironment(nil, true)
+	require.ElementsMatch(t, []string{
+		"GIT_CONFIG_COUNT=2",
+		"GIT_CONFIG_KEY_0=credential.helper",
+		"GIT_CONFIG_VALUE_0=!/run/codespace/bin/gitea-codespace-git-credential",
+		"GIT_CONFIG_KEY_1=http.https://gitea.example.com/.sslCAInfo",
+		"GIT_CONFIG_VALUE_1=/run/codespace/ca/bundle.pem",
+	}, environment)
+
+	active, err = writePlatformCABundle(directory, internal, "")
+	require.NoError(t, err)
+	require.False(t, active)
+	entries, err = os.ReadDir(directory)
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	bundle, err = os.ReadFile(filepath.Join(directory, "bundle.pem"))
+	require.NoError(t, err)
+	require.Equal(t, internal, string(bundle))
+}
+
+func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
+	server := httptest.NewTLSServer(http.NotFoundHandler())
+	t.Cleanup(server.Close)
+	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
+	identityDirectory, dockerCertificates := t.TempDir(), t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(identityDirectory, "ca.crt"), root, 0o600))
+	runtime := &Runtime{IdentityDirectory: identityDirectory, DockerCertificateDirectory: dockerCertificates}
+	cache := &agentv1.RuntimeCache{
+		BuildRegistry: "https://cache.codespace-system.svc/cache/example",
+		Mirrors:       map[string]string{"ghcr.io": "https://cache.codespace-system.svc/mirror/ghcr.io"},
+	}
+	prepared, err := runtime.prepareDockerCacheTrust(cache)
+	require.NoError(t, err)
+	require.Equal(t, root, prepared)
+	installed, err := os.ReadFile(filepath.Join(dockerCertificates, "cache.codespace-system.svc", "ca.crt"))
+	require.NoError(t, err)
+	require.Equal(t, root, installed)
+
+	cache.BuildRegistry = "http://cache.codespace-system.svc/cache/example"
+	_, err = runtime.prepareDockerCacheTrust(cache)
+	require.ErrorContains(t, err, "HTTPS")
+}

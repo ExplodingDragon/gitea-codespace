@@ -5,13 +5,74 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/docker/docker/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
+	t.Parallel()
+
+	wanted := ocispec.Platform{OS: "linux", Architecture: "amd64"}
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		if strings.HasSuffix(request.URL.Path, "/images/base/json") {
+			if request.URL.Query().Get("manifests") != "1" {
+				t.Errorf("manifests query = %q", request.URL.Query().Get("manifests"))
+			}
+			_, _ = response.Write([]byte(`{"Id":"sha256:index","Manifests":[{"ID":"sha256:child","Available":true,"Kind":"image","ImageData":{"Platform":{"os":"linux","architecture":"amd64"}}}]}`))
+			return
+		}
+		if !strings.HasSuffix(request.URL.Path, "/images/sha256:child/json") {
+			t.Errorf("image path = %q", request.URL.Path)
+		}
+		_, _ = response.Write([]byte(`{"Id":"sha256:child","Os":"linux","Architecture":"amd64","Config":{"Env":["PATH=/usr/bin"]}}`))
+	}))
+	defer server.Close()
+	apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
+	if err != nil {
+		t.Fatalf("create Docker client: %v", err)
+	}
+	defer func() { _ = apiClient.Close() }()
+	engine := &Engine{client: apiClient, platform: &wanted}
+	inspect, err := engine.inspectImage(context.Background(), "base")
+	if err != nil {
+		t.Fatalf("inspect image: %v", err)
+	}
+	if inspect.ID != "sha256:child" || inspect.Config == nil || len(inspect.Config.Env) != 1 || inspect.Config.Env[0] != "PATH=/usr/bin" {
+		t.Fatalf("image ID = %q", inspect.ID)
+	}
+}
+
+func TestImagePlatform(t *testing.T) {
+	t.Parallel()
+
+	for _, test := range []struct {
+		name     string
+		platform *ocispec.Platform
+		want     string
+	}{
+		{name: "unavailable"},
+		{name: "architecture", platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}, want: "linux/amd64"},
+		{name: "variant", platform: &ocispec.Platform{OS: "linux", Architecture: "arm64", Variant: "v8"}, want: "linux/arm64/v8"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			if got := (&Engine{platform: test.platform}).imagePlatform(); got != test.want {
+				t.Fatalf("image platform = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
 
 func TestDockerPullProgressAggregatesLayerUpdates(t *testing.T) {
 	t.Parallel()

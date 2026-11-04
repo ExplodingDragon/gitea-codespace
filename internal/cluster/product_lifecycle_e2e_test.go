@@ -424,14 +424,13 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: gatewayName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	gatewaySpec := testGatewayComponent(gatewayName, "").Spec
 	gatewaySpec.DisplayName = "Lifecycle E2E gateway"
-	gatewaySpec.Gateway.PublicURL = "http://" + gatewayName + ".test"
-	gatewaySpec.Gateway.SSHPublicAddress = gatewayName + ".test:22"
-	gatewaySpec.Gateway.Parent = api.GatewayParent{}
+	gatewaySpec.Gateway.EndpointBaseURL = "http://" + gatewayName + ".test"
+	gatewaySpec.Gateway.SSHExternalAddress = gatewayName + ".test:22"
 	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, true))
 
 	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	cacheSpec := testCacheComponent(cacheName, "").Spec
-	cacheSpec.DisplayName, cacheSpec.Cache.PublicURL, cacheSpec.Cache.MaxSize = "Lifecycle E2E cache", "http://"+cacheName+".test", "4GiB"
+	cacheSpec.DisplayName, cacheSpec.Cache.MaxSize = "Lifecycle E2E cache", "4GiB"
 	cacheSpec.Cache.Storage.VolumeSize = "5Gi"
 	cacheSpec.Cache.Upstreams = map[string]api.CacheUpstream{
 		"docker.io": {Allow: []string{"library/debian*"}},
@@ -455,8 +454,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(nodePortService), nodePortService))
 	require.NotZero(t, nodePortService.Spec.Ports[0].NodePort)
 	require.NotZero(t, nodePortService.Spec.Ports[1].NodePort)
-	gatewaySpec.Gateway.PublicURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
-	gatewaySpec.Gateway.SSHPublicAddress = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
+	gatewaySpec.Gateway.EndpointBaseURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
+	gatewaySpec.Gateway.SSHExternalAddress = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
 	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, false))
 
 	for _, name := range []string{gatewayName, cacheName} {
@@ -465,7 +464,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 			if c.Get(ctx, types.NamespacedName{Namespace: managementNamespace, Name: name}, &deployment) != nil {
 				return false
 			}
-			return deployment.Status.ObservedGeneration == deployment.Generation && deployment.Status.ReadyReplicas == 1
+			return deployment.Status.ObservedGeneration == deployment.Generation && deployment.Spec.Replicas != nil && deployment.Status.ReadyReplicas == *deployment.Spec.Replicas
 		}, 3*time.Minute, time.Second, "component %s did not become ready", name)
 	}
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cacheName}, cache))

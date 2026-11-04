@@ -24,6 +24,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 			BuildRegistry: "https://registry.example.com/cache",
 			BuildScope:    "scope",
 		},
+		GiteaCustomCA: true,
 	}
 	request.DevContainer.WebIDE.Version = " 4.121.0 "
 	options, err := buildCreateOptions(request)
@@ -47,5 +48,16 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	}
 	if options.Cache.BuildRegistry != request.Cache.BuildRegistry || options.Cache.BuildScope != request.Cache.BuildScope {
 		t.Fatalf("Codespace cache = %#v", options.Cache)
+	}
+	if options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_CA_BUNDLE"] != containerCABundlePath {
+		t.Fatalf("custom CA environment = %#v", options.ContainerEnv)
+	}
+	request.GiteaCustomCA = false
+	options, err = buildCreateOptions(request)
+	if err != nil {
+		t.Fatalf("create options without custom CA: %v", err)
+	}
+	if len(options.ContainerEnv) != 2 || options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath {
+		t.Fatalf("system CA environment = %#v", options.ContainerEnv)
 	}
 }

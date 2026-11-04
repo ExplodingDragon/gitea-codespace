@@ -41,6 +41,10 @@ spec:
             properties:
               acceptCreates:
                 type: boolean
+              caBundle:
+                description: CABundle extends the system trust store for this Gitea
+                  site.
+                type: string
               caches:
                 items:
                   description: ResourceReference pins an authorization to an object,

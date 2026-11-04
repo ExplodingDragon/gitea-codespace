@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package cache defines the managed registry cache command.
 package cache
 
 import (
@@ -17,7 +18,7 @@ import (
 	configpkg "gitea.dev/codespace/internal/config"
 )
 
-// NewCommand creates the independent registry cache component command.
+// NewCommand creates the managed registry cache component command.
 func NewCommand() *cobra.Command {
 	var id string
 	command := &cobra.Command{
@@ -30,12 +31,14 @@ func NewCommand() *cobra.Command {
 			if !configpkg.ValidCacheID(id) {
 				return fmt.Errorf("a valid cache ID is required")
 			}
-			client, httpClient, err := componentpkg.NewComponentRPCClient()
+			connection, err := componentpkg.NewManagerConnection()
 			if err != nil {
 				return err
 			}
-			defer httpClient.CloseIdleConnections()
-			err = cachepkg.Run(ctx, command.OutOrStdout(), &componentpkg.CacheComponentClient{Client: client}, id)
+			defer connection.Close()
+			err = cachepkg.Run(ctx, command.OutOrStdout(), &componentpkg.CacheComponentClient{Client: connection.Service}, cachepkg.RunOptions{
+				ID: id, CertificateDirectory: "/var/run/codespace/registry-tls",
+			})
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil
 			}

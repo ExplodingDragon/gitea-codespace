@@ -38,6 +38,7 @@ import (
 	"github.com/docker/docker/api/types/volume"
 	"github.com/docker/docker/client"
 	"github.com/docker/go-connections/nat"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -50,11 +51,12 @@ const (
 
 // Engine creates and controls one complete Dev Container environment.
 type Engine struct {
-	cli     *command.DockerCli
-	client  client.APIClient
-	compose api.Compose
-	stdout  io.Writer
-	stderr  io.Writer
+	cli      *command.DockerCli
+	client   client.APIClient
+	compose  api.Compose
+	stdout   io.Writer
+	stderr   io.Writer
+	platform *ocispec.Platform
 }
 
 // PrepareLifecycleFunc prepares caller-specific state after the remote user and
@@ -75,6 +77,7 @@ type CreateOptions struct {
 	Secrets          map[string]string
 	InjectedFeatures []devcontainer.InjectedFeature
 	AdditionalMounts []devcontainer.Mount
+	ContainerEnv     map[string]string
 	Labels           map[string]string
 	FrozenLockfile   bool
 	Cache            devcontainer.CacheOptions
@@ -102,12 +105,21 @@ func New(ctx context.Context, stdout, stderr io.Writer) (*Engine, error) {
 	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
 		return nil, fmt.Errorf("initialize Docker client: %w", err)
 	}
+	dockerClient := cli.Client()
+	version, err := dockerClient.ServerVersion(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("inspect Docker server: %w", err)
+	}
+	if strings.TrimSpace(version.Os) == "" || strings.TrimSpace(version.Arch) == "" {
+		return nil, fmt.Errorf("docker server platform is incomplete")
+	}
 	return &Engine{
-		cli:     cli,
-		client:  cli.Client(),
-		compose: compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil })),
-		stdout:  stdout,
-		stderr:  stderr,
+		cli:      cli,
+		client:   dockerClient,
+		compose:  compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil })),
+		stdout:   stdout,
+		stderr:   stderr,
+		platform: &ocispec.Platform{OS: version.Os, Architecture: version.Arch},
 	}, nil
 }
 
@@ -167,7 +179,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	}
 	resolved.FrozenLockfile = options.FrozenLockfile
 	resolved.Cache = options.Cache
-	resolved.Configuration = devcontainer.Merge(resolved.Configuration, devcontainer.Configuration{Mounts: options.AdditionalMounts})
+	resolved.Configuration = devcontainer.Merge(resolved.Configuration, devcontainer.Configuration{Mounts: options.AdditionalMounts, ContainerEnv: options.ContainerEnv})
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return nil, err
 	}
@@ -349,7 +361,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	if override || len(resolved.FeatureEntrypoints) > 0 {
 		var arguments []string
 		if !override {
-			inspect, err := e.client.ImageInspect(ctx, imageName)
+			inspect, err := e.inspectImage(ctx, imageName)
 			if err != nil {
 				return "", nil, fmt.Errorf("inspect Dev Container command: %w", err)
 			}
@@ -815,7 +827,7 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 }
 
 // Start resumes an existing environment and runs postStartCommand.
-func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, secrets map[string]string) (*devcontainer.State, error) {
+func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, secrets map[string]string, prepare PrepareLifecycleFunc) (*devcontainer.State, error) {
 	if err := environment.Validate(); err != nil {
 		return nil, err
 	}
@@ -835,6 +847,11 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, sec
 					return nil, fmt.Errorf("resume Dev Container %s: %w", id, err)
 				}
 			}
+		}
+	}
+	if prepare != nil {
+		if err := prepare(ctx, e, environment); err != nil {
+			return nil, err
 		}
 	}
 	if err := e.runLifecycleCommand(ctx, environment, string(devcontainer.LifecycleStagePostStart), environment.Configuration.PostStartCommand, secrets); err != nil {
