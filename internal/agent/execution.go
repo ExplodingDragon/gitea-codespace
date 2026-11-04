@@ -212,8 +212,8 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 		if err := replaceCAFile(dockerBundle, combined); err != nil {
 			return nil, fmt.Errorf("install Docker CA bundle: %w", err)
 		}
-		// Compose serves BuildKit registry credentials from this Agent process,
-		// while dockerd inherits the same trust bundle when it starts.
+		// Docker CLI subprocesses use this bundle together with the transient
+		// Docker configuration written for the create operation.
 		if err := os.Setenv("SSL_CERT_FILE", dockerBundle); err != nil {
 			return nil, fmt.Errorf("configure Docker CA bundle: %w", err)
 		}
@@ -281,26 +281,35 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	}
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	cache := devcontainer.CacheOptions{}
+	var cacheCredentials map[string]*agentv1.RegistryCredential
 	if value := response.Runtime.Cache; value != nil {
 		cache.BuildRegistry, cache.BuildScope = value.BuildRegistry, value.BuildScope
 		cache.Mirrors = maps.Clone(value.Mirrors)
 		cache.RootCAPEM = append([]byte(nil), cacheRootCA...)
-		cache.Credentials = make(map[string]devcontainer.RegistryCredential, len(value.Credentials))
-		for registry, credential := range value.Credentials {
-			if credential == nil || credential.Username == "" || credential.Password == "" {
-				return fmt.Errorf("runtime cache credential is invalid")
+		cacheCredentials = value.Credentials
+	}
+	cleanupCredentials, err := prepareDockerCredentials(runtimeDockerConfigDirectory, cacheCredentials)
+	if err != nil {
+		return err
+	}
+	if len(cacheCredentials) > 0 {
+		cache.Credentials = make(map[string]devcontainer.RegistryCredential, len(cacheCredentials))
+		for registry, credential := range cacheCredentials {
+			cache.Credentials[strings.TrimSpace(registry)] = devcontainer.RegistryCredential{
+				Username: strings.TrimSpace(credential.Username),
+				Password: credential.Password,
 			}
-			cache.Credentials[registry] = devcontainer.RegistryCredential{Username: credential.Username, Password: credential.Password}
 		}
 	}
-	state, err := executor.Apply(ctx, devcontainerruntime.Request{
+	state, applyErr := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
 		GiteaURL: trust.url, GiteaCustomCA: trust.customCA, Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
 	})
-	if err != nil {
-		return err
+	cleanupErr := cleanupCredentials()
+	if applyErr != nil || cleanupErr != nil {
+		return errors.Join(applyErr, cleanupErr)
 	}
 	endpoints, err := devcontainerruntime.ConfiguredEndpoints(state.Configuration)
 	if err == nil {

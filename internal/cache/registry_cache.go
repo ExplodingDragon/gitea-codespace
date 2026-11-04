@@ -254,10 +254,6 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 		c.registries = append(c.registries, proxy)
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path == "/auth" {
-			c.serveRegistryToken(writer, request)
-			return
-		}
 		// Wait for in-flight requests before GC and reject new requests during it.
 		if !c.maintenance.TryRLock() {
 			writer.Header().Set("Retry-After", "30")
@@ -267,12 +263,7 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 		defer c.maintenance.RUnlock()
 		repository, action := registryCacheAccess(request)
 		if err := c.authorize(request, repository, action); err != nil {
-			challenge, challengeErr := registryAuthenticationChallenge(request, repository, action)
-			if challengeErr != nil {
-				http.Error(writer, challengeErr.Error(), http.StatusBadRequest)
-				return
-			}
-			writer.Header().Set("WWW-Authenticate", challenge)
+			writer.Header().Set("WWW-Authenticate", registryAuthenticationChallenge)
 			http.Error(writer, err.Error(), http.StatusUnauthorized)
 			return
 		}

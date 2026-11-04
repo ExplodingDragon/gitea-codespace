@@ -57,7 +57,7 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		if len(data) > 4*1024*1024 {
 			return fmt.Errorf("dev container recovery state exceeds the size limit")
 		}
-		// Request.Secrets and cache credentials remain in memory, outside State.
+		// Request.Secrets and cache credentials remain outside recovery State.
 		return e.Journal.write("state/environment.json", data)
 	})
 	if err != nil {

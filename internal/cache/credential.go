@@ -22,8 +22,9 @@ type credentialClaims struct {
 	Expires   int64  `json:"e"`
 }
 
-// SignCredential creates a cache-scoped bearer credential. Each cache has a
-// distinct key, so validation does not require a Manager round trip.
+// SignCredential creates a short-lived registry credential scoped to one
+// cache namespace. Each cache has a distinct key, so validation does not
+// require a Manager round trip.
 func SignCredential(secret []byte, cacheID, namespace string, policy configpkg.CachePolicy, expires time.Time) (string, error) {
 	claims := credentialClaims{CacheID: cacheID, Namespace: namespace, Expires: expires.Unix()}
 	if policy.Public {

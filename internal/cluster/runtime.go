@@ -281,6 +281,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 					{Name: "CODESPACE_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 					{Name: "CODESPACE_DATA_DEVICE", Value: dataDevice},
 					{Name: "CODESPACE_DEVCONTAINER_CONFIGURATION", Value: string(devContainer)},
+					{Name: "DOCKER_CONFIG", Value: "/run/codespace/docker-config"},
 				},
 				VolumeMounts:  volumeMounts,
 				VolumeDevices: volumeDevices,

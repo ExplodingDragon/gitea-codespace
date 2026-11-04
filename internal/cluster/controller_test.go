@@ -319,6 +319,8 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	require.Equal(t, []corev1.VolumeDevice{{Name: "data", DevicePath: "/dev/codespace-data"}}, container.VolumeDevices)
 	require.NotContains(t, container.VolumeMounts, corev1.VolumeMount{Name: "data", MountPath: "/var/lib/codespace"})
 	require.Contains(t, container.Env, corev1.EnvVar{Name: "CODESPACE_DATA_DEVICE", Value: "/dev/codespace-data"})
+	require.Contains(t, container.Env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/run/codespace/docker-config"})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "ephemeral", MountPath: "/run/codespace"})
 	require.Equal(t, corev1.PullIfNotPresent, container.ImagePullPolicy)
 }
 

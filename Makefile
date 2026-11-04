@@ -54,7 +54,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images frontend frontend-check test-frontend admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images clean frontend frontend-check test-frontend admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -105,6 +105,11 @@ build-linux: frontend
 
 images: build-linux
 	$(CONTAINER_TOOL) build -f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
+
+clean:
+	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report
+	mkdir -p web/dist
+	touch web/dist/.gitkeep
 
 frontend:
 	$(PNPM) --dir web install --frozen-lockfile

@@ -7,14 +7,11 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"maps"
-	"net"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -29,7 +26,6 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/command"
 	containercommand "github.com/docker/cli/cli/command/container"
-	configtypes "github.com/docker/cli/cli/config/types"
 	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
 	compose "github.com/docker/compose/v2/pkg/compose"
@@ -130,37 +126,6 @@ func (e *Engine) Close() error {
 	return e.client.Close()
 }
 
-func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
-	if len(cache.Credentials) == 0 {
-		return
-	}
-	authConfigs := e.cli.ConfigFile().GetAuthConfigs()
-	for address, credential := range cache.Credentials {
-		address = strings.TrimRight(strings.TrimSpace(address), "/")
-		if address == "" || strings.TrimSpace(credential.Username) == "" || strings.TrimSpace(credential.Password) == "" {
-			continue
-		}
-		config := configtypes.AuthConfig{
-			Username:      credential.Username,
-			Password:      credential.Password,
-			Auth:          base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password)),
-			RegistryToken: credential.Password,
-			ServerAddress: address,
-		}
-		authConfigs[address] = config
-		parsed, err := url.Parse("https://" + address)
-		if err == nil && parsed.Host == address && parsed.Hostname() != "" {
-			if parsed.Port() == "" {
-				config.ServerAddress = net.JoinHostPort(parsed.Hostname(), "443")
-				authConfigs[config.ServerAddress] = config
-			} else if parsed.Port() == "443" {
-				config.ServerAddress = parsed.Hostname()
-				authConfigs[config.ServerAddress] = config
-			}
-		}
-	}
-}
-
 // Create resolves configuration, creates resources, and completes the first lifecycle.
 func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
@@ -180,7 +145,6 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if err := validateCacheOptions(options.Cache); err != nil {
 		return nil, err
 	}
-	e.applyCacheCredentials(options.Cache)
 	composeProject := ""
 	if len(resolved.DockerComposeFile) > 0 {
 		composeProject = composeProjectName(options.OwnerID)
