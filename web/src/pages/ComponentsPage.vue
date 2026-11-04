@@ -3,7 +3,15 @@ import {computed, onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
 import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
-import {errorMessage, request, type ClusterOptions, type Component, type ComponentStatus, type Resource} from '../api';
+import {
+  errorMessage,
+  request,
+  upsertResource,
+  type ClusterOptions,
+  type Component,
+  type ComponentStatus,
+  type Resource,
+} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import {measurementBaseValue} from '../utils/measurement';
@@ -19,7 +27,8 @@ const s3AccessKey = ref('');
 const s3SecretKey = ref('');
 const upstreams = ref<{host: string; allow: string}[]>([]);
 const error = ref('');
-const busy = ref(false);
+const loading = ref(false);
+const saving = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   name: name.value,
@@ -106,7 +115,7 @@ const storageOptions = computed(() => {
 });
 
 async function load() {
-  busy.value = true;
+  loading.value = true;
   error.value = '';
   try {
     [items.value, cluster.value] = await Promise.all([
@@ -116,7 +125,7 @@ async function load() {
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    loading.value = false;
   }
 }
 onMounted(load);
@@ -230,7 +239,7 @@ function close() {
   dirty.endTracking();
 }
 async function save() {
-  busy.value = true;
+  saving.value = true;
   error.value = '';
   try {
     const spec = structuredClone(toRaw(form.value!));
@@ -296,21 +305,25 @@ async function save() {
         };
       }
     }
-    await request(`components${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
-      name: name.value,
-      uid: selected.value?.uid ?? '',
-      resourceVersion: selected.value?.resourceVersion ?? '',
-      spec,
-      s3AccessKey: s3AccessKey.value,
-      s3SecretKey: s3SecretKey.value,
-    });
+    const saved = await request<Resource<Component, ComponentStatus>>(
+      `components${selected.value ? `/${name.value}` : ''}`,
+      selected.value ? 'PUT' : 'POST',
+      {
+        name: name.value,
+        uid: selected.value?.uid ?? '',
+        resourceVersion: selected.value?.resourceVersion ?? '',
+        spec,
+        s3AccessKey: s3AccessKey.value,
+        s3SecretKey: s3SecretKey.value,
+      },
+    );
+    items.value = upsertResource(items.value, saved);
     editing.value = false;
     dirty.endTracking();
-    await load();
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    saving.value = false;
   }
 }
 function remove(item: Resource<Component, ComponentStatus>) {
@@ -365,7 +378,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <NButton
         :aria-label="t('component.refresh')"
         :title="t('component.refresh')"
-        :disabled="busy"
+        :disabled="loading"
         @click="load"
       >
         <template #icon><RefreshCw :size="16" /></template>
@@ -467,8 +480,8 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           />
         </NFormItem>
       </div>
-      <h2>{{ t('component.gatewayRouting') }}</h2>
-      <p class="section-help">{{ t('component.gatewayRoutingHelp') }}</p>
+      <h2>{{ t('component.publicExposure') }}</h2>
+      <p class="section-help">{{ t('component.publicExposureHelp') }}</p>
       <div class="fields">
         <NFormItem :label="t('component.gatewayParent')">
           <NSelect
@@ -709,12 +722,12 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <NButton
         type="primary"
         attr-type="submit"
-        :loading="busy"
+        :loading="saving"
       >
         {{ t('component.save') }}
       </NButton>
       <NButton
-        :disabled="busy"
+        :disabled="saving"
         @click="close"
       >
         {{ t('common.cancel') }}
@@ -817,7 +830,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
             colspan="5"
             class="empty"
           >
-            {{ busy ? t('component.loading') : t('component.empty') }}
+            {{ loading ? t('component.loading') : t('component.empty') }}
           </td>
         </tr>
       </tbody>

@@ -61,7 +61,7 @@ func TestGatewayActivityCountsOnlyAuthenticatedLiveConnections(t *testing.T) {
 	requireSignal(t, registry.ActivityChanges())
 	require.Empty(t, registry.Activity(time.Now()))
 
-	sessionID, err := registry.Create(OpenTokenBinding{UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now())
+	sessionID, err := registry.Create(OpenTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now())
 	require.NoError(t, err)
 	require.Empty(t, registry.Activity(time.Now()))
 
@@ -72,7 +72,7 @@ func TestGatewayActivityCountsOnlyAuthenticatedLiveConnections(t *testing.T) {
 	requireSignal(t, registry.ActivityChanges())
 	require.Empty(t, registry.Activity(time.Now()))
 
-	releaseSSH, ok := registry.BeginSSHSession(runtimeUUID, 1, nil, time.Now())
+	releaseSSH, ok := registry.BeginSSHSession("site-1", runtimeUUID, 1, nil, time.Now())
 	require.True(t, ok)
 	requireSignal(t, registry.ActivityChanges())
 	require.Equal(t, map[string]int{runtimeUUID: 1}, registry.Activity(time.Now()))
@@ -117,6 +117,7 @@ func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 	registry := newGatewaySessionRegistry()
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -146,6 +147,7 @@ func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 	registry := newGatewaySessionRegistry()
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -168,13 +170,14 @@ func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T)
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 10))
 	now := time.Unix(100, 0)
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
 	}, now); err != nil {
 		t.Fatalf("create endpoint session: %v", err)
 	}
-	if release, ok := registry.BeginSSHSession("codespace-1", 42, nil, now); ok {
+	if release, ok := registry.BeginSSHSession("site-1", "codespace-1", 42, nil, now); ok {
 		release()
 		t.Fatalf("expected ssh session to share codespace limit")
 	}
@@ -186,6 +189,7 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -194,6 +198,7 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 		t.Fatalf("create first session: %v", err)
 	}
 	secondID, err := registry.CreateReplacing(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -208,6 +213,7 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 		t.Fatalf("new session does not authenticate")
 	}
 	if _, err := registry.CreateReplacing(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "web",
@@ -222,6 +228,7 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	validID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -230,6 +237,7 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 		t.Fatalf("create valid session: %v", err)
 	}
 	otherID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "web",
@@ -252,6 +260,7 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -260,6 +269,7 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 		t.Fatalf("create first session: %v", err)
 	}
 	secondID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -271,6 +281,7 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 		t.Fatalf("authenticate multiple current candidates ok=%v ambiguous=%v", ok, ambiguous)
 	}
 	if _, err := registry.CreateReplacingAny(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -284,17 +295,36 @@ func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	now := time.Unix(100, 0)
-	release, ok := registry.BeginSSHSession("codespace-1", 42, nil, now)
+	release, ok := registry.BeginSSHSession("site-1", "codespace-1", 42, nil, now)
 	if !ok {
 		t.Fatalf("begin ssh session")
 	}
 	defer release()
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-2",
 		EndpointID:    "workspace",
 	}, now); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("endpoint session over user limit err = %v", err)
+	}
+}
+
+func TestGatewaySessionRegistrySeparatesUsersBySite(t *testing.T) {
+	t.Parallel()
+
+	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
+	now := time.Unix(100, 0)
+	for _, binding := range []OpenTokenBinding{
+		{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace"},
+		{SiteUID: "site-2", UserID: 42, CodespaceUUID: "codespace-2", EndpointID: "workspace"},
+	} {
+		if _, err := registry.Create(binding, now); err != nil {
+			t.Fatalf("create session for %s: %v", binding.SiteUID, err)
+		}
+	}
+	if _, err := registry.Create(OpenTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-3", EndpointID: "workspace"}, now); !errors.Is(err, errGatewaySessionLimitReached) {
+		t.Fatalf("same-site user session over limit err = %v", err)
 	}
 }
 
@@ -304,6 +334,7 @@ func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Minute), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -315,6 +346,7 @@ func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 		t.Fatalf("authenticate endpoint session")
 	}
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -322,6 +354,7 @@ func TestGatewaySessionRegistryTTLReleasesEndpointSessionLimit(t *testing.T) {
 		t.Fatalf("endpoint session at ttl boundary err = %v", err)
 	}
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -336,6 +369,7 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -347,6 +381,7 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 		t.Fatalf("authenticate endpoint session")
 	}
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -354,6 +389,7 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 		t.Fatalf("endpoint session at idle boundary err = %v", err)
 	}
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -371,6 +407,7 @@ func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-1",
 		EndpointID:    "workspace",
@@ -397,7 +434,7 @@ func TestGatewaySessionRegistryDeleteCodespaceReleasesSSHSessionLimit(t *testing
 
 	registry := NewSessionRegistryFromConfig(gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	ctx, cancel := context.WithCancel(context.Background())
-	release, ok := registry.BeginSSHSession("codespace-1", 42, cancel, time.Unix(100, 0))
+	release, ok := registry.BeginSSHSession("site-1", "codespace-1", 42, cancel, time.Unix(100, 0))
 	if !ok {
 		t.Fatalf("begin ssh session")
 	}
@@ -409,6 +446,7 @@ func TestGatewaySessionRegistryDeleteCodespaceReleasesSSHSessionLimit(t *testing
 	}
 	release()
 	if _, err := registry.Create(OpenTokenBinding{
+		SiteUID:       "site-1",
 		UserID:        42,
 		CodespaceUUID: "codespace-2",
 		EndpointID:    "workspace",

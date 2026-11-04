@@ -103,11 +103,13 @@ message EndpointSessionAuthorization {
   int64 user_id = 1;
   string runtime_uuid = 2;
   string endpoint_id = 3;
+  string site_uid = 4;
 }
 
 message SSHSessionAuthorization {
   int64 user_id = 1;
   string runtime_uuid = 2;
+  string site_uid = 3;
 }
 
 message AuthorizeGatewayResponse {
@@ -116,6 +118,7 @@ message AuthorizeGatewayResponse {
   int64 user_id = 3;
   string runtime_uuid = 4;
   string endpoint_id = 5;
+  string site_uid = 6;
 }
 
 message IssueAgentAccessRequest {

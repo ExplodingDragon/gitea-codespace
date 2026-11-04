@@ -180,7 +180,7 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 		DisplayName: site.Spec.DisplayName, URL: site.Spec.URL, Enabled: site.Spec.Enabled, AcceptCreates: site.Spec.AcceptCreates,
 		StartupConcurrency: site.Spec.StartupConcurrency, CleanupConcurrency: site.Spec.CleanupConcurrency,
 		Templates: site.Spec.Templates, Gateway: site.Spec.Gateway, Caches: site.Spec.Caches, Quota: site.Spec.Quota,
-		ContainerLimits: site.Spec.ContainerLimits, Upstreams: site.Spec.Upstreams,
+		Upstreams: site.Spec.Upstreams,
 	}
 	input := adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: site.Name}, Spec: spec, RegistrationToken: strings.Repeat("t", 40)}
 	invalid := site.DeepCopy()
@@ -210,11 +210,13 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	w := httptest.NewRecorder()
 	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/sites", bytes.NewReader(encoded)))
 	require.Equal(t, http.StatusOK, w.Code, w.Body.String())
-	var created map[string]string
+	var created adminResource
 	require.NoError(t, json.Unmarshal(w.Body.Bytes(), &created))
-	require.Regexp(t, `^site-[0-9a-f-]{36}$`, created["name"])
+	require.Regexp(t, `^site-[0-9a-f-]{36}$`, created.Name)
+	require.NotEmpty(t, created.UID)
+	require.NotEmpty(t, created.ResourceVersion)
 	var generated api.GiteaSite
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: created["name"]}, &generated))
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: created.Name}, &generated))
 	require.Equal(t, "Generated site", generated.Spec.DisplayName)
 
 	oldRef := site.Spec.Credential

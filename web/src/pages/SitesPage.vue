@@ -3,7 +3,15 @@ import {computed, onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, useDialog} from 'naive-ui';
 import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
-import {errorMessage, request, type Component, type Environment, type Resource, type Site} from '../api';
+import {
+  errorMessage,
+  request,
+  upsertResource,
+  type Component,
+  type Environment,
+  type Resource,
+  type Site,
+} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
@@ -19,20 +27,35 @@ const form = ref<Site>();
 const name = ref('');
 const registrationToken = ref('');
 const error = ref('');
-const busy = ref(false);
+const loading = ref(false);
+const saving = ref(false);
+const quotaEnabled = ref(false);
+const quotaDraft = ref<Record<string, string>>({});
 const dialog = useDialog();
-const dirty = useDirtyForm(() => ({form: form.value, registrationToken: registrationToken.value}));
+const dirty = useDirtyForm(() => ({
+  form: form.value,
+  registrationToken: registrationToken.value,
+  quotaEnabled: quotaEnabled.value,
+  quota: quotaDraft.value,
+}));
 const quotaFields = computed<{key: string; label: string; kind: MeasurementKind}[]>(() => [
   {key: 'pods', label: t('site.pods'), kind: 'count'},
   {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count'},
   {key: 'requests.cpu', label: t('site.cpuRequests'), kind: 'cpu'},
-  {key: 'limits.cpu', label: t('site.cpuLimits'), kind: 'cpu'},
   {key: 'requests.memory', label: t('site.memoryRequests'), kind: 'memory'},
-  {key: 'limits.memory', label: t('site.memoryLimits'), kind: 'memory'},
   {key: 'requests.storage', label: t('site.storage'), kind: 'storage'},
 ]);
+function defaultQuota() {
+  return {
+    pods: '10',
+    persistentvolumeclaims: '10',
+    'requests.cpu': '10',
+    'requests.memory': '10Gi',
+    'requests.storage': '100Gi',
+  };
+}
 async function load() {
-  busy.value = true;
+  loading.value = true;
   error.value = '';
   try {
     sites.value = await request('sites');
@@ -41,7 +64,7 @@ async function load() {
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    loading.value = false;
   }
 }
 onMounted(load);
@@ -62,20 +85,13 @@ function edit(site?: Resource<Site>) {
         templates: [],
         gateway: {name: '', uid: ''},
         caches: [],
-        quota: {
-          pods: '10',
-          persistentvolumeclaims: '10',
-          'requests.cpu': '10',
-          'limits.cpu': '20',
-          'requests.memory': '10Gi',
-          'limits.memory': '20Gi',
-          'requests.storage': '100Gi',
-        },
-        containerLimits: {type: 'Container'},
+        quota: {},
         upstreams: [],
       };
   form.value.caches ||= [];
   form.value.upstreams ||= [];
+  quotaEnabled.value = Object.keys(form.value.quota ?? {}).length > 0;
+  quotaDraft.value = quotaEnabled.value ? structuredClone(toRaw(form.value.quota)) : defaultQuota();
   editing.value = true;
   dirty.beginTracking();
 }
@@ -86,28 +102,36 @@ function close() {
   dirty.endTracking();
 }
 async function save() {
-  busy.value = true;
+  saving.value = true;
   error.value = '';
   try {
-    for (const field of quotaFields.value) {
-      if ((measurementBaseValue(form.value!.quota[field.key], field.kind) ?? 0) <= 0)
-        throw new Error(t('site.invalidQuota', {resource: field.label}));
+    if (quotaEnabled.value) {
+      for (const field of quotaFields.value) {
+        if ((measurementBaseValue(quotaDraft.value[field.key], field.kind) ?? 0) <= 0)
+          throw new Error(t('site.invalidQuota', {resource: field.label}));
+      }
     }
-    await request(`sites${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
-      name: selected.value ? name.value : '',
-      uid: selected.value?.uid ?? '',
-      resourceVersion: selected.value?.resourceVersion ?? '',
-      spec: form.value,
-      registrationToken: registrationToken.value,
-    });
+    const spec = structuredClone(toRaw(form.value!));
+    spec.quota = quotaEnabled.value ? structuredClone(toRaw(quotaDraft.value)) : {};
+    const saved = await request<Resource<Site>>(
+      `sites${selected.value ? `/${name.value}` : ''}`,
+      selected.value ? 'PUT' : 'POST',
+      {
+        name: selected.value ? name.value : '',
+        uid: selected.value?.uid ?? '',
+        resourceVersion: selected.value?.resourceVersion ?? '',
+        spec,
+        registrationToken: registrationToken.value,
+      },
+    );
+    sites.value = upsertResource(sites.value, saved);
     registrationToken.value = '';
     editing.value = false;
     dirty.endTracking();
-    await load();
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    saving.value = false;
   }
 }
 function remove(site: Resource<Site>) {
@@ -142,7 +166,7 @@ function remove(site: Resource<Site>) {
       <NButton
         :aria-label="t('site.refresh')"
         :title="t('site.refresh')"
-        :disabled="busy"
+        :disabled="loading"
         @click="load"
       >
         <template #icon><RefreshCw :size="16" /></template>
@@ -288,14 +312,20 @@ function remove(site: Resource<Site>) {
     </div>
     <h2>{{ t('site.quota') }}</h2>
     <p class="section-help">{{ t('site.quotaHelp') }}</p>
-    <div class="fields quota-fields">
+    <NFormItem>
+      <NCheckbox v-model:checked="quotaEnabled">{{ t('site.quotaEnabled') }}</NCheckbox>
+    </NFormItem>
+    <div
+      v-if="quotaEnabled"
+      class="fields quota-fields"
+    >
       <NFormItem
         v-for="field in quotaFields"
         :key="field.key"
         :label="field.label"
       >
         <MeasurementInput
-          v-model="form.quota[field.key]"
+          v-model="quotaDraft[field.key]"
           :kind="field.kind"
           :aria-label="field.label"
         />
@@ -342,12 +372,12 @@ function remove(site: Resource<Site>) {
       <NButton
         type="primary"
         attr-type="submit"
-        :loading="busy"
+        :loading="saving"
       >
         {{ t('site.save') }}
       </NButton>
       <NButton
-        :disabled="busy"
+        :disabled="saving"
         @click="close"
       >
         {{ t('common.cancel') }}
@@ -406,7 +436,7 @@ function remove(site: Resource<Site>) {
             colspan="4"
             class="empty"
           >
-            {{ busy ? t('site.loading') : t('site.empty') }}
+            {{ loading ? t('site.loading') : t('site.empty') }}
           </td>
         </tr>
       </tbody>

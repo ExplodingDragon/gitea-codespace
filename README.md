@@ -8,7 +8,7 @@ Gitea Codespace provides isolated, Dev Container-based development environments 
 - Kata Containers or Sysbox isolation for Docker-based development workloads;
 - browser-based development with code-server;
 - SSH, SFTP, and HTTP endpoint access through a managed Gateway;
-- reusable environment templates, per-site quotas, and optional registry caches;
+- reusable environment templates, optional per-site quotas, and optional registry caches;
 - a web administration page for Gitea sites, environments, components, and active runtimes.
 
 ## Requirements
@@ -46,14 +46,17 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-The development chart uses `ghcr.io/explodingdragon/gitea-codespace:main`. For a reproducible installation, use the chart version and image digest published in a successful GitHub Actions workflow summary:
+The chart source uses `ghcr.io/explodingdragon/gitea-codespace:main` for
+development from a checkout. Each OCI chart published by CI pins the platform
+image produced by the same workflow to its immutable digest. For a
+reproducible installation, use the chart version from a successful GitHub
+Actions workflow summary:
 
 ```sh
 helm upgrade --install codespace \
   oci://ghcr.io/explodingdragon/charts/gitea-codespace \
   --version 0.1.0-main.REPLACE_WITH_RUN_NUMBER \
   --namespace codespace-system \
-  --set image.digest=sha256:REPLACE_WITH_IMAGE_DIGEST \
   --set admin.tokenSecret.name=codespace-admin \
   --wait \
   --timeout 5m
@@ -74,7 +77,7 @@ Visit <http://127.0.0.1:18080> and sign in with the administration token. Comple
 2. Add environment templates using the verified runtime and storage classes discovered from the cluster.
 3. Open the Codespace Managers page in Gitea and copy the registration token for the intended site-wide or personal scope.
 4. Add a Gitea site with its display name, Gitea URL, and registration token. The Manager exchanges the token for a dedicated runtime identity and does not store the registration token.
-5. Assign the site's environment templates, Gateway, optional caches, and resource quotas.
+5. Assign the site's environment templates, Gateway, optional caches, and, when required, resource quotas.
 6. Enable the site after its status reports that the configuration is ready.
 
 Users can then create Codespaces from supported repository pages in Gitea.
@@ -84,7 +87,10 @@ and compatible listeners from the current cluster. Resource references are
 selected from these results and revalidated when saved. CPU, memory, storage,
 cache limits, and durations use numeric fields with explicit units so the
 stored Kubernetes quantities remain valid without requiring administrators to
-write quantity syntax directly.
+write quantity syntax directly. Environment templates always reserve CPU and
+memory requests; limits are optional. Site quotas are also optional, allowing
+clusters with existing capacity policies to keep Kubernetes as the admission
+authority.
 
 Components are cluster-scoped resources managed through this page. The Manager
 creates their Deployments, Services, credentials, network policies, and cache

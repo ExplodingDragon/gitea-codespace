@@ -144,11 +144,12 @@ func gatewaySSHAuthFromPermissions(permissions *ssh.Permissions) (gatewaySSHAuth
 		return gatewaySSHAuthContext{}, false
 	}
 	codespaceUUID := permissions.Extensions["codespace_uuid"]
+	siteUID := permissions.Extensions["site_uid"]
 	userID, err := strconv.ParseInt(strings.TrimSpace(permissions.Extensions["user_id"]), 10, 64)
-	if err != nil || codespaceUUID == "" || userID <= 0 {
+	if err != nil || codespaceUUID == "" || siteUID == "" || userID <= 0 {
 		return gatewaySSHAuthContext{}, false
 	}
-	return gatewaySSHAuthContext{codespaceUUID: codespaceUUID, userID: userID}, true
+	return gatewaySSHAuthContext{codespaceUUID: codespaceUUID, siteUID: siteUID, userID: userID}, true
 }
 
 func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {

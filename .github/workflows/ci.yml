@@ -287,12 +287,19 @@ jobs:
           cache-to: type=gha,mode=max,scope=platform-image,ignore-error=true
       - name: Package and publish Helm chart
         id: chart
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
         run: |
-          mkdir -p .tmp/chart
-          source_version="$(awk '$1 == "version:" {print $2; exit}' charts/gitea-codespace/Chart.yaml)"
+          printf '%s\n' "$IMAGE_DIGEST" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          mkdir -p .tmp/chart-source .tmp/chart
+          cp -R charts/gitea-codespace/. .tmp/chart-source/
+          sed -i "s|^  digest: \"\"$|  digest: \"$IMAGE_DIGEST\"|" .tmp/chart-source/values.yaml
+          grep -Fx "  digest: \"$IMAGE_DIGEST\"" .tmp/chart-source/values.yaml
+
+          source_version="$(awk '$1 == "version:" {print $2; exit}' .tmp/chart-source/Chart.yaml)"
           test "${source_version##*-}" = 'main.0'
           version="${source_version%-main.0}-main.${GITHUB_RUN_NUMBER}"
-          helm package charts/gitea-codespace \
+          helm package .tmp/chart-source \
             --version "$version" \
             --app-version "main-${GITHUB_SHA}" \
             --destination .tmp/chart

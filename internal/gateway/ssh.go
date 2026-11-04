@@ -49,6 +49,7 @@ type SSHServer struct {
 
 type gatewaySSHAuthContext struct {
 	codespaceUUID string
+	siteUID       string
 	userID        int64
 }
 
@@ -128,6 +129,7 @@ func (s *SSHServer) authenticatePublicKey(ctx context.Context, conn ssh.ConnMeta
 	return &ssh.Permissions{
 		Extensions: map[string]string{
 			"codespace_uuid": codespaceUUID,
+			"site_uid":       decision.SiteUID,
 			"user_id":        formatInt64(decision.UserID),
 		},
 	}, nil
@@ -178,7 +180,7 @@ func (s *SSHServer) serveConn(ctx context.Context, conn net.Conn) {
 	release := func() {}
 	if s.sessions != nil {
 		var ok bool
-		release, ok = s.sessions.BeginSSHSession(auth.codespaceUUID, auth.userID, cancel, time.Now())
+		release, ok = s.sessions.BeginSSHSession(auth.siteUID, auth.codespaceUUID, auth.userID, cancel, time.Now())
 		if !ok {
 			return
 		}
@@ -398,7 +400,7 @@ func (s *SSHServer) revalidateSession(ctx context.Context, auth gatewaySSHAuthCo
 				cancel()
 				return
 			}
-			decision, err := s.controlPlane.RevalidateSSHSession(ctx, auth.userID, auth.codespaceUUID)
+			decision, err := s.controlPlane.RevalidateSSHSession(ctx, auth.siteUID, auth.userID, auth.codespaceUUID)
 			if err != nil {
 				log.Printf("gateway ssh revalidate %s user %d: %v", auth.codespaceUUID, auth.userID, err)
 				cancel()

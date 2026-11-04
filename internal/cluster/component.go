@@ -396,7 +396,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 			if s.Activity != nil {
 				s.Activity.ObserveInteraction(string(site.UID), allowed.RuntimeUuid, allowed.InteractionGeneration, time.Now())
 			}
-			return &componentv1.AuthorizeGatewayResponse{Allowed: true, UserId: allowed.UserId, RuntimeUuid: allowed.RuntimeUuid, EndpointId: allowed.EndpointId}, nil
+			return &componentv1.AuthorizeGatewayResponse{Allowed: true, SiteUid: string(site.UID), UserId: allowed.UserId, RuntimeUuid: allowed.RuntimeUuid, EndpointId: allowed.EndpointId}, nil
 		}
 		if denied := result.GetDenied(); denied != nil {
 			return gatewayDenied(denied.Category), nil
@@ -424,7 +424,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	response := &componentv1.AuthorizeGatewayResponse{RuntimeUuid: runtimeUUID}
+	response := &componentv1.AuthorizeGatewayResponse{SiteUid: string(site.UID), RuntimeUuid: runtimeUUID}
 	switch value := request.Request.(type) {
 	case *componentv1.AuthorizeGatewayRequest_PublicEndpoint:
 		result, err := remote.ValidatePublicEndpoint(ctx, &codespacev1.ValidatePublicEndpointRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, EndpointId: value.PublicEndpoint.EndpointId})
@@ -450,6 +450,9 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_EndpointSession:
+		if value.EndpointSession.SiteUid != string(site.UID) {
+			return gatewayDenied("site_mismatch"), nil
+		}
 		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{Endpoint: &codespacev1.EndpointSessionBinding{UserId: value.EndpointSession.UserId, RuntimeUuid: runtimeUUID, EndpointId: value.EndpointSession.EndpointId}}})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
@@ -459,6 +462,9 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_SshSession:
+		if value.SshSession.SiteUid != string(site.UID) {
+			return gatewayDenied("site_mismatch"), nil
+		}
 		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{Ssh: &codespacev1.SSHSessionBinding{UserId: value.SshSession.UserId, RuntimeUuid: runtimeUUID}}})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)

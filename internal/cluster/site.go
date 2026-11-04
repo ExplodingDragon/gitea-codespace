@@ -172,11 +172,28 @@ func (r *SiteReconciler) ensureNamespace(ctx context.Context, site *api.GiteaSit
 
 func (r *SiteReconciler) ensureSiteResources(ctx context.Context, site *api.GiteaSite, namespace string) error {
 	metadata := metav1.ObjectMeta{Name: "codespace", Namespace: namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}
-	quota := &corev1.ResourceQuota{ObjectMeta: metadata, Spec: corev1.ResourceQuotaSpec{Hard: site.Spec.Quota}}
-	limits := &corev1.LimitRange{ObjectMeta: metadata, Spec: corev1.LimitRangeSpec{Limits: []corev1.LimitRangeItem{site.Spec.ContainerLimits}}}
 	account := &corev1.ServiceAccount{ObjectMeta: metadata, AutomountServiceAccountToken: ptr.To(false)}
 	policy := siteNetworkPolicy(site, namespace, r.ManagementNamespace)
-	for _, object := range []client.Object{quota, limits, account, policy} {
+	objects := make([]client.Object, 0, 3)
+	if len(site.Spec.Quota) == 0 {
+		var quota corev1.ResourceQuota
+		err := r.Client.Get(ctx, types.NamespacedName{Name: metadata.Name, Namespace: metadata.Namespace}, &quota)
+		if err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+		if err == nil {
+			if quota.Labels[SiteUIDLabel] != string(site.UID) {
+				return fmt.Errorf("resource ResourceQuota %s has another owner", quota.Name)
+			}
+			if err := r.Client.Delete(ctx, &quota, client.Preconditions{UID: &quota.UID}); err != nil && !apierrors.IsNotFound(err) {
+				return err
+			}
+		}
+	} else {
+		objects = append(objects, &corev1.ResourceQuota{ObjectMeta: metadata, Spec: corev1.ResourceQuotaSpec{Hard: site.Spec.Quota}})
+	}
+	objects = append(objects, account, policy)
+	for _, object := range objects {
 		current := object.DeepCopyObject().(client.Object)
 		err := r.Client.Get(ctx, client.ObjectKeyFromObject(object), current)
 		if apierrors.IsNotFound(err) {
@@ -195,8 +212,6 @@ func (r *SiteReconciler) ensureSiteResources(ctx context.Context, site *api.Gite
 		switch desired := object.(type) {
 		case *corev1.ResourceQuota:
 			current.(*corev1.ResourceQuota).Spec = desired.Spec
-		case *corev1.LimitRange:
-			current.(*corev1.LimitRange).Spec = desired.Spec
 		case *corev1.ServiceAccount:
 			current.(*corev1.ServiceAccount).AutomountServiceAccountToken = desired.AutomountServiceAccountToken
 		case *networkingv1.NetworkPolicy:

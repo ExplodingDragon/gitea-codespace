@@ -230,7 +230,7 @@ func handleGatewayWorkspace(
 		session.endpointID,
 		time.Now(),
 		func(ctx context.Context) (gatewayAccessDecision, error) {
-			return controlPlane.RevalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+			return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.codespaceUUID, session.endpointID)
 		},
 	)
 	if validationFull {
@@ -267,7 +267,7 @@ func handleGatewayWorkspace(
 			session.codespaceUUID,
 			session.endpointID,
 			func(ctx context.Context) (gatewayAccessDecision, error) {
-				return controlPlane.RevalidateEndpointSession(ctx, session.userID, session.codespaceUUID, session.endpointID)
+				return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.codespaceUUID, session.endpointID)
 			},
 		)
 		if validationFull {

@@ -3,7 +3,7 @@ import {computed, onMounted, ref, toRaw} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, useDialog} from 'naive-ui';
 import {Pencil, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
-import {errorMessage, request, type ClusterOptions, type Environment, type Resource} from '../api';
+import {errorMessage, request, upsertResource, type ClusterOptions, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import JsonEditor from '../components/JsonEditor.vue';
 import MeasurementInput from '../components/MeasurementInput.vue';
@@ -21,7 +21,10 @@ const verification = ref('');
 const extensionsJSON = ref('[]');
 const featuresJSON = ref('{}');
 const error = ref('');
-const busy = ref(false);
+const loading = ref(false);
+const saving = ref(false);
+const limitsEnabled = ref(false);
+const limitsDraft = ref({cpu: '1', memory: '1Gi'});
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   name: name.value,
@@ -29,6 +32,8 @@ const dirty = useDirtyForm(() => ({
   verification: verification.value,
   extensions: extensionsJSON.value,
   features: featuresJSON.value,
+  limitsEnabled: limitsEnabled.value,
+  limits: limitsDraft.value,
 }));
 
 const isolationOptions = computed(() => {
@@ -75,7 +80,7 @@ const storageOptions = computed(() => {
 });
 
 async function load() {
-  busy.value = true;
+  loading.value = true;
   error.value = '';
   try {
     [items.value, cluster.value] = await Promise.all([
@@ -85,7 +90,7 @@ async function load() {
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    loading.value = false;
   }
 }
 onMounted(load);
@@ -115,12 +120,19 @@ function edit(item?: Resource<Environment>) {
             (cluster.value.storageClasses.length === 1 ? cluster.value.storageClasses[0].name : ''),
           storage: {storage: '20Gi'},
           accessMode: 'ReadWriteOncePod',
-          resources: {requests: {cpu: '1', memory: '1Gi'}, limits: {cpu: '2', memory: '2Gi'}},
+          resources: {requests: {cpu: '100m', memory: '256Mi'}, limits: {}},
           gitSSHKeyType: 'ed25519',
           devContainer: {webIDE: {enabled: true, version: '4.121.0', extensions: []}, features: []},
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
+  limitsEnabled.value = Boolean(form.value.runtime.resources.limits.cpu && form.value.runtime.resources.limits.memory);
+  limitsDraft.value = limitsEnabled.value
+    ? {
+        cpu: form.value.runtime.resources.limits.cpu,
+        memory: form.value.runtime.resources.limits.memory,
+      }
+    : {cpu: '1', memory: '1Gi'};
   extensionsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.extensions ?? [], null, 2);
   featuresJSON.value = JSON.stringify(
     Object.fromEntries(
@@ -160,7 +172,7 @@ function parseDevContainerAdditions() {
 }
 
 async function save() {
-  busy.value = true;
+  saving.value = true;
   error.value = '';
   try {
     if (
@@ -174,33 +186,42 @@ async function save() {
       !cluster.value.storageClasses.some(({name: storageName}) => storageName === form.value!.runtime.storageClassName)
     )
       throw new Error(t('environment.invalidStorageClass'));
+    const spec = structuredClone(toRaw(form.value!));
     for (const kind of ['cpu', 'memory'] as const) {
-      const request = measurementBaseValue(form.value!.runtime.resources.requests[kind], kind);
-      const limit = measurementBaseValue(form.value!.runtime.resources.limits[kind], kind);
-      if (request === null || limit === null || request <= 0 || request > limit)
+      const requestValue = measurementBaseValue(spec.runtime.resources.requests[kind], kind);
+      const limit = limitsEnabled.value ? measurementBaseValue(limitsDraft.value[kind], kind) : null;
+      if (
+        requestValue === null ||
+        requestValue <= 0 ||
+        (limitsEnabled.value && (limit === null || requestValue > limit))
+      )
         throw new Error(t('environment.invalidResourceRange', {resource: t(`units.${kind}`)}));
     }
-    if ((measurementBaseValue(form.value!.runtime.storage.storage, 'storage') ?? 0) <= 0)
+    spec.runtime.resources.limits = limitsEnabled.value ? structuredClone(toRaw(limitsDraft.value)) : {};
+    if ((measurementBaseValue(spec.runtime.storage.storage, 'storage') ?? 0) <= 0)
       throw new Error(t('environment.invalidStorageSize'));
     const {extensions, features} = parseDevContainerAdditions();
-    form.value!.runtime.devContainer.features = features;
-    if (form.value!.runtime.devContainer.webIDE.enabled)
-      form.value!.runtime.devContainer.webIDE.extensions = extensions;
-    else form.value!.runtime.devContainer.webIDE = {enabled: false, extensions: []};
-    await request(`environments${selected.value ? `/${name.value}` : ''}`, selected.value ? 'PUT' : 'POST', {
-      name: name.value,
-      uid: selected.value?.uid ?? '',
-      resourceVersion: selected.value?.resourceVersion ?? '',
-      spec: form.value,
-      verification: verification.value,
-    });
+    spec.runtime.devContainer.features = features;
+    if (spec.runtime.devContainer.webIDE.enabled) spec.runtime.devContainer.webIDE.extensions = extensions;
+    else spec.runtime.devContainer.webIDE = {enabled: false, extensions: []};
+    const saved = await request<Resource<Environment>>(
+      `environments${selected.value ? `/${name.value}` : ''}`,
+      selected.value ? 'PUT' : 'POST',
+      {
+        name: name.value,
+        uid: selected.value?.uid ?? '',
+        resourceVersion: selected.value?.resourceVersion ?? '',
+        spec,
+        verification: verification.value,
+      },
+    );
+    items.value = upsertResource(items.value, saved);
     editing.value = false;
     dirty.endTracking();
-    await load();
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {
-    busy.value = false;
+    saving.value = false;
   }
 }
 
@@ -236,7 +257,7 @@ function remove(item: Resource<Environment>) {
       <NButton
         :aria-label="t('environment.refresh')"
         :title="t('environment.refresh')"
-        :disabled="busy"
+        :disabled="loading"
         @click="load"
       >
         <template #icon><RefreshCw :size="16" /></template>
@@ -369,13 +390,6 @@ function remove(item: Resource<Environment>) {
           :aria-label="t('environment.cpuRequest')"
         />
       </NFormItem>
-      <NFormItem :label="t('environment.cpuLimit')">
-        <MeasurementInput
-          v-model="form.runtime.resources.limits.cpu"
-          kind="cpu"
-          :aria-label="t('environment.cpuLimit')"
-        />
-      </NFormItem>
       <NFormItem :label="t('environment.memoryRequest')">
         <MeasurementInput
           v-model="form.runtime.resources.requests.memory"
@@ -383,9 +397,24 @@ function remove(item: Resource<Environment>) {
           :aria-label="t('environment.memoryRequest')"
         />
       </NFormItem>
+    </div>
+    <NFormItem>
+      <NCheckbox v-model:checked="limitsEnabled">{{ t('environment.limitsEnabled') }}</NCheckbox>
+    </NFormItem>
+    <div
+      v-if="limitsEnabled"
+      class="fields"
+    >
+      <NFormItem :label="t('environment.cpuLimit')">
+        <MeasurementInput
+          v-model="limitsDraft.cpu"
+          kind="cpu"
+          :aria-label="t('environment.cpuLimit')"
+        />
+      </NFormItem>
       <NFormItem :label="t('environment.memoryLimit')">
         <MeasurementInput
-          v-model="form.runtime.resources.limits.memory"
+          v-model="limitsDraft.memory"
           kind="memory"
           :aria-label="t('environment.memoryLimit')"
         />
@@ -428,12 +457,12 @@ function remove(item: Resource<Environment>) {
       <NButton
         type="primary"
         attr-type="submit"
-        :loading="busy"
+        :loading="saving"
       >
         {{ t('environment.save') }}
       </NButton>
       <NButton
-        :disabled="busy"
+        :disabled="saving"
         @click="close"
       >
         {{ t('common.cancel') }}
@@ -470,7 +499,17 @@ function remove(item: Resource<Environment>) {
             <p class="muted">{{ item.spec.runtime.runtimeClassName }}</p>
           </td>
           <td>
-            {{ item.spec.runtime.resources.limits.cpu }} CPU / {{ item.spec.runtime.resources.limits.memory }}
+            {{ item.spec.runtime.resources.requests.cpu }} CPU / {{ item.spec.runtime.resources.requests.memory }}
+            <p class="muted">
+              {{
+                item.spec.runtime.resources.limits.cpu
+                  ? t('environment.resourceLimits', {
+                      cpu: item.spec.runtime.resources.limits.cpu,
+                      memory: item.spec.runtime.resources.limits.memory,
+                    })
+                  : t('environment.noResourceLimits')
+              }}
+            </p>
             <p class="muted">{{ item.spec.runtime.storage.storage }} / {{ item.spec.runtime.storageClassName }}</p>
           </td>
           <td><ResourceStatus :resource="item" /></td>
@@ -500,7 +539,7 @@ function remove(item: Resource<Environment>) {
             colspan="5"
             class="empty"
           >
-            {{ busy ? t('environment.loading') : t('environment.empty') }}
+            {{ loading ? t('environment.loading') : t('environment.empty') }}
           </td>
         </tr>
       </tbody>

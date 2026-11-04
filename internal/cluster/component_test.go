@@ -95,8 +95,14 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
 	require.NoError(t, err)
 	require.True(t, response.Allowed)
+	require.Equal(t, string(site.UID), response.SiteUid)
 	require.Equal(t, 1, target.calls)
 	require.Zero(t, unrelated.calls)
+
+	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: "another-site", UserId: 1, RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
+	require.NoError(t, err)
+	require.False(t, response.Allowed)
+	require.Equal(t, "site_mismatch", response.DeniedCategory)
 
 	target.binding.EndpointId = "other"
 	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})

@@ -32,6 +32,9 @@ func (c *ComponentControlPlane) authorize(ctx context.Context, payload *componen
 	if response.Allowed == (response.DeniedCategory != "") {
 		return nil, fmt.Errorf("manager returned an invalid Gateway authorization outcome")
 	}
+	if response.Allowed && response.SiteUid == "" {
+		return nil, fmt.Errorf("manager returned an authorization without a site identity")
+	}
 	return response, nil
 }
 
@@ -43,7 +46,7 @@ func (c *ComponentControlPlane) ValidateOpenToken(ctx context.Context, code, run
 	if !result.Allowed {
 		return gatewayOpenTokenDecision{deniedCategory: result.DeniedCategory}, nil
 	}
-	return gatewayOpenTokenDecision{Allowed: true, Binding: OpenTokenBinding{UserID: result.UserId, CodespaceUUID: result.RuntimeUuid, EndpointID: result.EndpointId}}, nil
+	return gatewayOpenTokenDecision{Allowed: true, Binding: OpenTokenBinding{SiteUID: result.SiteUid, UserID: result.UserId, CodespaceUUID: result.RuntimeUuid, EndpointID: result.EndpointId}}, nil
 }
 
 func (c *ComponentControlPlane) ValidatePublicEndpoint(ctx context.Context, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
@@ -59,21 +62,27 @@ func (c *ComponentControlPlane) VerifySSHPublicKey(ctx context.Context, runtimeU
 	if err != nil {
 		return gatewaySSHAuthDecision{}, err
 	}
-	return gatewaySSHAuthDecision{Allowed: result.Allowed, UserID: result.UserId, deniedCategory: result.DeniedCategory}, nil
+	return gatewaySSHAuthDecision{Allowed: result.Allowed, SiteUID: result.SiteUid, UserID: result.UserId, deniedCategory: result.DeniedCategory}, nil
 }
 
-func (c *ComponentControlPlane) RevalidateEndpointSession(ctx context.Context, userID int64, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{UserId: userID, RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
+func (c *ComponentControlPlane) RevalidateEndpointSession(ctx context.Context, siteUID string, userID int64, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
+	}
+	if result.Allowed && result.SiteUid != siteUID {
+		return gatewayAccessDecision{}, fmt.Errorf("manager returned a different site identity")
 	}
 	return gatewayAccessDecision{Allowed: result.Allowed, DeniedCategory: result.DeniedCategory}, nil
 }
 
-func (c *ComponentControlPlane) RevalidateSSHSession(ctx context.Context, userID int64, runtimeUUID string) (gatewayAccessDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshSession{SshSession: &componentv1.SSHSessionAuthorization{UserId: userID, RuntimeUuid: runtimeUUID}}})
+func (c *ComponentControlPlane) RevalidateSSHSession(ctx context.Context, siteUID string, userID int64, runtimeUUID string) (gatewayAccessDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshSession{SshSession: &componentv1.SSHSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeUuid: runtimeUUID}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
+	}
+	if result.Allowed && result.SiteUid != siteUID {
+		return gatewayAccessDecision{}, fmt.Errorf("manager returned a different site identity")
 	}
 	return gatewayAccessDecision{Allowed: result.Allowed, DeniedCategory: result.DeniedCategory}, nil
 }

@@ -783,6 +783,7 @@ type EndpointSessionAuthorization struct {
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	RuntimeUuid   string                 `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
 	EndpointId    string                 `protobuf:"bytes,3,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	SiteUid       string                 `protobuf:"bytes,4,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -838,10 +839,18 @@ func (x *EndpointSessionAuthorization) GetEndpointId() string {
 	return ""
 }
 
+func (x *EndpointSessionAuthorization) GetSiteUid() string {
+	if x != nil {
+		return x.SiteUid
+	}
+	return ""
+}
+
 type SSHSessionAuthorization struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	RuntimeUuid   string                 `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	SiteUid       string                 `protobuf:"bytes,3,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -890,6 +899,13 @@ func (x *SSHSessionAuthorization) GetRuntimeUuid() string {
 	return ""
 }
 
+func (x *SSHSessionAuthorization) GetSiteUid() string {
+	if x != nil {
+		return x.SiteUid
+	}
+	return ""
+}
+
 type AuthorizeGatewayResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	Allowed        bool                   `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
@@ -897,6 +913,7 @@ type AuthorizeGatewayResponse struct {
 	UserId         int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	RuntimeUuid    string                 `protobuf:"bytes,4,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
 	EndpointId     string                 `protobuf:"bytes,5,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	SiteUid        string                 `protobuf:"bytes,6,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -962,6 +979,13 @@ func (x *AuthorizeGatewayResponse) GetRuntimeUuid() string {
 func (x *AuthorizeGatewayResponse) GetEndpointId() string {
 	if x != nil {
 		return x.EndpointId
+	}
+	return ""
+}
+
+func (x *AuthorizeGatewayResponse) GetSiteUid() string {
+	if x != nil {
+		return x.SiteUid
 	}
 	return ""
 }
@@ -1912,22 +1936,25 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x19SSHPublicKeyAuthorization\x12!\n" +
 	"\fruntime_uuid\x18\x01 \x01(\tR\vruntimeUuid\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x02 \x01(\fR\tpublicKey\"{\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\"\x96\x01\n" +
 	"\x1cEndpointSessionAuthorization\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12!\n" +
 	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12\x1f\n" +
 	"\vendpoint_id\x18\x03 \x01(\tR\n" +
-	"endpointId\"U\n" +
+	"endpointId\x12\x19\n" +
+	"\bsite_uid\x18\x04 \x01(\tR\asiteUid\"p\n" +
 	"\x17SSHSessionAuthorization\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12!\n" +
-	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\"\xba\x01\n" +
+	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12\x19\n" +
+	"\bsite_uid\x18\x03 \x01(\tR\asiteUid\"\xd5\x01\n" +
 	"\x18AuthorizeGatewayResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x12'\n" +
 	"\x0fdenied_category\x18\x02 \x01(\tR\x0edeniedCategory\x12\x17\n" +
 	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12!\n" +
 	"\fruntime_uuid\x18\x04 \x01(\tR\vruntimeUuid\x12\x1f\n" +
 	"\vendpoint_id\x18\x05 \x01(\tR\n" +
-	"endpointId\"\xc4\x01\n" +
+	"endpointId\x12\x19\n" +
+	"\bsite_uid\x18\x06 \x01(\tR\asiteUid\"\xc4\x01\n" +
 	"\x17IssueAgentAccessRequest\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12!\n" +
 	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12:\n" +

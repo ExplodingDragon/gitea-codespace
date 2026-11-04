@@ -33,7 +33,7 @@ type SessionRegistry struct {
 	nextLiveID              int64
 	liveEntries             map[string]map[int64]gatewayLiveSession
 	sessionCountByCodespace map[string]int
-	sessionCountByUser      map[int64]int
+	sessionCountByUser      map[gatewayUserKey]int
 	sessions                map[string]*gatewaySession
 	activityChanges         chan struct{}
 }
@@ -55,6 +55,7 @@ func (r *SessionRegistry) Activity(now time.Time) map[string]int {
 
 type gatewaySession struct {
 	id            string
+	siteUID       string
 	userID        int64
 	codespaceUUID string
 	endpointID    string
@@ -66,8 +67,14 @@ type gatewaySession struct {
 type gatewayLiveSession struct {
 	cancel        context.CancelFunc
 	sessionID     string
+	siteUID       string
 	userID        int64
 	countsSession bool
+}
+
+type gatewayUserKey struct {
+	siteUID string
+	userID  int64
 }
 
 func NewSessionRegistryFromConfig(config configpkg.GatewayConfig) *SessionRegistry {
@@ -97,7 +104,7 @@ func NewSessionRegistryFromConfig(config configpkg.GatewayConfig) *SessionRegist
 		live:                    make(map[string]int),
 		liveEntries:             make(map[string]map[int64]gatewayLiveSession),
 		sessionCountByCodespace: make(map[string]int),
-		sessionCountByUser:      make(map[int64]int),
+		sessionCountByUser:      make(map[gatewayUserKey]int),
 		sessions:                make(map[string]*gatewaySession),
 		activityChanges:         make(chan struct{}, 1),
 	}
@@ -123,7 +130,7 @@ func (r *SessionRegistry) CreateReplacing(binding OpenTokenBinding, replaceID st
 }
 
 func (r *SessionRegistry) CreateReplacingAny(binding OpenTokenBinding, replaceIDs []string, now time.Time) (string, error) {
-	if binding.UserID <= 0 || binding.CodespaceUUID == "" || binding.EndpointID == "" {
+	if binding.SiteUID == "" || binding.UserID <= 0 || binding.CodespaceUUID == "" || binding.EndpointID == "" {
 		return "", fmt.Errorf("gateway session binding is incomplete")
 	}
 	id, err := newGatewaySessionID()
@@ -142,13 +149,14 @@ func (r *SessionRegistry) CreateReplacingAny(binding OpenTokenBinding, replaceID
 	if replaceID != "" {
 		cancels = append(cancels, r.deleteGatewaySessionAndLiveLocked(replaceID)...)
 	}
-	if !r.canAddSessionLocked(binding.UserID, binding.CodespaceUUID) {
+	if !r.canAddSessionLocked(binding.SiteUID, binding.UserID, binding.CodespaceUUID) {
 		r.mu.Unlock()
 		cancelGatewaySessions(cancels)
 		return "", errGatewaySessionLimitReached
 	}
 	r.sessions[id] = &gatewaySession{
 		id:            id,
+		siteUID:       binding.SiteUID,
 		userID:        binding.UserID,
 		codespaceUUID: binding.CodespaceUUID,
 		endpointID:    binding.EndpointID,
@@ -156,7 +164,7 @@ func (r *SessionRegistry) CreateReplacingAny(binding OpenTokenBinding, replaceID
 		lastActive:    now,
 		established:   false,
 	}
-	r.incrementSessionCountLocked(binding.UserID, binding.CodespaceUUID)
+	r.incrementSessionCountLocked(binding.SiteUID, binding.UserID, binding.CodespaceUUID)
 	r.mu.Unlock()
 	cancelGatewaySessions(cancels)
 	return id, nil
@@ -206,25 +214,25 @@ func (r *SessionRegistry) Begin(codespaceUUID string) func() {
 }
 
 func (r *SessionRegistry) BeginCancelable(codespaceUUID string, cancel context.CancelFunc) func() {
-	return r.beginLive(codespaceUUID, "", 0, cancel, false, time.Time{})
+	return r.beginLive(codespaceUUID, "", "", 0, cancel, false, time.Time{})
 }
 
 func (r *SessionRegistry) BeginSessionCancelable(sessionID, codespaceUUID string, cancel context.CancelFunc) func() {
-	return r.beginLive(codespaceUUID, sessionID, 0, cancel, false, time.Time{})
+	return r.beginLive(codespaceUUID, sessionID, "", 0, cancel, false, time.Time{})
 }
 
-func (r *SessionRegistry) BeginSSHSession(codespaceUUID string, userID int64, cancel context.CancelFunc, now time.Time) (func(), bool) {
-	if codespaceUUID == "" || userID <= 0 {
+func (r *SessionRegistry) BeginSSHSession(siteUID, codespaceUUID string, userID int64, cancel context.CancelFunc, now time.Time) (func(), bool) {
+	if siteUID == "" || codespaceUUID == "" || userID <= 0 {
 		return func() {}, false
 	}
-	release := r.beginLive(codespaceUUID, "", userID, cancel, true, now)
+	release := r.beginLive(codespaceUUID, "", siteUID, userID, cancel, true, now)
 	if release == nil {
 		return func() {}, false
 	}
 	return release, true
 }
 
-func (r *SessionRegistry) beginLive(codespaceUUID, sessionID string, userID int64, cancel context.CancelFunc, countsSession bool, now time.Time) func() {
+func (r *SessionRegistry) beginLive(codespaceUUID, sessionID, siteUID string, userID int64, cancel context.CancelFunc, countsSession bool, now time.Time) func() {
 	if codespaceUUID == "" {
 		return func() {}
 	}
@@ -232,12 +240,12 @@ func (r *SessionRegistry) beginLive(codespaceUUID, sessionID string, userID int6
 	var cancels []context.CancelFunc
 	if countsSession {
 		cancels = r.dropExpiredSessionsLocked(now)
-		if !r.canAddSessionLocked(userID, codespaceUUID) {
+		if !r.canAddSessionLocked(siteUID, userID, codespaceUUID) {
 			r.mu.Unlock()
 			cancelGatewaySessions(cancels)
 			return nil
 		}
-		r.incrementSessionCountLocked(userID, codespaceUUID)
+		r.incrementSessionCountLocked(siteUID, userID, codespaceUUID)
 	} else if sessionID == "" {
 		r.anonymousLive[codespaceUUID]++
 	}
@@ -252,6 +260,7 @@ func (r *SessionRegistry) beginLive(codespaceUUID, sessionID string, userID int6
 		r.liveEntries[codespaceUUID][liveID] = gatewayLiveSession{
 			cancel:        cancel,
 			sessionID:     sessionID,
+			siteUID:       siteUID,
 			userID:        userID,
 			countsSession: countsSession,
 		}
@@ -272,7 +281,7 @@ func (r *SessionRegistry) beginLive(codespaceUUID, sessionID string, userID int6
 			}
 			if hadEntry {
 				if entry.countsSession {
-					r.decrementSessionCountLocked(entry.userID, codespaceUUID)
+					r.decrementSessionCountLocked(entry.siteUID, entry.userID, codespaceUUID)
 				}
 				delete(r.liveEntries[codespaceUUID], liveID)
 				if len(r.liveEntries[codespaceUUID]) == 0 {
@@ -361,7 +370,7 @@ func (r *SessionRegistry) DeleteCodespace(codespaceUUID string) int {
 	var cancels []context.CancelFunc
 	for liveID, entry := range r.liveEntries[codespaceUUID] {
 		if entry.countsSession {
-			r.decrementSessionCountLocked(entry.userID, codespaceUUID)
+			r.decrementSessionCountLocked(entry.siteUID, entry.userID, codespaceUUID)
 		}
 		if entry.cancel != nil {
 			cancels = append(cancels, entry.cancel)
@@ -377,9 +386,9 @@ func (r *SessionRegistry) DeleteCodespace(codespaceUUID string) int {
 	return deleted
 }
 
-func (r *SessionRegistry) canAddSessionLocked(userID int64, codespaceUUID string) bool {
+func (r *SessionRegistry) canAddSessionLocked(siteUID string, userID int64, codespaceUUID string) bool {
 	return r.sessionCountByCodespace[codespaceUUID] < r.maxSessionsPerCodespace &&
-		r.sessionCountByUser[userID] < r.maxSessionsPerUser
+		r.sessionCountByUser[gatewayUserKey{siteUID: siteUID, userID: userID}] < r.maxSessionsPerUser
 }
 
 func (r *SessionRegistry) deleteLiveEntriesLocked(codespaceUUID, sessionID string) []context.CancelFunc {
@@ -435,6 +444,9 @@ func (r *SessionRegistry) matchingSessionIDLocked(ids []string, binding OpenToke
 		if binding.UserID > 0 && session.userID != binding.UserID {
 			continue
 		}
+		if binding.SiteUID != "" && session.siteUID != binding.SiteUID {
+			continue
+		}
 		if matchedID != "" {
 			return "", true
 		}
@@ -443,21 +455,22 @@ func (r *SessionRegistry) matchingSessionIDLocked(ids []string, binding OpenToke
 	return matchedID, false
 }
 
-func (r *SessionRegistry) incrementSessionCountLocked(userID int64, codespaceUUID string) {
+func (r *SessionRegistry) incrementSessionCountLocked(siteUID string, userID int64, codespaceUUID string) {
 	r.sessionCountByCodespace[codespaceUUID]++
-	r.sessionCountByUser[userID]++
+	r.sessionCountByUser[gatewayUserKey{siteUID: siteUID, userID: userID}]++
 }
 
-func (r *SessionRegistry) decrementSessionCountLocked(userID int64, codespaceUUID string) {
+func (r *SessionRegistry) decrementSessionCountLocked(siteUID string, userID int64, codespaceUUID string) {
 	if current := r.sessionCountByCodespace[codespaceUUID]; current <= 1 {
 		delete(r.sessionCountByCodespace, codespaceUUID)
 	} else {
 		r.sessionCountByCodespace[codespaceUUID] = current - 1
 	}
-	if current := r.sessionCountByUser[userID]; current <= 1 {
-		delete(r.sessionCountByUser, userID)
+	user := gatewayUserKey{siteUID: siteUID, userID: userID}
+	if current := r.sessionCountByUser[user]; current <= 1 {
+		delete(r.sessionCountByUser, user)
 	} else {
-		r.sessionCountByUser[userID] = current - 1
+		r.sessionCountByUser[user] = current - 1
 	}
 }
 
@@ -484,7 +497,7 @@ func (r *SessionRegistry) deleteGatewaySessionLocked(id string) {
 		return
 	}
 	delete(r.sessions, id)
-	r.decrementSessionCountLocked(session.userID, session.codespaceUUID)
+	r.decrementSessionCountLocked(session.siteUID, session.userID, session.codespaceUUID)
 }
 
 func (r *SessionRegistry) dropExpiredSessionsLocked(now time.Time) []context.CancelFunc {

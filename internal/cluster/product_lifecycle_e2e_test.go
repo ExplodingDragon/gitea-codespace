@@ -472,12 +472,12 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 
 	quota := corev1.ResourceList{
 		corev1.ResourcePods: resource.MustParse("2"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"),
-		corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceLimitsCPU: resource.MustParse("2"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"), corev1.ResourceLimitsMemory: resource.MustParse("2Gi"),
+		corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"),
 	}
 	siteSpec := adminSiteSpec{
 		DisplayName: "Lifecycle E2E site", URL: remote.baseURL, Enabled: true, AcceptCreates: true, StartupConcurrency: 1, CleanupConcurrency: 1,
 		Templates: []api.ResourceReference{{Name: template.Name, UID: template.UID}}, Gateway: api.ResourceReference{Name: gateway.Name, UID: gateway.UID}, Caches: []api.ResourceReference{{Name: cache.Name, UID: cache.UID}},
-		Quota: quota, ContainerLimits: corev1.LimitRangeItem{Type: corev1.LimitTypeContainer},
+		Quota:     quota,
 		Upstreams: []api.NetworkDestination{{CIDR: host + "/32", Ports: []int32{int32(port)}}, {CIDR: "0.0.0.0/0", Ports: []int32{80, 443}}},
 	}
 	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}

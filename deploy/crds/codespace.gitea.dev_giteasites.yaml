@@ -69,66 +69,6 @@ spec:
                 maximum: 64
                 minimum: 1
                 type: integer
-              containerLimits:
-                description: LimitRangeItem defines a min/max usage limit for any
-                  resource that matches on kind.
-                properties:
-                  default:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: Default resource requirement limit value by resource
-                      name if resource limit is omitted.
-                    type: object
-                  defaultRequest:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: DefaultRequest is the default resource requirement
-                      request value by resource name if resource request is omitted.
-                    type: object
-                  max:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: Max usage constraints on this kind by resource name.
-                    type: object
-                  maxLimitRequestRatio:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: MaxLimitRequestRatio if specified, the named resource
-                      must have a request and limit that are both non-zero where limit
-                      divided by request is less than or equal to the enumerated value;
-                      this represents the max burst for the named resource.
-                    type: object
-                  min:
-                    additionalProperties:
-                      anyOf:
-                      - type: integer
-                      - type: string
-                      pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
-                      x-kubernetes-int-or-string: true
-                    description: Min usage constraints on this kind by resource name.
-                    type: object
-                  type:
-                    description: Type of resource that this limit applies to.
-                    type: string
-                required:
-                - type
-                type: object
               credential:
                 description: ResourceReference pins an authorization to an object,
                   rather than a reusable name.
@@ -189,7 +129,8 @@ spec:
                   - type: string
                   pattern: ^(\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\+|-)?(([0-9]+(\.[0-9]*)?)|(\.[0-9]+))))?$
                   x-kubernetes-int-or-string: true
-                description: ResourceList is a set of (resource name, quantity) pairs.
+                description: Quota is empty when Kubernetes admission alone manages
+                  site capacity.
                 type: object
               startupConcurrency:
                 default: 1
@@ -243,13 +184,11 @@ spec:
             required:
             - acceptCreates
             - cleanupConcurrency
-            - containerLimits
             - credential
             - displayName
             - enabled
             - gateway
             - managerID
-            - quota
             - startupConcurrency
             - templates
             - url

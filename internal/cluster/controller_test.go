@@ -59,9 +59,8 @@ func testSite(name, uid string) *api.GiteaSite {
 		Spec: api.GiteaSiteSpec{DisplayName: name, URL: "https://gitea.example/", ManagerID: 1, Enabled: true, AcceptCreates: true,
 			StartupConcurrency: 1, CleanupConcurrency: 16,
 			Credential: api.ResourceReference{Name: "site-credential", UID: "credential-uid"}, Gateway: api.ResourceReference{Name: "gateway", UID: "gateway-uid"},
-			Templates:       []api.ResourceReference{{Name: "default", UID: "template-uid"}},
-			Quota:           corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2"), corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceLimitsCPU: resource.MustParse("4"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"), corev1.ResourceLimitsMemory: resource.MustParse("4Gi"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2")},
-			ContainerLimits: corev1.LimitRangeItem{Type: corev1.LimitTypeContainer},
+			Templates: []api.ResourceReference{{Name: "default", UID: "template-uid"}},
+			Quota:     corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2"), corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2")},
 		},
 	}
 }
@@ -86,6 +85,15 @@ func TestRuntimeConfigurationRejectsDynamicResourceClaims(t *testing.T) {
 	runtime := testRuntime()
 	runtime.Resources.Claims = []corev1.ResourceClaim{{Name: "accelerator"}}
 	require.EqualError(t, runtime.Validate(), "runtime dynamic resource claims are not supported")
+}
+
+func TestRuntimeConfigurationAllowsOptionalLimits(t *testing.T) {
+	runtime := testEnvironment()
+	runtime.Resources.Limits = nil
+	require.NoError(t, runtime.Validate())
+
+	runtime.Resources.Limits = corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1")}
+	require.EqualError(t, runtime.Validate(), "runtime CPU and memory limits must be configured together")
 }
 
 func TestRuntimeConfigurationDerivesStorageVolumeMode(t *testing.T) {
@@ -152,6 +160,11 @@ func TestSiteOwnershipAndCleanup(t *testing.T) {
 	require.NoError(t, c.Create(ctx, ns))
 	require.NoError(t, r.ensureNamespace(ctx, site, ns.Name))
 	require.NoError(t, r.ensureSiteResources(ctx, site, ns.Name))
+	var quota corev1.ResourceQuota
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "codespace", Namespace: ns.Name}, &quota))
+	site.Spec.Quota = nil
+	require.NoError(t, r.ensureSiteResources(ctx, site, ns.Name))
+	require.True(t, apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Name: "codespace", Namespace: ns.Name}, &quota)))
 	require.NoError(t, c.Status().Update(ctx, site))
 	var account corev1.ServiceAccount
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "codespace", Namespace: ns.Name}, &account))

@@ -93,6 +93,12 @@ export type Resource<T, S = ResourceStatus> = {
   status?: S;
 };
 
+export function upsertResource<T, S>(resources: Resource<T, S>[], saved: Resource<T, S>): Resource<T, S>[] {
+  const index = resources.findIndex(({uid}) => uid === saved.uid);
+  if (index < 0) return [...resources, saved];
+  return resources.map((resource, current) => (current === index ? saved : resource));
+}
+
 export type Runtime = {
   isolation: string;
   runtimeClassName: string;
@@ -134,14 +140,6 @@ export type Site = {
   gateway: ResourceReference;
   caches: ResourceReference[];
   quota: Record<string, string>;
-  containerLimits: {
-    type: string;
-    default?: Record<string, string>;
-    defaultRequest?: Record<string, string>;
-    min?: Record<string, string>;
-    max?: Record<string, string>;
-    maxLimitRequestRatio?: Record<string, string>;
-  };
   upstreams: {cidr: string; ports: number[]}[];
 };
 

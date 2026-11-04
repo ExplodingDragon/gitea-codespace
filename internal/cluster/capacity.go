@@ -37,30 +37,32 @@ func (c *SiteCoordinator) capacity(ctx context.Context, site *api.GiteaSite, row
 	if startup <= 0 {
 		return nil
 	}
-	namespace, err := api.SiteNamespace(site.Name, c.ManagementNamespace)
-	if err != nil {
-		return err
-	}
 	var quotas corev1.ResourceQuotaList
-	if err := c.Client.List(ctx, &quotas, client.InNamespace(namespace)); err != nil {
-		return err
-	}
-	var managed bool
-	for _, quota := range quotas.Items {
-		if quota.Name == "codespace" {
-			managed = quota.Labels[SiteUIDLabel] == string(site.UID) && quota.DeletionTimestamp.IsZero()
+	if len(site.Spec.Quota) != 0 {
+		namespace, err := api.SiteNamespace(site.Name, c.ManagementNamespace)
+		if err != nil {
+			return err
 		}
-		if !equality.Semantic.DeepEqual(quota.Spec.Hard, quota.Status.Hard) {
-			return fmt.Errorf("quota %s has not observed its current limits", quota.Name)
+		if err := c.Client.List(ctx, &quotas, client.InNamespace(namespace)); err != nil {
+			return err
 		}
-		for name := range quota.Status.Hard {
-			if _, ok := quota.Status.Used[name]; !ok {
-				return fmt.Errorf("quota %s has not observed usage for %s", quota.Name, name)
+		var managed bool
+		for _, quota := range quotas.Items {
+			if quota.Name == "codespace" {
+				managed = quota.Labels[SiteUIDLabel] == string(site.UID) && quota.DeletionTimestamp.IsZero()
+			}
+			if !equality.Semantic.DeepEqual(quota.Spec.Hard, quota.Status.Hard) {
+				return fmt.Errorf("quota %s has not observed its current limits", quota.Name)
+			}
+			for name := range quota.Status.Hard {
+				if _, ok := quota.Status.Used[name]; !ok {
+					return fmt.Errorf("quota %s has not observed usage for %s", quota.Name, name)
+				}
 			}
 		}
-	}
-	if !managed {
-		return fmt.Errorf("site resource quota is unavailable")
+		if !managed {
+			return fmt.Errorf("site resource quota is unavailable")
+		}
 	}
 	var accepted []string
 	if site.Spec.AcceptCreates {

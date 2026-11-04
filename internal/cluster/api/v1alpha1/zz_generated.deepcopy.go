@@ -639,7 +639,6 @@ func (in *GiteaSiteSpec) DeepCopyInto(out *GiteaSiteSpec) {
 			(*out)[key] = val.DeepCopy()
 		}
 	}
-	in.ContainerLimits.DeepCopyInto(&out.ContainerLimits)
 	if in.Upstreams != nil {
 		in, out := &in.Upstreams, &out.Upstreams
 		*out = make([]NetworkDestination, len(*in))

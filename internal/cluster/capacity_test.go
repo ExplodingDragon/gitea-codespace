@@ -29,7 +29,7 @@ func TestSiteCapacity(t *testing.T) {
 	small := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "small", Runtime: testEnvironment()}}
 	large := small.DeepCopy()
 	large.Name, large.UID, large.Spec.Tag = "large", "large-uid", "large"
-	large.Spec.Runtime.Resources.Limits[corev1.ResourceMemory] = resource.MustParse("8Gi")
+	large.Spec.Runtime.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
 	site.Spec.Templates = append(site.Spec.Templates, api.ResourceReference{Name: large.Name, UID: large.UID})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(quota).WithObjects(quota, small, large).Build()
 	coordinator := SiteCoordinator{Operations: Operations{Client: c, ManagementNamespace: "codespace-system"}}
@@ -58,4 +58,11 @@ func TestSiteCapacity(t *testing.T) {
 	require.Error(t, coordinator.capacity(t.Context(), site, rows, []string{"small"}, request))
 	require.Zero(t, request.StartupCapacityAvailable)
 	require.EqualValues(t, 15, request.CleanupCapacityAvailable)
+
+	site.Spec.Quota = nil
+	require.NoError(t, c.Delete(t.Context(), quota))
+	request = &codespacev1.FetchOperationsRequest{}
+	require.NoError(t, coordinator.capacity(t.Context(), site, nil, []string{"small", "large"}, request))
+	require.Equal(t, []string{"small", "large"}, request.AcceptedCreateTags)
+	require.EqualValues(t, 1, request.StartupCapacityAvailable)
 }

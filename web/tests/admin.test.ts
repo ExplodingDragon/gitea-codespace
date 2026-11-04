@@ -108,6 +108,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
   let recoveryWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
+  let failNextEnvironmentWrite = true;
   const requestedLanguages: string[] = [];
   await page.route('**/api/admin/**', async (route) => {
     const request = route.request();
@@ -155,6 +156,11 @@ test('administration workflows preserve resource identity and validate cluster-b
     } else if (kind === 'components' && action === 'rotate-ssh-host-key') {
       rotationWrite = body;
     } else if (kind === 'environments') {
+      if (failNextEnvironmentWrite) {
+        failNextEnvironmentWrite = false;
+        await route.fulfill({status: 503, json: {code: 'request_failed', message: 'temporary failure'}});
+        return;
+      }
       environments.push({
         name: body.name,
         uid: 'template-uid',
@@ -184,7 +190,16 @@ test('administration workflows preserve resource identity and validate cluster-b
           spec: body.spec,
         });
     }
-    await route.fulfill({json: {name: body.name}});
+    await route.fulfill({
+      json:
+        kind === 'environments'
+          ? environments.at(-1)
+          : kind === 'sites'
+            ? name
+              ? sites[0]
+              : sites.at(-1)
+            : {name: body.name},
+    });
   });
   await page.goto('/environments');
   await expect(page.locator('.login .language-select')).toBeVisible();
@@ -208,11 +223,19 @@ test('administration workflows preserve resource identity and validate cluster-b
   await field('Tag').fill('standard');
   await field('code-server version').fill('4.121.0');
   await page.getByRole('button', {name: 'Save template'}).click();
+  await expect(page.getByText('Request failed', {exact: false})).toBeVisible();
+  await expect(field('Resource name')).toHaveValue('standard');
+  await expect(field('Tag')).toHaveValue('standard');
+  await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
     enabled: true,
     version: '4.121.0',
     extensions: [],
+  });
+  expect(environments[0].spec.runtime.resources).toEqual({
+    requests: {cpu: '100m', memory: '256Mi'},
+    limits: {},
   });
   await page.locator('.language-select .n-base-selection').click();
   await page.getByText('简体中文', {exact: true}).last().click();

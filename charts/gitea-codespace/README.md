@@ -59,8 +59,7 @@ external Gateway listener.
 
 ## Install
 
-Create the administration token and install the newest development chart. The
-default image is `ghcr.io/explodingdragon/gitea-codespace:main`:
+Create the administration token and install the newest development chart:
 
 ```sh
 kubectl create namespace codespace-system
@@ -76,16 +75,20 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-Pushes to `main` publish a Helm prerelease named
-`0.1.0-main.<run-number>`. For a reproducible installation, use the exact chart
-version and image digest from the workflow summary:
+The chart source defaults to
+`ghcr.io/explodingdragon/gitea-codespace:main` when installed directly from a
+checkout. Pushes to `main` publish a Helm prerelease named
+`0.1.0-main.<run-number>`. CI packages a temporary chart copy whose
+`image.digest` is the immutable digest produced by the same workflow. This
+keeps the source convenient for development while ensuring that an OCI chart
+version always installs its corresponding image. For a reproducible
+installation, use the exact chart version from the workflow summary:
 
 ```sh
 helm upgrade --install codespace \
   oci://ghcr.io/explodingdragon/charts/gitea-codespace \
   --version 0.1.0-main.REPLACE_WITH_RUN_NUMBER \
   --namespace codespace-system \
-  --set image.digest=sha256:REPLACE_WITH_THE_PLATFORM_IMAGE_DIGEST \
   --set admin.tokenSecret.name=codespace-admin \
   --wait \
   --timeout 5m
@@ -137,7 +140,10 @@ cluster and only presents HTTP or HTTPS listeners for endpoint traffic and TCP
 listeners for SSH. Manager reads the resources again when saving, then
 maintains that component's HTTPRoute and TCPRoute. Per-component selection
 allows separate Gateway components to use different public domains and
-listeners without changing the Helm release.
+listeners without changing the Helm release. A route exposes the shared
+Gateway Service rather than an individual site or Codespace. The Gateway keeps
+authorization and session limits separate by site identity, so multiple Gitea
+sites can safely use the same component.
 
 HTTPS certificates for Codespace endpoint hostnames belong to the external
 Gateway listener and its `certificateRefs`. The cluster operator can use
@@ -165,7 +171,9 @@ The administration page also discovers labeled RuntimeClasses and available
 StorageClasses. CPU, memory, storage, cache limits, and durations are entered
 as a number with an explicit unit; Manager stores the corresponding native
 Kubernetes quantity or duration and validates request/limit and cache capacity
-relationships before applying resources.
+relationships before applying resources. Environment templates require CPU and
+memory requests but can omit limits. Site quotas are optional; when disabled,
+Manager does not maintain a ResourceQuota for that site namespace.
 
 [`values.yaml`](values.yaml) contains defaults. [`values.schema.json`](values.schema.json)
 is the authoritative list of supported values and validation rules. Render and

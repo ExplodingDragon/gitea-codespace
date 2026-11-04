@@ -9,8 +9,8 @@ type gatewayControlPlaneClient interface {
 	ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error)
 	ValidatePublicEndpoint(context.Context, string, string) (gatewayAccessDecision, error)
 	VerifySSHPublicKey(context.Context, string, []byte) (gatewaySSHAuthDecision, error)
-	RevalidateEndpointSession(context.Context, int64, string, string) (gatewayAccessDecision, error)
-	RevalidateSSHSession(context.Context, int64, string) (gatewayAccessDecision, error)
+	RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error)
+	RevalidateSSHSession(context.Context, string, int64, string) (gatewayAccessDecision, error)
 }
 
 type gatewayAccessDecision struct {
@@ -20,6 +20,7 @@ type gatewayAccessDecision struct {
 
 // OpenTokenBinding is the user and runtime authorized by one-use browser code.
 type OpenTokenBinding struct {
+	SiteUID       string
 	UserID        int64
 	CodespaceUUID string
 	EndpointID    string
@@ -33,6 +34,7 @@ type gatewayOpenTokenDecision struct {
 
 type gatewaySSHAuthDecision struct {
 	Allowed        bool
+	SiteUID        string
 	UserID         int64
 	deniedCategory string
 }

@@ -64,11 +64,11 @@ type GiteaSiteSpec struct {
 	CleanupConcurrency int32 `json:"cleanupConcurrency"`
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:MaxItems=64
-	Templates       []ResourceReference   `json:"templates"`
-	Gateway         ResourceReference     `json:"gateway"`
-	Caches          []ResourceReference   `json:"caches,omitempty"`
-	Quota           corev1.ResourceList   `json:"quota"`
-	ContainerLimits corev1.LimitRangeItem `json:"containerLimits"`
+	Templates []ResourceReference `json:"templates"`
+	Gateway   ResourceReference   `json:"gateway"`
+	Caches    []ResourceReference `json:"caches,omitempty"`
+	// Quota is empty when Kubernetes admission alone manages site capacity.
+	Quota corev1.ResourceList `json:"quota,omitempty"`
 	// Upstreams are explicit exceptions to the workload's private-network isolation.
 	Upstreams []NetworkDestination `json:"upstreams,omitempty"`
 }

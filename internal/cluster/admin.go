@@ -52,6 +52,19 @@ type adminResource struct {
 	Status          any       `json:"status,omitempty"`
 }
 
+func newAdminResource(object client.Object, spec, status any) adminResource {
+	return adminResource{
+		Name:            object.GetName(),
+		Namespace:       object.GetNamespace(),
+		UID:             object.GetUID(),
+		ResourceVersion: object.GetResourceVersion(),
+		Generation:      object.GetGeneration(),
+		Deleting:        !object.GetDeletionTimestamp().IsZero(),
+		Spec:            spec,
+		Status:          status,
+	}
+}
+
 type adminWriteIdentity struct {
 	Name            string    `json:"name"`
 	UID             types.UID `json:"uid"`
@@ -94,18 +107,20 @@ type adminSiteSpec struct {
 	Gateway            api.ResourceReference    `json:"gateway"`
 	Caches             []api.ResourceReference  `json:"caches,omitempty"`
 	Quota              corev1.ResourceList      `json:"quota"`
-	ContainerLimits    corev1.LimitRangeItem    `json:"containerLimits"`
 	Upstreams          []api.NetworkDestination `json:"upstreams,omitempty"`
 }
 
 // adminSiteSpec exposes only fields controlled by administrators. Registration
 // assigns the Manager identity and credential reference on the resource.
 func newAdminSiteSpec(spec api.GiteaSiteSpec) adminSiteSpec {
+	if spec.Quota == nil {
+		spec.Quota = corev1.ResourceList{}
+	}
 	return adminSiteSpec{
 		DisplayName: spec.DisplayName, URL: spec.URL, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
 		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
 		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
-		ContainerLimits: spec.ContainerLimits, Upstreams: spec.Upstreams,
+		Upstreams: spec.Upstreams,
 	}
 }
 
@@ -114,7 +129,7 @@ func (spec adminSiteSpec) resourceSpec() api.GiteaSiteSpec {
 		DisplayName: spec.DisplayName, URL: spec.URL, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
 		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
 		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
-		ContainerLimits: spec.ContainerLimits, Upstreams: spec.Upstreams,
+		Upstreams: spec.Upstreams,
 	}
 }
 
@@ -301,7 +316,19 @@ func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
 		writeAdminError(w, r, err)
 		return
 	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"name": name})
+	var resource adminResource
+	switch current := object.(type) {
+	case *api.GiteaSite:
+		resource = newAdminResource(current, newAdminSiteSpec(current.Spec), current.Status)
+	case *api.EnvironmentTemplate:
+		resource = newAdminResource(current, current.Spec, current.Status)
+	case *api.CodespaceComponent:
+		// Component status is a projection of Deployment and Lease state. The
+		// controller has not observed this generation yet, so the write response
+		// reports its initial state without adding fallible reads after the write.
+		resource = newAdminResource(current, current.Spec, adminComponentStatus{DesiredReplicas: 1})
+	}
+	writeAdminJSON(w, http.StatusOK, resource)
 }
 
 func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Request, name string) {
@@ -500,9 +527,6 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 
 func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminResource, error) {
 	items := []adminResource{}
-	appendItem := func(object client.Object, spec, status any) {
-		items = append(items, adminResource{Name: object.GetName(), Namespace: object.GetNamespace(), UID: object.GetUID(), ResourceVersion: object.GetResourceVersion(), Generation: object.GetGeneration(), Deleting: !object.GetDeletionTimestamp().IsZero(), Spec: spec, Status: status})
-	}
 	switch kind {
 	case "sites":
 		var list api.GiteaSiteList
@@ -510,7 +534,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			return nil, err
 		}
 		for _, item := range list.Items {
-			appendItem(&item, newAdminSiteSpec(item.Spec), item.Status)
+			items = append(items, newAdminResource(&item, newAdminSiteSpec(item.Spec), item.Status))
 		}
 	case "environments":
 		var list api.EnvironmentTemplateList
@@ -518,7 +542,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			return nil, err
 		}
 		for _, item := range list.Items {
-			appendItem(&item, item.Spec, item.Status)
+			items = append(items, newAdminResource(&item, item.Spec, item.Status))
 		}
 	case "runtimes":
 		var list api.CodespaceList
@@ -527,7 +551,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 		}
 		for _, item := range list.Items {
 			// Operation payloads and raw metadata are not administration responses.
-			appendItem(&item, struct {
+			items = append(items, newAdminResource(&item, struct {
 				Site           api.ResourceReference `json:"site"`
 				CodespaceID    string                `json:"codespaceID"`
 				RuntimeUUID    string                `json:"runtimeUUID"`
@@ -540,7 +564,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 				Volume     api.ObservedResource `json:"volume"`
 				Ready      bool                 `json:"ready"`
 				Conditions []metav1.Condition   `json:"conditions"`
-			}{item.Status.Bound, item.Status.Pod, item.Status.Volume, item.Status.Target != nil && item.Status.Target.Ready, item.Status.Conditions})
+			}{item.Status.Bound, item.Status.Pod, item.Status.Volume, item.Status.Target != nil && item.Status.Target.Ready, item.Status.Conditions}))
 		}
 	case "components":
 		var list api.CodespaceComponentList
@@ -552,7 +576,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			if err != nil {
 				return nil, err
 			}
-			appendItem(&item, item.Spec, status)
+			items = append(items, newAdminResource(&item, item.Spec, status))
 		}
 	}
 	return items, nil

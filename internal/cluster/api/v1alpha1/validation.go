@@ -58,18 +58,24 @@ func (s *GiteaSite) Validate(managementNamespace string) error {
 	if s.Spec.StartupConcurrency < 1 || s.Spec.StartupConcurrency > 64 || s.Spec.CleanupConcurrency < 1 || s.Spec.CleanupConcurrency > 64 {
 		return fmt.Errorf("startup and cleanup concurrency must be between 1 and 64")
 	}
-	for _, name := range []corev1.ResourceName{corev1.ResourcePods, corev1.ResourceRequestsCPU, corev1.ResourceRequestsMemory, corev1.ResourceLimitsCPU, corev1.ResourceLimitsMemory, corev1.ResourceRequestsStorage, corev1.ResourcePersistentVolumeClaims} {
-		if q := s.Spec.Quota[name]; q.Sign() <= 0 {
-			return fmt.Errorf("site quota %s must be positive", name)
+	if len(s.Spec.Quota) != 0 {
+		quotaResources := map[corev1.ResourceName]bool{
+			corev1.ResourcePods:                   true,
+			corev1.ResourcePersistentVolumeClaims: true,
+			corev1.ResourceRequestsCPU:            true,
+			corev1.ResourceRequestsMemory:         true,
+			corev1.ResourceRequestsStorage:        true,
 		}
-	}
-	for name, q := range s.Spec.Quota {
-		if q.Sign() < 0 {
-			return fmt.Errorf("site quota %s must not be negative", name)
+		for name := range quotaResources {
+			if q := s.Spec.Quota[name]; q.Sign() <= 0 {
+				return fmt.Errorf("site quota %s must be positive", name)
+			}
 		}
-	}
-	if s.Spec.ContainerLimits.Type != corev1.LimitTypeContainer {
-		return fmt.Errorf("site LimitRange must target containers")
+		for name := range s.Spec.Quota {
+			if !quotaResources[name] {
+				return fmt.Errorf("site quota %s is not supported", name)
+			}
+		}
 	}
 	for _, target := range s.Spec.Upstreams {
 		if _, err := netip.ParsePrefix(target.CIDR); err != nil || len(target.Ports) == 0 {
@@ -188,10 +194,23 @@ func (r EnvironmentConfiguration) Validate() error {
 		return fmt.Errorf("runtime storage must specify a positive storage quantity")
 	}
 	for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
-		request, limit := r.Resources.Requests[name], r.Resources.Limits[name]
-		if request.Sign() <= 0 || limit.Sign() <= 0 || request.Cmp(limit) > 0 {
-			return fmt.Errorf("runtime %s request and limit must be positive, with request no greater than limit", name)
+		if request := r.Resources.Requests[name]; request.Sign() <= 0 {
+			return fmt.Errorf("runtime %s request must be positive", name)
 		}
+	}
+	cpuLimit, memoryLimit := r.Resources.Limits[corev1.ResourceCPU], r.Resources.Limits[corev1.ResourceMemory]
+	if (cpuLimit.Sign() > 0) != (memoryLimit.Sign() > 0) {
+		return fmt.Errorf("runtime CPU and memory limits must be configured together")
+	}
+	if cpuLimit.Sign() > 0 {
+		for _, name := range []corev1.ResourceName{corev1.ResourceCPU, corev1.ResourceMemory} {
+			request, limit := r.Resources.Requests[name], r.Resources.Limits[name]
+			if request.Cmp(limit) > 0 {
+				return fmt.Errorf("runtime %s request must not exceed its limit", name)
+			}
+		}
+	} else if len(r.Resources.Limits) != 0 {
+		return fmt.Errorf("runtime resource limits may contain only positive CPU and memory limits")
 	}
 	if r.GitSSHKeyType != "ed25519" && r.GitSSHKeyType != "rsa-4096" {
 		return fmt.Errorf("git SSH key type must be ed25519 or rsa-4096")

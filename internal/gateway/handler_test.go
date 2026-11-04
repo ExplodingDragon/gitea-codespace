@@ -28,11 +28,11 @@ func (gatewayHandlerTestControlPlane) VerifySSHPublicKey(context.Context, string
 	return gatewaySSHAuthDecision{}, nil
 }
 
-func (gatewayHandlerTestControlPlane) RevalidateEndpointSession(context.Context, int64, string, string) (gatewayAccessDecision, error) {
+func (gatewayHandlerTestControlPlane) RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error) {
 	return gatewayAccessDecision{}, nil
 }
 
-func (gatewayHandlerTestControlPlane) RevalidateSSHSession(context.Context, int64, string) (gatewayAccessDecision, error) {
+func (gatewayHandlerTestControlPlane) RevalidateSSHSession(context.Context, string, int64, string) (gatewayAccessDecision, error) {
 	return gatewayAccessDecision{}, nil
 }
 
