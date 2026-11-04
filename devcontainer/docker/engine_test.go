@@ -14,9 +14,12 @@ import (
 	"testing"
 
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/cli/cli/command"
 	composeapi "github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	buildkitauth "github.com/moby/buildkit/session/auth"
+	"github.com/moby/buildkit/session/auth/authprovider"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -25,6 +28,37 @@ type cacheFallbackCompose struct {
 	composeapi.Compose
 	cacheFrom []composetypes.StringList
 	cacheTo   []composetypes.StringList
+}
+
+func TestApplyCacheCredentialsProvidesBuildKitRegistryToken(t *testing.T) {
+	cli, err := command.NewDockerCli(command.WithCombinedStreams(io.Discard))
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := &Engine{cli: cli}
+	const registry = "cache.codespace-system.svc"
+	const token = "manager-signed-cache-token"
+	engine.applyCacheCredentials(devcontainer.CacheOptions{Credentials: map[string]devcontainer.RegistryCredential{
+		registry: {Username: "gitea-codespace", Password: token},
+	}})
+
+	provider := authprovider.NewDockerAuthProvider(authprovider.DockerAuthProviderConfig{ConfigFile: cli.ConfigFile()})
+	fetcher, ok := provider.(interface {
+		FetchToken(context.Context, *buildkitauth.FetchTokenRequest) (*buildkitauth.FetchTokenResponse, error)
+	})
+	if !ok {
+		t.Fatal("BuildKit authentication provider does not expose token retrieval")
+	}
+	response, err := fetcher.FetchToken(t.Context(), &buildkitauth.FetchTokenRequest{
+		Host: registry, Realm: "https://invalid.example/auth", Service: "gitea-codespace-cache",
+		Scopes: []string{"repository:cache/example/build:pull,push"},
+	})
+	if err != nil {
+		t.Fatalf("fetch BuildKit registry token: %v", err)
+	}
+	if response.Token != token {
+		t.Fatalf("BuildKit registry token = %q", response.Token)
+	}
 }
 
 func (c *cacheFallbackCompose) Build(_ context.Context, project *composetypes.Project, _ composeapi.BuildOptions) error {

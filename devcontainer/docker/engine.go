@@ -142,6 +142,7 @@ func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
 			Username:      credential.Username,
 			Password:      credential.Password,
 			Auth:          base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password)),
+			RegistryToken: credential.Password,
 			ServerAddress: address,
 		}
 	}
