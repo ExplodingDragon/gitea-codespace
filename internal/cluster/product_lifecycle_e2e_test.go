@@ -432,6 +432,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: cacheName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	cacheSpec := testCacheComponent(cacheName, "").Spec
 	cacheSpec.DisplayName, cacheSpec.Cache.PublicURL, cacheSpec.Cache.MaxSize = "Lifecycle E2E cache", "http://"+cacheName+".test", "4GiB"
+	cacheSpec.Cache.Storage.VolumeSize = "5Gi"
 	cacheSpec.Cache.Upstreams = map[string]api.CacheUpstream{
 		"docker.io": {Allow: []string{"library/debian*"}},
 		"ghcr.io":   {Allow: []string{"coder/devcontainer-features/code-server*", "devcontainers/features/common-utils*"}},
