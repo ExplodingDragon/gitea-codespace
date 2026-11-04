@@ -50,7 +50,7 @@ func TestApplyCacheCredentialsProvidesBuildKitRegistryToken(t *testing.T) {
 		t.Fatal("BuildKit authentication provider does not expose token retrieval")
 	}
 	response, err := fetcher.FetchToken(t.Context(), &buildkitauth.FetchTokenRequest{
-		Host: registry, Realm: "https://invalid.example/auth", Service: "gitea-codespace-cache",
+		Host: registry + ":443", Realm: "https://invalid.example/auth", Service: "gitea-codespace-cache",
 		Scopes: []string{"repository:cache/example/build:pull,push"},
 	})
 	if err != nil {

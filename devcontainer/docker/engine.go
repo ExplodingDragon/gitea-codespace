@@ -13,6 +13,8 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -138,12 +140,23 @@ func (e *Engine) applyCacheCredentials(cache devcontainer.CacheOptions) {
 		if address == "" || strings.TrimSpace(credential.Username) == "" || strings.TrimSpace(credential.Password) == "" {
 			continue
 		}
-		authConfigs[address] = configtypes.AuthConfig{
+		config := configtypes.AuthConfig{
 			Username:      credential.Username,
 			Password:      credential.Password,
 			Auth:          base64.StdEncoding.EncodeToString([]byte(credential.Username + ":" + credential.Password)),
 			RegistryToken: credential.Password,
 			ServerAddress: address,
+		}
+		authConfigs[address] = config
+		parsed, err := url.Parse("https://" + address)
+		if err == nil && parsed.Host == address && parsed.Hostname() != "" {
+			if parsed.Port() == "" {
+				config.ServerAddress = net.JoinHostPort(parsed.Hostname(), "443")
+				authConfigs[config.ServerAddress] = config
+			} else if parsed.Port() == "443" {
+				config.ServerAddress = parsed.Hostname()
+				authConfigs[config.ServerAddress] = config
+			}
 		}
 	}
 }
