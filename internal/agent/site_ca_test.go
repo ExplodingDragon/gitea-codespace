@@ -67,6 +67,7 @@ func TestWritePlatformCABundleRotation(t *testing.T) {
 }
 
 func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
+	t.Setenv("SSL_CERT_FILE", "")
 	server := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(server.Close)
 	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
@@ -94,6 +95,7 @@ func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
 	installed, err = os.ReadFile(dockerBundle)
 	require.NoError(t, err)
 	require.Equal(t, append([]byte("system certificates\n"), root...), installed)
+	require.Equal(t, dockerBundle, os.Getenv("SSL_CERT_FILE"))
 
 	cache.BuildRegistry = "http://cache.codespace-system.svc/cache/example"
 	_, err = runtime.prepareDockerCacheTrust(cache)

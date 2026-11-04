@@ -137,14 +137,7 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache)
 	if directory == "" {
 		directory = runtimeVolume
 	}
-	caBundle := ""
-	if len(root) > 0 {
-		caBundle = r.dockerCABundlePath
-		if caBundle == "" {
-			caBundle = runtimeRunDirectory + "/docker-ca-bundle.pem"
-		}
-	}
-	daemon, err := StartDocker(ctx, directory, caBundle, r.Diagnostics)
+	daemon, err := StartDocker(ctx, directory, r.Diagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -218,6 +211,11 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 		}
 		if err := replaceCAFile(dockerBundle, combined); err != nil {
 			return nil, fmt.Errorf("install Docker CA bundle: %w", err)
+		}
+		// Compose serves BuildKit registry credentials from this Agent process,
+		// while dockerd inherits the same trust bundle when it starts.
+		if err := os.Setenv("SSL_CERT_FILE", dockerBundle); err != nil {
+			return nil, fmt.Errorf("configure Docker CA bundle: %w", err)
 		}
 		return root, nil
 	}
