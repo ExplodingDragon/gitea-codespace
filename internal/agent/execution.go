@@ -45,6 +45,8 @@ type Runtime struct {
 	DockerCertificateDirectory string
 	Diagnostics                io.Writer
 	DevContainer               devcontainerruntime.Configuration
+	systemCABundlePath         string
+	dockerCABundlePath         string
 
 	dockerMu        sync.Mutex
 	mu              sync.RWMutex
@@ -135,7 +137,14 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache)
 	if directory == "" {
 		directory = runtimeVolume
 	}
-	daemon, err := StartDocker(ctx, directory, r.Diagnostics)
+	caBundle := ""
+	if len(root) > 0 {
+		caBundle = r.dockerCABundlePath
+		if caBundle == "" {
+			caBundle = runtimeRunDirectory + "/docker-ca-bundle.pem"
+		}
+	}
+	daemon, err := StartDocker(ctx, directory, caBundle, r.Diagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -185,6 +194,30 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 			if err := replaceCAFile(filepath.Join(directory, "ca.crt"), root); err != nil {
 				return nil, fmt.Errorf("install Docker registry CA: %w", err)
 			}
+		}
+		systemBundle := r.systemCABundlePath
+		if systemBundle == "" {
+			systemBundle = "/etc/ssl/certs/ca-certificates.crt"
+		}
+		systemRoots, err := os.ReadFile(systemBundle)
+		if err != nil {
+			return nil, fmt.Errorf("read system CA bundle: %w", err)
+		}
+		dockerBundle := r.dockerCABundlePath
+		if dockerBundle == "" {
+			dockerBundle = runtimeRunDirectory + "/docker-ca-bundle.pem"
+		}
+		combined := make([]byte, 0, len(systemRoots)+len(root)+1)
+		combined = append(combined, systemRoots...)
+		if len(combined) > 0 && combined[len(combined)-1] != '\n' {
+			combined = append(combined, '\n')
+		}
+		combined = append(combined, root...)
+		if err := os.MkdirAll(filepath.Dir(dockerBundle), 0o700); err != nil {
+			return nil, fmt.Errorf("create Docker CA bundle directory: %w", err)
+		}
+		if err := replaceCAFile(dockerBundle, combined); err != nil {
+			return nil, fmt.Errorf("install Docker CA bundle: %w", err)
 		}
 		return root, nil
 	}

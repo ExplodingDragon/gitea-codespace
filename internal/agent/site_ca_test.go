@@ -70,9 +70,17 @@ func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
 	server := httptest.NewTLSServer(http.NotFoundHandler())
 	t.Cleanup(server.Close)
 	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	identityDirectory, dockerCertificates := t.TempDir(), t.TempDir()
+	identityDirectory, dockerCertificates, caDirectory := t.TempDir(), t.TempDir(), t.TempDir()
+	systemBundle := filepath.Join(caDirectory, "system.pem")
+	dockerBundle := filepath.Join(caDirectory, "docker.pem")
 	require.NoError(t, os.WriteFile(filepath.Join(identityDirectory, "ca.crt"), root, 0o600))
-	runtime := &Runtime{IdentityDirectory: identityDirectory, DockerCertificateDirectory: dockerCertificates}
+	require.NoError(t, os.WriteFile(systemBundle, []byte("system certificates\n"), 0o600))
+	runtime := &Runtime{
+		IdentityDirectory:          identityDirectory,
+		DockerCertificateDirectory: dockerCertificates,
+		systemCABundlePath:         systemBundle,
+		dockerCABundlePath:         dockerBundle,
+	}
 	cache := &agentv1.RuntimeCache{
 		BuildRegistry: "https://cache.codespace-system.svc/cache/example",
 		Mirrors:       map[string]string{"ghcr.io": "https://cache.codespace-system.svc/mirror/ghcr.io"},
@@ -83,6 +91,9 @@ func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
 	installed, err := os.ReadFile(filepath.Join(dockerCertificates, "cache.codespace-system.svc", "ca.crt"))
 	require.NoError(t, err)
 	require.Equal(t, root, installed)
+	installed, err = os.ReadFile(dockerBundle)
+	require.NoError(t, err)
+	require.Equal(t, append([]byte("system certificates\n"), root...), installed)
 
 	cache.BuildRegistry = "http://cache.codespace-system.svc/cache/example"
 	_, err = runtime.prepareDockerCacheTrust(cache)

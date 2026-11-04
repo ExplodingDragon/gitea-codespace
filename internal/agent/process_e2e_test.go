@@ -89,7 +89,7 @@ func TestAgentE2EDockerSupervision(t *testing.T) {
 	require.NoError(t, err)
 	// Sysbox retains its data-root mount until Pod teardown. The enclosing
 	// Kubernetes test owns the disposable Pod/PVC and reclaims it there.
-	daemon, err := StartDocker(t.Context(), directory, os.Stderr)
+	daemon, err := StartDocker(t.Context(), directory, "", os.Stderr)
 	require.NoError(t, err)
 	require.NoError(t, daemon.Close())
 	select {

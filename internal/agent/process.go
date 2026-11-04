@@ -96,7 +96,7 @@ type DockerDaemon struct {
 	err     error
 }
 
-func StartDocker(ctx context.Context, directory string, output io.Writer) (*DockerDaemon, error) {
+func StartDocker(ctx context.Context, directory, caBundle string, output io.Writer) (*DockerDaemon, error) {
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("inspect Runtime network interfaces: %w", err)
@@ -111,6 +111,9 @@ func StartDocker(ctx context.Context, directory string, output io.Writer) (*Dock
 	command := exec.Command("dockerd", arguments...)
 	command.Stdout, command.Stderr = output, output
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if caBundle != "" {
+		command.Env = append(os.Environ(), "SSL_CERT_FILE="+caBundle)
+	}
 	if err := command.Start(); err != nil {
 		return nil, fmt.Errorf("start Docker daemon: %w", err)
 	}
