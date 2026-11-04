@@ -30,26 +30,9 @@ if [[ $runtime == sysbox ]]; then
 	package="$work/sysbox.deb"
 	curl -fsSL "https://github.com/nestybox/sysbox/releases/download/v$SYSBOX_VERSION/sysbox-ce_$SYSBOX_VERSION.linux_amd64.deb" -o "$package"
 	printf '%s  %s\n' "$SYSBOX_SHA256" "$package" | sha256sum --check
-	sudo install -d -m 0755 /etc/systemd/system/sysbox-fs.service.d
-	printf '[Service]\nRestart=on-failure\nRestartSec=1\n' | sudo tee /etc/systemd/system/sysbox-fs.service.d/restart.conf >/dev/null
 	sudo apt-get update
 	sudo apt-get install -y "$package"
-	sudo systemctl daemon-reload
-	sysbox_ready=false
-	for _ in {1..60}; do
-		if systemctl is-active --quiet sysbox-mgr &&
-			systemctl is-active --quiet sysbox-fs &&
-			sudo test -S /run/sysbox/sysmgr.sock &&
-			sudo test -S /run/sysbox/sysfs.sock; then
-			sysbox_ready=true
-			break
-		fi
-		sleep 1
-	done
-	if [[ $sysbox_ready != true ]]; then
-		sudo systemctl status sysbox-mgr sysbox-fs --no-pager || true
-		exit 1
-	fi
+	sudo systemctl is-active --quiet sysbox-mgr sysbox-fs
 else
 	echo "Checking Kata hardware virtualization"
 	test -c /dev/kvm
