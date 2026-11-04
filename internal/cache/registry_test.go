@@ -5,10 +5,13 @@ package cache
 
 import (
 	"context"
+	"crypto/tls"
+	"encoding/json"
 	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -216,6 +219,64 @@ func TestRegistryCacheRequiresCredentialsForBuildKitPath(t *testing.T) {
 	response = httptest.NewRecorder()
 	cache.httpHandler().ServeHTTP(response, request)
 	require.Equal(t, http.StatusUnauthorized, response.Code)
+}
+
+func TestRegistryCacheExchangesBuildKitCredentials(t *testing.T) {
+	config := configpkg.CacheConfig{ID: "test", Name: "Test", Enabled: true,
+		Storage: configpkg.CacheStorageConfig{Driver: "filesystem", Path: t.TempDir()}}
+	cache, err := newRegistryCache(t.Context(), config, "test-secret", []byte(strings.Repeat("t", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { require.NoError(t, cache.Close()) }()
+	namespace := Namespace(cache.secret, "site-one", 2, 3)
+	token := testRegistryToken(t, cache, namespace, configpkg.CachePolicy{Build: true})
+	handler := cache.httpHandler()
+
+	challengeRequest := httptest.NewRequest(http.MethodHead, "/v2/cache/"+namespace+"/build/manifests/latest", nil)
+	challengeRequest.Host = "cache.codespace-system.svc:443"
+	challengeRequest.TLS = &tls.ConnectionState{}
+	challengeResponse := httptest.NewRecorder()
+	handler.ServeHTTP(challengeResponse, challengeRequest)
+	require.Equal(t, http.StatusUnauthorized, challengeResponse.Code)
+	require.Equal(t,
+		`Bearer realm="https://cache.codespace-system.svc:443/auth",service="gitea-codespace-cache",scope="repository:cache/`+namespace+`/build:pull"`,
+		challengeResponse.Header().Get("WWW-Authenticate"),
+	)
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/auth?service=gitea-codespace-cache", nil)
+	getRequest.SetBasicAuth(Username, token)
+	getResponse := httptest.NewRecorder()
+	handler.ServeHTTP(getResponse, getRequest)
+	require.Equal(t, http.StatusOK, getResponse.Code)
+	var getToken registryTokenResponse
+	require.NoError(t, json.Unmarshal(getResponse.Body.Bytes(), &getToken))
+	require.Equal(t, token, getToken.Token)
+	require.Equal(t, token, getToken.AccessToken)
+	require.Positive(t, getToken.ExpiresIn)
+	require.Equal(t, "no-store", getResponse.Header().Get("Cache-Control"))
+
+	form := url.Values{
+		"grant_type": {"password"},
+		"username":   {Username},
+		"password":   {token},
+		"service":    {registryAuthenticationService},
+		"scope":      {"repository:cache/" + namespace + "/build:pull,push"},
+	}
+	postRequest := httptest.NewRequest(http.MethodPost, "/auth", strings.NewReader(form.Encode()))
+	postRequest.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	postResponse := httptest.NewRecorder()
+	handler.ServeHTTP(postResponse, postRequest)
+	require.Equal(t, http.StatusOK, postResponse.Code)
+	var postToken registryTokenResponse
+	require.NoError(t, json.Unmarshal(postResponse.Body.Bytes(), &postToken))
+	require.Equal(t, token, postToken.AccessToken)
+
+	bearerRequest := httptest.NewRequest(http.MethodPost, "/v2/cache/"+namespace+"/build/blobs/uploads/", nil)
+	bearerRequest.Header.Set("Authorization", "Bearer "+postToken.AccessToken)
+	bearerResponse := httptest.NewRecorder()
+	handler.ServeHTTP(bearerResponse, bearerRequest)
+	require.NotEqual(t, http.StatusUnauthorized, bearerResponse.Code)
 }
 
 func TestRegistryCacheCleanupPreservesSharedLayers(t *testing.T) {
