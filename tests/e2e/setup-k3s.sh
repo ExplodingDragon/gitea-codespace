@@ -39,7 +39,8 @@ if [[ $runtime == sysbox ]]; then
 	for _ in {1..60}; do
 		if systemctl is-active --quiet sysbox-mgr &&
 			systemctl is-active --quiet sysbox-fs &&
-			[[ -S /run/sysbox/sysmgr.sock && -S /run/sysbox/sysfs.sock ]]; then
+			sudo test -S /run/sysbox/sysmgr.sock &&
+			sudo test -S /run/sysbox/sysfs.sock; then
 			sysbox_ready=true
 			break
 		fi
