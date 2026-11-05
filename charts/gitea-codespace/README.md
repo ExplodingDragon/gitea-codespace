@@ -15,19 +15,194 @@ objects configured through the administration UI.
   `codespace.gitea.dev/isolation=kata|sysbox`, and a compatible StorageClass
   before an environment template is enabled.
 
-The chart references existing RuntimeClasses and leaves node configuration to
-the cluster operator. Install Kata using its
-[installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md),
-or install Sysbox on a dedicated node pool using its
-[Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
-Verify the selected runtime, storage, and platform image with a real Pod first.
-Label the verified RuntimeClass so Manager can present it with the correct
-isolation mode:
+The Codespace Kubernetes baseline and the selected runtime's upstream support
+matrix both apply. Meeting the Kubernetes version above does not imply that a
+particular Kata or Sysbox release supports the cluster's operating system,
+architecture, CRI, or container runtime.
+
+## Install a workload runtime
+
+Install Kata Containers or Sysbox before installing this chart. Installing
+both is optional; separate environment templates can select different runtimes
+when both are available. The Codespace chart consumes existing RuntimeClasses
+rather than changing worker nodes because runtime installation writes host
+artifacts and updates containerd or another CRI implementation. Keeping that
+lifecycle with the cluster operator also allows the runtime to be shared by
+other workloads without coupling it to a Codespace release.
+
+| Runtime | Best suited for | Worker-node requirement | Codespace storage |
+| --- | --- | --- | --- |
+| Kata Containers | Lightweight virtual-machine isolation | Supported hardware virtualization, architecture, CRI, and Kata release | A StorageClass that can provision raw block volumes |
+| Sysbox | Nested Docker without hardware virtualization | A combination supported by the current Sysbox Kubernetes, OS, architecture, and containerd matrix | A filesystem volume |
+
+In both modes, the Runtime Pod starts its own Docker daemon and runs the actual
+Dev Container inside that Docker environment.
+
+### Install Kata Containers
+
+Kata recommends its OCI Helm chart for Kubernetes. Pin a release so the node
+artifacts, RuntimeClasses, and Helm release remain reproducible:
 
 ```sh
-kubectl label runtimeclass kata-qemu codespace.gitea.dev/isolation=kata
-kubectl label runtimeclass sysbox-runc codespace.gitea.dev/isolation=sysbox
+export KATA_VERSION="<supported-release>"
+
+helm upgrade --install kata-deploy \
+  oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
+  --version "${KATA_VERSION}" \
+  --namespace kube-system \
+  --create-namespace \
+  --set shims.disableAll=true \
+  --set shims.qemu-runtime-rs.enabled=true \
+  --wait \
+  --timeout 10m
 ```
+
+Select a version and any distribution-specific values from the
+[Kata installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md).
+The selected workers must expose supported hardware virtualization. The
+example installs `kata-qemu-runtime-rs`, the current runtime-rs QEMU class used
+by the Codespace test suite.
+
+Kata Deploy uses short-lived per-node Jobs by default. This minimizes
+long-lived privileged access on clusters with a stable worker set. Clusters
+that add worker nodes automatically can use `deploymentMode=daemonset` or the
+scheduled reconciliation described in the
+[Kata Helm configuration](https://github.com/kata-containers/kata-containers/blob/main/docs/helm-configuration.md),
+so newly added nodes receive the runtime before Kata workloads are scheduled.
+
+Confirm that the RuntimeClass starts a VM-backed Pod:
+
+```sh
+kubectl get runtimeclass kata-qemu-runtime-rs
+
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: codespace-kata-check
+spec:
+  runtimeClassName: kata-qemu-runtime-rs
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: quay.io/libpod/ubuntu:latest
+      command: ["/bin/sh", "-c"]
+      args: ["uname -r; sleep 30"]
+EOF
+
+kubectl wait --for=condition=Ready pod/codespace-kata-check --timeout=2m
+kubectl logs codespace-kata-check
+kubectl delete pod codespace-kata-check
+```
+
+The reported kernel should be the Kata guest kernel rather than the worker
+node's kernel. Record the successful verification for Manager by labeling the
+class:
+
+```sh
+kubectl label runtimeclass kata-qemu-runtime-rs \
+  codespace.gitea.dev/isolation=kata \
+  --overwrite
+```
+
+### Install Sysbox
+
+Use the current
+[Sysbox Kubernetes installation guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md)
+to confirm the supported Kubernetes, Ubuntu, architecture, and containerd
+combination before changing a worker node. The Codespace Kubernetes minimum
+and the upstream Sysbox support matrix must both cover the selected workers.
+Review the installer before applying it because runtime installation can
+change the node's CRI configuration and restart kubelet.
+
+Choose the workers that will host Sysbox Codespaces, then apply a reviewed and
+pinned Sysbox manifest instead of relying on a moving branch:
+
+```sh
+kubectl label node <worker-node> sysbox-install=yes
+
+export SYSBOX_REF="<release-tag-or-reviewed-commit>"
+
+kubectl apply -f \
+  "https://raw.githubusercontent.com/nestybox/sysbox/${SYSBOX_REF}/sysbox-k8s-manifests/sysbox-install.yaml"
+
+kubectl -n kube-system rollout status daemonset/sysbox-deploy-k8s \
+  --timeout=10m
+kubectl get runtimeclass sysbox-runc
+```
+
+Confirm that the RuntimeClass supports the user-namespace and nested-Docker
+model used by Codespace:
+
+```sh
+cat <<'EOF' | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: codespace-sysbox-check
+spec:
+  runtimeClassName: sysbox-runc
+  hostUsers: false
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: registry.nestybox.com/nestybox/ubuntu-focal-systemd-docker
+      command: ["/sbin/init"]
+EOF
+
+kubectl wait --for=condition=Ready pod/codespace-sysbox-check --timeout=2m
+kubectl exec codespace-sysbox-check -- /bin/sh -c \
+  'for i in $(seq 1 60); do docker info && exit 0; sleep 1; done; exit 1'
+kubectl delete pod codespace-sysbox-check
+```
+
+Review the upstream
+[Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
+when templates need host devices, multi-architecture emulation, privileged
+containers, host networking, or nested user namespaces. These capabilities
+have different support boundaries from a VM-backed Kata environment.
+
+After the check succeeds, label the RuntimeClass:
+
+```sh
+kubectl label runtimeclass sysbox-runc \
+  codespace.gitea.dev/isolation=sysbox \
+  --overwrite
+```
+
+### Verify storage compatibility
+
+Kata templates use the Codespace data PVC as a raw block device. Their
+StorageClass must support `volumeMode: Block` together with
+`ReadWriteOncePod`, or a `ReadWriteOnce` combination that the cluster operator
+has verified. Sysbox templates use a filesystem PVC. A StorageClass object does
+not advertise whether its CSI driver supports every volume mode, so validate
+the selected runtime and StorageClass together with a real test PVC before
+publishing an environment template.
+
+### Runtime installation readiness
+
+The cluster is ready for the Codespace chart when:
+
+- a test Pod starts with the selected RuntimeClass on every intended worker
+  pool;
+- a nested Docker daemon responds in the Sysbox check, or the Kata check
+  reports a guest kernel;
+- the selected StorageClass provisions the volume mode required by that
+  runtime;
+- the verified RuntimeClass carries the corresponding isolation label; and
+- the following command shows the expected class and isolation value:
+
+```sh
+kubectl get runtimeclass \
+  -L codespace.gitea.dev/isolation
+```
+
+The isolation label records the operator's verification and lets Manager
+filter the administration form. Runtime installation and CRI handler
+registration remain node preparation steps. Create a real Codespace from the
+finished environment template as the final platform-image, storage, network,
+and nested-Docker check.
 
 The broader isolation, storage, network, identity, and recovery design is
 defined in the [deployment requirements](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/deployment-requirements.md).
@@ -35,28 +210,15 @@ defined in the [deployment requirements](https://github.com/ExplodingDragon/gite
 ## Internal identity
 
 Manager maintains an installation-specific root and issuing CA in
-`Secret/<release>-internal-ca`. It directly issues 24-hour certificates for
-Manager, Agent, Gateway, and Cache control connections. It also issues a
-separate HTTPS server certificate for each Cache Service DNS name. The root
-remains stable while the issuing CA and workload certificates rotate, so new
-TLS connections use the renewed files without restarting workloads or
-requiring another cluster service. File-backed identities are validated at
-startup and cached in memory. New connections check the projected files at
-most once per minute, so normal traffic does not read certificate files for
-every TLS handshake.
+`Secret/<release>-internal-ca`. It issues certificates for Manager, Agent,
+Gateway, and Cache control connections, plus a separate HTTPS server
+certificate for each Cache Service. The root remains stable while online
+certificates rotate.
 
-The root is valid for ten years. The issuing CA is valid for one year and is
-replaced 30 days before expiry. Workload certificates are replaced eight hours
-before their 24-hour expiry. These intervals keep the stable recovery boundary
-separate from routinely rotated online keys while leaving enough time for a
-temporary control-plane outage.
-
-The CA Secret is created through the Kubernetes API after Manager starts; the
-Manager Pod does not mount a pre-existing identity Secret. Multiple replicas
-use Kubernetes object creation and resource versions to converge on the same
-CA. Include this Secret in cluster backups and enable Kubernetes Secret
-encryption at rest. If the Secret is lost while managed resources exist,
-Manager stops instead of silently creating a different trust hierarchy.
+Include the CA Secret in cluster backups and enable Kubernetes Secret
+encryption at rest. Manager stops when this identity is missing while managed
+resources still exist, allowing an operator to restore the original trust
+root.
 
 Cache control identities and Cache Registry server certificates are stored in
 separate Secrets and carry different certificate purposes. Runtime Pods receive
@@ -84,13 +246,9 @@ helm upgrade --install codespace \
 ```
 
 The chart source defaults to
-`ghcr.io/explodingdragon/gitea-codespace:main` when installed directly from a
-checkout. Pushes to `main` publish a Helm prerelease named
-`0.1.0-main.<run-number>`. CI packages a temporary chart copy whose
-`image.digest` is the immutable digest produced by the same workflow. This
-keeps the source convenient for development while ensuring that an OCI chart
-version always installs its corresponding image. For a reproducible
-installation, use the exact chart version from the workflow summary:
+`ghcr.io/explodingdragon/gitea-codespace:main`. Published OCI chart versions
+pin the platform image produced by the same workflow to an immutable digest.
+Use an exact chart version for a reproducible installation:
 
 ```sh
 helm upgrade --install codespace \
@@ -102,10 +260,9 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-Tagged platform images use the Kubernetes `Always` pull policy. Digest-pinned
-images use `IfNotPresent`. For a private registry, list existing pull Secret
-names in `image.pullSecrets`; Manager copies only those credentials to managed
-site namespaces.
+For a private registry, list existing pull Secret names in
+`image.pullSecrets`; Manager copies those credentials to managed site
+namespaces.
 
 ## Verify the installation
 
@@ -156,12 +313,7 @@ the internal component CA and the public Gateway certificate.
 Each Cache component creates a same-name ClusterIP Service on port `443` and a
 `<component>-registry-tls` Secret for that Service DNS name. The Cache process
 listens on container port `8443`, and the Service DNS name is its canonical
-registry address.
-The Manager renews the certificate before expiry. Cache keeps the last valid
-key pair in memory and checks the projected files at most once per minute when
-new TLS connections arrive. A successful check replaces the complete key pair;
-a failed check keeps the previous pair only while its certificate remains
-valid.
+registry address. Manager renews its certificate before expiry.
 
 Runtime Docker installs the public internal root under the Cache host in its
 `certs.d` directory. BuildKit and Docker therefore use standard HTTPS rather
@@ -215,9 +367,9 @@ Manager reports an explicit startup error when the Secret is missing or
 invalid while managed state exists. Restore the original Secret and restart
 Manager; Agent, Gateway, and Cache will reconnect using the same root.
 
-Creating a replacement CA is appropriate only for an empty installation. This
-distinction prevents a deleted Secret from turning into an undetected second
-trust domain.
+Initialize a new CA only for an empty installation. Installations with managed
+resources recover the original CA so existing workload identities remain
+valid.
 
 ## Configuration and validation
 
@@ -230,9 +382,6 @@ memory requests but can omit limits. Site quotas are optional; when disabled,
 Manager does not maintain a ResourceQuota for that site namespace.
 
 [`values.yaml`](values.yaml) contains defaults. [`values.schema.json`](values.schema.json)
-is the authoritative list of supported values and validation rules. Render and
-validate the chart through the repository Makefile:
-
-```sh
-make helm-check
-```
+is the authoritative list of supported values and validation rules. The
+[developer guide](../../DEVELOPMENT.md) documents chart validation for source
+changes.

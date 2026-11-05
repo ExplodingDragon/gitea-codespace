@@ -1,1 +1,16 @@
-Dev Container 规范定义的字段必须完整保留，不得因当前实现未使用而删除。
+# Repository Instructions
+
+- Follow [`DEVELOPMENT.md`](DEVELOPMENT.md) for the supported build, generation,
+  test, and validation workflows.
+- Keep every field defined by the Dev Container specification represented
+  throughout parsing, merging, and resolution, including fields that the
+  current runtime does not consume yet.
+- Change Kubernetes APIs in `internal/cluster/api` and regenerate both CRD
+  copies with `make generate-kubernetes`.
+- Change internal RPC definitions in their `.proto` sources and regenerate the
+  Go bindings with `make proto-generate`.
+- Keep user-facing behavior documented in `README.md` or the Helm guide, and
+  keep contributor workflows in `DEVELOPMENT.md`.
+- Run the focused tests for the changed package and `make lint` before
+  submitting a change. Use `make test` and `make test-frontend` for the complete
+  standard test suite.
