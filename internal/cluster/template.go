@@ -19,8 +19,7 @@ import (
 )
 
 type TemplateReconciler struct {
-	Client              client.Client
-	ManagementNamespace string
+	Client client.Client
 }
 
 func validateEnvironmentDependencies(ctx context.Context, reader client.Reader, configuration api.EnvironmentConfiguration) error {
@@ -47,9 +46,6 @@ func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	problem := template.Validate()
 	if problem == nil {
 		problem = validateEnvironmentDependencies(ctx, r.Client, template.Spec.Runtime)
-	}
-	if problem == nil {
-		problem = reconcileTemplateProxySecret(ctx, r.Client, r.ManagementNamespace, &template, "", "", false)
 	}
 	err := updateTemplateStatus(ctx, r.Client, &template, func(current *api.EnvironmentTemplate) error {
 		if current.Generation != observedGeneration {

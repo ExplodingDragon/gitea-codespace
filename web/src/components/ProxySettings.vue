@@ -6,17 +6,32 @@ import type {OutboundProxy} from '../api';
 
 const props = defineProps<{
   modelValue?: OutboundProxy;
-  username: string;
-  password: string;
-  clearCredential: boolean;
 }>();
 const emit = defineEmits<{
   'update:modelValue': [value: OutboundProxy | undefined];
-  'update:username': [value: string];
-  'update:password': [value: string];
-  'update:clearCredential': [value: boolean];
 }>();
 const {t} = useI18n();
+
+const proxyURLFields = [
+  {
+    key: 'httpProxy',
+    label: 'proxy.http',
+    placeholder: 'http://username:password@proxy.example:3128',
+    help: undefined,
+  },
+  {
+    key: 'httpsProxy',
+    label: 'proxy.https',
+    placeholder: 'http://username:password@proxy.example:3128',
+    help: undefined,
+  },
+  {
+    key: 'socksProxy',
+    label: 'proxy.socks',
+    placeholder: 'socks5h://username:password@proxy.example:1080',
+    help: 'proxy.socksHelp',
+  },
+] as const;
 
 const enabled = computed({
   get: () => Boolean(props.modelValue),
@@ -45,35 +60,22 @@ function update<K extends keyof OutboundProxy>(key: K, value: OutboundProxy[K]) 
   </NFormItem>
   <template v-if="modelValue">
     <p class="section-help">{{ t('proxy.help') }}</p>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem
-        :label="t('proxy.http')"
-        :feedback="t('proxy.httpHelp')"
+        v-for="field in proxyURLFields"
+        :key="field.key"
+        class="field-wide"
+        :label="t(field.label)"
+        :feedback="field.help ? `${t('proxy.urlHelp')} ${t(field.help)}` : t('proxy.urlHelp')"
       >
         <NInput
-          :value="modelValue.httpProxy"
-          placeholder="http://proxy.example:3128"
-          @update:value="update('httpProxy', $event)"
-        />
-      </NFormItem>
-      <NFormItem :label="t('proxy.https')">
-        <NInput
-          :value="modelValue.httpsProxy"
-          placeholder="http://proxy.example:3128"
-          @update:value="update('httpsProxy', $event)"
+          :value="modelValue[field.key]"
+          :placeholder="field.placeholder"
+          @update:value="update(field.key, $event)"
         />
       </NFormItem>
       <NFormItem
-        :label="t('proxy.socks')"
-        :feedback="t('proxy.socksHelp')"
-      >
-        <NInput
-          :value="modelValue.socksProxy"
-          placeholder="socks5h://proxy.example:1080"
-          @update:value="update('socksProxy', $event)"
-        />
-      </NFormItem>
-      <NFormItem
+        class="field-wide"
         :label="t('proxy.noProxy')"
         :feedback="t('proxy.noProxyHelp')"
       >
@@ -84,41 +86,19 @@ function update<K extends keyof OutboundProxy>(key: K, value: OutboundProxy[K]) 
           placeholder="registry.internal.example&#10;10.0.0.0/8"
         />
       </NFormItem>
-      <NFormItem :label="t('proxy.username')">
+      <NFormItem
+        class="field-wide"
+        :label="t('proxy.caBundle')"
+        :feedback="t('proxy.caBundleHelp')"
+      >
         <NInput
-          :value="username"
-          autocomplete="off"
-          @update:value="emit('update:username', $event)"
-        />
-      </NFormItem>
-      <NFormItem :label="t('proxy.password')">
-        <NInput
-          :value="password"
-          type="password"
-          autocomplete="new-password"
-          @update:value="emit('update:password', $event)"
+          :value="modelValue.caBundle"
+          type="textarea"
+          :autosize="{minRows: 4, maxRows: 12}"
+          placeholder="-----BEGIN CERTIFICATE-----"
+          @update:value="update('caBundle', $event)"
         />
       </NFormItem>
     </div>
-    <NFormItem>
-      <NCheckbox
-        :checked="clearCredential"
-        @update:checked="emit('update:clearCredential', $event)"
-      >
-        {{ t('proxy.clearCredential') }}
-      </NCheckbox>
-    </NFormItem>
-    <NFormItem
-      :label="t('proxy.caBundle')"
-      :feedback="t('proxy.caBundleHelp')"
-    >
-      <NInput
-        :value="modelValue.caBundle"
-        type="textarea"
-        :autosize="{minRows: 4, maxRows: 12}"
-        placeholder="-----BEGIN CERTIFICATE-----"
-        @update:value="update('caBundle', $event)"
-      />
-    </NFormItem>
   </template>
 </template>

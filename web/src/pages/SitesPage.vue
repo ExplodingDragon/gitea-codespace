@@ -166,9 +166,10 @@ function remove(site: Resource<Site>) {
     <h1>{{ editing ? (selected ? t('site.edit') : t('site.new')) : t('site.title') }}</h1>
     <div
       v-if="!editing"
-      class="actions"
+      class="page-actions"
     >
       <NButton
+        quaternary
         :aria-label="t('site.refresh')"
         :title="t('site.refresh')"
         :disabled="loading"
@@ -197,7 +198,7 @@ function remove(site: Resource<Site>) {
     @submit.prevent="save"
   >
     <h2>{{ t('site.registrationSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem :label="t('site.displayName')">
         <NInput
           v-model:value="form.displayName"
@@ -224,22 +225,23 @@ function remove(site: Resource<Site>) {
           placeholder="-----BEGIN CERTIFICATE-----"
         />
       </NFormItem>
+      <NFormItem
+        v-if="!selected"
+        class="field-wide"
+        :label="t('site.registrationToken')"
+        :feedback="t('site.registrationTokenHelp')"
+      >
+        <NInput
+          v-model:value="registrationToken"
+          type="password"
+          autocomplete="new-password"
+          required
+        />
+      </NFormItem>
     </div>
-    <NFormItem
-      v-if="!selected"
-      :label="t('site.registrationToken')"
-      :feedback="t('site.registrationTokenHelp')"
-    >
-      <NInput
-        v-model:value="registrationToken"
-        type="password"
-        autocomplete="new-password"
-        required
-      />
-    </NFormItem>
     <h2>{{ t('site.assignmentsSection') }}</h2>
     <p class="section-help">{{ t('site.assignmentsHelp') }}</p>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem :label="t('site.templates')">
         <NSelect
           multiple
@@ -276,7 +278,10 @@ function remove(site: Resource<Site>) {
           "
         />
       </NFormItem>
-      <NFormItem :label="t('site.caches')">
+      <NFormItem
+        class="field-wide"
+        :label="t('site.caches')"
+      >
         <NSelect
           multiple
           :value="form.caches.map((item) => item.uid)"
@@ -294,8 +299,9 @@ function remove(site: Resource<Site>) {
       </NFormItem>
     </div>
     <h2>{{ t('site.lifecycleSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem
+        class="field-wide"
         :label="t('site.lifecycle')"
         :feedback="t('site.lifecycleHelp')"
       >
@@ -326,7 +332,7 @@ function remove(site: Resource<Site>) {
     </NFormItem>
     <div
       v-if="quotaEnabled"
-      class="fields quota-fields"
+      class="form-grid quota-fields"
     >
       <NFormItem
         v-for="field in quotaFields"
@@ -368,6 +374,7 @@ function remove(site: Resource<Site>) {
         />
       </NFormItem>
       <NButton
+        type="error"
         quaternary
         :aria-label="t('site.removeUpstream')"
         :title="t('site.removeUpstream')"
@@ -376,20 +383,25 @@ function remove(site: Resource<Site>) {
         <template #icon><Trash2 :size="16" /></template>
       </NButton>
     </div>
-    <NButton @click="form.upstreams.push({cidr: '', ports: [443]})">{{ t('site.addUpstream') }}</NButton>
+    <NButton
+      class="add-row"
+      @click="form.upstreams.push({cidr: '', ports: [443]})"
+    >
+      {{ t('site.addUpstream') }}
+    </NButton>
     <div class="form-actions">
+      <NButton
+        :disabled="saving"
+        @click="close"
+      >
+        {{ t('common.cancel') }}
+      </NButton>
       <NButton
         type="primary"
         attr-type="submit"
         :loading="saving"
       >
         {{ t('site.save') }}
-      </NButton>
-      <NButton
-        :disabled="saving"
-        @click="close"
-      >
-        {{ t('common.cancel') }}
       </NButton>
     </div>
   </NForm>
@@ -403,7 +415,7 @@ function remove(site: Resource<Site>) {
           <th>{{ t('site.site') }}</th>
           <th>{{ t('site.gitea') }}</th>
           <th>{{ t('site.availability') }}</th>
-          <th>{{ t('common.actions') }}</th>
+          <th class="table-actions">{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -419,9 +431,11 @@ function remove(site: Resource<Site>) {
             {{ site.spec.url }}
           </td>
           <td><ResourceStatus :resource="site" /></td>
-          <td>
-            <div class="actions">
+          <td class="table-actions">
+            <div class="table-action-buttons">
               <NButton
+                size="small"
+                quaternary
                 :aria-label="t('site.editAction')"
                 :title="t('site.editAction')"
                 :disabled="site.deleting"
@@ -430,6 +444,9 @@ function remove(site: Resource<Site>) {
                 <template #icon><Pencil :size="16" /></template>
               </NButton>
               <NButton
+                size="small"
+                quaternary
+                type="error"
                 :aria-label="t('site.deleteAction')"
                 :title="t('site.deleteAction')"
                 :disabled="site.spec.enabled || site.deleting"

@@ -294,8 +294,8 @@ func validateProxyURL(value string, schemes ...string) error {
 		return fmt.Errorf("URL contains surrounding whitespace")
 	}
 	u, err := url.Parse(value)
-	if err != nil || u.Hostname() == "" || u.Port() == "" || u.User != nil || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("URL must contain a host and port without credentials, path, query, or fragment")
+	if err != nil || u.Hostname() == "" || u.Port() == "" || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("URL must contain a host and port without a path, query, or fragment")
 	}
 	port, err := strconv.ParseUint(u.Port(), 10, 16)
 	if err != nil || port == 0 {

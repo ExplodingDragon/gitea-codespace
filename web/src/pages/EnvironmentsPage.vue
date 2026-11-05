@@ -31,9 +31,6 @@ const loading = ref(false);
 const saving = ref(false);
 const limitsEnabled = ref(false);
 const limitsDraft = ref({cpu: '1', memory: '1Gi'});
-const proxyUsername = ref('');
-const proxyPassword = ref('');
-const clearProxyCredential = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   form: form.value,
@@ -41,9 +38,6 @@ const dirty = useDirtyForm(() => ({
   features: featuresJSON.value,
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
-  proxyUsername: proxyUsername.value,
-  proxyPassword: proxyPassword.value,
-  clearProxyCredential: clearProxyCredential.value,
 }));
 
 const isolationOptions = computed(() => {
@@ -92,9 +86,6 @@ const storageOptions = computed(() => {
 async function load() {
   loading.value = true;
   error.value = '';
-  proxyUsername.value = '';
-  proxyPassword.value = '';
-  clearProxyCredential.value = false;
   try {
     [items.value, cluster.value] = await Promise.all([
       request<Resource<Environment>[]>('environments'),
@@ -232,9 +223,6 @@ async function save() {
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
-        proxyUsername: proxyUsername.value,
-        proxyPassword: proxyPassword.value,
-        clearProxyCredential: clearProxyCredential.value,
       },
     );
     items.value = upsertResource(items.value, saved);
@@ -274,9 +262,10 @@ function remove(item: Resource<Environment>) {
     <h1>{{ editing ? (selected ? t('environment.edit') : t('environment.new')) : t('environment.title') }}</h1>
     <div
       v-if="!editing"
-      class="actions"
+      class="page-actions"
     >
       <NButton
+        quaternary
         :aria-label="t('environment.refresh')"
         :title="t('environment.refresh')"
         :disabled="loading"
@@ -321,7 +310,7 @@ function remove(item: Resource<Environment>) {
     @submit.prevent="save"
   >
     <h2>{{ t('environment.basicSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem :label="t('environment.tag')">
         <NInput
           v-model:value="form.tag"
@@ -331,7 +320,7 @@ function remove(item: Resource<Environment>) {
       <NFormItem :label="t('environment.description')"><NInput v-model:value="form.description" /></NFormItem>
     </div>
     <h2>{{ t('environment.runtimeSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem
         :label="t('environment.isolation')"
         :feedback="t('environment.isolationHelp')"
@@ -354,7 +343,7 @@ function remove(item: Resource<Environment>) {
     </div>
 
     <h2>{{ t('environment.storageSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem
         :label="t('environment.storageClass')"
         :feedback="t('environment.storageClassHelp')"
@@ -396,7 +385,7 @@ function remove(item: Resource<Environment>) {
 
     <h2>{{ t('environment.computeSection') }}</h2>
     <p class="section-help">{{ t('environment.computeHelp') }}</p>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem :label="t('environment.cpuRequest')">
         <MeasurementInput
           v-model="form.runtime.resources.requests.cpu"
@@ -417,7 +406,7 @@ function remove(item: Resource<Environment>) {
     </NFormItem>
     <div
       v-if="limitsEnabled"
-      class="fields"
+      class="form-grid"
     >
       <NFormItem :label="t('environment.cpuLimit')">
         <MeasurementInput
@@ -436,51 +425,54 @@ function remove(item: Resource<Environment>) {
     </div>
 
     <h2>{{ t('environment.devContainerSection') }}</h2>
-    <NFormItem>
-      <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
-        {{ t('environment.webIDEEnabled') }}
-      </NCheckbox>
-    </NFormItem>
-    <template v-if="form.runtime.devContainer.webIDE.enabled">
-      <NFormItem :label="t('environment.webIDEVersion')">
-        <NInput
-          v-model:value="form.runtime.devContainer.webIDE.version"
-          required
-        />
+    <div class="form-grid">
+      <NFormItem class="field-wide">
+        <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
+          {{ t('environment.webIDEEnabled') }}
+        </NCheckbox>
       </NFormItem>
-      <NFormItem :label="t('environment.extensions')">
+      <template v-if="form.runtime.devContainer.webIDE.enabled">
+        <NFormItem :label="t('environment.webIDEVersion')">
+          <NInput
+            v-model:value="form.runtime.devContainer.webIDE.version"
+            required
+          />
+        </NFormItem>
+        <NFormItem
+          class="field-wide"
+          :label="t('environment.extensions')"
+        >
+          <JsonEditor
+            v-model="extensionsJSON"
+            :label="t('environment.jsonExtensionsLabel')"
+          />
+        </NFormItem>
+      </template>
+      <NFormItem
+        class="field-wide"
+        :label="t('environment.features')"
+      >
         <JsonEditor
-          v-model="extensionsJSON"
-          :label="t('environment.jsonExtensionsLabel')"
+          v-model="featuresJSON"
+          :label="t('environment.jsonFeaturesLabel')"
         />
       </NFormItem>
-    </template>
-    <NFormItem :label="t('environment.features')">
-      <JsonEditor
-        v-model="featuresJSON"
-        :label="t('environment.jsonFeaturesLabel')"
-      />
-    </NFormItem>
+    </div>
     <h2>{{ t('proxy.section') }}</h2>
-    <ProxySettings
-      v-model="form.runtime.proxy"
-      v-model:username="proxyUsername"
-      v-model:password="proxyPassword"
-      v-model:clear-credential="clearProxyCredential"
-    />
+    <ProxySettings v-model="form.runtime.proxy" />
     <div class="form-actions">
+      <NButton
+        :disabled="saving"
+        @click="close"
+      >
+        {{ t('common.cancel') }}
+      </NButton>
       <NButton
         type="primary"
         attr-type="submit"
         :loading="saving"
       >
         {{ t('environment.save') }}
-      </NButton>
-      <NButton
-        :disabled="saving"
-        @click="close"
-      >
-        {{ t('common.cancel') }}
       </NButton>
     </div>
   </NForm>
@@ -496,7 +488,7 @@ function remove(item: Resource<Environment>) {
           <th>{{ t('environment.runtime') }}</th>
           <th>{{ t('environment.resources') }}</th>
           <th>{{ t('environment.status') }}</th>
-          <th>{{ t('common.actions') }}</th>
+          <th class="table-actions">{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -551,9 +543,11 @@ function remove(item: Resource<Environment>) {
             <p class="muted">{{ item.spec.runtime.storage.storage }} / {{ item.spec.runtime.storageClassName }}</p>
           </td>
           <td><ResourceStatus :resource="item" /></td>
-          <td>
-            <div class="actions">
+          <td class="table-actions">
+            <div class="table-action-buttons">
               <NButton
+                size="small"
+                quaternary
                 :aria-label="t('environment.editAction')"
                 :title="t('environment.editAction')"
                 :disabled="item.deleting"
@@ -562,6 +556,9 @@ function remove(item: Resource<Environment>) {
                 <template #icon><Pencil :size="16" /></template>
               </NButton>
               <NButton
+                size="small"
+                quaternary
+                type="error"
                 :aria-label="t('environment.deleteAction')"
                 :title="t('environment.deleteAction')"
                 :disabled="item.deleting"

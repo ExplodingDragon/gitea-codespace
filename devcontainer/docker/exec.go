@@ -11,10 +11,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 	"syscall"
 
@@ -91,13 +92,8 @@ func decodeCommand(command devcontainer.Command) ([][]string, error) {
 		}
 	}
 	if object, ok := value.(map[string]any); ok {
-		names := make([]string, 0, len(object))
-		for name := range object {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		result := make([][]string, 0, len(names))
-		for _, name := range names {
+		result := make([][]string, 0, len(object))
+		for _, name := range slices.Sorted(maps.Keys(object)) {
 			arguments, err := toArguments(object[name])
 			if err != nil {
 				return nil, fmt.Errorf("lifecycle command %s: %w", name, err)

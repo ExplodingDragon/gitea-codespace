@@ -189,10 +189,7 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 		}
 		if role != "gateway" {
 			previous := secret.DeepCopy().Data
-			secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, "", "", false)
-			if err != nil {
-				return nil, err
-			}
+			secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
 			if !apiequality.Semantic.DeepEqual(previous, secret.Data) {
 				if err := r.Client.Update(ctx, secret); err != nil {
 					return nil, err
@@ -240,10 +237,7 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 			return nil, err
 		}
 		secret.Data = map[string][]byte{"registryKey": registryKey, "tokenKey": tokenKey, "s3AccessKey": {}, "s3SecretKey": {}}
-		secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, "", "", false)
-		if err != nil {
-			return nil, err
-		}
+		secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
 	}
 	if err := controllerutil.SetControllerReference(component, secret, r.Client.Scheme()); err != nil {
 		return nil, err

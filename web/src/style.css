@@ -19,7 +19,7 @@ h1 {
 h2 {
   font-size: 17px;
   font-weight: 600;
-  margin: 24px 0 16px;
+  margin: 0 0 16px;
 }
 .shell {
   display: grid;
@@ -78,30 +78,51 @@ h2 {
   justify-content: space-between;
   margin-bottom: 24px;
 }
+.page-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
 .notice {
   margin-bottom: 20px;
 }
 .editor {
-  max-width: 960px;
+  max-width: 1040px;
 }
 .editor > h2:first-child {
-  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
 }
-.fields {
+.editor > h2 {
+  border-top: 1px solid #d8dee4;
+  padding-top: 24px;
+  margin-top: 28px;
+}
+.editor > h2 + .section-help {
+  margin-top: -8px;
+}
+.form-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 24px;
+  gap: 4px 24px;
+  align-items: start;
+}
+.form-grid > * {
+  min-width: 0;
 }
 .field-wide {
   grid-column: 1 / -1;
 }
-.actions {
+.table-action-buttons {
   display: flex;
-  gap: 8px;
+  justify-content: flex-end;
+  gap: 4px;
   align-items: center;
 }
 .form-actions {
   display: flex;
+  justify-content: flex-end;
   gap: 12px;
   border-top: 1px solid #d0d7de;
   padding-top: 20px;
@@ -149,13 +170,10 @@ th {
 .runtime-table {
   min-width: 800px;
 }
-.runtime-actions {
+.table-actions {
   width: 1%;
   white-space: nowrap;
-}
-td:last-child {
-  width: 1%;
-  white-space: nowrap;
+  text-align: right;
 }
 .muted {
   color: #57606a;
@@ -200,11 +218,12 @@ td:last-child {
 .upstream-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
-  align-items: center;
+  align-items: end;
   gap: 12px;
+  margin-bottom: 12px;
 }
-.upstream-row + .upstream-row {
-  margin-top: 10px;
+.upstream-row > .n-form-item {
+  margin-bottom: 0;
 }
 .add-row {
   margin: 12px 0 20px;
@@ -244,7 +263,7 @@ td:last-child {
   .content {
     padding: 20px 16px;
   }
-  .fields {
+  .form-grid {
     grid-template-columns: minmax(0, 1fr);
   }
   .page-heading {
@@ -252,5 +271,9 @@ td:last-child {
   }
   .upstream-row {
     grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .upstream-row > button {
+    justify-self: end;
   }
 }

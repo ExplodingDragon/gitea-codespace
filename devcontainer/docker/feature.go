@@ -146,12 +146,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		feature.references = []string{reference}
 		features = append(features, feature)
 		requests[requestKey] = feature
-		dependencies := make([]string, 0, len(feature.metadata.DependsOn))
-		for dependency := range feature.metadata.DependsOn {
-			dependencies = append(dependencies, dependency)
-		}
-		sort.Strings(dependencies)
-		for _, dependency := range dependencies {
+		for _, dependency := range slices.Sorted(maps.Keys(feature.metadata.DependsOn)) {
 			options := feature.metadata.DependsOn[dependency]
 			if requestedOptions, explicitlyRequested := requestedFeatures[dependency]; explicitlyRequested {
 				options = requestedOptions
@@ -164,12 +159,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		}
 		return feature, nil
 	}
-	references := make([]string, 0, len(requestedFeatures))
-	for reference := range requestedFeatures {
-		references = append(references, reference)
-	}
-	sort.Strings(references)
-	for _, reference := range references {
+	for _, reference := range slices.Sorted(maps.Keys(requestedFeatures)) {
 		if _, err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
 			return "", nil, err
 		}
@@ -279,29 +269,8 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			digests[reference] = feature.digest
 		}
 	}
-	if !resolved.Synthetic {
-		generated := devcontainer.Lockfile{Features: map[string]devcontainer.LockedFeature{}}
-		for _, feature := range orderedFeatures {
-			if !feature.lockable {
-				continue
-			}
-			dependencies := make([]string, 0, len(feature.metadata.DependsOn))
-			for dependency := range feature.metadata.DependsOn {
-				dependencies = append(dependencies, strings.ToLower(dependency))
-			}
-			sort.Strings(dependencies)
-			for _, reference := range feature.references {
-				if _, excluded := resolved.PlatformFeatureReferences[strings.ToLower(strings.TrimSpace(reference))]; excluded {
-					continue
-				}
-				generated.Features[strings.ToLower(reference)] = devcontainer.LockedFeature{
-					Version: feature.metadata.Version, Resolved: feature.resolved, Integrity: feature.digest, DependsOn: dependencies,
-				}
-			}
-		}
-		if err := devcontainer.WriteLockfile(resolved.ConfigurationPath, generated, resolved.FrozenLockfile); err != nil {
-			return "", nil, err
-		}
+	if err := writeResolvedFeatureLockfile(resolved, orderedFeatures); err != nil {
+		return "", nil, err
 	}
 	containerUser := strings.TrimSpace(resolved.ContainerUser)
 	if containerUser == "" && inspect.Config != nil {
@@ -333,6 +302,32 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	e.publishCachedImage(ctx, imageName, cacheReference, "features")
 	return imageName, digests, nil
+}
+
+func writeResolvedFeatureLockfile(resolved *devcontainer.ResolvedConfiguration, features []*resolvedFeature) error {
+	if resolved.Synthetic {
+		return nil
+	}
+	lockfile := devcontainer.Lockfile{Features: map[string]devcontainer.LockedFeature{}}
+	for _, feature := range features {
+		if !feature.lockable {
+			continue
+		}
+		dependencies := make([]string, 0, len(feature.metadata.DependsOn))
+		for dependency := range feature.metadata.DependsOn {
+			dependencies = append(dependencies, strings.ToLower(dependency))
+		}
+		sort.Strings(dependencies)
+		for _, reference := range feature.references {
+			if _, excluded := resolved.PlatformFeatureReferences[strings.ToLower(strings.TrimSpace(reference))]; excluded {
+				continue
+			}
+			lockfile.Features[strings.ToLower(reference)] = devcontainer.LockedFeature{
+				Version: feature.metadata.Version, Resolved: feature.resolved, Integrity: feature.digest, DependsOn: dependencies,
+			}
+		}
+	}
+	return devcontainer.WriteLockfile(resolved.ConfigurationPath, lockfile, resolved.FrozenLockfile)
 }
 
 func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseImageID string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) string {
@@ -870,12 +865,7 @@ func featureReferenceID(reference string) (string, error) {
 func writeFeatureBuildContext(root, baseImage string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) error {
 	var dockerfile strings.Builder
 	_, _ = fmt.Fprintf(&dockerfile, "FROM %s\nUSER root\n", baseImage)
-	environmentNames := make([]string, 0, len(containerEnvironment))
-	for name := range containerEnvironment {
-		environmentNames = append(environmentNames, name)
-	}
-	sort.Strings(environmentNames)
-	for _, name := range environmentNames {
+	for _, name := range slices.Sorted(maps.Keys(containerEnvironment)) {
 		_, _ = fmt.Fprintf(&dockerfile, "ENV %s=%s\n", name, shellQuote(containerEnvironment[name]))
 	}
 	dockerfile.WriteString("RUN mkdir -p /tmp/dev-container-feature && \\\n")
@@ -888,12 +878,7 @@ func writeFeatureBuildContext(root, baseImage string, features []*resolvedFeatur
 			return err
 		}
 		var featureEnvironment strings.Builder
-		keys := make([]string, 0, len(feature.options))
-		for key := range feature.options {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
+		for _, key := range slices.Sorted(maps.Keys(feature.options)) {
 			_, _ = fmt.Fprintf(&featureEnvironment, "%s=%s\n", key, shellQuote(feature.options[key]))
 		}
 		if err := os.WriteFile(filepath.Join(target, "devcontainer-features.env"), []byte(featureEnvironment.String()), 0o600); err != nil {

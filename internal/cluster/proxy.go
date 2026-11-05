@@ -4,8 +4,6 @@
 package cluster
 
 import (
-	"fmt"
-	"net/url"
 	"slices"
 	"strings"
 
@@ -15,13 +13,7 @@ import (
 	"k8s.io/utils/ptr"
 )
 
-const (
-	proxyUsernameKey = "proxy-username"
-	proxyPasswordKey = "proxy-password"
-	proxyCAKey       = "proxy-ca.crt"
-)
-
-func templateProxySecretName(templateName string) string { return templateName + "-proxy" }
+const proxyCAKey = "proxy-ca.crt"
 
 func runtimeProxySecretName(codespaceName string) string { return codespaceName + "-proxy" }
 
@@ -36,12 +28,9 @@ func proxyEnvironmentFromSecret(secretName string) []corev1.EnvVar {
 	return result
 }
 
-// reconcileProxySecretData replaces derived proxy values while preserving
-// unrelated Secret data and, unless requested otherwise, existing credentials.
-func reconcileProxySecretData(data map[string][]byte, proxy *api.OutboundProxy, username, password string, clearCredential bool) (map[string][]byte, error) {
-	if len(username) > 512 || len(password) > 4096 {
-		return nil, fmt.Errorf("proxy credential is too large")
-	}
+// updateProxySecretData replaces derived proxy values while preserving
+// unrelated Secret data.
+func updateProxySecretData(data map[string][]byte, proxy *api.OutboundProxy) map[string][]byte {
 	if data == nil {
 		data = make(map[string][]byte)
 	}
@@ -49,63 +38,23 @@ func reconcileProxySecretData(data map[string][]byte, proxy *api.OutboundProxy, 
 		delete(data, name)
 	}
 	delete(data, proxyCAKey)
-	if clearCredential || proxy == nil {
-		delete(data, proxyUsernameKey)
-		delete(data, proxyPasswordKey)
-	}
 	if proxy == nil {
-		return data, nil
+		return data
 	}
-	if username != "" || password != "" {
-		if username == "" || password == "" {
-			return nil, fmt.Errorf("proxy username and password must be configured together")
-		}
-		data[proxyUsernameKey], data[proxyPasswordKey] = []byte(username), []byte(password)
-	}
-	username, password = string(data[proxyUsernameKey]), string(data[proxyPasswordKey])
-	if (username == "") != (password == "") {
-		return nil, fmt.Errorf("stored proxy credential is incomplete")
-	}
-	environment, err := outboundProxyEnvironment(proxy, username, password)
-	if err != nil {
-		return nil, err
-	}
-	for name, value := range environment {
+	for name, value := range outboundProxyEnvironment(proxy) {
 		data[name] = []byte(value)
 	}
 	if proxy.CABundle != "" {
 		data[proxyCAKey] = []byte(proxy.CABundle)
 	}
-	return data, nil
+	return data
 }
 
-func outboundProxyEnvironment(proxy *api.OutboundProxy, username, password string) (map[string]string, error) {
+func outboundProxyEnvironment(proxy *api.OutboundProxy) map[string]string {
 	if proxy == nil {
-		return nil, nil
+		return nil
 	}
-	withCredential := func(value string) (string, error) {
-		if value == "" || username == "" {
-			return value, nil
-		}
-		parsed, err := url.Parse(value)
-		if err != nil {
-			return "", err
-		}
-		parsed.User = url.UserPassword(username, password)
-		return parsed.String(), nil
-	}
-	httpProxy, err := withCredential(proxy.HTTPProxy)
-	if err != nil {
-		return nil, err
-	}
-	httpsProxy, err := withCredential(proxy.HTTPSProxy)
-	if err != nil {
-		return nil, err
-	}
-	socksProxy, err := withCredential(proxy.SOCKSProxy)
-	if err != nil {
-		return nil, err
-	}
+	httpProxy, httpsProxy, socksProxy := proxy.HTTPProxy, proxy.HTTPSProxy, proxy.SOCKSProxy
 	if httpProxy == "" {
 		httpProxy = socksProxy
 	}
@@ -131,5 +80,5 @@ func outboundProxyEnvironment(proxy *api.OutboundProxy, username, password strin
 		}
 		environment[pair[0]], environment[strings.ToLower(pair[0])] = pair[1], pair[1]
 	}
-	return environment, nil
+	return environment
 }

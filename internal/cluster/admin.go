@@ -78,20 +78,14 @@ type adminSiteWrite struct {
 
 type adminTemplateWrite struct {
 	adminWriteIdentity
-	Spec                 api.EnvironmentTemplateSpec `json:"spec"`
-	ProxyUsername        string                      `json:"proxyUsername,omitempty"`
-	ProxyPassword        string                      `json:"proxyPassword,omitempty"`
-	ClearProxyCredential bool                        `json:"clearProxyCredential,omitempty"`
+	Spec api.EnvironmentTemplateSpec `json:"spec"`
 }
 
 type adminComponentWrite struct {
 	adminWriteIdentity
-	Spec                 api.CodespaceComponentSpec `json:"spec"`
-	S3AccessKey          string                     `json:"s3AccessKey,omitempty"`
-	S3SecretKey          string                     `json:"s3SecretKey,omitempty"`
-	ProxyUsername        string                     `json:"proxyUsername,omitempty"`
-	ProxyPassword        string                     `json:"proxyPassword,omitempty"`
-	ClearProxyCredential bool                       `json:"clearProxyCredential,omitempty"`
+	Spec        api.CodespaceComponentSpec `json:"spec"`
+	S3AccessKey string                     `json:"s3AccessKey,omitempty"`
+	S3SecretKey string                     `json:"s3SecretKey,omitempty"`
 }
 
 type adminRuntimeRecovery struct {
@@ -704,9 +698,6 @@ func (s *AdminServer) saveTemplateWrite(ctx context.Context, template *api.Envir
 	if err := template.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
-	if _, err := reconcileProxySecretData(nil, template.Spec.Runtime.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential); err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
 	if err := validateEnvironmentDependencies(ctx, s.Client, template.Spec.Runtime); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
@@ -732,10 +723,7 @@ func (s *AdminServer) saveTemplateWrite(ctx context.Context, template *api.Envir
 	} else {
 		err = s.Client.Update(ctx, template)
 	}
-	if err != nil {
-		return err
-	}
-	return reconcileTemplateProxySecret(ctx, s.Client, s.Namespace, template, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
+	return err
 }
 
 func validateProxyDestination(upstreams []api.NetworkDestination, proxy *api.OutboundProxy) error {
@@ -775,11 +763,6 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 	component.Spec.DisplayName = strings.TrimSpace(component.Spec.DisplayName)
 	if err := component.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
-	}
-	if component.Spec.Role == "cache" {
-		if _, err := reconcileProxySecretData(nil, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential); err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
 	}
 	if !creating && previousRole != body.Spec.Role {
 		return apierrors.NewBadRequest("component role is immutable")
@@ -852,46 +835,6 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 	return s.saveCacheCredentials(ctx, component, body)
 }
 
-func reconcileTemplateProxySecret(ctx context.Context, writer client.Client, namespace string, template *api.EnvironmentTemplate, username, password string, clear bool) error {
-	key := types.NamespacedName{Namespace: namespace, Name: templateProxySecretName(template.Name)}
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var secret corev1.Secret
-		err := writer.Get(ctx, key, &secret)
-		if apierrors.IsNotFound(err) {
-			if template.Spec.Runtime.Proxy == nil {
-				return nil
-			}
-			secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
-			if err := controllerutil.SetControllerReference(template, &secret, writer.Scheme()); err != nil {
-				return err
-			}
-			secret.Data, err = reconcileProxySecretData(nil, template.Spec.Runtime.Proxy, username, password, clear)
-			if err != nil {
-				return apierrors.NewBadRequest(err.Error())
-			}
-			if err := writer.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
-				return apierrors.NewConflict(corev1.Resource("secrets"), key.Name, err)
-			} else {
-				return err
-			}
-		}
-		if err != nil {
-			return err
-		}
-		if !metav1.IsControlledBy(&secret, template) || !secret.DeletionTimestamp.IsZero() {
-			return apierrors.NewConflict(corev1.Resource("secrets"), key.Name, fmt.Errorf("environment proxy Secret ownership changed"))
-		}
-		if template.Spec.Runtime.Proxy == nil {
-			return writer.Delete(ctx, &secret, client.Preconditions{UID: &secret.UID})
-		}
-		secret.Data, err = reconcileProxySecretData(secret.Data, template.Spec.Runtime.Proxy, username, password, clear)
-		if err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		return writer.Update(ctx, &secret)
-	})
-}
-
 func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite) error {
 	name := component.Name + "-cache"
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
@@ -912,10 +855,7 @@ func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.C
 			if body.S3AccessKey != "" {
 				secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
 			}
-			secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
-			if err != nil {
-				return apierrors.NewBadRequest(err.Error())
-			}
+			secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
 			if err := s.Client.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
 				return apierrors.NewConflict(corev1.Resource("secrets"), name, err)
 			} else {
@@ -931,10 +871,7 @@ func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.C
 		if body.S3AccessKey != "" {
 			secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
 		}
-		secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
-		if err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
+		secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
 		return s.Client.Update(ctx, &secret)
 	})
 }

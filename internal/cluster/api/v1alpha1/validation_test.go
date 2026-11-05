@@ -33,7 +33,7 @@ func TestEnvironmentConfigurationRejectsUnsupportedResourceLimit(t *testing.T) {
 
 func TestOutboundProxyValidation(t *testing.T) {
 	valid := &OutboundProxy{
-		HTTPProxy:  "http://proxy.example:3128",
+		HTTPProxy:  "http://user:p%40ssword@proxy.example:3128",
 		HTTPSProxy: "https://proxy.example:8443",
 		SOCKSProxy: "socks5h://proxy.example:1080",
 		NoProxy:    []string{"registry.internal", "10.0.0.0/8"},
@@ -42,7 +42,7 @@ func TestOutboundProxyValidation(t *testing.T) {
 
 	for _, proxy := range []*OutboundProxy{
 		{},
-		{HTTPProxy: "http://user:password@proxy.example:3128"},
+		{HTTPProxy: "http://proxy.example:3128/path"},
 		{HTTPSProxy: "https://proxy.example"},
 		{HTTPSProxy: "https://proxy.example:65536"},
 		{SOCKSProxy: "http://proxy.example:1080"},

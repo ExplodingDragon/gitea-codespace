@@ -103,7 +103,6 @@ test('administration workflows preserve resource identity and validate cluster-b
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
   let recoveryWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
-  let environmentWrite: Record<string, unknown> = {};
   let failNextEnvironmentWrite = true;
   const requestedLanguages: string[] = [];
   await page.route('**/api/admin/**', async (route) => {
@@ -152,7 +151,6 @@ test('administration workflows preserve resource identity and validate cluster-b
     } else if (kind === 'components' && action === 'rotate-ssh-host-key') {
       rotationWrite = body;
     } else if (kind === 'environments') {
-      environmentWrite = body;
       if (failNextEnvironmentWrite) {
         failNextEnvironmentWrite = false;
         await route.fulfill({status: 503, json: {code: 'request_failed', message: 'temporary failure'}});
@@ -219,18 +217,12 @@ test('administration workflows preserve resource identity and validate cluster-b
   await field('Tag').fill('standard');
   await field('code-server version').fill('4.121.0');
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
-  await field('HTTP proxy').fill('http://proxy.example:3128');
+  await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
   await field('Direct destinations').fill('registry.internal.example');
-  await field('Replace username').fill('proxy-user');
-  await page
-    .locator('.n-form-item')
-    .filter({has: page.locator('.n-form-item-label', {hasText: /^Replace password$/})})
-    .locator('input')
-    .fill('proxy-password');
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Request failed', {exact: false})).toBeVisible();
   await expect(field('Tag')).toHaveValue('standard');
-  await expect(field('Replace username')).toHaveValue('proxy-user');
+  await expect(field('HTTP proxy')).toHaveValue('http://proxy-user:proxy-password@proxy.example:3128');
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
@@ -242,14 +234,9 @@ test('administration workflows preserve resource identity and validate cluster-b
     requests: {cpu: '100m', memory: '256Mi'},
   });
   expect(environments[0].spec.runtime.proxy).toEqual({
-    httpProxy: 'http://proxy.example:3128',
+    httpProxy: 'http://proxy-user:proxy-password@proxy.example:3128',
     noProxy: ['registry.internal.example'],
   });
-  expect(environmentWrite).toMatchObject({
-    proxyUsername: 'proxy-user',
-    proxyPassword: 'proxy-password',
-  });
-  expect(JSON.stringify(environments[0].spec)).not.toContain('proxy-password');
   await page.locator('.language-select .n-base-selection').click();
   await page.getByText('简体中文', {exact: true}).last().click();
   await expect(page.getByRole('link', {name: 'Gitea 站点', exact: true})).toBeVisible();

@@ -91,14 +91,17 @@ onMounted(load);
 <template>
   <div class="page-heading">
     <h1>{{ t('runtime.title') }}</h1>
-    <NButton
-      :aria-label="t('runtime.refresh')"
-      :title="t('runtime.refresh')"
-      :disabled="busy"
-      @click="load"
-    >
-      <template #icon><RefreshCw :size="16" /></template>
-    </NButton>
+    <div class="page-actions">
+      <NButton
+        quaternary
+        :aria-label="t('runtime.refresh')"
+        :title="t('runtime.refresh')"
+        :disabled="busy"
+        @click="load"
+      >
+        <template #icon><RefreshCw :size="16" /></template>
+      </NButton>
+    </div>
   </div>
   <NAlert
     v-if="error"
@@ -116,7 +119,7 @@ onMounted(load);
           <th>{{ t('runtime.environment') }}</th>
           <th>{{ t('runtime.operation') }}</th>
           <th>{{ t('runtime.runtime') }}</th>
-          <th class="runtime-actions">{{ t('common.actions') }}</th>
+          <th class="table-actions">{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -135,8 +138,8 @@ onMounted(load);
             <ResourceStatus :resource="item" />
             <p class="muted">{{ item.status?.pod?.name }}</p>
           </td>
-          <td class="runtime-actions">
-            <div class="actions">
+          <td class="table-actions">
+            <div class="table-action-buttons">
               <NButton
                 v-if="recoveryRequired(item)"
                 size="small"

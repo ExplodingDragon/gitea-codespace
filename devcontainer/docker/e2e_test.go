@@ -161,7 +161,7 @@ func TestDockerE2EImageSource(t *testing.T) {
 		t.Fatalf("remoteEnv null did not remove inherited variable: %#v", state.RemoteEnvironment)
 	}
 	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir,
-		[]string{"/bin/sh", "-c", `test "$IMAGE_SOURCE" = ready && test "$(cat .image-source-created)" = created && test "$(hostname)" = devcontainer-image-source && test "$(local-feature)" = local-feature`}, state.RemoteEnvironment, nil); err != nil {
+		[]string{"/bin/sh", "-c", `test "$IMAGE_SOURCE" = ready && test "$(cat .image-source-created)" = created && test "$(hostname)" = devcontainer-image-source && test "$(local-feature)" = local-feature`}, state.RemoteEnvironment); err != nil {
 		t.Fatalf("verify image-source environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 	if err := engine.Delete(ctx, state); err != nil {
@@ -204,7 +204,7 @@ func TestDockerE2EBuildSource(t *testing.T) {
 		}
 	}()
 	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir,
-		[]string{"/bin/sh", "-c", `test "$BUILD_SOURCE" = ready && test "$(cat .build-source-created)" = created`}, state.RemoteEnvironment, nil); err != nil {
+		[]string{"/bin/sh", "-c", `test "$BUILD_SOURCE" = ready && test "$(cat .build-source-created)" = created`}, state.RemoteEnvironment); err != nil {
 		t.Fatalf("verify build-source environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 }
@@ -254,8 +254,8 @@ for i in $(seq 1 60); do
 done
 docker info >/dev/null
 docker run --rm hello-world >/dev/null`
-	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment, nil); err != nil {
-		daemonLog, _, logErr := execForTest(engine, ctx, state.PrimaryContainerID, "root", "/", []string{"cat", "/tmp/dockerd.log"}, nil, nil)
+	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment); err != nil {
+		daemonLog, _, logErr := execForTest(engine, ctx, state.PrimaryContainerID, "root", "/", []string{"cat", "/tmp/dockerd.log"}, nil)
 		t.Fatalf("verify Docker-in-Docker environment: %v\n%s\ndaemon log (read error: %v):\n%s", err, strings.TrimSpace(string(stderr)), logErr, daemonLog)
 	}
 }
@@ -280,7 +280,7 @@ test "$(wc -c < /workspace/.initialize)" = %d
 test "$(wc -c < /workspace/.post-start)" = %d
 if [ %d -gt 0 ]; then test "$(wc -c < /workspace/.post-attach)" = %d; fi`,
 		strconv.Itoa(uid), strconv.Itoa(gid), startCount, startCount, attachCount, attachCount)
-	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment, nil); err != nil {
+	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment); err != nil {
 		t.Fatalf("verify official interoperability environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}
 	if filepath.Clean(state.RemoteWorkdir) != "/workspace" {

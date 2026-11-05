@@ -32,9 +32,6 @@ const name = ref('');
 const form = ref<Component>();
 const s3AccessKey = ref('');
 const s3SecretKey = ref('');
-const proxyUsername = ref('');
-const proxyPassword = ref('');
-const clearProxyCredential = ref(false);
 const upstreams = ref<{host: string; allow: string}[]>([]);
 const trustedProxyCIDRs = ref('');
 const error = ref('');
@@ -45,9 +42,6 @@ const dirty = useDirtyForm(() => ({
   form: form.value,
   s3AccessKey: s3AccessKey.value,
   s3SecretKey: s3SecretKey.value,
-  proxyUsername: proxyUsername.value,
-  proxyPassword: proxyPassword.value,
-  clearProxyCredential: clearProxyCredential.value,
   upstreams: upstreams.value,
   trustedProxyCIDRs: trustedProxyCIDRs.value,
 }));
@@ -171,9 +165,6 @@ function edit(item?: Resource<Component, ComponentStatus>) {
   error.value = '';
   s3AccessKey.value = '';
   s3SecretKey.value = '';
-  proxyUsername.value = '';
-  proxyPassword.value = '';
-  clearProxyCredential.value = false;
   form.value = item ? structuredClone(toRaw(item.spec)) : defaultGateway();
   trustedProxyCIDRs.value = form.value.gateway?.trustedProxyCIDRs?.join('\n') ?? '';
   upstreams.value = Object.entries(form.value.cache?.upstreams ?? {}).map(([host, config]) => ({
@@ -304,9 +295,6 @@ async function save() {
         spec,
         s3AccessKey: s3AccessKey.value,
         s3SecretKey: s3SecretKey.value,
-        proxyUsername: proxyUsername.value,
-        proxyPassword: proxyPassword.value,
-        clearProxyCredential: clearProxyCredential.value,
       },
     );
     items.value = upsertResource(items.value, saved);
@@ -365,9 +353,10 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     <h1>{{ editing ? (selected ? t('component.edit') : t('component.new')) : t('component.title') }}</h1>
     <div
       v-if="!editing"
-      class="actions"
+      class="page-actions"
     >
       <NButton
+        quaternary
         :aria-label="t('component.refresh')"
         :title="t('component.refresh')"
         :disabled="loading"
@@ -396,7 +385,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     @submit.prevent="save"
   >
     <h2>{{ t('component.basicSection') }}</h2>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem :label="t('component.displayName')">
         <NInput
           v-model:value="form.displayName"
@@ -417,9 +406,10 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     </div>
     <h2>{{ t('component.computeSection') }}</h2>
     <p class="section-help">{{ t('component.computeHelp') }}</p>
-    <div class="fields">
+    <div class="form-grid">
       <NFormItem
         v-if="form.gateway"
+        class="field-wide"
         :label="t('component.gatewayReplicas')"
         :feedback="t('component.gatewayReplicasHelp')"
       >
@@ -461,7 +451,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     </div>
     <template v-if="form.gateway">
       <h2>{{ t('component.gatewayAddresses') }}</h2>
-      <div class="fields">
+      <div class="form-grid">
         <NFormItem :label="t('component.publicHTTPS')">
           <NInput
             v-model:value="form.gateway.endpointBaseURL"
@@ -479,7 +469,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </div>
       <h2>{{ t('component.publicExposure') }}</h2>
       <p class="section-help">{{ t('component.publicExposureHelp') }}</p>
-      <div class="fields">
+      <div class="form-grid">
         <NFormItem :label="t('component.httpExposure')">
           <NSelect
             :value="form.gateway.httpExposure.mode"
@@ -503,7 +493,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </div>
       <div
         v-if="form.gateway.httpExposure.ingress"
-        class="fields"
+        class="form-grid"
       >
         <NFormItem :label="t('component.ingressClass')">
           <NSelect
@@ -546,19 +536,22 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           />
         </NFormItem>
       </div>
-      <NFormItem
-        :label="t('component.trustedProxies')"
-        :feedback="t('component.trustedProxiesHelp')"
-      >
-        <NInput
-          v-model:value="trustedProxyCIDRs"
-          type="textarea"
-          :autosize="{minRows: 2, maxRows: 5}"
-          placeholder="10.0.0.0/8"
-        />
-      </NFormItem>
+      <div class="form-grid">
+        <NFormItem
+          class="field-wide"
+          :label="t('component.trustedProxies')"
+          :feedback="t('component.trustedProxiesHelp')"
+        >
+          <NInput
+            v-model:value="trustedProxyCIDRs"
+            type="textarea"
+            :autosize="{minRows: 2, maxRows: 5}"
+            placeholder="10.0.0.0/8"
+          />
+        </NFormItem>
+      </div>
       <h2>{{ t('component.sessions') }}</h2>
-      <div class="fields">
+      <div class="form-grid">
         <NFormItem :label="t('component.sessionLifetime')">
           <MeasurementInput
             v-model="form.gateway.sessions.ttl"
@@ -614,7 +607,10 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
     </template>
     <template v-if="form.cache">
       <h2>{{ t('component.cacheSection') }}</h2>
-      <div class="fields">
+      <div class="form-grid">
+        <NFormItem class="field-wide">
+          <NCheckbox v-model:checked="form.cache.enabled">{{ t('component.acceptCache') }}</NCheckbox>
+        </NFormItem>
         <NFormItem :label="t('component.storageDriver')">
           <NSelect
             v-model:value="form.cache.storage.driver"
@@ -651,7 +647,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </NFormItem>
       </div>
       <template v-if="form.cache.storage.driver === 'filesystem'">
-        <div class="fields">
+        <div class="form-grid">
           <NFormItem
             :label="t('component.volumeSize')"
             :feedback="t('component.volumeSizeHelp')"
@@ -686,7 +682,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </div>
       </template>
       <template v-else>
-        <div class="fields">
+        <div class="form-grid">
           <NFormItem :label="t('component.s3Endpoint')">
             <NInput v-model:value="form.cache.storage.s3.endpoint" />
           </NFormItem>
@@ -722,7 +718,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         </div>
       </template>
       <h2>{{ t('component.mirrors') }}</h2>
-      <p class="muted">{{ t('component.mirrorHelp') }}</p>
+      <p class="section-help">{{ t('component.mirrorHelp') }}</p>
       <div
         v-for="(upstream, index) in upstreams"
         :key="index"
@@ -741,6 +737,8 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           :aria-label="t('component.allowedRepositories')"
         />
         <NButton
+          quaternary
+          type="error"
           :aria-label="t('component.removeMirror')"
           :title="t('component.removeMirror')"
           @click="upstreams.splice(index, 1)"
@@ -755,30 +753,22 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         <template #icon><Plus :size="16" /></template>
         {{ t('component.addMirror') }}
       </NButton>
-      <NFormItem>
-        <NCheckbox v-model:checked="form.cache.enabled">{{ t('component.acceptCache') }}</NCheckbox>
-      </NFormItem>
       <h2>{{ t('proxy.section') }}</h2>
-      <ProxySettings
-        v-model="form.cache.proxy"
-        v-model:username="proxyUsername"
-        v-model:password="proxyPassword"
-        v-model:clear-credential="clearProxyCredential"
-      />
+      <ProxySettings v-model="form.cache.proxy" />
     </template>
     <div class="form-actions">
+      <NButton
+        :disabled="saving"
+        @click="close"
+      >
+        {{ t('common.cancel') }}
+      </NButton>
       <NButton
         type="primary"
         attr-type="submit"
         :loading="saving"
       >
         {{ t('component.save') }}
-      </NButton>
-      <NButton
-        :disabled="saving"
-        @click="close"
-      >
-        {{ t('common.cancel') }}
       </NButton>
     </div>
   </NForm>
@@ -793,7 +783,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
           <th>{{ t('component.role') }}</th>
           <th>{{ t('component.address') }}</th>
           <th>{{ t('component.state') }}</th>
-          <th>{{ t('common.actions') }}</th>
+          <th class="table-actions">{{ t('common.actions') }}</th>
         </tr>
       </thead>
       <tbody>
@@ -892,10 +882,12 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
               }}
             </p>
           </td>
-          <td>
-            <div class="actions">
+          <td class="table-actions">
+            <div class="table-action-buttons">
               <NButton
                 v-if="item.spec.gateway"
+                size="small"
+                quaternary
                 :aria-label="t('component.rotateKey')"
                 :title="t('component.rotateKey')"
                 :disabled="item.deleting"
@@ -904,6 +896,8 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
                 <template #icon><KeyRound :size="16" /></template>
               </NButton>
               <NButton
+                size="small"
+                quaternary
                 :aria-label="t('component.editAction')"
                 :title="t('component.editAction')"
                 :disabled="item.deleting"
@@ -912,6 +906,9 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
                 <template #icon><Pencil :size="16" /></template>
               </NButton>
               <NButton
+                size="small"
+                quaternary
+                type="error"
                 :aria-label="t('component.deleteAction')"
                 :title="t('component.deleteAction')"
                 :disabled="item.deleting"

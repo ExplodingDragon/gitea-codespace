@@ -137,8 +137,9 @@ spec:
                     type: string
                   proxy:
                     description: |-
-                      OutboundProxy configures one administrator-managed network proxy. Credentials
-                      are stored separately because Kubernetes API objects are not secret storage.
+                      OutboundProxy configures one administrator-managed network proxy. Proxy URLs
+                      may contain standard URL user information because the complete configuration
+                      is visible to the runtime processes that consume it.
                     properties:
                       caBundle:
                         description: CABundle extends the system trust store for the

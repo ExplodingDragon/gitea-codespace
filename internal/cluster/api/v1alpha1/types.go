@@ -114,8 +114,9 @@ type EnvironmentTemplateSpec struct {
 	Runtime     EnvironmentConfiguration `json:"runtime"`
 }
 
-// OutboundProxy configures one administrator-managed network proxy. Credentials
-// are stored separately because Kubernetes API objects are not secret storage.
+// OutboundProxy configures one administrator-managed network proxy. Proxy URLs
+// may contain standard URL user information because the complete configuration
+// is visible to the runtime processes that consume it.
 type OutboundProxy struct {
 	// +kubebuilder:validation:MaxLength=2048
 	HTTPProxy string `json:"httpProxy,omitempty"`

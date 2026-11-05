@@ -9,10 +9,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/url"
 	"path"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
@@ -121,16 +122,7 @@ func stringMapCachePart(values map[string]string) string {
 	if len(values) == 0 {
 		return "{}"
 	}
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	ordered := make(map[string]string, len(values))
-	for _, name := range names {
-		ordered[name] = values[name]
-	}
-	content, err := json.Marshal(ordered)
+	content, err := json.Marshal(values)
 	if err != nil {
 		return "{}"
 	}
@@ -199,12 +191,7 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		if target != "" {
 			arguments = append(arguments, "--target", target)
 		}
-		names := make([]string, 0, len(args))
-		for name := range args {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		for _, name := range names {
+		for _, name := range slices.Sorted(maps.Keys(args)) {
 			value := name
 			if args[name] != nil {
 				value += "=" + *args[name]

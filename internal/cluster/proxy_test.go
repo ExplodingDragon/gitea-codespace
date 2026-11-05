@@ -10,23 +10,19 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestReconcileProxySecretData(t *testing.T) {
-	proxy := &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128", SOCKSProxy: "socks5h://proxy.example:1080", NoProxy: []string{"registry.internal"}, CABundle: "ca"}
-	data, err := reconcileProxySecretData(map[string][]byte{"unrelated": []byte("value")}, proxy, "user", "password", false)
-	require.NoError(t, err)
-	require.Equal(t, "http://user:password@proxy.example:3128", string(data["HTTP_PROXY"]))
-	require.Equal(t, "socks5h://user:password@proxy.example:1080", string(data["HTTPS_PROXY"]))
+func TestUpdateProxySecretData(t *testing.T) {
+	proxy := &api.OutboundProxy{HTTPProxy: "http://user:password@proxy.example:3128", SOCKSProxy: "socks5h://socks-user:socks-password@proxy.example:1080", NoProxy: []string{"registry.internal"}, CABundle: "ca"}
+	data := updateProxySecretData(map[string][]byte{"unrelated": []byte("value")}, proxy)
+	require.Equal(t, proxy.HTTPProxy, string(data["HTTP_PROXY"]))
+	require.Equal(t, proxy.SOCKSProxy, string(data["HTTPS_PROXY"]))
 	require.Equal(t, string(data["HTTP_PROXY"]), string(data["http_proxy"]))
 	require.Equal(t, "registry.internal,localhost,127.0.0.1,::1,.svc,.svc.cluster.local", string(data["NO_PROXY"]))
 	require.Equal(t, "value", string(data["unrelated"]))
 
-	data, err = reconcileProxySecretData(data, proxy, "", "", false)
-	require.NoError(t, err)
-	require.Equal(t, "user", string(data[proxyUsernameKey]))
-	data, err = reconcileProxySecretData(data, proxy, "", "", true)
-	require.NoError(t, err)
-	require.NotContains(t, data, proxyUsernameKey)
-	require.Equal(t, "http://proxy.example:3128", string(data["HTTP_PROXY"]))
+	data = updateProxySecretData(data, nil)
+	require.NotContains(t, data, "HTTP_PROXY")
+	require.NotContains(t, data, proxyCAKey)
+	require.Equal(t, "value", string(data["unrelated"]))
 }
 
 func TestLiteralProxyRequiresSiteUpstream(t *testing.T) {

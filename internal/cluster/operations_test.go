@@ -111,22 +111,19 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.Empty(t, cs.Status.RecoveryAction)
 }
 
-func TestRuntimeProxyCredentialIsSnapshotted(t *testing.T) {
+func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
 	site := testSite("example", "site-uid")
+	runtimeConfiguration := testEnvironment()
+	runtimeConfiguration.Proxy = &api.OutboundProxy{HTTPProxy: "http://user:password@proxy.example:3128"}
 	template := &api.EnvironmentTemplate{
 		ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"},
-		Spec:       api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()},
-	}
-	template.Spec.Runtime.Proxy = &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128"}
-	source := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: templateProxySecretName(template.Name), Namespace: "codespace-system", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(template, api.GroupVersion.WithKind("EnvironmentTemplate"))}},
-		Data:       map[string][]byte{proxyUsernameKey: []byte("user"), proxyPasswordKey: []byte("password")},
+		Spec:       api.EnvironmentTemplateSpec{Tag: "standard", Runtime: runtimeConfiguration},
 	}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "codespace-1", Namespace: "codespace-example", UID: "runtime-uid"},
 		Spec:       api.CodespaceSpec{EnvironmentTag: "standard", Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: template.Spec.Runtime, Image: testRuntime().Image}},
 	}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, source, cs).Build()
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, cs).Build()
 	o := Operations{Client: c, ManagementNamespace: "codespace-system"}
 	require.NoError(t, o.ensureRuntimeProxySecret(t.Context(), site, cs))
 	var target corev1.Secret
@@ -134,8 +131,8 @@ func TestRuntimeProxyCredentialIsSnapshotted(t *testing.T) {
 	require.True(t, metav1.IsControlledBy(&target, cs))
 	require.Equal(t, "http://user:password@proxy.example:3128", string(target.Data["HTTP_PROXY"]))
 
-	source.Data[proxyPasswordKey] = []byte("changed")
-	require.NoError(t, c.Update(t.Context(), source))
+	template.Spec.Runtime.Proxy = &api.OutboundProxy{HTTPProxy: "http://changed.example:3128"}
+	require.NoError(t, c.Update(t.Context(), template))
 	require.NoError(t, o.ensureRuntimeProxySecret(t.Context(), site, cs))
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(&target), &target))
 	require.Equal(t, "http://user:password@proxy.example:3128", string(target.Data["HTTP_PROXY"]))

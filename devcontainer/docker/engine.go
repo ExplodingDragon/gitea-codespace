@@ -491,12 +491,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	}
 	arguments = append(arguments, resolved.RunArgs...)
 	arguments = append(arguments, "--name", "devcontainer-"+resolved.DevContainerID)
-	labelNames := make([]string, 0, len(config.Labels))
-	for name := range config.Labels {
-		labelNames = append(labelNames, name)
-	}
-	sort.Strings(labelNames)
-	for _, name := range labelNames {
+	for _, name := range slices.Sorted(maps.Keys(config.Labels)) {
 		arguments = append(arguments, "--label", name+"="+config.Labels[name])
 	}
 	if len(config.Entrypoint) > 0 {
@@ -629,22 +624,6 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	for name, value := range resolved.ContainerEnv {
 		service.Environment[name] = &value
-	}
-	serviceEnvironment := make(map[string]string, len(service.Environment))
-	for name, value := range service.Environment {
-		if value != nil {
-			serviceEnvironment[name] = *value
-		}
-	}
-	for name, value := range mergePlatformEnvironment(serviceEnvironment, platformEnvironment) {
-		value := value
-		service.Environment[name] = &value
-	}
-	if service.Labels == nil {
-		service.Labels = composetypes.Labels{}
-	}
-	for name, value := range labels {
-		service.Labels[name] = value
 	}
 	if resolved.Privileged {
 		service.Privileged = true
@@ -983,13 +962,8 @@ func devContainerMounts(workspace, workspaceFolder, workspaceMount string, value
 }
 
 func environmentList(values map[string]string) []string {
-	names := make([]string, 0, len(values))
-	for name := range values {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	result := make([]string, 0, len(names))
-	for _, name := range names {
+	result := make([]string, 0, len(values))
+	for _, name := range slices.Sorted(maps.Keys(values)) {
 		result = append(result, name+"="+values[name])
 	}
 	return result

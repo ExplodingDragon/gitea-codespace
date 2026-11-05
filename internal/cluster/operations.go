@@ -225,7 +225,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 }
 
 func (o *Operations) ensureRuntimeProxySecret(ctx context.Context, site *api.GiteaSite, cs *api.Codespace) error {
-	var selected *api.EnvironmentTemplate
+	matchedTemplate := false
 	for _, ref := range site.Spec.Templates {
 		var template api.EnvironmentTemplate
 		if err := o.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &template); err != nil {
@@ -234,30 +234,19 @@ func (o *Operations) ensureRuntimeProxySecret(ctx context.Context, site *api.Git
 		if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() || template.Spec.Tag != cs.Spec.EnvironmentTag {
 			continue
 		}
-		if selected != nil {
+		if matchedTemplate {
 			return fmt.Errorf("create environment is ambiguous")
 		}
-		selected = &template
+		matchedTemplate = true
 	}
-	if selected == nil {
+	if !matchedTemplate {
 		return fmt.Errorf("create environment is not authorized by this site")
 	}
 
-	var source corev1.Secret
-	if err := o.Client.Get(ctx, types.NamespacedName{Namespace: o.ManagementNamespace, Name: templateProxySecretName(selected.Name)}, &source); err != nil {
-		return fmt.Errorf("read environment proxy credential: %w", err)
-	}
-	if !metav1.IsControlledBy(&source, selected) || !source.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("environment proxy Secret ownership changed")
-	}
-	data, err := reconcileProxySecretData(nil, cs.Spec.Runtime.Proxy, string(source.Data[proxyUsernameKey]), string(source.Data[proxyPasswordKey]), false)
-	if err != nil {
-		return fmt.Errorf("snapshot environment proxy: %w", err)
-	}
 	key := types.NamespacedName{Namespace: cs.Namespace, Name: runtimeProxySecretName(cs.Name)}
 	secret := corev1.Secret{
 		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID), RuntimeUIDLabel: string(cs.UID)}},
-		Data:       data,
+		Data:       updateProxySecretData(nil, cs.Spec.Runtime.Proxy),
 	}
 	if err := controllerutil.SetControllerReference(cs, &secret, o.Client.Scheme()); err != nil {
 		return err

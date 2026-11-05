@@ -130,6 +130,8 @@ make test-frontend
 make build
 ```
 
+`make test` runs the standard Go suite and `make test-frontend` checks the administration interface. Kubernetes lifecycle checks use the same E2E suite in CI or on a prepared cluster through `make test-e2e`, keeping routine development independent from cluster setup.
+
 See the [architecture and design documentation](https://github.com/ExplodingDragon/gitea-dev) before changing lifecycle, isolation, identity, or protocol behavior.
 
 ## License
