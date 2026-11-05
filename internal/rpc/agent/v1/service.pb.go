@@ -27,7 +27,7 @@ type AccessCapability int32
 
 const (
 	AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED  AccessCapability = 0
-	AccessCapability_ACCESS_CAPABILITY_TERMINAL     AccessCapability = 1
+	AccessCapability_ACCESS_CAPABILITY_SHELL        AccessCapability = 1
 	AccessCapability_ACCESS_CAPABILITY_COMMAND      AccessCapability = 2
 	AccessCapability_ACCESS_CAPABILITY_SFTP         AccessCapability = 3
 	AccessCapability_ACCESS_CAPABILITY_ENDPOINT     AccessCapability = 4
@@ -38,7 +38,7 @@ const (
 var (
 	AccessCapability_name = map[int32]string{
 		0: "ACCESS_CAPABILITY_UNSPECIFIED",
-		1: "ACCESS_CAPABILITY_TERMINAL",
+		1: "ACCESS_CAPABILITY_SHELL",
 		2: "ACCESS_CAPABILITY_COMMAND",
 		3: "ACCESS_CAPABILITY_SFTP",
 		4: "ACCESS_CAPABILITY_ENDPOINT",
@@ -46,7 +46,7 @@ var (
 	}
 	AccessCapability_value = map[string]int32{
 		"ACCESS_CAPABILITY_UNSPECIFIED":  0,
-		"ACCESS_CAPABILITY_TERMINAL":     1,
+		"ACCESS_CAPABILITY_SHELL":        1,
 		"ACCESS_CAPABILITY_COMMAND":      2,
 		"ACCESS_CAPABILITY_SFTP":         3,
 		"ACCESS_CAPABILITY_ENDPOINT":     4,
@@ -1361,7 +1361,7 @@ type OpenAccess struct {
 	Ticket string `protobuf:"bytes,1,opt,name=ticket,proto3" json:"ticket,omitempty"`
 	// Types that are valid to be assigned to Capability:
 	//
-	//	*OpenAccess_Terminal
+	//	*OpenAccess_Shell
 	//	*OpenAccess_Command
 	//	*OpenAccess_Sftp
 	//	*OpenAccess_Endpoint
@@ -1415,10 +1415,10 @@ func (x *OpenAccess) GetCapability() isOpenAccess_Capability {
 	return nil
 }
 
-func (x *OpenAccess) GetTerminal() *Terminal {
+func (x *OpenAccess) GetShell() *Shell {
 	if x != nil {
-		if x, ok := x.Capability.(*OpenAccess_Terminal); ok {
-			return x.Terminal
+		if x, ok := x.Capability.(*OpenAccess_Shell); ok {
+			return x.Shell
 		}
 	}
 	return nil
@@ -1464,8 +1464,8 @@ type isOpenAccess_Capability interface {
 	isOpenAccess_Capability()
 }
 
-type OpenAccess_Terminal struct {
-	Terminal *Terminal `protobuf:"bytes,2,opt,name=terminal,proto3,oneof"`
+type OpenAccess_Shell struct {
+	Shell *Shell `protobuf:"bytes,2,opt,name=shell,proto3,oneof"`
 }
 
 type OpenAccess_Command struct {
@@ -1484,7 +1484,7 @@ type OpenAccess_Tcp struct {
 	Tcp *LoopbackTCP `protobuf:"bytes,6,opt,name=tcp,proto3,oneof"`
 }
 
-func (*OpenAccess_Terminal) isOpenAccess_Capability() {}
+func (*OpenAccess_Shell) isOpenAccess_Capability() {}
 
 func (*OpenAccess_Command) isOpenAccess_Capability() {}
 
@@ -1715,6 +1715,51 @@ func (x *TerminalSize) GetRows() uint32 {
 	return 0
 }
 
+type Shell struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// terminal is present when the SSH shell request allocated a PTY.
+	Terminal      *Terminal `protobuf:"bytes,1,opt,name=terminal,proto3" json:"terminal,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Shell) Reset() {
+	*x = Shell{}
+	mi := &file_agent_v1_service_proto_msgTypes[24]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Shell) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Shell) ProtoMessage() {}
+
+func (x *Shell) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_service_proto_msgTypes[24]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Shell.ProtoReflect.Descriptor instead.
+func (*Shell) Descriptor() ([]byte, []int) {
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{24}
+}
+
+func (x *Shell) GetTerminal() *Terminal {
+	if x != nil {
+		return x.Terminal
+	}
+	return nil
+}
+
 type Command struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// SSH exec commands are evaluated by the selected user's login shell.
@@ -1727,7 +1772,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_agent_v1_service_proto_msgTypes[24]
+	mi := &file_agent_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1739,7 +1784,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[24]
+	mi := &file_agent_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1752,7 +1797,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{24}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *Command) GetCommand() string {
@@ -1777,7 +1822,7 @@ type SFTP struct {
 
 func (x *SFTP) Reset() {
 	*x = SFTP{}
-	mi := &file_agent_v1_service_proto_msgTypes[25]
+	mi := &file_agent_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1789,7 +1834,7 @@ func (x *SFTP) String() string {
 func (*SFTP) ProtoMessage() {}
 
 func (x *SFTP) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[25]
+	mi := &file_agent_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1802,7 +1847,7 @@ func (x *SFTP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SFTP.ProtoReflect.Descriptor instead.
 func (*SFTP) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{25}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 type Endpoint struct {
@@ -1814,7 +1859,7 @@ type Endpoint struct {
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_agent_v1_service_proto_msgTypes[26]
+	mi := &file_agent_v1_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1826,7 +1871,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[26]
+	mi := &file_agent_v1_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1839,7 +1884,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{26}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *Endpoint) GetEndpointId() string {
@@ -1858,7 +1903,7 @@ type LoopbackTCP struct {
 
 func (x *LoopbackTCP) Reset() {
 	*x = LoopbackTCP{}
-	mi := &file_agent_v1_service_proto_msgTypes[27]
+	mi := &file_agent_v1_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1870,7 +1915,7 @@ func (x *LoopbackTCP) String() string {
 func (*LoopbackTCP) ProtoMessage() {}
 
 func (x *LoopbackTCP) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[27]
+	mi := &file_agent_v1_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1883,7 +1928,7 @@ func (x *LoopbackTCP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoopbackTCP.ProtoReflect.Descriptor instead.
 func (*LoopbackTCP) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{27}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *LoopbackTCP) GetPort() uint32 {
@@ -1908,7 +1953,7 @@ type AccessResponse struct {
 
 func (x *AccessResponse) Reset() {
 	*x = AccessResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[28]
+	mi := &file_agent_v1_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1920,7 +1965,7 @@ func (x *AccessResponse) String() string {
 func (*AccessResponse) ProtoMessage() {}
 
 func (x *AccessResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[28]
+	mi := &file_agent_v1_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1933,7 +1978,7 @@ func (x *AccessResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessResponse.ProtoReflect.Descriptor instead.
 func (*AccessResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{28}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *AccessResponse) GetFrame() isAccessResponse_Frame {
@@ -2105,11 +2150,11 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x06resize\x18\x04 \x01(\v2\x16.agent.v1.TerminalSizeH\x00R\x06resize\x12\x18\n" +
 	"\x06signal\x18\x05 \x01(\x05H\x00R\x06signal\x12\x1d\n" +
 	"\tstdin_eof\x18\x06 \x01(\bH\x00R\bstdinEofB\a\n" +
-	"\x05frame\"\x96\x02\n" +
+	"\x05frame\"\x8d\x02\n" +
 	"\n" +
 	"OpenAccess\x12\x16\n" +
-	"\x06ticket\x18\x01 \x01(\tR\x06ticket\x120\n" +
-	"\bterminal\x18\x02 \x01(\v2\x12.agent.v1.TerminalH\x00R\bterminal\x12-\n" +
+	"\x06ticket\x18\x01 \x01(\tR\x06ticket\x12'\n" +
+	"\x05shell\x18\x02 \x01(\v2\x0f.agent.v1.ShellH\x00R\x05shell\x12-\n" +
 	"\acommand\x18\x03 \x01(\v2\x11.agent.v1.CommandH\x00R\acommand\x12$\n" +
 	"\x04sftp\x18\x04 \x01(\v2\x0e.agent.v1.SFTPH\x00R\x04sftp\x120\n" +
 	"\bendpoint\x18\x05 \x01(\v2\x12.agent.v1.EndpointH\x00R\bendpoint\x12)\n" +
@@ -2136,7 +2181,9 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x04size\x18\x02 \x01(\v2\x16.agent.v1.TerminalSizeR\x04size\"<\n" +
 	"\fTerminalSize\x12\x18\n" +
 	"\acolumns\x18\x01 \x01(\rR\acolumns\x12\x12\n" +
-	"\x04rows\x18\x02 \x01(\rR\x04rows\"S\n" +
+	"\x04rows\x18\x02 \x01(\rR\x04rows\"7\n" +
+	"\x05Shell\x12.\n" +
+	"\bterminal\x18\x01 \x01(\v2\x12.agent.v1.TerminalR\bterminal\"S\n" +
 	"\aCommand\x12\x18\n" +
 	"\acommand\x18\x01 \x01(\tR\acommand\x12.\n" +
 	"\bterminal\x18\x02 \x01(\v2\x12.agent.v1.TerminalR\bterminal\"\x06\n" +
@@ -2152,10 +2199,10 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x06stderr\x18\x03 \x01(\fH\x00R\x06stderr\x12!\n" +
 	"\vexit_status\x18\x04 \x01(\x05H\x00R\n" +
 	"exitStatusB\a\n" +
-	"\x05frame*\xd4\x01\n" +
+	"\x05frame*\xd1\x01\n" +
 	"\x10AccessCapability\x12!\n" +
-	"\x1dACCESS_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1e\n" +
-	"\x1aACCESS_CAPABILITY_TERMINAL\x10\x01\x12\x1d\n" +
+	"\x1dACCESS_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1b\n" +
+	"\x17ACCESS_CAPABILITY_SHELL\x10\x01\x12\x1d\n" +
 	"\x19ACCESS_CAPABILITY_COMMAND\x10\x02\x12\x1a\n" +
 	"\x16ACCESS_CAPABILITY_SFTP\x10\x03\x12\x1e\n" +
 	"\x1aACCESS_CAPABILITY_ENDPOINT\x10\x04\x12\"\n" +
@@ -2185,7 +2232,7 @@ func file_agent_v1_service_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 31)
+var file_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 32)
 var file_agent_v1_service_proto_goTypes = []any{
 	(AccessCapability)(0),                        // 0: agent.v1.AccessCapability
 	(*PrepareVolumeRequest)(nil),                 // 1: agent.v1.PrepareVolumeRequest
@@ -2212,69 +2259,71 @@ var file_agent_v1_service_proto_goTypes = []any{
 	(*AccessTicketClaims)(nil),                   // 22: agent.v1.AccessTicketClaims
 	(*Terminal)(nil),                             // 23: agent.v1.Terminal
 	(*TerminalSize)(nil),                         // 24: agent.v1.TerminalSize
-	(*Command)(nil),                              // 25: agent.v1.Command
-	(*SFTP)(nil),                                 // 26: agent.v1.SFTP
-	(*Endpoint)(nil),                             // 27: agent.v1.Endpoint
-	(*LoopbackTCP)(nil),                          // 28: agent.v1.LoopbackTCP
-	(*AccessResponse)(nil),                       // 29: agent.v1.AccessResponse
-	nil,                                          // 30: agent.v1.RuntimeCache.MirrorsEntry
-	nil,                                          // 31: agent.v1.RuntimeCache.CredentialsEntry
-	(*v1.RuntimeEndpoint)(nil),                   // 32: codespace.v1.RuntimeEndpoint
-	(*v1.RuntimeBoot)(nil),                       // 33: codespace.v1.RuntimeBoot
-	(*v1.RuntimeResourceUsage)(nil),              // 34: codespace.v1.RuntimeResourceUsage
-	(v1.FinalStatus)(0),                          // 35: codespace.v1.FinalStatus
-	(*v1.OperationPayload)(nil),                  // 36: codespace.v1.OperationPayload
-	(*v1.RuntimeAccessBundle)(nil),               // 37: codespace.v1.RuntimeAccessBundle
-	(*v1.LogLine)(nil),                           // 38: codespace.v1.LogLine
+	(*Shell)(nil),                                // 25: agent.v1.Shell
+	(*Command)(nil),                              // 26: agent.v1.Command
+	(*SFTP)(nil),                                 // 27: agent.v1.SFTP
+	(*Endpoint)(nil),                             // 28: agent.v1.Endpoint
+	(*LoopbackTCP)(nil),                          // 29: agent.v1.LoopbackTCP
+	(*AccessResponse)(nil),                       // 30: agent.v1.AccessResponse
+	nil,                                          // 31: agent.v1.RuntimeCache.MirrorsEntry
+	nil,                                          // 32: agent.v1.RuntimeCache.CredentialsEntry
+	(*v1.RuntimeEndpoint)(nil),                   // 33: codespace.v1.RuntimeEndpoint
+	(*v1.RuntimeBoot)(nil),                       // 34: codespace.v1.RuntimeBoot
+	(*v1.RuntimeResourceUsage)(nil),              // 35: codespace.v1.RuntimeResourceUsage
+	(v1.FinalStatus)(0),                          // 36: codespace.v1.FinalStatus
+	(*v1.OperationPayload)(nil),                  // 37: codespace.v1.OperationPayload
+	(*v1.RuntimeAccessBundle)(nil),               // 38: codespace.v1.RuntimeAccessBundle
+	(*v1.LogLine)(nil),                           // 39: codespace.v1.LogLine
 }
 var file_agent_v1_service_proto_depIdxs = []int32{
-	32, // 0: agent.v1.RuntimeEndpointServiceListResponse.endpoints:type_name -> codespace.v1.RuntimeEndpoint
-	32, // 1: agent.v1.RuntimeEndpointServiceSetRequest.endpoint:type_name -> codespace.v1.RuntimeEndpoint
+	33, // 0: agent.v1.RuntimeEndpointServiceListResponse.endpoints:type_name -> codespace.v1.RuntimeEndpoint
+	33, // 1: agent.v1.RuntimeEndpointServiceSetRequest.endpoint:type_name -> codespace.v1.RuntimeEndpoint
 	10, // 2: agent.v1.ControlRequest.report:type_name -> agent.v1.AgentReport
 	11, // 3: agent.v1.AgentReport.result:type_name -> agent.v1.OperationResult
 	16, // 4: agent.v1.AgentReport.target:type_name -> agent.v1.AccessTarget
-	33, // 5: agent.v1.AgentReport.boot:type_name -> codespace.v1.RuntimeBoot
-	34, // 6: agent.v1.AgentReport.resource_usage:type_name -> codespace.v1.RuntimeResourceUsage
-	35, // 7: agent.v1.OperationResult.status:type_name -> codespace.v1.FinalStatus
-	36, // 8: agent.v1.ControlResponse.operation:type_name -> codespace.v1.OperationPayload
-	37, // 9: agent.v1.ControlResponse.access:type_name -> codespace.v1.RuntimeAccessBundle
+	34, // 5: agent.v1.AgentReport.boot:type_name -> codespace.v1.RuntimeBoot
+	35, // 6: agent.v1.AgentReport.resource_usage:type_name -> codespace.v1.RuntimeResourceUsage
+	36, // 7: agent.v1.OperationResult.status:type_name -> codespace.v1.FinalStatus
+	37, // 8: agent.v1.ControlResponse.operation:type_name -> codespace.v1.OperationPayload
+	38, // 9: agent.v1.ControlResponse.access:type_name -> codespace.v1.RuntimeAccessBundle
 	13, // 10: agent.v1.ControlResponse.runtime:type_name -> agent.v1.RuntimeOptions
 	14, // 11: agent.v1.RuntimeOptions.cache:type_name -> agent.v1.RuntimeCache
-	30, // 12: agent.v1.RuntimeCache.mirrors:type_name -> agent.v1.RuntimeCache.MirrorsEntry
-	31, // 13: agent.v1.RuntimeCache.credentials:type_name -> agent.v1.RuntimeCache.CredentialsEntry
+	31, // 12: agent.v1.RuntimeCache.mirrors:type_name -> agent.v1.RuntimeCache.MirrorsEntry
+	32, // 13: agent.v1.RuntimeCache.credentials:type_name -> agent.v1.RuntimeCache.CredentialsEntry
 	17, // 14: agent.v1.AccessTarget.endpoints:type_name -> agent.v1.EndpointTarget
-	32, // 15: agent.v1.EndpointTarget.endpoint:type_name -> codespace.v1.RuntimeEndpoint
-	38, // 16: agent.v1.UploadLogsRequest.lines:type_name -> codespace.v1.LogLine
+	33, // 15: agent.v1.EndpointTarget.endpoint:type_name -> codespace.v1.RuntimeEndpoint
+	39, // 16: agent.v1.UploadLogsRequest.lines:type_name -> codespace.v1.LogLine
 	21, // 17: agent.v1.AccessRequest.open:type_name -> agent.v1.OpenAccess
 	24, // 18: agent.v1.AccessRequest.resize:type_name -> agent.v1.TerminalSize
-	23, // 19: agent.v1.OpenAccess.terminal:type_name -> agent.v1.Terminal
-	25, // 20: agent.v1.OpenAccess.command:type_name -> agent.v1.Command
-	26, // 21: agent.v1.OpenAccess.sftp:type_name -> agent.v1.SFTP
-	27, // 22: agent.v1.OpenAccess.endpoint:type_name -> agent.v1.Endpoint
-	28, // 23: agent.v1.OpenAccess.tcp:type_name -> agent.v1.LoopbackTCP
+	25, // 19: agent.v1.OpenAccess.shell:type_name -> agent.v1.Shell
+	26, // 20: agent.v1.OpenAccess.command:type_name -> agent.v1.Command
+	27, // 21: agent.v1.OpenAccess.sftp:type_name -> agent.v1.SFTP
+	28, // 22: agent.v1.OpenAccess.endpoint:type_name -> agent.v1.Endpoint
+	29, // 23: agent.v1.OpenAccess.tcp:type_name -> agent.v1.LoopbackTCP
 	0,  // 24: agent.v1.AccessTicketClaims.capability:type_name -> agent.v1.AccessCapability
 	24, // 25: agent.v1.Terminal.size:type_name -> agent.v1.TerminalSize
-	23, // 26: agent.v1.Command.terminal:type_name -> agent.v1.Terminal
-	15, // 27: agent.v1.RuntimeCache.CredentialsEntry.value:type_name -> agent.v1.RegistryCredential
-	1,  // 28: agent.v1.AgentControlService.PrepareVolume:input_type -> agent.v1.PrepareVolumeRequest
-	9,  // 29: agent.v1.AgentControlService.Control:input_type -> agent.v1.ControlRequest
-	18, // 30: agent.v1.AgentControlService.UploadLogs:input_type -> agent.v1.UploadLogsRequest
-	20, // 31: agent.v1.AgentAccessService.Access:input_type -> agent.v1.AccessRequest
-	3,  // 32: agent.v1.RuntimeEndpointService.List:input_type -> agent.v1.RuntimeEndpointServiceListRequest
-	5,  // 33: agent.v1.RuntimeEndpointService.Set:input_type -> agent.v1.RuntimeEndpointServiceSetRequest
-	7,  // 34: agent.v1.RuntimeEndpointService.Delete:input_type -> agent.v1.RuntimeEndpointServiceDeleteRequest
-	2,  // 35: agent.v1.AgentControlService.PrepareVolume:output_type -> agent.v1.PrepareVolumeResponse
-	12, // 36: agent.v1.AgentControlService.Control:output_type -> agent.v1.ControlResponse
-	19, // 37: agent.v1.AgentControlService.UploadLogs:output_type -> agent.v1.UploadLogsResponse
-	29, // 38: agent.v1.AgentAccessService.Access:output_type -> agent.v1.AccessResponse
-	4,  // 39: agent.v1.RuntimeEndpointService.List:output_type -> agent.v1.RuntimeEndpointServiceListResponse
-	6,  // 40: agent.v1.RuntimeEndpointService.Set:output_type -> agent.v1.RuntimeEndpointServiceSetResponse
-	8,  // 41: agent.v1.RuntimeEndpointService.Delete:output_type -> agent.v1.RuntimeEndpointServiceDeleteResponse
-	35, // [35:42] is the sub-list for method output_type
-	28, // [28:35] is the sub-list for method input_type
-	28, // [28:28] is the sub-list for extension type_name
-	28, // [28:28] is the sub-list for extension extendee
-	0,  // [0:28] is the sub-list for field type_name
+	23, // 26: agent.v1.Shell.terminal:type_name -> agent.v1.Terminal
+	23, // 27: agent.v1.Command.terminal:type_name -> agent.v1.Terminal
+	15, // 28: agent.v1.RuntimeCache.CredentialsEntry.value:type_name -> agent.v1.RegistryCredential
+	1,  // 29: agent.v1.AgentControlService.PrepareVolume:input_type -> agent.v1.PrepareVolumeRequest
+	9,  // 30: agent.v1.AgentControlService.Control:input_type -> agent.v1.ControlRequest
+	18, // 31: agent.v1.AgentControlService.UploadLogs:input_type -> agent.v1.UploadLogsRequest
+	20, // 32: agent.v1.AgentAccessService.Access:input_type -> agent.v1.AccessRequest
+	3,  // 33: agent.v1.RuntimeEndpointService.List:input_type -> agent.v1.RuntimeEndpointServiceListRequest
+	5,  // 34: agent.v1.RuntimeEndpointService.Set:input_type -> agent.v1.RuntimeEndpointServiceSetRequest
+	7,  // 35: agent.v1.RuntimeEndpointService.Delete:input_type -> agent.v1.RuntimeEndpointServiceDeleteRequest
+	2,  // 36: agent.v1.AgentControlService.PrepareVolume:output_type -> agent.v1.PrepareVolumeResponse
+	12, // 37: agent.v1.AgentControlService.Control:output_type -> agent.v1.ControlResponse
+	19, // 38: agent.v1.AgentControlService.UploadLogs:output_type -> agent.v1.UploadLogsResponse
+	30, // 39: agent.v1.AgentAccessService.Access:output_type -> agent.v1.AccessResponse
+	4,  // 40: agent.v1.RuntimeEndpointService.List:output_type -> agent.v1.RuntimeEndpointServiceListResponse
+	6,  // 41: agent.v1.RuntimeEndpointService.Set:output_type -> agent.v1.RuntimeEndpointServiceSetResponse
+	8,  // 42: agent.v1.RuntimeEndpointService.Delete:output_type -> agent.v1.RuntimeEndpointServiceDeleteResponse
+	36, // [36:43] is the sub-list for method output_type
+	29, // [29:36] is the sub-list for method input_type
+	29, // [29:29] is the sub-list for extension type_name
+	29, // [29:29] is the sub-list for extension extendee
+	0,  // [0:29] is the sub-list for field type_name
 }
 
 func init() { file_agent_v1_service_proto_init() }
@@ -2290,13 +2339,13 @@ func file_agent_v1_service_proto_init() {
 		(*AccessRequest_StdinEof)(nil),
 	}
 	file_agent_v1_service_proto_msgTypes[20].OneofWrappers = []any{
-		(*OpenAccess_Terminal)(nil),
+		(*OpenAccess_Shell)(nil),
 		(*OpenAccess_Command)(nil),
 		(*OpenAccess_Sftp)(nil),
 		(*OpenAccess_Endpoint)(nil),
 		(*OpenAccess_Tcp)(nil),
 	}
-	file_agent_v1_service_proto_msgTypes[28].OneofWrappers = []any{
+	file_agent_v1_service_proto_msgTypes[29].OneofWrappers = []any{
 		(*AccessResponse_Accepted)(nil),
 		(*AccessResponse_Stdout)(nil),
 		(*AccessResponse_Stderr)(nil),
@@ -2308,7 +2357,7 @@ func file_agent_v1_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_v1_service_proto_rawDesc), len(file_agent_v1_service_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   31,
+			NumMessages:   32,
 			NumExtensions: 0,
 			NumServices:   3,
 		},

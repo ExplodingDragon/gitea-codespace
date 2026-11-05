@@ -31,6 +31,20 @@ func TestConfigurationValidation(t *testing.T) {
 			wantError:     "must be empty",
 		},
 		{
+			name: "web IDE settings are an object",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Enabled: true, Version: "4.121.0", Settings: apiextensionsv1.JSON{Raw: []byte(`[]`)},
+			}},
+			wantError: "settings must be a JSON object",
+		},
+		{
+			name: "template extensions install rather than remove",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Enabled: true, Version: "4.121.0", Extensions: []string{"-example.tool"},
+			}},
+			wantError: "rather than remove",
+		},
+		{
 			name: "feature options are an object",
 			configuration: Configuration{Features: []InjectedFeature{{
 				Reference: "ghcr.io/example/features/tool:1",

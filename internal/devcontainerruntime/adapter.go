@@ -187,18 +187,14 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	var settingsReader io.Reader
 	customizations := webIDECustomizations{}
 	if initializeWebIDE {
-		if raw := state.Configuration.Customizations["vscode"]; len(raw) > 0 {
-			if err := json.Unmarshal(raw, &customizations); err != nil {
-				return fmt.Errorf("decode VS Code customizations: %w", err)
-			}
+		var err error
+		customizations, err = resolveWebIDECustomizations(configuration.WebIDE, state.Configuration.Customizations["vscode"])
+		if err != nil {
+			return err
 		}
-		settings := []byte("{}")
-		if customizations.Settings != nil {
-			encoded, err := json.Marshal(customizations.Settings)
-			if err != nil {
-				return err
-			}
-			settings = encoded
+		settings, err := json.Marshal(customizations.Settings)
+		if err != nil {
+			return fmt.Errorf("encode Web IDE settings: %w", err)
 		}
 		settingsReader = bytes.NewReader(settings)
 	}
@@ -211,19 +207,8 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if !initializeWebIDE {
 		return nil
 	}
-	extensions := append([]string(nil), customizations.Extensions...)
-	extensions = append(extensions, configuration.WebIDE.Extensions...)
-	seen := make(map[string]struct{}, len(extensions))
 	_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
-	for _, extension := range extensions {
-		extension = strings.TrimSpace(extension)
-		if extension == "" {
-			return fmt.Errorf("VS Code extension identifier is empty")
-		}
-		if _, exists := seen[extension]; exists {
-			continue
-		}
-		seen[extension] = struct{}{}
+	for _, extension := range customizations.Extensions {
 		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
 			_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
 		}
@@ -232,6 +217,58 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 }
 
 type webIDECustomizations struct {
-	Settings   map[string]any `json:"settings"`
-	Extensions []string       `json:"extensions"`
+	Settings   map[string]json.RawMessage `json:"settings"`
+	Extensions []string                   `json:"extensions"`
+}
+
+func resolveWebIDECustomizations(configuration WebIDEConfiguration, repository json.RawMessage) (webIDECustomizations, error) {
+	result := webIDECustomizations{Settings: map[string]json.RawMessage{}}
+	if len(configuration.Settings.Raw) != 0 {
+		if err := json.Unmarshal(configuration.Settings.Raw, &result.Settings); err != nil {
+			return webIDECustomizations{}, fmt.Errorf("decode environment-template Web IDE settings: %w", err)
+		}
+	}
+	repositoryConfiguration := webIDECustomizations{}
+	if len(repository) != 0 {
+		if err := json.Unmarshal(repository, &repositoryConfiguration); err != nil {
+			return webIDECustomizations{}, fmt.Errorf("decode VS Code customizations: %w", err)
+		}
+	}
+	for name, value := range repositoryConfiguration.Settings {
+		result.Settings[name] = value
+	}
+
+	extensions := make(map[string]string, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
+	ordered := make(map[string]struct{}, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
+	order := make([]string, 0, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
+	apply := func(values []string) error {
+		for _, value := range values {
+			identity, extension, remove, err := parseWebIDEExtension(value)
+			if err != nil {
+				return fmt.Errorf("VS Code extension %q: %w", value, err)
+			}
+			if remove {
+				delete(extensions, identity)
+				continue
+			}
+			if _, exists := ordered[identity]; !exists {
+				ordered[identity] = struct{}{}
+				order = append(order, identity)
+			}
+			extensions[identity] = extension
+		}
+		return nil
+	}
+	if err := apply(configuration.Extensions); err != nil {
+		return webIDECustomizations{}, err
+	}
+	if err := apply(repositoryConfiguration.Extensions); err != nil {
+		return webIDECustomizations{}, err
+	}
+	for _, identity := range order {
+		if extension := extensions[identity]; extension != "" {
+			result.Extensions = append(result.Extensions, extension)
+		}
+	}
+	return result, nil
 }

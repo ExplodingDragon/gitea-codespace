@@ -115,6 +115,8 @@ spec:
                             items:
                               type: string
                             type: array
+                          settings:
+                            x-kubernetes-preserve-unknown-fields: true
                           version:
                             type: string
                         required:

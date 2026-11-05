@@ -168,7 +168,7 @@ message OpenAccess {
   // Signed by Manager; binds site, Runtime, Pod, target version and capability.
   string ticket = 1;
   oneof capability {
-    Terminal terminal = 2;
+    Shell shell = 2;
     Command command = 3;
     SFTP sftp = 4;
     Endpoint endpoint = 5;
@@ -179,7 +179,7 @@ message OpenAccess {
 // AccessCapability identifies the single operation authorized by a ticket.
 enum AccessCapability {
   ACCESS_CAPABILITY_UNSPECIFIED = 0;
-  ACCESS_CAPABILITY_TERMINAL = 1;
+  ACCESS_CAPABILITY_SHELL = 1;
   ACCESS_CAPABILITY_COMMAND = 2;
   ACCESS_CAPABILITY_SFTP = 3;
   ACCESS_CAPABILITY_ENDPOINT = 4;
@@ -208,6 +208,11 @@ message Terminal {
 message TerminalSize {
   uint32 columns = 1;
   uint32 rows = 2;
+}
+
+message Shell {
+  // terminal is present when the SSH shell request allocated a PTY.
+  Terminal terminal = 1;
 }
 
 message Command {

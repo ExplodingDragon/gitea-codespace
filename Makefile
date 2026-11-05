@@ -23,6 +23,7 @@ BASH_SCRIPTS := \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
+	devcontainer/docker/builtin/resolve-user-shell.sh \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
 	internal/devcontainerruntime/builtin/endpoint.sh \

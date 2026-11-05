@@ -40,6 +40,10 @@ type gatewayHandlerTestBackend struct {
 	address string
 }
 
+func (gatewayHandlerTestBackend) OpenWorkspaceShell(context.Context, WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+	return nil, fmt.Errorf("shell is not available")
+}
+
 func (gatewayHandlerTestBackend) OpenWorkspaceCommand(context.Context, WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
 	return nil, fmt.Errorf("command is not available")
 }

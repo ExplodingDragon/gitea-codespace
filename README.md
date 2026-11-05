@@ -4,15 +4,13 @@ Gitea Codespace provides isolated, Dev Container-based development
 environments for Gitea repositories on Kubernetes. Users create and manage
 their environments from Gitea, then connect through a browser, SSH, or SFTP.
 
-## Capabilities
+## What it provides
 
-- load a Dev Container configuration from the selected repository and revision;
-- run development workloads with Kata Containers or Sysbox isolation;
-- provide browser development through code-server;
-- expose authorized HTTP, SSH, and SFTP access through a managed Gateway;
-- reuse administrator-defined environment templates and registry caches; and
-- manage Gitea sites, environments, components, and active runtimes from a web
-  administration page.
+- Dev Container environments created from a repository and revision;
+- Kata Containers or Sysbox workload isolation;
+- browser, SSH, SFTP, and authorized forwarded-port access;
+- reusable environment templates and an optional registry cache; and
+- a web administration page for sites, templates, components, and runtimes.
 
 ## Requirements
 
@@ -22,13 +20,11 @@ their environments from Gitea, then connect through a browser, SSH, or SFTP.
 - a verified Kata Containers or Sysbox RuntimeClass; and
 - a StorageClass compatible with the selected runtime.
 
-Install either Kata Containers or Sysbox before installing Codespace. The
-selected runtime must support the cluster's Kubernetes version, operating
-system, architecture, and container runtime. Follow the
-[workload runtime guide](charts/gitea-codespace/README.md#install-a-workload-runtime)
-to install and verify the runtime and storage combination.
+Prepare and verify either Kata Containers or Sysbox before creating an
+environment template. The [Helm guide](charts/gitea-codespace/README.md)
+explains the required RuntimeClass labels and storage behavior.
 
-## Install
+## Quick start
 
 Create an administration token and install the newest development chart:
 
@@ -46,8 +42,8 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-Add `--version <chart-version>` to select an exact published chart and its
-digest-pinned platform image.
+Use `--version <chart-version>` for a reproducible release instead of the
+development chart.
 
 ## Configure
 
@@ -58,15 +54,13 @@ kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-Visit <http://127.0.0.1:18080>, sign in with the administration token, and
-complete the initial configuration:
+Open <http://127.0.0.1:18080>, sign in with the administration token, and:
 
-1. Add a Gateway component and any required Cache components.
-2. Add environment templates using verified runtime and storage classes.
-3. Create a registration token from the Codespace Managers page in Gitea.
-4. Register the Gitea site with its URL and token.
-5. Assign templates, the Gateway, optional caches, and optional site quotas.
-6. Enable the site after its status reports that it is ready.
+1. create a Gateway and any optional Cache components;
+2. create an environment template from verified runtime and storage classes;
+3. create a registration token on Gitea's Codespace Managers page;
+4. register the Gitea site and assign its templates and components; and
+5. enable the site after it reports that it is ready.
 
 Users can then create Codespaces from supported repository pages in Gitea.
 

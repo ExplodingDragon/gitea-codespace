@@ -22,28 +22,37 @@ import (
 
 type backendTestServer struct {
 	componentv1connect.UnimplementedComponentServiceHandler
-	route  *componentv1.GatewayRuntimeRoute
-	access func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error
+	route      *componentv1.GatewayRuntimeRoute
+	access     func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error
+	capability chan agentv1.AccessCapability
+	open       chan *agentv1.OpenAccess
 }
 
-func (s *backendTestServer) IssueAgentAccess(context.Context, *componentv1.IssueAgentAccessRequest) (*componentv1.IssueAgentAccessResponse, error) {
+func (s *backendTestServer) IssueAgentAccess(_ context.Context, request *componentv1.IssueAgentAccessRequest) (*componentv1.IssueAgentAccessResponse, error) {
+	s.capability <- request.Capability
 	return &componentv1.IssueAgentAccessResponse{Runtime: s.route, Ticket: "test-ticket"}, nil
 }
 
 func (s *backendTestServer) Access(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
-	if _, err := stream.Receive(); err != nil {
+	request, err := stream.Receive()
+	if err != nil {
 		return err
 	}
+	s.open <- request.GetOpen()
 	if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
 		return err
 	}
 	return s.access(ctx, stream)
 }
 
-func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error) *AgentBackend {
+func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error) (*AgentBackend, *backendTestServer) {
 	t.Helper()
 	route := &componentv1.GatewayRuntimeRoute{RuntimeUuid: "runtime", SiteUid: "site", ResourceUid: "resource", PodUid: "pod", AgentAddress: "agent:8444"}
-	service := &backendTestServer{route: route, access: handle}
+	service := &backendTestServer{
+		route: route, access: handle,
+		capability: make(chan agentv1.AccessCapability, 1),
+		open:       make(chan *agentv1.OpenAccess, 1),
+	}
 	rpc := connect.NewServer()
 	componentv1connect.RegisterComponentServiceHandler(rpc, service)
 	agentv1connect.RegisterAgentAccessServiceHandler(rpc, service)
@@ -59,12 +68,12 @@ func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1conn
 			transport: server.Client().Transport.(*http.Transport), access: agentv1connect.NewAgentAccessServiceClient(client)},
 	}}
 	t.Cleanup(backend.Close)
-	return backend
+	return backend, service
 }
 
 func TestAgentCommandCloseReleasesBlockedOutput(t *testing.T) {
 	serverDone := make(chan struct{})
-	backend := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+	backend, _ := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
 		defer close(serverDone)
 		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: []byte("unread output")}}); err != nil {
 			return err
@@ -96,8 +105,55 @@ func TestAgentCommandCloseReleasesBlockedOutput(t *testing.T) {
 	}
 }
 
+func TestAgentBackendPreservesSSHProcessKind(t *testing.T) {
+	tests := []struct {
+		name       string
+		capability agentv1.AccessCapability
+		open       func(context.Context, *AgentBackend) (WorkspaceCommandSession, error)
+		assertOpen func(*testing.T, *agentv1.OpenAccess)
+	}{
+		{
+			name:       "shell without terminal",
+			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL,
+			open: func(ctx context.Context, backend *AgentBackend) (WorkspaceCommandSession, error) {
+				return backend.OpenWorkspaceShell(ctx, WorkspaceShellRequest{RuntimeUUID: "runtime"})
+			},
+			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
+				require.NotNil(t, open.GetShell())
+				require.Nil(t, open.GetShell().Terminal)
+			},
+		},
+		{
+			name:       "command with terminal",
+			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND,
+			open: func(ctx context.Context, backend *AgentBackend) (WorkspaceCommandSession, error) {
+				return backend.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{RuntimeUUID: "runtime", Command: "printf test", Interactive: true, Cols: 91, Rows: 37})
+			},
+			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
+				require.Equal(t, "printf test", open.GetCommand().GetCommand())
+				require.Equal(t, "xterm-256color", open.GetCommand().GetTerminal().GetTerm())
+				require.Equal(t, uint32(91), open.GetCommand().GetTerminal().GetSize().GetColumns())
+				require.Equal(t, uint32(37), open.GetCommand().GetTerminal().GetSize().GetRows())
+			},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			backend, service := newBackendTestClient(t, func(_ context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+				return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}})
+			})
+			session, err := test.open(t.Context(), backend)
+			require.NoError(t, err)
+			t.Cleanup(func() { _ = session.Close() })
+			require.Equal(t, test.capability, <-service.capability)
+			test.assertOpen(t, <-service.open)
+			require.NoError(t, session.Wait())
+		})
+	}
+}
+
 func TestAgentTCPHalfCloseReceivesResponse(t *testing.T) {
-	backend := newBackendTestClient(t, func(_ context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+	backend, _ := newBackendTestClient(t, func(_ context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
 		var request []byte
 		for {
 			frame, err := stream.Receive()

@@ -190,6 +190,10 @@ func (s *RouteStore) OpenWorkspaceCommand(ctx context.Context, request Workspace
 	return s.backend.OpenWorkspaceCommand(ctx, request)
 }
 
+func (s *RouteStore) OpenWorkspaceShell(ctx context.Context, request WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+	return s.backend.OpenWorkspaceShell(ctx, request)
+}
+
 func (s *RouteStore) OpenWorkspaceSFTP(ctx context.Context, request WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	return s.backend.OpenWorkspaceSFTP(ctx, request)
 }

@@ -10,7 +10,15 @@ import (
 	"strconv"
 )
 
-// WorkspaceCommandRequest describes one command stream opened by SSH.
+// WorkspaceShellRequest describes one login shell opened by SSH.
+type WorkspaceShellRequest struct {
+	RuntimeUUID string
+	Interactive bool
+	Cols        int
+	Rows        int
+}
+
+// WorkspaceCommandRequest describes one exec command opened by SSH.
 type WorkspaceCommandRequest struct {
 	RuntimeUUID string
 	Command     string
@@ -46,6 +54,7 @@ func (e *WorkspaceCommandExitError) Error() string {
 
 // WorkspaceBackend opens all supported streams to one Runtime Agent.
 type WorkspaceBackend interface {
+	OpenWorkspaceShell(context.Context, WorkspaceShellRequest) (WorkspaceCommandSession, error)
 	OpenWorkspaceCommand(context.Context, WorkspaceCommandRequest) (WorkspaceCommandSession, error)
 	OpenWorkspaceSFTP(context.Context, WorkspaceSFTPRequest) (io.ReadWriteCloser, error)
 	OpenWorkspaceEndpoint(context.Context, string, string) (net.Conn, error)

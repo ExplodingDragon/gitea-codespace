@@ -708,12 +708,34 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		return session.CombinedOutput(command)
 	}
 	if initialize {
-		output, err := run(`test "$E2E_SECRET" = "e2e-secret-value" && test "$(git branch --show-current)" = "main" && printf lifecycle-persisted > .codespace-lifecycle && printf command-ok`)
+		output, err := run(`test "$E2E_SECRET" = "e2e-secret-value" && test "$(git branch --show-current)" = "main" && test "$0" = "$(getent passwd "$(id -u)" | cut -d: -f7)" && printf lifecycle-persisted > .codespace-lifecycle && printf command-ok`)
 		if err != nil {
 			return fmt.Errorf("run Gateway SSH command: output %q: %w", output, err)
 		}
 		if string(output) != "command-ok" {
 			return fmt.Errorf("run Gateway SSH command: unexpected output %q", output)
+		}
+		if err := connection.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
+			return fmt.Errorf("set Gateway SSH shell deadline: %w", err)
+		}
+		shell, err := client.NewSession()
+		if err != nil {
+			return err
+		}
+		var shellOutput, shellError bytes.Buffer
+		shell.Stdin = strings.NewReader("printf shell-stdin-ok\\n")
+		shell.Stdout = &shellOutput
+		shell.Stderr = &shellError
+		err = shell.Shell()
+		if err == nil {
+			err = shell.Wait()
+		}
+		_ = shell.Close()
+		if err != nil {
+			return fmt.Errorf("run Gateway SSH shell: output %q, stderr %q: %w", shellOutput.String(), shellError.String(), err)
+		}
+		if strings.TrimSpace(shellOutput.String()) != "shell-stdin-ok" {
+			return fmt.Errorf("run Gateway SSH shell: unexpected output %q, stderr %q", shellOutput.String(), shellError.String())
 		}
 		if err := connection.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
 			return fmt.Errorf("set Gateway SSH PTY deadline: %w", err)

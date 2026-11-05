@@ -197,20 +197,31 @@ func (w *agentInput) Close() error {
 	return err
 }
 
-func (b *AgentBackend) OpenWorkspaceCommand(ctx context.Context, request WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
-	capability := agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND
-	command := &agentv1.Command{Command: request.Command}
-	open := &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Command{Command: command}}
+func (b *AgentBackend) OpenWorkspaceShell(ctx context.Context, request WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+	shell := &agentv1.Shell{}
 	if request.Interactive {
-		terminal := &agentv1.Terminal{Term: "xterm-256color", Size: &agentv1.TerminalSize{Columns: uint32(max(request.Cols, 1)), Rows: uint32(max(request.Rows, 1))}}
-		if request.Command == "" {
-			capability = agentv1.AccessCapability_ACCESS_CAPABILITY_TERMINAL
-			open.Capability = &agentv1.OpenAccess_Terminal{Terminal: terminal}
-		} else {
-			command.Terminal = terminal
-		}
+		shell.Terminal = &agentv1.Terminal{Term: "xterm-256color", Size: &agentv1.TerminalSize{Columns: uint32(max(request.Cols, 1)), Rows: uint32(max(request.Rows, 1))}}
 	}
-	access, err := b.open(ctx, request.RuntimeUUID, capability, "", open)
+	return b.openWorkspaceProcess(ctx, request.RuntimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL, &agentv1.OpenAccess{
+		Capability: &agentv1.OpenAccess_Shell{Shell: shell},
+	})
+}
+
+func (b *AgentBackend) OpenWorkspaceCommand(ctx context.Context, request WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
+	if request.Command == "" {
+		return nil, fmt.Errorf("workspace command is required")
+	}
+	command := &agentv1.Command{Command: request.Command}
+	if request.Interactive {
+		command.Terminal = &agentv1.Terminal{Term: "xterm-256color", Size: &agentv1.TerminalSize{Columns: uint32(max(request.Cols, 1)), Rows: uint32(max(request.Rows, 1))}}
+	}
+	return b.openWorkspaceProcess(ctx, request.RuntimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND, &agentv1.OpenAccess{
+		Capability: &agentv1.OpenAccess_Command{Command: command},
+	})
+}
+
+func (b *AgentBackend) openWorkspaceProcess(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, open *agentv1.OpenAccess) (WorkspaceCommandSession, error) {
+	access, err := b.open(ctx, runtimeUUID, capability, "", open)
 	if err != nil {
 		return nil, err
 	}

@@ -271,23 +271,39 @@ func (s *SSHServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 			}
 		case "window-change":
 			pty = parseGatewaySSHWindowChange(request.Payload, pty)
-		case "shell", "exec":
-			command := ""
-			if request.Type == "exec" {
-				command = parseGatewaySSHExecCommand(request.Payload)
-				if command == "" {
-					if request.WantReply {
-						_ = request.Reply(false, nil)
-					}
-					continue
+		case "shell":
+			session, err := s.backend.OpenWorkspaceShell(ctx, WorkspaceShellRequest{
+				RuntimeUUID: auth.codespaceUUID,
+				Interactive: pty.enabled,
+				Cols:        pty.cols,
+				Rows:        pty.rows,
+			})
+			if err != nil {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
 				}
+				return
 			}
-			commandRequest := WorkspaceCommandRequest{RuntimeUUID: auth.codespaceUUID}
-			commandRequest.Command = command
-			commandRequest.Interactive = pty.enabled
-			commandRequest.Cols = pty.cols
-			commandRequest.Rows = pty.rows
-			session, err := s.backend.OpenWorkspaceCommand(ctx, commandRequest)
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+			s.serveWorkspaceSession(ctx, clientChannel, requests, session, pty, activity)
+			return
+		case "exec":
+			command := parseGatewaySSHExecCommand(request.Payload)
+			if command == "" {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			session, err := s.backend.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{
+				RuntimeUUID: auth.codespaceUUID,
+				Command:     command,
+				Interactive: pty.enabled,
+				Cols:        pty.cols,
+				Rows:        pty.rows,
+			})
 			if err != nil {
 				if request.WantReply {
 					_ = request.Reply(false, nil)

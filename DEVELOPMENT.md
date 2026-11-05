@@ -45,7 +45,7 @@ when a field is not yet consumed by the runtime. This keeps repository
 configurations portable and prevents parsing or merge stages from silently
 discarding standard data.
 
-## Build and check changes
+## Development workflow
 
 Use the Makefile as the development entry point:
 
@@ -65,9 +65,9 @@ make build
 - `make test-frontend` runs the administration workflow tests with Playwright.
 - `make build` builds the frontend and the local `gitea-codespace` binary.
 
-Run a focused package test while iterating, then run the complete checks above
-before submitting the change. `make clean` removes binaries, frontend build
-output, temporary generation workspaces, and test reports.
+Run focused package tests while iterating. Before submitting, use the complete
+commands above; they are the same entry points used by CI. `make clean` removes
+binaries, generated frontend output, temporary workspaces, and test reports.
 
 ## Generated sources
 
@@ -111,21 +111,19 @@ port-forward a Manager Service to that address before testing API-backed
 workflows. User-visible text belongs in the JSON locale catalogs under
 `web/locales`.
 
-## Platform image
+## Platform image and E2E
 
-Build a Linux binary and the platform image with:
+Build the Linux binary before packaging the platform image. Keeping the Go
+build outside the container build makes local and CI artifacts follow the same
+path:
 
 ```sh
 make build-linux
 make images
 ```
 
-Override `CODESPACE_IMAGE` and `CONTAINER_TOOL` when using another image name
-or a Docker-compatible builder. CI builds the binary outside the container
-build and then packages that artifact into the platform image, so local image
-changes should preserve the same boundary.
-
-## Kubernetes E2E
+Override `CODESPACE_IMAGE` or `CONTAINER_TOOL` when using another image name or
+Docker-compatible builder.
 
 The E2E suite exercises the Manager, controllers, Gateway, Cache, Runtime
 Agent, persistent Docker state, and Dev Container creation in a real cluster.
@@ -146,9 +144,9 @@ make test-e2e \
   KUBERNETES_STORAGE_CLASS=<storage-class>
 ```
 
-The harness creates isolated Manager and runtime resources, collects
-diagnostics on failure, and removes its resources when it exits. CI runs the
-same entry point for both Kata and Sysbox.
+The harness creates isolated resources, collects failure diagnostics, and
+removes its resources when it exits. CI runs this entry point for both Kata
+and Sysbox; ordinary local development only needs the standard test suite.
 
 ## Before submitting
 

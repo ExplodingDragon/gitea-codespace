@@ -4,9 +4,12 @@
 package devcontainerruntime
 
 import (
+	"encoding/json"
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
+	"github.com/stretchr/testify/require"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
@@ -60,4 +63,30 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if len(options.ContainerEnv) != 2 || options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath {
 		t.Fatalf("system CA environment = %#v", options.ContainerEnv)
 	}
+}
+
+func TestResolveWebIDECustomizations(t *testing.T) {
+	t.Parallel()
+
+	configuration := WebIDEConfiguration{
+		Extensions: []string{"example.base@1.0.0", "example.remove", "example.keep"},
+		Settings: apiextensionsv1.JSON{Raw: []byte(`{
+			"editor.formatOnSave": true,
+			"editor.tabSize": 4
+		}`)},
+	}
+	repository := json.RawMessage(`{
+		"extensions": ["example.base@2.0.0", "-example.remove", "example.repository", "example.repository"],
+		"settings": {
+			"editor.tabSize": 2,
+			"files.autoSave": "afterDelay"
+		}
+	}`)
+
+	resolved, err := resolveWebIDECustomizations(configuration, repository)
+	require.NoError(t, err)
+	require.Equal(t, []string{"example.base@2.0.0", "example.keep", "example.repository"}, resolved.Extensions)
+	require.JSONEq(t, `true`, string(resolved.Settings["editor.formatOnSave"]))
+	require.JSONEq(t, `2`, string(resolved.Settings["editor.tabSize"]))
+	require.JSONEq(t, `"afterDelay"`, string(resolved.Settings["files.autoSave"]))
 }

@@ -7,6 +7,7 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,9 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+//go:embed builtin/resolve-user-shell.sh
+var resolveUserShellScript string
 
 func runInitializeCommand(ctx context.Context, command devcontainer.Command, user devcontainer.HostUser, workdir string, environment map[string]string, stdout, stderr io.Writer) error {
 	commands, err := decodeCommand(command)
@@ -283,13 +287,9 @@ func (e *Engine) probeRemoteEnvironment(ctx context.Context, environment *devcon
 	case "interactiveShell":
 		flag = "-ic"
 	}
-	shellOutput, _, err := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{"/bin/sh", "-c", `user="${1%%:*}"; getent passwd "$user" 2>/dev/null | cut -d: -f7`, "sh", environment.RemoteUser}, nil, nil, io.Discard, io.Discard, true)
+	shell, err := e.ResolveRemoteUserShell(ctx, environment)
 	if err != nil {
 		return nil, err
-	}
-	shell := strings.TrimSpace(string(shellOutput))
-	if shell == "" {
-		shell = "/bin/sh"
 	}
 	stdout, _, err := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{shell, flag, "env -0"}, nil, nil, io.Discard, io.Discard, true)
 	if err != nil {
@@ -303,4 +303,26 @@ func (e *Engine) probeRemoteEnvironment(ctx context.Context, environment *devcon
 		}
 	}
 	return result, nil
+}
+
+// ResolveRemoteUserShell returns the current login shell configured for the
+// Dev Container remote user. The lookup happens at attachment time because a
+// lifecycle command may update the container user database after creation.
+func (e *Engine) ResolveRemoteUserShell(ctx context.Context, environment *devcontainer.State) (string, error) {
+	if environment == nil || environment.PrimaryContainerID == "" || strings.TrimSpace(environment.RemoteUser) == "" {
+		return "", fmt.Errorf("resolve Dev Container login shell: remote user is incomplete")
+	}
+	stdout, stderr, err := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, []string{"/bin/sh", "-c", resolveUserShellScript, "sh", environment.RemoteUser}, nil, nil, io.Discard, io.Discard, true)
+	if err != nil {
+		message := strings.TrimSpace(string(stderr))
+		if message == "" {
+			return "", fmt.Errorf("resolve Dev Container login shell: %w", err)
+		}
+		return "", fmt.Errorf("resolve Dev Container login shell: %s: %w", message, err)
+	}
+	shell := strings.TrimSpace(string(stdout))
+	if !strings.HasPrefix(shell, "/") || strings.ContainsAny(shell, "\x00\r\n") {
+		return "", fmt.Errorf("resolve Dev Container login shell: invalid path %q", shell)
+	}
+	return shell, nil
 }

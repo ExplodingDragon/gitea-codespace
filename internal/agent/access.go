@@ -25,6 +25,7 @@ import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
+	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
@@ -139,8 +140,8 @@ func (r *Runtime) authorize(open *agentv1.OpenAccess) (*agentv1.AccessTarget, *d
 
 func accessCapability(open *agentv1.OpenAccess) agentv1.AccessCapability {
 	switch open.Capability.(type) {
-	case *agentv1.OpenAccess_Terminal:
-		return agentv1.AccessCapability_ACCESS_CAPABILITY_TERMINAL
+	case *agentv1.OpenAccess_Shell:
+		return agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL
 	case *agentv1.OpenAccess_Command:
 		return agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND
 	case *agentv1.OpenAccess_Sftp:
@@ -154,79 +155,98 @@ func accessCapability(open *agentv1.OpenAccess) agentv1.AccessCapability {
 	}
 }
 
-func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, state *devcontainer.State, secrets map[string]string, target *agentv1.AccessTarget, capability agentv1.AccessCapability, endpoint *agentv1.EndpointTarget, open *agentv1.OpenAccess) error {
-	apiClient, err := client.NewClientWithOpts(client.WithHost(DockerHost), client.WithAPIVersionNegotiation())
-	if err != nil {
-		return err
-	}
-	defer func() { _ = apiClient.Close() }()
+func prepareAccessExec(ctx context.Context, state *devcontainer.State, secrets map[string]string, target *agentv1.AccessTarget, capability agentv1.AccessCapability, endpoint *agentv1.EndpointTarget, open *agentv1.OpenAccess) (string, container.ExecOptions, error) {
 	containerID := target.PrimaryContainerId
-	command := []string{"/bin/sh", "-l"}
-	interactive := false
+	var command []string
+	var terminal *agentv1.Terminal
 	user, workdir := state.RemoteUser, state.RemoteWorkdir
-	if capability == agentv1.AccessCapability_ACCESS_CAPABILITY_TERMINAL || capability == agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND || capability == agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
-		engine, err := containerdocker.New(ctx, io.Discard, io.Discard)
-		if err != nil {
-			return err
-		}
-		err = engine.RunPostAttach(ctx, state, secrets)
-		closeErr := engine.Close()
-		if err = errors.Join(err, closeErr); err != nil {
-			return err
-		}
-	}
+	commandValue := ""
 	switch capability {
-	case agentv1.AccessCapability_ACCESS_CAPABILITY_TERMINAL:
-		terminal := open.GetTerminal()
-		if terminal == nil || len(terminal.Term) > 64 || strings.ContainsFunc(terminal.Term, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-			return connect.NewError(connect.CodeInvalidArgument, "terminal type is invalid")
+	case agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL:
+		requestedShell := open.GetShell()
+		if requestedShell == nil {
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "shell request is invalid")
 		}
-		interactive = true
+		terminal = requestedShell.Terminal
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND:
 		requestedCommand := open.GetCommand()
-		value := requestedCommand.GetCommand()
-		if len(value) > 32*1024 || strings.ContainsRune(value, 0) {
-			return connect.NewError(connect.CodeInvalidArgument, "command is invalid")
+		if requestedCommand == nil {
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "command is invalid")
 		}
-		command = []string{"/bin/sh", "-lc", value}
-		if requestedCommand.Terminal != nil {
-			if requestedCommand.Terminal.Term == "" || len(requestedCommand.Terminal.Term) > 64 || strings.ContainsFunc(requestedCommand.Terminal.Term, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
-				return connect.NewError(connect.CodeInvalidArgument, "terminal type is invalid")
-			}
-			interactive = true
+		commandValue = requestedCommand.GetCommand()
+		if commandValue == "" || len(commandValue) > 32*1024 || strings.ContainsRune(commandValue, 0) {
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "command is invalid")
 		}
+		terminal = requestedCommand.Terminal
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP:
 		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "sftp", "--workdir", state.RemoteWorkdir}
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT:
+		if endpoint == nil || endpoint.ContainerId == "" || endpoint.Port == 0 || endpoint.Port > 65535 {
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "endpoint target is invalid")
+		}
 		containerID = endpoint.ContainerId
 		command, user, workdir = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(endpoint.Port), 10)}, "", "/"
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP:
 		port := open.GetTcp().GetPort()
 		if port == 0 || port > 65535 {
-			return connect.NewError(connect.CodeInvalidArgument, "loopback TCP port is invalid")
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "loopback TCP port is invalid")
 		}
 		command = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(port), 10)}
 	default:
-		return connect.NewError(connect.CodeInvalidArgument, "access capability is invalid")
+		return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "access capability is invalid")
+	}
+	if terminal != nil {
+		if terminal.Term == "" || len(terminal.Term) > 64 || strings.ContainsFunc(terminal.Term, func(r rune) bool { return r <= ' ' || r == 0x7f }) {
+			return "", container.ExecOptions{}, connect.NewError(connect.CodeInvalidArgument, "terminal type is invalid")
+		}
+	}
+	switch capability {
+	case agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL, agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND, agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP:
+		engine, err := containerdocker.New(ctx, io.Discard, io.Discard)
+		if err != nil {
+			return "", container.ExecOptions{}, err
+		}
+		err = engine.RunPostAttach(ctx, state, secrets)
+		if err == nil && capability != agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
+			var loginShell string
+			loginShell, err = engine.ResolveRemoteUserShell(ctx, state)
+			if capability == agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL {
+				command = []string{loginShell, "-l"}
+			} else {
+				command = []string{loginShell, "-c", commandValue}
+			}
+		}
+		if err = errors.Join(err, engine.Close()); err != nil {
+			return "", container.ExecOptions{}, err
+		}
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
-	terminal := open.GetTerminal()
-	if terminal == nil && open.GetCommand() != nil {
-		terminal = open.GetCommand().Terminal
-	}
 	if terminal != nil {
 		values["TERM"] = terminal.Term
 		values["COLORTERM"] = "truecolor"
 	}
-	options := container.ExecOptions{User: user, WorkingDir: workdir, Env: stringMapEnvironment(values), Cmd: command, AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: interactive}
+	options := container.ExecOptions{User: user, WorkingDir: workdir, Env: stringMapEnvironment(values), Cmd: command, AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: terminal != nil}
 	if terminal != nil && terminal.Size != nil && terminal.Size.Columns > 0 && terminal.Size.Rows > 0 {
 		options.ConsoleSize = &[2]uint{uint(terminal.Size.Rows), uint(terminal.Size.Columns)}
 	}
+	return containerID, options, nil
+}
+
+func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, state *devcontainer.State, secrets map[string]string, target *agentv1.AccessTarget, capability agentv1.AccessCapability, endpoint *agentv1.EndpointTarget, open *agentv1.OpenAccess) error {
+	containerID, options, err := prepareAccessExec(ctx, state, secrets, target, capability, endpoint, open)
+	if err != nil {
+		return err
+	}
+	apiClient, err := client.NewClientWithOpts(client.WithHost(DockerHost), client.WithAPIVersionNegotiation())
+	if err != nil {
+		return err
+	}
+	defer func() { _ = apiClient.Close() }()
 	created, err := apiClient.ContainerExecCreate(ctx, containerID, options)
 	if err != nil {
 		return err
 	}
-	attached, err := apiClient.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{Tty: interactive, ConsoleSize: options.ConsoleSize})
+	attached, err := apiClient.ContainerExecAttach(ctx, created.ID, container.ExecAttachOptions{Tty: options.Tty, ConsoleSize: options.ConsoleSize})
 	if err != nil {
 		return err
 	}
@@ -235,91 +255,12 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	defer stopClose()
 	writeErr := make(chan error, 1)
 	go func() {
-		for {
-			frame, err := stream.Receive()
-			if err != nil {
-				if errors.Is(err, io.EOF) && ctx.Err() == nil {
-					_ = attached.CloseWrite()
-				} else {
-					attached.Close()
-				}
-				writeErr <- err
-				return
-			}
-			switch value := frame.Frame.(type) {
-			case *agentv1.AccessRequest_Stdin:
-				_, err = attached.Conn.Write(value.Stdin)
-			case *agentv1.AccessRequest_Resize:
-				if !interactive || value.Resize == nil || value.Resize.Columns == 0 || value.Resize.Rows == 0 {
-					err = fmt.Errorf("terminal resize is invalid")
-				} else {
-					err = apiClient.ContainerExecResize(ctx, created.ID, container.ResizeOptions{Height: uint(value.Resize.Rows), Width: uint(value.Resize.Columns)})
-				}
-			case *agentv1.AccessRequest_Signal:
-				if value.Signal <= 0 || value.Signal > 64 {
-					err = fmt.Errorf("process signal is invalid")
-				} else if inspect, inspectErr := apiClient.ContainerExecInspect(ctx, created.ID); inspectErr != nil || inspect.Pid <= 0 {
-					err = errors.Join(inspectErr, fmt.Errorf("workspace process is not running"))
-				} else {
-					err = unix.Kill(inspect.Pid, syscall.Signal(value.Signal))
-				}
-			case *agentv1.AccessRequest_StdinEof:
-				switch {
-				case !value.StdinEof:
-					err = fmt.Errorf("stdin EOF frame is invalid")
-				case interactive:
-					// A PTY receives terminal EOF as EOT. Let the process finish
-					// before closing the hijacked input so pending output is kept.
-					_, _ = attached.Conn.Write([]byte{0x04})
-					deadline := time.Now().Add(time.Second)
-					for time.Now().Before(deadline) {
-						inspect, inspectErr := apiClient.ContainerExecInspect(ctx, created.ID)
-						if inspectErr != nil || !inspect.Running {
-							break
-						}
-						select {
-						case <-ctx.Done():
-							err = ctx.Err()
-						case <-time.After(10 * time.Millisecond):
-						}
-						if err != nil {
-							break
-						}
-					}
-					if err == nil {
-						err = attached.CloseWrite()
-					}
-				default:
-					err = attached.CloseWrite()
-				}
-			default:
-				err = fmt.Errorf("access frame is invalid after open")
-			}
-			if err != nil {
-				attached.Close()
-				writeErr <- err
-				return
-			}
-		}
+		writeErr <- receiveAccessInput(ctx, stream, apiClient, created.ID, &attached, options.Tty)
 	}()
-	send := stream.Send
-	var outputErr error
-	if interactive {
-		outputErr = copyFrames(attached.Reader, func(value []byte) error {
-			return send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: value}})
-		})
-	} else {
-		stdout := frameWriter{send: func(value []byte) error {
-			return send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: value}})
-		}}
-		stderr := frameWriter{send: func(value []byte) error {
-			return send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stderr{Stderr: value}})
-		}}
-		_, outputErr = stdcopy.StdCopy(stdout, stderr, attached.Reader)
-	}
+	outputErr := sendAccessOutput(stream, attached.Reader, options.Tty)
 	result, inspectErr := apiClient.ContainerExecInspect(ctx, created.ID)
 	if inspectErr == nil {
-		inspectErr = send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: int32(result.ExitCode)}})
+		inspectErr = stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: int32(result.ExitCode)}})
 	}
 	select {
 	case receiveErr := <-writeErr:
@@ -329,6 +270,89 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	default:
 	}
 	return errors.Join(outputErr, inspectErr)
+}
+
+func receiveAccessInput(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, apiClient *client.Client, execID string, attached *dockertypes.HijackedResponse, tty bool) error {
+	for {
+		frame, err := stream.Receive()
+		if err != nil {
+			if errors.Is(err, io.EOF) && ctx.Err() == nil {
+				_ = attached.CloseWrite()
+			} else {
+				attached.Close()
+			}
+			return err
+		}
+		switch value := frame.Frame.(type) {
+		case *agentv1.AccessRequest_Stdin:
+			_, err = attached.Conn.Write(value.Stdin)
+		case *agentv1.AccessRequest_Resize:
+			if !tty || value.Resize == nil || value.Resize.Columns == 0 || value.Resize.Rows == 0 {
+				err = fmt.Errorf("terminal resize is invalid")
+			} else {
+				err = apiClient.ContainerExecResize(ctx, execID, container.ResizeOptions{Height: uint(value.Resize.Rows), Width: uint(value.Resize.Columns)})
+			}
+		case *agentv1.AccessRequest_Signal:
+			if value.Signal <= 0 || value.Signal > 64 {
+				err = fmt.Errorf("process signal is invalid")
+			} else if inspect, inspectErr := apiClient.ContainerExecInspect(ctx, execID); inspectErr != nil || inspect.Pid <= 0 {
+				err = errors.Join(inspectErr, fmt.Errorf("workspace process is not running"))
+			} else {
+				err = unix.Kill(inspect.Pid, syscall.Signal(value.Signal))
+			}
+		case *agentv1.AccessRequest_StdinEof:
+			switch {
+			case !value.StdinEof:
+				err = fmt.Errorf("stdin EOF frame is invalid")
+			case tty:
+				// A PTY receives terminal EOF as EOT. Let the process finish
+				// before closing the hijacked input so pending output is kept.
+				_, _ = attached.Conn.Write([]byte{0x04})
+				deadline := time.Now().Add(time.Second)
+				for time.Now().Before(deadline) {
+					inspect, inspectErr := apiClient.ContainerExecInspect(ctx, execID)
+					if inspectErr != nil || !inspect.Running {
+						break
+					}
+					select {
+					case <-ctx.Done():
+						err = ctx.Err()
+					case <-time.After(10 * time.Millisecond):
+					}
+					if err != nil {
+						break
+					}
+				}
+				if err == nil {
+					err = attached.CloseWrite()
+				}
+			default:
+				err = attached.CloseWrite()
+			}
+		default:
+			err = fmt.Errorf("access frame is invalid after open")
+		}
+		if err != nil {
+			attached.Close()
+			return err
+		}
+	}
+}
+
+func sendAccessOutput(stream agentv1connect.AgentAccessServiceAccessServerStream, reader io.Reader, tty bool) error {
+	if tty {
+		return copyFrames(reader, func(value []byte) error {
+			return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: value}})
+		})
+	}
+	stdout := frameWriter{send: func(value []byte) error {
+		return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: value}})
+	}}
+	stderr := frameWriter{send: func(value []byte) error {
+		return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stderr{Stderr: value}})
+	}}
+	_, err := stdcopy.StdCopy(stdout, stderr, reader)
+	return err
 }
 
 type frameWriter struct{ send func([]byte) error }
