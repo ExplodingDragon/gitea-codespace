@@ -45,7 +45,6 @@ var runtimeMounts = [...]struct {
 }{
 	{source: "/run/codespace/gitea-token", target: "/var/lib/gitea-codespace/gitea-token", readOnly: true},
 	{source: "/run/codespace/git", target: "/var/lib/gitea-codespace/git", readOnly: true},
-	{source: "/run/codespace/bin", target: "/var/lib/gitea-codespace/bin", readOnly: true},
 	{source: "/run/codespace/ca", target: "/var/lib/gitea-codespace/ca", readOnly: true},
 	{source: runtimeendpoint.AgentSocketPath, target: runtimeendpoint.ContainerSocketPath},
 	{source: "/usr/local/bin/gitea-codespace", target: ContainerRuntimeBinary, readOnly: true},
@@ -99,6 +98,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		LocalEnvironment: request.LocalEnvironment,
 		Secrets:          request.Secrets,
 		Cache:            request.Cache,
+		RunLifecycle:     request.RunLifecycle,
 		InjectedFeatures: injected,
 		AdditionalMounts: mounts,
 		ContainerEnv:     containerEnvironment,
@@ -169,9 +169,6 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
-		return err
-	}
 	if !configuration.WebIDE.Enabled {
 		return nil
 	}
@@ -200,6 +197,9 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 	}
 	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
+	}
+	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
+		return err
 	}
 	if !initializeWebIDE {
 		return nil

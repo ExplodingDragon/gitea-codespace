@@ -56,11 +56,31 @@ func ReadLockfile(configurationPath string) (Lockfile, bool, error) {
 	if lockfile.Features == nil {
 		lockfile.Features = map[string]LockedFeature{}
 	}
+	normalized := make(map[string]LockedFeature, len(lockfile.Features))
+	for reference, feature := range lockfile.Features {
+		reference = strings.ToLower(reference)
+		if _, exists := normalized[reference]; exists {
+			return Lockfile{}, false, fmt.Errorf("decode Dev Container lockfile: duplicate Feature %s", reference)
+		}
+		for index := range feature.DependsOn {
+			feature.DependsOn[index] = strings.ToLower(feature.DependsOn[index])
+		}
+		normalized[reference] = feature
+	}
+	lockfile.Features = normalized
 	return lockfile, true, nil
 }
 
 // WriteLockfile atomically updates a lockfile or validates it when frozen is true.
 func WriteLockfile(configurationPath string, lockfile Lockfile, frozen bool) error {
+	normalized := make(map[string]LockedFeature, len(lockfile.Features))
+	for reference, feature := range lockfile.Features {
+		for index := range feature.DependsOn {
+			feature.DependsOn[index] = strings.ToLower(feature.DependsOn[index])
+		}
+		normalized[strings.ToLower(reference)] = feature
+	}
+	lockfile.Features = normalized
 	content, err := json.MarshalIndent(lockfile, "", "  ")
 	if err != nil {
 		return err

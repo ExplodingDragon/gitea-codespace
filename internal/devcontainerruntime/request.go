@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"gitea.dev/codespace/devcontainer"
+	containerdocker "gitea.dev/codespace/devcontainer/docker"
 )
 
 // Request supplies one Agent lifecycle action to the Dev Container executor.
@@ -28,6 +29,7 @@ type Request struct {
 	DevContainer     Configuration
 	Cache            devcontainer.CacheOptions
 	Environment      *devcontainer.State
+	RunLifecycle     containerdocker.RunLifecycleFunc
 }
 
 // Validate checks action-specific identity and state requirements.

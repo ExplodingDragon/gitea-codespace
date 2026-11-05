@@ -18,8 +18,8 @@ import (
 )
 
 func checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
-	if requirements.CPUs > float64(runtime.NumCPU()) {
-		return fmt.Errorf("dev container requires %g CPUs but the runtime provides %d", requirements.CPUs, runtime.NumCPU())
+	if requirements.CPUs != nil && *requirements.CPUs > runtime.NumCPU() {
+		return fmt.Errorf("dev container requires %d CPUs but the runtime provides %d", *requirements.CPUs, runtime.NumCPU())
 	}
 	if strings.TrimSpace(requirements.Memory) != "" {
 		required, err := dockerunits.RAMInBytes(requirements.Memory)

@@ -76,16 +76,15 @@ func TestStatusUpdateRetriesPreserveIndependentWriters(t *testing.T) {
 			if attempts == 1 {
 				var concurrent api.EnvironmentTemplate
 				require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(template), &concurrent))
-				concurrent.Status.VerifiedGeneration = 4
-				concurrent.Status.Verification = "smoke-test-4"
+				meta.SetStatusCondition(&concurrent.Status.Conditions, metav1.Condition{Type: "StorageReady", Status: metav1.ConditionTrue, Reason: "Available", ObservedGeneration: 4})
 				require.NoError(t, kubeClient.Status().Update(t.Context(), &concurrent))
 			}
-			meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Attested", ObservedGeneration: 4})
+			meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "DependenciesReady", ObservedGeneration: 4})
 			return nil
 		})
 		require.NoError(t, err)
 		require.Equal(t, 2, attempts)
-		require.Equal(t, "smoke-test-4", template.Status.Verification)
+		require.True(t, meta.IsStatusConditionTrue(template.Status.Conditions, "StorageReady"))
 		require.True(t, meta.IsStatusConditionTrue(template.Status.Conditions, "Ready"))
 	})
 }

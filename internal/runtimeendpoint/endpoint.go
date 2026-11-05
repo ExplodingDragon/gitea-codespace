@@ -5,6 +5,7 @@
 package runtimeendpoint
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"strconv"
 	"strings"
@@ -36,6 +37,29 @@ const WorkspaceEndpointPort = 13337
 // PortEndpointID returns the stable identifier for a user-declared port.
 func PortEndpointID(port uint16) string {
 	return "port-" + strconv.Itoa(int(port))
+}
+
+// ServicePortEndpointID identifies a Compose service port without exposing the service name.
+func ServicePortEndpointID(service string, port uint16) string {
+	digest := sha256.Sum256([]byte(service))
+	return fmt.Sprintf("port-%d-%x", port, digest[:8])
+}
+
+// IsPortEndpointID verifies an endpoint ID generated for a declared or dynamic port.
+func IsPortEndpointID(endpointID string, port uint16) bool {
+	if endpointID == PortEndpointID(port) {
+		return true
+	}
+	prefix := PortEndpointID(port) + "-"
+	if len(endpointID) != len(prefix)+16 || !strings.HasPrefix(endpointID, prefix) {
+		return false
+	}
+	for _, char := range endpointID[len(prefix):] {
+		if (char < '0' || char > '9') && (char < 'a' || char > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // ValidateLabel applies the common label constraints used by runtime declarations and Gateway routes.

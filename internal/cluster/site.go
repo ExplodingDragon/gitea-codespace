@@ -134,11 +134,8 @@ func (r *SiteReconciler) condition(ctx context.Context, site *api.GiteaSite, rea
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
 		return nil
 	})
-	if err == errObservedResourceChanged {
-		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
-	}
 	if err != nil {
-		return ctrl.Result{}, err
+		return reconcileStatusError(err)
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

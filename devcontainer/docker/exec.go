@@ -38,13 +38,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 			process.Dir = workdir
 			process.Stdout = stdout
 			process.Stderr = stderr
-			values := map[string]string{}
-			for _, item := range os.Environ() {
-				name, value, ok := strings.Cut(item, "=")
-				if ok {
-					values[name] = value
-				}
-			}
+			values := map[string]string{"PATH": os.Getenv("PATH")}
 			for name, value := range environment {
 				values[name] = value
 			}
@@ -56,7 +50,10 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 				values["HOME"] = user.Home
 			}
 			process.Env = environmentList(values)
-			if user.UID != 0 || user.GID != 0 {
+			if user.UID != uint32(os.Geteuid()) || user.GID != uint32(os.Getegid()) {
+				if os.Geteuid() != 0 {
+					return fmt.Errorf("command %q requires host user %d:%d, current process is %d:%d", arguments[0], user.UID, user.GID, os.Geteuid(), os.Getegid())
+				}
 				process.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: user.UID, Gid: user.GID}}
 			}
 			if err := process.Run(); err != nil {
@@ -116,7 +113,7 @@ func decodeCommand(command devcontainer.Command) ([][]string, error) {
 	return [][]string{arguments}, nil
 }
 
-func (e *Engine) runLifecycleCommand(ctx context.Context, environment *devcontainer.State, name string, command devcontainer.Command, secrets map[string]string) error {
+func (e *Engine) executeLifecycleCommand(ctx context.Context, environment *devcontainer.State, name string, command devcontainer.Command, secrets map[string]string) error {
 	commands, err := decodeCommand(command)
 	if err != nil {
 		return fmt.Errorf("decode %s: %w", name, err)
@@ -138,9 +135,37 @@ func (e *Engine) runLifecycleCommand(ctx context.Context, environment *devcontai
 	return group.Wait()
 }
 
+func runLifecycleStage(ctx context.Context, runner RunLifecycleFunc, stage devcontainer.LifecycleStage, command devcontainer.Command, run func(context.Context) error) error {
+	if len(command.Value) == 0 {
+		return nil
+	}
+	if runner == nil {
+		return run(ctx)
+	}
+	return runner(ctx, stage, run)
+}
+
+func (e *Engine) executeLifecycleStage(ctx context.Context, environment *devcontainer.State, stage devcontainer.LifecycleStage, commands []devcontainer.Command, secrets map[string]string, runner RunLifecycleFunc) error {
+	if len(commands) == 0 {
+		return nil
+	}
+	run := func(ctx context.Context) error {
+		for _, command := range commands {
+			if err := e.executeLifecycleCommand(ctx, environment, string(stage), command, secrets); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if runner != nil {
+		return runner(ctx, stage, run)
+	}
+	return run(ctx)
+}
+
 // RunPostAttach runs postAttachCommand for a new user attachment.
 func (e *Engine) RunPostAttach(ctx context.Context, environment *devcontainer.State, secrets map[string]string) error {
-	return e.runLifecycleCommand(ctx, environment, "postAttachCommand", environment.Configuration.PostAttachCommand, secrets)
+	return e.executeLifecycleStage(ctx, environment, devcontainer.LifecycleStagePostAttach, environment.LifecycleCommands.PostAttach, secrets, nil)
 }
 
 // Run streams a command's output without retaining it in memory.

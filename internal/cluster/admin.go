@@ -76,8 +76,7 @@ type adminSiteWrite struct {
 
 type adminTemplateWrite struct {
 	adminWriteIdentity
-	Spec         api.EnvironmentTemplateSpec `json:"spec"`
-	Verification string                      `json:"verification,omitempty"`
+	Spec api.EnvironmentTemplateSpec `json:"spec"`
 }
 
 type adminComponentWrite struct {
@@ -237,7 +236,7 @@ func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request
 		identity = body.adminWriteIdentity
 		object = &api.EnvironmentTemplate{}
 		save = func(ctx context.Context, object client.Object, creating bool) error {
-			return s.saveTemplate(ctx, object.(*api.EnvironmentTemplate), body, creating)
+			return s.saveTemplate(ctx, object.(*api.EnvironmentTemplate), body.Spec, creating)
 		}
 		prefix = "environment-"
 	case "components":
@@ -689,37 +688,18 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 	return nil
 }
 
-func (s *AdminServer) saveTemplate(ctx context.Context, template *api.EnvironmentTemplate, body adminTemplateWrite, creating bool) error {
-	template.Spec = body.Spec
+func (s *AdminServer) saveTemplate(ctx context.Context, template *api.EnvironmentTemplate, spec api.EnvironmentTemplateSpec, creating bool) error {
+	template.Spec = spec
 	if err := template.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
 	if err := validateEnvironmentDependencies(ctx, s.Client, template.Spec.Runtime); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
-	if len(body.Verification) > 4096 {
-		return apierrors.NewBadRequest("verification reference is too long")
-	}
-	var err error
 	if creating {
-		err = s.Client.Create(ctx, template)
-	} else {
-		err = s.Client.Update(ctx, template)
+		return s.Client.Create(ctx, template)
 	}
-	if err != nil {
-		return err
-	}
-	if body.Verification != "" {
-		generation := template.Generation
-		return updateTemplateStatus(ctx, s.Client, template, func(current *api.EnvironmentTemplate) error {
-			if current.Generation != generation {
-				return errObservedResourceChanged
-			}
-			current.Status.VerifiedGeneration, current.Status.Verification = generation, body.Verification
-			return nil
-		})
-	}
-	return nil
+	return s.Client.Update(ctx, template)
 }
 
 func (s *AdminServer) saveComponent(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite, creating bool) error {

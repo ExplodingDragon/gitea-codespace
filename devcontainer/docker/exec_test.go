@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,7 +18,46 @@ import (
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/stretchr/testify/require"
+
+	"gitea.dev/codespace/devcontainer"
 )
+
+func TestInitializeCommandCanRunForCreateAndResume(t *testing.T) {
+	t.Parallel()
+
+	directory := t.TempDir()
+	command := devcontainer.Command{Value: []byte(`"printf x >> initialized"`)}
+	user := devcontainer.HostUser{
+		Name: os.Getenv("USER"), Home: os.Getenv("HOME"),
+		UID: uint32(os.Geteuid()), GID: uint32(os.Getegid()),
+	}
+	for range 2 {
+		if err := runInitializeCommand(t.Context(), command, user, directory, nil, io.Discard, io.Discard); err != nil {
+			t.Fatalf("run initializeCommand: %v", err)
+		}
+	}
+	content, err := os.ReadFile(filepath.Join(directory, "initialized"))
+	if err != nil || string(content) != "xx" {
+		t.Fatalf("initializeCommand output = %q, %v", content, err)
+	}
+}
+
+func TestInitializeCommandUsesOnlyExplicitEnvironment(t *testing.T) {
+	t.Setenv("CODESPACE_PRIVATE_TOKEN", "secret")
+	directory := t.TempDir()
+	command := devcontainer.Command{Value: []byte(`"printf '%s' \"${CODESPACE_PRIVATE_TOKEN-unset}:$SAFE_VALUE\" > environment"`)}
+	user := devcontainer.HostUser{
+		Name: os.Getenv("USER"), Home: os.Getenv("HOME"),
+		UID: uint32(os.Geteuid()), GID: uint32(os.Getegid()),
+	}
+	if err := runInitializeCommand(t.Context(), command, user, directory, map[string]string{"SAFE_VALUE": "available"}, io.Discard, io.Discard); err != nil {
+		t.Fatalf("run initializeCommand: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(directory, "environment"))
+	if err != nil || string(content) != "unset:available" {
+		t.Fatalf("initializeCommand environment = %q, %v", content, err)
+	}
+}
 
 func execForTest(engine *Engine, ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string, stdin io.Reader) ([]byte, []byte, error) {
 	return engine.exec(ctx, containerID, user, workdir, command, environment, stdin, engine.stdout, engine.stderr, true)

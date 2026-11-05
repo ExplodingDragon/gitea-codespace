@@ -75,8 +75,6 @@ export type Condition = {
 
 type ResourceStatus = {
   conditions?: Condition[];
-  verifiedGeneration?: number;
-  verification?: string;
   ready?: boolean;
   pod?: ResourceReference;
   volume?: ResourceReference;

@@ -43,6 +43,9 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		stage += "/" + e.PodUID
 	}
 	err := e.Journal.RunOnce(ctx, request.OperationVersion, stage, func(ctx context.Context) error {
+		request.RunLifecycle = func(ctx context.Context, lifecycle devcontainer.LifecycleStage, run func(context.Context) error) error {
+			return e.Journal.runActiveStep(ctx, request.OperationVersion, fmt.Sprintf("lifecycle/%s", lifecycle), run)
+		}
 		state, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
 		if err != nil {
 			return err

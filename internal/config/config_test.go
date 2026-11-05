@@ -11,21 +11,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func validGatewayConfig() configpkg.GatewayConfig {
+	return configpkg.GatewayConfig{
+		HTTP: configpkg.GatewayHTTPConfig{Listen: ":18081", PublicURL: "http://gateway.example.com:18081"},
+		SSH: configpkg.GatewaySSHConfig{
+			Listen: ":2222", PublicAddr: "gateway.example.com:22", HandshakeTimeout: configpkg.Duration(30 * time.Second), MaxChannelsPerConnection: 32,
+			Auth: configpkg.GatewaySSHAuthConfig{MaxAttemptsPerIP: 30, MaxAttemptsPerCodespace: 20, MaxAttemptsPerIPCodespace: 10, MaxAttemptsPerPublicKey: 30, FailureWindow: configpkg.Duration(10 * time.Minute)},
+		},
+		Sessions: configpkg.GatewaySessionConfig{TTL: configpkg.Duration(8 * time.Hour), IdleTimeout: configpkg.Duration(30 * time.Minute), RevalidateInterval: configpkg.Duration(5 * time.Minute), MaxPerCodespace: 32, MaxPerUser: 128},
+		Limits:   configpkg.GatewayLimitsConfig{MaxInflightTotal: 4096, MaxInflightPerSession: 32, PublicMaxConnectionsPerEndpoint: 64, PublicMaxConnectionsPerIP: 16, ValidationMaxInflight: 128},
+	}
+}
+
 func TestGatewayConfigValidation(t *testing.T) {
 	t.Parallel()
 
-	config := configpkg.DefaultGatewayConfig()
+	config := validGatewayConfig()
 	require.NoError(t, config.Validate())
 
 	config.Limits.MaxInflightTotal = 4
 	config.Limits.MaxInflightPerSession = 5
 	require.ErrorContains(t, config.Validate(), "not exceed the total")
 
-	config = configpkg.DefaultGatewayConfig()
+	config = validGatewayConfig()
 	config.HTTP.PublicURL = "http://127.0.0.1:18081"
 	require.ErrorContains(t, config.Validate(), "gateway.http.public_url")
 
-	config = configpkg.DefaultGatewayConfig()
+	config = validGatewayConfig()
 	config.SSH.HandshakeTimeout = configpkg.Duration(time.Millisecond)
 	require.ErrorContains(t, config.Validate(), "handshake_timeout")
 }

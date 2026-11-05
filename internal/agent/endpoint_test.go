@@ -25,7 +25,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.NoError(t, err)
 	runtime := &Runtime{Journal: journal}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
-	target := accessTargetForContainer(1, "container", runtime.endpoints)
+	target := accessTargetForContainer(1, "container", runtime.endpoints, nil)
 	runtime.setAccessState(target, nil)
 
 	endpoints, err := runtime.setEndpoint(&codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Public: true, Port: 8080})

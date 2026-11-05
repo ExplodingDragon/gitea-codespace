@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	configpkg "gitea.dev/codespace/internal/config"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"github.com/stretchr/testify/require"
 )
@@ -22,7 +21,7 @@ func TestGatewayControlDeadlinePreservesActivePermit(t *testing.T) {
 }
 
 func TestGatewayConfigurationSnapshotIsComplete(t *testing.T) {
-	want := configpkg.DefaultGatewayConfig()
+	want := validGatewayConfig()
 	want.HTTP.Listen = ":8080"
 	want.HTTP.PublicURL = "https://workspace.example.com"
 	want.HTTP.TrustedProxyCIDRs = []string{"10.0.0.0/8", "2001:db8::/32"}

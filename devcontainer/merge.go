@@ -64,12 +64,24 @@ func Merge(base, override Configuration) Configuration {
 	if override.UserEnvProbe != "" {
 		result.UserEnvProbe = override.UserEnvProbe
 	}
-	result.InitializeCommand = mergeCommand(result.InitializeCommand, override.InitializeCommand)
-	result.OnCreateCommand = mergeCommand(result.OnCreateCommand, override.OnCreateCommand)
-	result.UpdateContentCommand = mergeCommand(result.UpdateContentCommand, override.UpdateContentCommand)
-	result.PostCreateCommand = mergeCommand(result.PostCreateCommand, override.PostCreateCommand)
-	result.PostStartCommand = mergeCommand(result.PostStartCommand, override.PostStartCommand)
-	result.PostAttachCommand = mergeCommand(result.PostAttachCommand, override.PostAttachCommand)
+	if len(override.InitializeCommand.Value) != 0 {
+		result.InitializeCommand = override.InitializeCommand
+	}
+	if len(override.OnCreateCommand.Value) != 0 {
+		result.OnCreateCommand = override.OnCreateCommand
+	}
+	if len(override.UpdateContentCommand.Value) != 0 {
+		result.UpdateContentCommand = override.UpdateContentCommand
+	}
+	if len(override.PostCreateCommand.Value) != 0 {
+		result.PostCreateCommand = override.PostCreateCommand
+	}
+	if len(override.PostStartCommand.Value) != 0 {
+		result.PostStartCommand = override.PostStartCommand
+	}
+	if len(override.PostAttachCommand.Value) != 0 {
+		result.PostAttachCommand = override.PostAttachCommand
+	}
 	if override.WaitFor != "" {
 		result.WaitFor = override.WaitFor
 	}
@@ -107,8 +119,9 @@ func Merge(base, override Configuration) Configuration {
 
 func mergeHostRequirements(base, override HostRequirements) HostRequirements {
 	result := base
-	if override.CPUs > result.CPUs {
-		result.CPUs = override.CPUs
+	if override.CPUs != nil && (result.CPUs == nil || *override.CPUs > *result.CPUs) {
+		value := *override.CPUs
+		result.CPUs = &value
 	}
 	result.Memory = largerByteRequirement(result.Memory, override.Memory)
 	result.Storage = largerByteRequirement(result.Storage, override.Storage)
@@ -277,28 +290,4 @@ func jsonEqual(left, right any) bool {
 	a, _ := json.Marshal(left)
 	b, _ := json.Marshal(right)
 	return string(a) == string(b)
-}
-
-func mergeCommand(base, override Command) Command {
-	if len(base.Value) == 0 {
-		return override
-	}
-	if len(override.Value) == 0 {
-		return base
-	}
-	entries := map[string]json.RawMessage{}
-	add := func(prefix string, command Command) {
-		var object map[string]json.RawMessage
-		if json.Unmarshal(command.Value, &object) == nil && object != nil {
-			for key, value := range object {
-				entries[prefix+"-"+key] = value
-			}
-			return
-		}
-		entries[prefix] = command.Value
-	}
-	add("base", base)
-	add("configuration", override)
-	encoded, _ := json.Marshal(entries)
-	return Command{Value: encoded}
 }

@@ -23,7 +23,6 @@ const editing = ref(false);
 const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
 const name = ref('');
-const verification = ref('');
 const extensionsJSON = ref('[]');
 const featuresJSON = ref('{}');
 const error = ref('');
@@ -34,7 +33,6 @@ const limitsDraft = ref({cpu: '1', memory: '1Gi'});
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   form: form.value,
-  verification: verification.value,
   extensions: extensionsJSON.value,
   features: featuresJSON.value,
   limitsEnabled: limitsEnabled.value,
@@ -116,7 +114,6 @@ function edit(item?: Resource<Environment>) {
   }
   selected.value = item;
   name.value = item?.name ?? '';
-  verification.value = '';
   error.value = '';
   form.value = item
     ? structuredClone(toRaw(item.spec))
@@ -225,7 +222,6 @@ async function save() {
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
-        verification: verification.value,
       },
     );
     items.value = upsertResource(items.value, saved);
@@ -450,12 +446,6 @@ function remove(item: Resource<Environment>) {
       <JsonEditor
         v-model="featuresJSON"
         :label="t('environment.jsonFeaturesLabel')"
-      />
-    </NFormItem>
-    <NFormItem :label="t('environment.verification')">
-      <NInput
-        v-model:value="verification"
-        :placeholder="t('environment.verificationPlaceholder')"
       />
     </NFormItem>
     <div class="form-actions">

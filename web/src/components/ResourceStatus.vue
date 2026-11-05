@@ -50,6 +50,6 @@ const conditionSummary = computed(() => {
     v-else
     size="small"
   >
-    {{ t('common.pendingVerification') }}
+    {{ t('common.pendingStatus') }}
   </NTag>
 </template>

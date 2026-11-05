@@ -156,15 +156,10 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 			t.Errorf("delete E2E EnvironmentTemplate %s: %v", template.Name, err)
 		}
 	})
-	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		if err := c.Get(ctx, client.ObjectKeyFromObject(template), template); err != nil {
-			return err
-		}
-		template.Status.VerifiedGeneration = template.Generation
-		template.Status.Verification = "resource ownership E2E"
-		meta.SetStatusCondition(&template.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: template.Generation})
-		return c.Status().Update(ctx, template)
-	}))
+	_, err := (&TemplateReconciler{Client: c}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(template)})
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(template), template))
+	require.True(t, meta.IsStatusConditionTrue(template.Status.Conditions, "Ready"))
 	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		if err := c.Get(ctx, client.ObjectKeyFromObject(site), site); err != nil {
 			return err
@@ -206,7 +201,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 		return c.Status().Update(ctx, &allocated)
 	}))
 	runtimeController.ManagementNamespace = cluster.managementNamespace
-	_, err := runtimeController.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+	_, err = runtimeController.Reconcile(ctx, ctrl.Request{NamespacedName: key})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, key, &allocated))
 	require.NoError(t, operations.Flush(ctx, &allocated, remote))

@@ -134,6 +134,9 @@ func TestParseImageMetadataPreservesEntrypointOrder(t *testing.T) {
 	if metadata.Configuration.ContainerEnv["ORDER"] != "second" || metadata.Configuration.Image != "" || len(metadata.Configuration.DockerComposeFile) != 0 {
 		t.Fatalf("merged image metadata = %#v", metadata.Configuration)
 	}
+	if len(metadata.Sources) != 2 || metadata.Sources[0].ContainerEnv["ORDER"] != "first" || metadata.Sources[1].ContainerEnv["ORDER"] != "second" {
+		t.Fatalf("image metadata sources = %#v", metadata.Sources)
+	}
 }
 
 func TestDockerProgressStreams(t *testing.T) {

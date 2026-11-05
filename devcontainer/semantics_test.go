@@ -98,12 +98,28 @@ func TestVariableSubstitutionPreservesShellVariables(t *testing.T) {
 	}
 }
 
-func TestHostRequirementsAcceptFractionalCPU(t *testing.T) {
+func TestHostRequirementsRequirePositiveIntegerCPU(t *testing.T) {
 	t.Parallel()
 
-	configuration := Configuration{Image: "ubuntu", HostRequirements: HostRequirements{CPUs: 1.5, Memory: "2gb", Storage: "8gb"}}
+	cpus := 2
+	configuration := Configuration{Image: "ubuntu", HostRequirements: HostRequirements{CPUs: &cpus, Memory: "2gb", Storage: "8gb"}}
 	if err := configuration.Validate(); err != nil {
 		t.Fatalf("validate host requirements: %v", err)
+	}
+	zero := 0
+	configuration.HostRequirements.CPUs = &zero
+	if err := configuration.Validate(); err == nil {
+		t.Fatal("zero CPU requirement was accepted")
+	}
+	var fractional Configuration
+	if err := json.Unmarshal([]byte(`{"image":"ubuntu","hostRequirements":{"cpus":1.5}}`), &fractional); err == nil {
+		t.Fatal("fractional CPU requirement was accepted")
+	}
+	if err := json.Unmarshal([]byte(`{"image":"ubuntu","hostRequirements":{"gpu":{"cores":1.5}}}`), &fractional); err != nil {
+		t.Fatalf("decode GPU configuration: %v", err)
+	}
+	if err := fractional.Validate(); err == nil {
+		t.Fatal("fractional GPU core requirement was accepted")
 	}
 }
 
@@ -123,6 +139,7 @@ func TestMountAndPortAttributes(t *testing.T) {
 			"3100-3199":          {Label: "narrow"},
 			"3150":               {Label: "exact"},
 			`node .+/server\.js`: {Label: "process"},
+			"db:5432":            {Label: "database"},
 		},
 		OtherPortsAttributes: &PortAttributes{Label: "other"},
 	}
@@ -137,6 +154,9 @@ func TestMountAndPortAttributes(t *testing.T) {
 	}
 	if got := PortAttributesForProcess(configuration, 8080, "node /workspace/server.js").Label; got != "process" {
 		t.Fatalf("process port attributes = %q", got)
+	}
+	if got := PortAttributesForAddress(configuration, "db:5432", 5432).Label; got != "database" {
+		t.Fatalf("address port attributes = %q", got)
 	}
 	var zero Port
 	if err := json.Unmarshal([]byte(`0`), &zero); err != nil {
@@ -157,7 +177,7 @@ func TestLockfileRoundTripAndFrozenMode(t *testing.T) {
 	directory := t.TempDir()
 	configurationPath := filepath.Join(directory, "devcontainer.json")
 	lockfile := Lockfile{Features: map[string]LockedFeature{
-		"ghcr.io/example/feature:1": {Version: "1.2.3", Resolved: "ghcr.io/example/feature@sha256:abc", Integrity: "sha256:abc"},
+		"GHCR.IO/Example/Feature:1": {Version: "1.2.3", Resolved: "ghcr.io/example/feature@sha256:abc", Integrity: "sha256:abc", DependsOn: []string{"GHCR.IO/Example/Base:1"}},
 	}}
 	if err := WriteLockfile(configurationPath, lockfile, false); err != nil {
 		t.Fatalf("write lockfile: %v", err)
@@ -165,6 +185,9 @@ func TestLockfileRoundTripAndFrozenMode(t *testing.T) {
 	loaded, exists, err := ReadLockfile(configurationPath)
 	if err != nil || !exists || loaded.Features["ghcr.io/example/feature:1"].Version != "1.2.3" {
 		t.Fatalf("read lockfile = %#v, exists=%v, err=%v", loaded, exists, err)
+	}
+	if dependencies := loaded.Features["ghcr.io/example/feature:1"].DependsOn; len(dependencies) != 1 || dependencies[0] != "ghcr.io/example/base:1" {
+		t.Fatalf("normalized lockfile dependencies = %#v", dependencies)
 	}
 	if err := WriteLockfile(configurationPath, lockfile, true); err != nil {
 		t.Fatalf("validate frozen lockfile: %v", err)

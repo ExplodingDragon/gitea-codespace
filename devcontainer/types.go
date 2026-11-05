@@ -29,6 +29,8 @@ const (
 	LifecycleStagePostCreate LifecycleStage = "postCreateCommand"
 	// LifecycleStagePostStart is ready after postStartCommand.
 	LifecycleStagePostStart LifecycleStage = "postStartCommand"
+	// LifecycleStagePostAttach identifies postAttachCommand execution.
+	LifecycleStagePostAttach LifecycleStage = "postAttachCommand"
 )
 
 // Configuration contains the Dev Container properties used to create an environment.
@@ -196,7 +198,7 @@ type PortAttributes struct {
 
 // HostRequirements contains the minimum resources requested by a Dev Container.
 type HostRequirements struct {
-	CPUs    float64         `json:"cpus"`
+	CPUs    *int            `json:"cpus,omitempty"`
 	Memory  string          `json:"memory"`
 	Storage string          `json:"storage"`
 	GPU     json.RawMessage `json:"gpu"`
@@ -250,9 +252,10 @@ type ResolvedConfiguration struct {
 	AllowedPathRoot           string              `json:"-"`
 	Synthetic                 bool                `json:"-"`
 	FrozenLockfile            bool                `json:"-"`
-	InjectedFeatureReferences map[string]struct{} `json:"-"`
+	PlatformFeatureReferences map[string]struct{} `json:"-"`
 	InstallOnlyFeatures       map[string]struct{} `json:"-"`
 	FeatureEntrypoints        []string            `json:"-"`
+	LifecycleCommands         LifecycleCommands   `json:"-"`
 	Cache                     CacheOptions        `json:"-"`
 }
 

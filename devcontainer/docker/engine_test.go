@@ -21,6 +21,20 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
+func TestDevContainerIDIsStableAndAlphanumeric(t *testing.T) {
+	t.Parallel()
+
+	first := devContainerID("codespace-1")
+	if first != devContainerID("codespace-1") || first == devContainerID("codespace-2") || len(first) != 64 {
+		t.Fatalf("Dev Container IDs are not stable and unique: %q", first)
+	}
+	for _, char := range first {
+		if char < '0' || char > '9' && char < 'a' || char > 'f' {
+			t.Fatalf("Dev Container ID contains %q", char)
+		}
+	}
+}
+
 type cacheFallbackCompose struct {
 	composeapi.Compose
 	cacheFrom []composetypes.StringList
@@ -196,7 +210,7 @@ func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
 	}
 }
 
-func TestMergeInjectedFeaturesOverridesRepositoryFeature(t *testing.T) {
+func TestMergeInjectedFeaturesKeepsDistinctFeatureVersions(t *testing.T) {
 	t.Parallel()
 
 	resolved := &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
@@ -209,17 +223,46 @@ func TestMergeInjectedFeaturesOverridesRepositoryFeature(t *testing.T) {
 	}}); err != nil {
 		t.Fatalf("override repository Feature: %v", err)
 	}
-	if _, exists := resolved.Features["ghcr.io/example/features/tool:1"]; exists {
-		t.Fatal("repository Feature was not replaced")
+	if _, exists := resolved.Features["ghcr.io/example/features/tool:1"]; !exists {
+		t.Fatal("repository Feature was removed")
 	}
-	want := `{"version":"1","channel":"stable"}`
+	want := `{"channel":"stable"}`
 	got := resolved.Features["ghcr.io/example/features/tool:2"]
 	var gotOptions, wantOptions map[string]any
 	if json.Unmarshal(got, &gotOptions) != nil || json.Unmarshal([]byte(want), &wantOptions) != nil || !maps.Equal(gotOptions, wantOptions) {
 		t.Fatalf("merged Feature options = %s, want %s", got, want)
 	}
-	if _, exists := resolved.InjectedFeatureReferences["ghcr.io/example/features/tool:2"]; !exists {
-		t.Fatal("administrator Feature is not recorded as injected")
+	if _, exists := resolved.PlatformFeatureReferences["ghcr.io/example/features/tool:2"]; !exists {
+		t.Fatal("platform-only Feature is not excluded from the repository lockfile")
+	}
+}
+
+func TestMergeInjectedFeaturesKeepsRepositoryLockOwnership(t *testing.T) {
+	t.Parallel()
+
+	const repositoryReference = "ghcr.io/example/features/tool:1"
+	resolved := &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
+		repositoryReference: json.RawMessage(`{"version":"1"}`),
+	}}}
+	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
+		Reference: "GHCR.IO/EXAMPLE/FEATURES/TOOL:1",
+		Origin:    "environment template",
+		Options:   map[string]json.RawMessage{"channel": json.RawMessage(`"stable"`)},
+	}}); err != nil {
+		t.Fatalf("merge platform Feature: %v", err)
+	}
+	if _, excluded := resolved.PlatformFeatureReferences[repositoryReference]; excluded {
+		t.Fatal("repository Feature was excluded from its lockfile after platform options were merged")
+	}
+	if len(resolved.Features) != 1 {
+		t.Fatalf("merged Features = %#v", resolved.Features)
+	}
+	var options map[string]any
+	if err := json.Unmarshal(resolved.Features[repositoryReference], &options); err != nil {
+		t.Fatalf("decode merged Feature: %v", err)
+	}
+	if options["version"] != "1" || options["channel"] != "stable" {
+		t.Fatalf("merged Feature options = %#v", options)
 	}
 }
 

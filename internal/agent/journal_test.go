@@ -82,6 +82,42 @@ func TestJournalSerialExecution(t *testing.T) {
 	require.NoError(t, j.RunOnce(t.Context(), 2, "stop", func(context.Context) error { return nil }))
 }
 
+func TestJournalReplacementPodReusesLifecycleResult(t *testing.T) {
+	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	require.NoError(t, err)
+	defer func() { require.NoError(t, j.Close()) }()
+
+	j.record.Version = 1
+	j.record.Started = 1
+	j.record.Stages = map[string]stageResult{
+		"resume/pod-one":             {},
+		"lifecycle/postStartCommand": {},
+	}
+	require.NoError(t, j.save())
+	userCalls := 0
+	err = j.RunOnce(t.Context(), 1, "resume/pod-two", func(ctx context.Context) error {
+		return j.runActiveStep(ctx, 1, "lifecycle/postStartCommand", func(context.Context) error {
+			userCalls++
+			return nil
+		})
+	})
+	require.ErrorContains(t, err, "unknown result")
+	require.Zero(t, userCalls)
+
+	platformCalls := 0
+	for _, pod := range []string{"pod-three", "pod-four"} {
+		require.NoError(t, j.RunOnce(t.Context(), 2, "resume/"+pod, func(ctx context.Context) error {
+			platformCalls++
+			return j.runActiveStep(ctx, 2, "lifecycle/postStartCommand", func(context.Context) error {
+				userCalls++
+				return nil
+			})
+		}))
+	}
+	require.Equal(t, 2, platformCalls)
+	require.Equal(t, 1, userCalls)
+}
+
 func TestJournalRejectsInvalidRecoveryFiles(t *testing.T) {
 	directory := t.TempDir()
 	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}

@@ -28,9 +28,11 @@ import (
 )
 
 const (
-	runtimeVolume       = "/var/lib/codespace"
-	runtimeRunDirectory = "/run/codespace"
-	workspaceRoot       = runtimeVolume + "/workspaces"
+	runtimeVolume         = "/var/lib/codespace"
+	runtimeRunDirectory   = "/run/codespace"
+	runtimeGiteaTokenPath = runtimeRunDirectory + "/gitea-token"
+	runtimeGitDirectory   = runtimeRunDirectory + "/git"
+	workspaceRoot         = runtimeVolume + "/workspaces"
 )
 
 var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
@@ -305,13 +307,13 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
-		GiteaURL: trust.url, GiteaCustomCA: trust.customCA, Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
+		GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
 	})
 	cleanupErr := cleanupCredentials()
 	if applyErr != nil || cleanupErr != nil {
 		return errors.Join(applyErr, cleanupErr)
 	}
-	endpoints, err := devcontainerruntime.ConfiguredEndpoints(state.Configuration)
+	endpoints, _, err := devcontainerruntime.ConfiguredEndpoints(state)
 	if err == nil {
 		err = r.replaceConfiguredEndpoints(endpoints)
 	}
@@ -352,7 +354,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
-		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.url, GiteaCustomCA: trust.customCA, Secrets: secrets, DevContainer: r.DevContainer,
+		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer,
 	})
 	if err != nil {
 		return err
@@ -383,18 +385,26 @@ func (r *Runtime) accessTarget(version int64, state *devcontainer.State) (*agent
 	if err := r.loadEndpointsLocked(); err != nil {
 		return nil, err
 	}
-	return accessTargetForContainer(version, state.PrimaryContainerID, r.endpoints), nil
+	_, containers, err := devcontainerruntime.ConfiguredEndpoints(state)
+	if err != nil {
+		return nil, err
+	}
+	return accessTargetForContainer(version, state.PrimaryContainerID, r.endpoints, containers), nil
 }
 
-func accessTargetForContainer(version int64, primaryContainerID string, endpoints []*codespacev1.RuntimeEndpoint) *agentv1.AccessTarget {
+func accessTargetForContainer(version int64, primaryContainerID string, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
 	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, Ready: true}
 	target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
 		Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},
 		ContainerId: primaryContainerID, Port: runtimeendpoint.WorkspaceEndpointPort,
 	})
 	for _, endpoint := range endpoints {
+		containerID := containers[endpoint.EndpointId]
+		if containerID == "" {
+			containerID = primaryContainerID
+		}
 		target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
-			Endpoint: proto.Clone(endpoint).(*codespacev1.RuntimeEndpoint), ContainerId: primaryContainerID, Port: endpoint.Port,
+			Endpoint: proto.Clone(endpoint).(*codespacev1.RuntimeEndpoint), ContainerId: containerID, Port: endpoint.Port,
 		})
 	}
 	return target

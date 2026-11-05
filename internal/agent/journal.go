@@ -172,11 +172,26 @@ func (j *Journal) Close() error {
 // RunOnce records intent before invoking a side effect. An interrupted invocation
 // is not replayed because its external result cannot be inferred from a missing ack.
 func (j *Journal) RunOnce(ctx context.Context, version int64, name string, run func(context.Context) error) error {
+	return j.runStage(ctx, version, name, false, run)
+}
+
+// runActiveStep records a stable user-command stage inside the current
+// Pod-local operation stage. A replacement Pod may repeat platform setup, but
+// it observes the same command result for the operation version.
+func (j *Journal) runActiveStep(ctx context.Context, version int64, name string, run func(context.Context) error) error {
+	return j.runStage(ctx, version, name, true, run)
+}
+
+func (j *Journal) runStage(ctx context.Context, version int64, name string, nested bool, run func(context.Context) error) error {
 	if version <= 0 || name == "" || len(name) > 128 || run == nil {
 		return fmt.Errorf("execution stage identity is invalid")
 	}
 	j.mu.Lock()
-	if j.active {
+	if nested && (!j.active || j.record.Version != version) {
+		j.mu.Unlock()
+		return fmt.Errorf("execution step is outside its operation stage")
+	}
+	if !nested && j.active {
 		j.mu.Unlock()
 		return fmt.Errorf("previous execution stage is still running")
 	}
@@ -209,7 +224,9 @@ func (j *Journal) RunOnce(ctx context.Context, version int64, name string, run f
 	}
 	j.record.Stages[name] = stageResult{}
 	err := j.save()
-	j.active = err == nil
+	if !nested {
+		j.active = err == nil
+	}
 	j.mu.Unlock()
 	if err != nil {
 		return err
@@ -217,7 +234,9 @@ func (j *Journal) RunOnce(ctx context.Context, version int64, name string, run f
 	runErr := run(ctx)
 	j.mu.Lock()
 	defer j.mu.Unlock()
-	j.active = false
+	if !nested {
+		j.active = false
+	}
 	j.record.Stages[name] = stageResult{Complete: true, Succeeded: runErr == nil}
 	if err := j.save(); err != nil {
 		j.record.Stages[name] = stageResult{}

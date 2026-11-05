@@ -55,6 +55,18 @@ func TestLoadRepositoryConfiguration(t *testing.T) {
 	}
 }
 
+func TestComposeWorkspaceFolderDefaultsToRoot(t *testing.T) {
+	t.Parallel()
+
+	configuration := Configuration{DockerComposeFile: StringList{"compose.yaml"}, Service: "workspace"}
+	if err := configuration.Finalize(); err != nil {
+		t.Fatalf("finalize Compose configuration: %v", err)
+	}
+	if configuration.WorkspaceFolder != "/" {
+		t.Fatalf("Compose workspaceFolder = %q", configuration.WorkspaceFolder)
+	}
+}
+
 func TestLoadRejectsConfigurationSymlinkOutsideWorkspace(t *testing.T) {
 	t.Parallel()
 

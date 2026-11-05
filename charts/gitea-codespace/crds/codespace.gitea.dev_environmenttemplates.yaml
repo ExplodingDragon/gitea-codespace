@@ -249,13 +249,6 @@ spec:
                 x-kubernetes-list-map-keys:
                 - type
                 x-kubernetes-list-type: map
-              verification:
-                type: string
-              verifiedGeneration:
-                description: Verification is an administrator's reference to a real
-                  runtime/storage test record.
-                format: int64
-                type: integer
             type: object
         required:
         - spec

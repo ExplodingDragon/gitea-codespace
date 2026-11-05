@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -44,7 +45,7 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 		}
 		for _, cloneURL := range repositoryCloneURLs(repository) {
 			if cloneURL != "" {
-				return configureRepositoryCredentials(ctx, owner, target, cloneURL)
+				return configureRepositoryCredentials(ctx, owner, target, cloneURL, trust)
 			}
 		}
 		return fmt.Errorf("repository clone URL is missing")
@@ -62,10 +63,11 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 			return err
 		}
 		if err := runGit(ctx, owner, "", trust, stdout, stderr, cloneURL, "clone", "--no-checkout", cloneURL, temporary); err != nil {
-			failures = append(failures, err)
+			protocol, endpoint := repositoryCloneEndpoint(cloneURL)
+			failures = append(failures, fmt.Errorf("clone through %s %s: %w", protocol, endpoint, err))
 			continue
 		}
-		if err := configureRepositoryCredentials(ctx, owner, temporary, cloneURL); err != nil {
+		if err := configureRepositoryCredentials(ctx, owner, temporary, cloneURL, trust); err != nil {
 			failures = append(failures, err)
 			_ = os.RemoveAll(temporary)
 			continue
@@ -91,12 +93,30 @@ func repositoryCloneURLs(repository *codespacev1.RepositoryCheckout) []string {
 	return urls
 }
 
-func configureRepositoryCredentials(ctx context.Context, owner devcontainer.HostUser, directory, cloneURL string) error {
+func repositoryCloneEndpoint(cloneURL string) (string, string) {
+	parsed, err := url.Parse(cloneURL)
+	if err == nil && parsed.Scheme != "" && parsed.Host != "" {
+		return strings.ToUpper(parsed.Scheme), parsed.Host
+	}
+	host, _, found := strings.Cut(cloneURL, ":")
+	if !found {
+		host = cloneURL
+	}
+	if _, value, found := strings.Cut(host, "@"); found {
+		host = value
+	}
+	return "SSH", host
+}
+
+func configureRepositoryCredentials(ctx context.Context, owner devcontainer.HostUser, directory, cloneURL string, trust siteTrust) error {
 	var key, value string
 	if strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://") {
-		key, value = "credential.helper", "!"+runtimeRunDirectory+"/bin/gitea-codespace-git-credential"
+		if trust.giteaURL == "" {
+			return fmt.Errorf("configure repository credentials: Gitea URL is missing")
+		}
+		key, value = "credential."+trust.giteaURL+".helper", gitCredentialCommand(runtimeGiteaTokenPath)
 	} else {
-		key, value = "core.sshCommand", runtimeRunDirectory+"/bin/gitea-codespace-git-ssh"
+		key, value = "core.sshCommand", gitSSHCommand(runtimeGitDirectory)
 	}
 	command := exec.CommandContext(ctx, "git", "-C", directory, "config", key, value)
 	configureGitCommand(command, owner, "", siteTrust{})
@@ -175,6 +195,6 @@ func configureGitCommand(command *exec.Cmd, owner devcontainer.HostUser, cloneUR
 	httpClone := strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://")
 	command.Env = trust.gitEnvironment(command.Env, httpClone)
 	if cloneURL != "" && !httpClone {
-		command.Env = append(command.Env, "GIT_SSH_COMMAND="+runtimeRunDirectory+"/bin/gitea-codespace-git-ssh")
+		command.Env = append(command.Env, "GIT_SSH_COMMAND="+gitSSHCommand(runtimeGitDirectory))
 	}
 }

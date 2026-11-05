@@ -147,9 +147,6 @@ type RuntimeConfiguration struct {
 }
 
 type EnvironmentTemplateStatus struct {
-	// Verification is an administrator's reference to a real runtime/storage test record.
-	VerifiedGeneration int64  `json:"verifiedGeneration,omitempty"`
-	Verification       string `json:"verification,omitempty"`
 	// +listType=map
 	// +listMapKey=type
 	Conditions []metav1.Condition `json:"conditions,omitempty"`

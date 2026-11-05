@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"path/filepath"
@@ -97,6 +98,20 @@ func reservedRuntimeUser(name string) bool {
 	default:
 		return false
 	}
+}
+
+func runtimeLocalEnvironment(hostUser devcontainer.HostUser) map[string]string {
+	environment := map[string]string{
+		"HOME":    hostUser.Home,
+		"LOGNAME": hostUser.Name,
+		"USER":    hostUser.Name,
+	}
+	for _, name := range []string{"PATH", "SHELL"} {
+		if value := os.Getenv(name); value != "" {
+			environment[name] = value
+		}
+	}
+	return environment
 }
 
 func (r *Runtime) saveHostUser(hostUser devcontainer.HostUser) error {

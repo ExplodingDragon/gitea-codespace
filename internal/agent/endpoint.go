@@ -215,7 +215,11 @@ func (r *Runtime) updateTargetEndpointsLocked() (*agentv1.AccessTarget, bool, er
 	if r.target.Version == int64(^uint64(0)>>1) {
 		return nil, false, fmt.Errorf("runtime endpoint target version is exhausted")
 	}
-	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.endpoints)
+	containers := make(map[string]string, len(r.target.Endpoints))
+	for _, endpoint := range r.target.Endpoints {
+		containers[endpoint.Endpoint.EndpointId] = endpoint.ContainerId
+	}
+	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.endpoints, containers)
 	r.target = proto.Clone(target).(*agentv1.AccessTarget)
 	return target, true, nil
 }
@@ -234,7 +238,7 @@ func (r *Runtime) notifyTargetChanged(target *agentv1.AccessTarget) {
 }
 
 func validateRuntimeEndpoint(endpoint *codespacev1.RuntimeEndpoint) error {
-	if endpoint == nil || endpoint.Port == 0 || endpoint.Port > 65535 || endpoint.EndpointId != runtimeendpoint.PortEndpointID(uint16(endpoint.Port)) {
+	if endpoint == nil || endpoint.Port == 0 || endpoint.Port > 65535 || !runtimeendpoint.IsPortEndpointID(endpoint.EndpointId, uint16(endpoint.Port)) {
 		return fmt.Errorf("endpoint identity or port is invalid")
 	}
 	if err := runtimeendpoint.ValidateLabel(endpoint.Label); err != nil {

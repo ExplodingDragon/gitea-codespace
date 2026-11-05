@@ -5,11 +5,12 @@ package devcontainer
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 )
 
 // StateFormatVersion is the only state representation accepted by this package.
-const StateFormatVersion = 1
+const StateFormatVersion = 2
 
 // HostUser is the local identity whose UID and GID are mapped to remoteUser.
 type HostUser struct {
@@ -30,6 +31,7 @@ type State struct {
 	WorkspaceFolder     string            `json:"workspace_folder"`
 	ComposeProject      string            `json:"compose_project,omitempty"`
 	PrimaryService      string            `json:"primary_service,omitempty"`
+	ComposeContainers   map[string]string `json:"compose_containers,omitempty"`
 	PrimaryContainerID  string            `json:"primary_container_id"`
 	RelatedContainerIDs []string          `json:"related_container_ids"`
 	Configuration       Configuration     `json:"configuration"`
@@ -37,7 +39,7 @@ type State struct {
 	RemoteWorkdir       string            `json:"remote_workdir"`
 	RemoteEnvironment   map[string]string `json:"remote_environment,omitempty"`
 	FeatureDigests      map[string]string `json:"feature_digests,omitempty"`
-	Lifecycle           LifecycleState    `json:"lifecycle"`
+	LifecycleCommands   LifecycleCommands `json:"lifecycle_commands"`
 }
 
 // Validate checks the state identity and the resources required for future operations.
@@ -60,6 +62,13 @@ func (s *State) Validate() error {
 	if strings.TrimSpace(s.RemoteUser) == "" {
 		return fmt.Errorf("dev container remote user is empty")
 	}
+	if len(s.Configuration.OnCreateCommand.Value) != 0 ||
+		len(s.Configuration.UpdateContentCommand.Value) != 0 ||
+		len(s.Configuration.PostCreateCommand.Value) != 0 ||
+		len(s.Configuration.PostStartCommand.Value) != 0 ||
+		len(s.Configuration.PostAttachCommand.Value) != 0 {
+		return fmt.Errorf("dev container state contains flattened lifecycle commands")
+	}
 	seen := map[string]struct{}{s.PrimaryContainerID: {}}
 	for _, id := range s.RelatedContainerIDs {
 		id = strings.TrimSpace(id)
@@ -74,12 +83,54 @@ func (s *State) Validate() error {
 	if (s.ComposeProject == "") != (s.PrimaryService == "") {
 		return fmt.Errorf("dev container Compose identity is incomplete")
 	}
+	if s.ComposeProject == "" {
+		if len(s.ComposeContainers) != 0 {
+			return fmt.Errorf("non-Compose Dev Container contains Compose services")
+		}
+	} else {
+		if s.ComposeContainers[s.PrimaryService] != s.PrimaryContainerID {
+			return fmt.Errorf("dev container primary Compose service is incomplete")
+		}
+		mapped := make(map[string]string, len(s.ComposeContainers))
+		for service, id := range s.ComposeContainers {
+			if strings.TrimSpace(service) == "" {
+				return fmt.Errorf("dev container Compose service is empty")
+			}
+			if _, ok := seen[id]; !ok {
+				return fmt.Errorf("dev container Compose service %s references an unknown container", service)
+			}
+			if existing := mapped[id]; existing != "" {
+				return fmt.Errorf("dev container Compose services %s and %s reference the same container", existing, service)
+			}
+			mapped[id] = service
+		}
+		if len(mapped) != len(seen) {
+			return fmt.Errorf("dev container Compose service mapping is incomplete")
+		}
+	}
 	return nil
 }
 
-// LifecycleState records one-time lifecycle commands that completed successfully.
-type LifecycleState struct {
-	OnCreateComplete      bool `json:"on_create_complete"`
-	UpdateContentComplete bool `json:"update_content_complete"`
-	PostCreateComplete    bool `json:"post_create_complete"`
+// LifecycleCommands preserves command sources in their required execution order.
+// Commands within one entry retain the Dev Container object form and may run in parallel.
+type LifecycleCommands struct {
+	OnCreate      []Command `json:"on_create,omitempty"`
+	UpdateContent []Command `json:"update_content,omitempty"`
+	PostCreate    []Command `json:"post_create,omitempty"`
+	PostStart     []Command `json:"post_start,omitempty"`
+	PostAttach    []Command `json:"post_attach,omitempty"`
+}
+
+// Append adds the lifecycle commands contributed by one metadata source.
+func (c *LifecycleCommands) Append(configuration Configuration) {
+	appendCommand := func(commands *[]Command, command Command) {
+		if len(command.Value) != 0 {
+			*commands = append(*commands, Command{Value: slices.Clone(command.Value)})
+		}
+	}
+	appendCommand(&c.OnCreate, configuration.OnCreateCommand)
+	appendCommand(&c.UpdateContent, configuration.UpdateContentCommand)
+	appendCommand(&c.PostCreate, configuration.PostCreateCommand)
+	appendCommand(&c.PostStart, configuration.PostStartCommand)
+	appendCommand(&c.PostAttach, configuration.PostAttachCommand)
 }

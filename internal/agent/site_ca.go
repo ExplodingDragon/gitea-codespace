@@ -14,19 +14,18 @@ import (
 	"sort"
 	"strings"
 
+	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 )
 
 const (
-	runtimeCADirectory    = runtimeRunDirectory + "/ca"
-	runtimeCABundlePath   = runtimeCADirectory + "/bundle.pem"
-	containerCADirectory  = "/var/lib/gitea-codespace/ca"
-	containerCABundlePath = containerCADirectory + "/bundle.pem"
+	runtimeCADirectory  = runtimeRunDirectory + "/ca"
+	runtimeCABundlePath = runtimeCADirectory + "/bundle.pem"
 )
 
 type siteTrust struct {
-	url      string
+	giteaURL string
 	customCA bool
 }
 
@@ -34,11 +33,11 @@ func prepareSiteTrust(options *agentv1.RuntimeOptions, accessURL, identityDirect
 	if options == nil {
 		return siteTrust{}, fmt.Errorf("runtime site trust is missing")
 	}
-	canonicalURL, err := validateGiteaURL(options.GiteaUrl)
+	canonicalURL, err := canonicalGiteaURL(options.GiteaUrl)
 	if err != nil {
 		return siteTrust{}, err
 	}
-	canonicalAccessURL, err := validateGiteaURL(accessURL)
+	canonicalAccessURL, err := canonicalGiteaURL(accessURL)
 	if err != nil {
 		return siteTrust{}, fmt.Errorf("runtime access Gitea URL: %w", err)
 	}
@@ -61,7 +60,7 @@ func prepareSiteTrust(options *agentv1.RuntimeOptions, accessURL, identityDirect
 	if err != nil {
 		return siteTrust{}, fmt.Errorf("runtime platform CA bundle: %w", err)
 	}
-	return siteTrust{url: canonicalURL, customCA: customCA}, nil
+	return siteTrust{giteaURL: canonicalURL, customCA: customCA}, nil
 }
 
 func writePlatformCABundle(directory, internalBundle, siteBundle string) (bool, error) {
@@ -122,19 +121,29 @@ func writePlatformCABundle(directory, internalBundle, siteBundle string) (bool, 
 }
 
 func replaceCAFile(path string, content []byte) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".ca-*")
+	return replaceFileAtomically(path, content, 0o444, nil)
+}
+
+func replaceFileAtomically(path string, content []byte, mode os.FileMode, owner *devcontainer.HostUser) error {
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".replace-*")
 	if err != nil {
 		return err
 	}
 	temporaryName := temporary.Name()
 	defer func() { _ = os.Remove(temporaryName) }()
-	if err := temporary.Chmod(0o444); err != nil {
-		_ = temporary.Close()
-		return err
-	}
 	if _, err := temporary.Write(content); err != nil {
 		_ = temporary.Close()
 		return err
+	}
+	if err := temporary.Chmod(mode); err != nil {
+		_ = temporary.Close()
+		return err
+	}
+	if owner != nil {
+		if err := temporary.Chown(int(owner.UID), int(owner.GID)); err != nil {
+			_ = temporary.Close()
+			return err
+		}
 	}
 	if err := temporary.Sync(); err != nil {
 		_ = temporary.Close()
@@ -146,7 +155,7 @@ func replaceCAFile(path string, content []byte) error {
 	return os.Rename(temporaryName, path)
 }
 
-func validateGiteaURL(raw string) (string, error) {
+func canonicalGiteaURL(raw string) (string, error) {
 	value := strings.TrimRight(strings.TrimSpace(raw), "/")
 	u, err := url.Parse(value)
 	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
@@ -169,11 +178,11 @@ func (t siteTrust) gitEnvironment(environment []string, includeCredential bool) 
 	environment = append(environment, fmt.Sprintf("GIT_CONFIG_COUNT=%d", count))
 	index := 0
 	if includeCredential {
-		environment = append(environment, fmt.Sprintf("GIT_CONFIG_KEY_%d=credential.helper", index), fmt.Sprintf("GIT_CONFIG_VALUE_%d=!%s/bin/gitea-codespace-git-credential", index, runtimeRunDirectory))
+		environment = append(environment, fmt.Sprintf("GIT_CONFIG_KEY_%d=credential.%s.helper", index, t.giteaURL), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, gitCredentialCommand(runtimeGiteaTokenPath)))
 		index++
 	}
 	if t.customCA {
-		environment = append(environment, fmt.Sprintf("GIT_CONFIG_KEY_%d=http.%s/.sslCAInfo", index, t.url), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, runtimeCABundlePath))
+		environment = append(environment, fmt.Sprintf("GIT_CONFIG_KEY_%d=http.%s/.sslCAInfo", index, t.giteaURL), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", index, runtimeCABundlePath))
 	}
 	return environment
 }

@@ -49,20 +49,15 @@ func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request
 		if current.Generation != observedGeneration {
 			return errObservedResourceChanged
 		}
-		condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Attested", Message: "An administrator recorded validation for this Runtime and storage configuration", ObservedGeneration: observedGeneration}
+		condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "DependenciesReady", Message: "RuntimeClass and StorageClass dependencies are available", ObservedGeneration: observedGeneration}
 		if problem != nil {
 			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "DependencyUnavailable", problem.Error()
-		} else if current.Status.VerifiedGeneration != observedGeneration || current.Status.Verification == "" {
-			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "VerificationRequired", "Record an administrator validation reference before publishing this template"
 		}
 		meta.SetStatusCondition(&current.Status.Conditions, condition)
 		return nil
 	})
-	if err == errObservedResourceChanged {
-		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
-	}
 	if err != nil {
-		return ctrl.Result{}, err
+		return reconcileStatusError(err)
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
 }

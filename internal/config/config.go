@@ -102,19 +102,6 @@ type RuntimeCacheUpstreamConfig struct {
 	Allow []string `json:"allow"`
 }
 
-// DefaultGatewayConfig returns the values used when an administrator creates a Gateway.
-func DefaultGatewayConfig() GatewayConfig {
-	return GatewayConfig{
-		HTTP: GatewayHTTPConfig{Listen: ":18081", PublicURL: "http://gateway.example.com:18081"},
-		SSH: GatewaySSHConfig{
-			Listen: ":2222", PublicAddr: "gateway.example.com:22", HandshakeTimeout: Duration(30 * time.Second), MaxChannelsPerConnection: 32,
-			Auth: GatewaySSHAuthConfig{MaxAttemptsPerIP: 30, MaxAttemptsPerCodespace: 20, MaxAttemptsPerIPCodespace: 10, MaxAttemptsPerPublicKey: 30, FailureWindow: Duration(10 * time.Minute)},
-		},
-		Sessions: GatewaySessionConfig{TTL: Duration(8 * time.Hour), IdleTimeout: Duration(30 * time.Minute), RevalidateInterval: Duration(5 * time.Minute), MaxPerCodespace: 32, MaxPerUser: 128},
-		Limits:   GatewayLimitsConfig{MaxInflightTotal: 4096, MaxInflightPerSession: 32, PublicMaxConnectionsPerEndpoint: 64, PublicMaxConnectionsPerIP: 16, ValidationMaxInflight: 128},
-	}
-}
-
 // Validate checks whether the Gateway can start and expose stable public addresses.
 func (c GatewayConfig) Validate() error {
 	if err := c.HTTP.validate(); err != nil {

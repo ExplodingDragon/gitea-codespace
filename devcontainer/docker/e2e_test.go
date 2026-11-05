@@ -100,7 +100,9 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 	if _, err := engine.Stop(ctx, state); err != nil {
 		t.Fatalf("stop official interoperability environment: %v", err)
 	}
-	state, err = engine.Start(ctx, state, nil, nil)
+	state, err = engine.Start(ctx, state, devcontainer.HostUser{
+		Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME"),
+	}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("resume official interoperability environment: %v", err)
 	}
@@ -274,9 +276,10 @@ test "$(cat /workspace/.on-create)" = repository
 test "$(cat /workspace/.update-content)" = update
 test "$(cat /workspace/.post-create-first)" = first
 test "$(cat /workspace/.post-create-second)" = second
+test "$(wc -c < /workspace/.initialize)" = %d
 test "$(wc -c < /workspace/.post-start)" = %d
 if [ %d -gt 0 ]; then test "$(wc -c < /workspace/.post-attach)" = %d; fi`,
-		strconv.Itoa(uid), strconv.Itoa(gid), startCount, attachCount, attachCount)
+		strconv.Itoa(uid), strconv.Itoa(gid), startCount, startCount, attachCount, attachCount)
 	if _, stderr, err := execForTest(engine, ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", command}, state.RemoteEnvironment, nil); err != nil {
 		t.Fatalf("verify official interoperability environment: %v\n%s", err, strings.TrimSpace(string(stderr)))
 	}

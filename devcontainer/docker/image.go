@@ -77,7 +77,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 	imageConfiguration := metadata.Configuration
 	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
 	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, repositoryConfiguration)
+	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration)
 }
 
 func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cache devcontainer.CacheOptions) (string, error) {
@@ -209,6 +209,7 @@ func streamDockerPullProgress(reader io.Reader, output io.Writer) error {
 
 type imageMetadata struct {
 	Configuration devcontainer.Configuration
+	Sources       []devcontainer.Configuration
 	Entrypoints   []string
 }
 
@@ -334,7 +335,9 @@ func parseImageMetadata(raw []byte) (imageMetadata, error) {
 	}
 	var metadata imageMetadata
 	for _, value := range values {
-		metadata.Configuration = devcontainer.Merge(metadata.Configuration, value.configuration())
+		configuration := value.configuration()
+		metadata.Sources = append(metadata.Sources, configuration)
+		metadata.Configuration = devcontainer.Merge(metadata.Configuration, configuration)
 		if entrypoint := strings.TrimSpace(value.Entrypoint); entrypoint != "" {
 			metadata.Entrypoints = append(metadata.Entrypoints, entrypoint)
 		}

@@ -15,10 +15,11 @@
   },
   "features": {
     "ghcr.io/devcontainers/features/common-utils:2": {
-      "installZsh": true,
+      "installZsh": "true",
       "username": "automatic"
     }
   },
+  "initializeCommand": "printf x >> .initialize",
   "onCreateCommand": "printf repository > /workspace/.on-create",
   "updateContentCommand": ["/bin/sh", "-c", "printf update > /workspace/.update-content"],
   "postCreateCommand": {

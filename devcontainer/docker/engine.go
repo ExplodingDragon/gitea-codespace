@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,7 +20,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"uuid"
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
@@ -64,6 +64,10 @@ type PrepareLifecycleFunc func(context.Context, *Engine, *devcontainer.State) er
 // ReadyFunc reports the first lifecycle stage selected by waitFor.
 type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage)
 
+// RunLifecycleFunc durably executes one lifecycle stage. Callers may leave it
+// nil when no external journal is used.
+type RunLifecycleFunc func(context.Context, devcontainer.LifecycleStage, func(context.Context) error) error
+
 // CreateOptions contains caller identity, configuration input, and product integration hooks.
 type CreateOptions struct {
 	OwnerID          string
@@ -80,6 +84,7 @@ type CreateOptions struct {
 	FrozenLockfile   bool
 	Cache            devcontainer.CacheOptions
 	PrepareLifecycle PrepareLifecycleFunc
+	RunLifecycle     RunLifecycleFunc
 	Ready            ReadyFunc
 }
 
@@ -131,7 +136,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if strings.TrimSpace(options.OwnerID) == "" {
 		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
-	environmentID := uuid.NewV4().String()
+	environmentID := devContainerID(options.OwnerID)
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
 		Workspace:       options.Workspace,
 		Source:          options.Source,
@@ -161,13 +166,19 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return nil, err
 	}
-	if err := runInitializeCommand(ctx, resolved.InitializeCommand, options.HostUser, resolved.Workspace, options.LocalEnvironment, e.stdout, e.stderr); err != nil {
+	if err := runLifecycleStage(ctx, options.RunLifecycle, devcontainer.LifecycleStageInitialize, resolved.InitializeCommand, func(ctx context.Context) error {
+		return runInitializeCommand(ctx, resolved.InitializeCommand, options.HostUser, resolved.Workspace, options.LocalEnvironment, e.stdout, e.stderr)
+	}); err != nil {
 		return nil, fmt.Errorf("run initializeCommand: %w", err)
 	}
 
 	workspaceFolder := strings.TrimSpace(resolved.WorkspaceFolder)
 	if workspaceFolder == "" {
-		workspaceFolder = filepath.Join(devcontainer.DefaultWorkspaceFolder, filepath.Base(resolved.Workspace))
+		if len(resolved.DockerComposeFile) > 0 {
+			workspaceFolder = "/"
+		} else {
+			workspaceFolder = filepath.Join(devcontainer.DefaultWorkspaceFolder, filepath.Base(resolved.Workspace))
+		}
 	}
 	resolved.WorkspaceFolder = workspaceFolder
 	labels := maps.Clone(options.Labels)
@@ -181,62 +192,72 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var related []string
 	var featureDigests map[string]string
 	var primaryService string
+	var composeContainers map[string]string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser)
+		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser)
 	} else {
 		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser)
 	}
 	if err != nil {
 		return nil, err
 	}
+	stateConfiguration := resolved.Configuration
+	stateConfiguration.OnCreateCommand = devcontainer.Command{}
+	stateConfiguration.UpdateContentCommand = devcontainer.Command{}
+	stateConfiguration.PostCreateCommand = devcontainer.Command{}
+	stateConfiguration.PostStartCommand = devcontainer.Command{}
+	stateConfiguration.PostAttachCommand = devcontainer.Command{}
 	environment := &devcontainer.State{
 		Version:             devcontainer.StateFormatVersion,
 		ID:                  environmentID,
 		OwnerID:             options.OwnerID,
 		ConfigurationPath:   resolved.ConfigurationPath,
 		ConfigurationSHA256: resolved.ContentSHA256,
-		Configuration:       resolved.Configuration,
+		Configuration:       stateConfiguration,
 		Workspace:           resolved.Workspace,
 		WorkspaceFolder:     workspaceFolder,
 		ComposeProject:      composeProject,
 		PrimaryService:      primaryService,
+		ComposeContainers:   composeContainers,
 		PrimaryContainerID:  primaryID,
 		RelatedContainerIDs: related,
 		RemoteUser:          strings.TrimSpace(resolved.RemoteUser),
 		RemoteWorkdir:       workspaceFolder,
 		RemoteEnvironment:   map[string]string{},
 		FeatureDigests:      featureDigests,
+		LifecycleCommands:   resolved.LifecycleCommands,
 	}
-	if err := e.initializeContainer(ctx, environment, options.Secrets, options.PrepareLifecycle, options.Ready); err != nil {
+	if err := environment.Validate(); err != nil {
 		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
-	if err := environment.Validate(); err != nil {
+	if err := e.initializeContainer(ctx, environment, options.Secrets, options.PrepareLifecycle, options.RunLifecycle, options.Ready); err != nil {
 		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
 	return environment, nil
 }
 
+func devContainerID(ownerID string) string {
+	digest := sha256.Sum256([]byte(ownerID))
+	return hex.EncodeToString(digest[:])
+}
+
 func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injected []devcontainer.InjectedFeature) error {
-	resolved.InjectedFeatureReferences = map[string]struct{}{}
-	resolved.InstallOnlyFeatures = map[string]struct{}{}
-	featureOrigins := make(map[string]string, len(resolved.Features)+len(injected))
-	featureIDs := make(map[string]string, len(resolved.Features)+len(injected))
+	repositoryFeatures := make(map[string]string, len(resolved.Features))
 	for reference := range resolved.Features {
-		featureOrigins[reference] = "repository"
-		featureID, err := featureReferenceID(reference)
-		if err != nil {
-			return err
+		canonicalReference := strings.ToLower(strings.TrimSpace(reference))
+		if existing := repositoryFeatures[canonicalReference]; existing != "" {
+			return fmt.Errorf("repository Dev Container Features %s and %s differ only by case", existing, reference)
 		}
-		if existing, ok := featureIDs[featureID]; ok {
-			return fmt.Errorf("dev container feature %s conflicts with %s in repository configuration", reference, existing)
-		}
-		featureIDs[featureID] = reference
+		repositoryFeatures[canonicalReference] = reference
 	}
+	resolved.PlatformFeatureReferences = map[string]struct{}{}
+	resolved.InstallOnlyFeatures = map[string]struct{}{}
 	for _, feature := range injected {
 		reference := strings.TrimSpace(feature.Reference)
+		canonicalReference := strings.ToLower(reference)
 		origin := strings.TrimSpace(feature.Origin)
 		if reference == "" || origin == "" {
 			return fmt.Errorf("injected Dev Container Feature identity is incomplete")
@@ -245,44 +266,42 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 		if err != nil {
 			return fmt.Errorf("encode %s Feature %s options: %w", origin, reference, err)
 		}
-		featureID, err := featureReferenceID(reference)
-		if err != nil {
-			return err
+		repositoryReference, repositoryOwned := repositoryFeatures[canonicalReference]
+		if repositoryOwned {
+			reference = repositoryReference
 		}
-		if existing, ok := featureIDs[featureID]; ok {
-			if featureOrigins[existing] != "repository" {
-				return fmt.Errorf("dev container feature %s from %s conflicts with %s from %s", reference, origin, existing, featureOrigins[existing])
-			}
-			featureOptions, err = mergeFeatureOptions(resolved.Features[existing], featureOptions)
+		if existing, ok := resolved.Features[reference]; ok {
+			featureOptions, err = mergeFeatureOptions(existing, featureOptions)
 			if err != nil {
-				return fmt.Errorf("merge dev container feature %s from repository and %s: %w", existing, origin, err)
+				return fmt.Errorf("merge dev container feature %s from repository and %s: %w", reference, origin, err)
 			}
-			delete(resolved.Features, existing)
-			delete(featureOrigins, existing)
-			delete(resolved.InstallOnlyFeatures, existing)
 		}
 		if resolved.Features == nil {
 			resolved.Features = map[string]json.RawMessage{}
 		}
 		resolved.Features[reference] = featureOptions
-		resolved.InjectedFeatureReferences[reference] = struct{}{}
+		if !repositoryOwned {
+			resolved.PlatformFeatureReferences[canonicalReference] = struct{}{}
+		}
 		if feature.InstallOnly {
 			resolved.InstallOnlyFeatures[reference] = struct{}{}
 		}
-		featureOrigins[reference] = origin
-		featureIDs[featureID] = reference
 	}
 	return nil
 }
 
 func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error) {
 	decode := func(raw json.RawMessage) (map[string]json.RawMessage, error) {
-		if len(raw) == 0 || bytes.Equal(bytes.TrimSpace(raw), []byte("null")) || bytes.Equal(bytes.TrimSpace(raw), []byte("true")) {
-			return map[string]json.RawMessage{}, nil
+		enabled, normalized, err := normalizeFeatureRequest(raw)
+		if err != nil {
+			return nil, err
+		}
+		if !enabled {
+			return nil, fmt.Errorf("feature is disabled")
 		}
 		var result map[string]json.RawMessage
-		if err := json.Unmarshal(raw, &result); err != nil || result == nil {
-			return nil, fmt.Errorf("feature options must be an object")
+		if err := json.Unmarshal(normalized, &result); err != nil {
+			return nil, err
 		}
 		return result, nil
 	}
@@ -487,7 +506,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	return arguments, nil
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -498,7 +517,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		file, err := resolvePathInsideRoot(resolved.AllowedPathRoot, file)
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("resolve Docker Compose file %s: %w", value, err)
+			return "", nil, nil, nil, fmt.Errorf("resolve Docker Compose file %s: %w", value, err)
 		}
 		files = append(files, file)
 	}
@@ -508,7 +527,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		composecli.WithResolvedPaths(true),
 	)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("prepare Docker Compose project: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("prepare Docker Compose project: %w", err)
 	}
 	composeEnvironment := map[string]string{}
 	for _, item := range os.Environ() {
@@ -522,40 +541,40 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	options.Environment = composetypes.Mapping(composeEnvironment)
 	project, err := options.LoadProject(ctx)
 	if err != nil {
-		return "", nil, nil, fmt.Errorf("load Docker Compose project: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("load Docker Compose project: %w", err)
 	}
 	for name, candidate := range project.Services {
 		if candidate.Build == nil {
 			continue
 		}
 		if _, err := resolvePathInsideRoot(resolved.AllowedPathRoot, candidate.Build.Context); err != nil {
-			return "", nil, nil, fmt.Errorf("docker compose service %s build context: %w", name, err)
+			return "", nil, nil, nil, fmt.Errorf("docker compose service %s build context: %w", name, err)
 		}
 	}
 	service, ok := project.Services[resolved.Service]
 	if !ok {
-		return "", nil, nil, fmt.Errorf("docker compose service %q does not exist", resolved.Service)
+		return "", nil, nil, nil, fmt.Errorf("docker compose service %q does not exist", resolved.Service)
 	}
 	if service.Build != nil {
 		stage := "compose-" + resolved.Service
 		if err := e.buildService(ctx, project, resolved.Service, resolved.Cache, stage); err != nil {
-			return "", nil, nil, fmt.Errorf("build Docker Compose Dev Container service: %w", err)
+			return "", nil, nil, nil, fmt.Errorf("build Docker Compose Dev Container service: %w", err)
 		}
 	}
 	baseImage := api.GetImageNameOrDefault(service, project.Name)
 	if strings.TrimSpace(baseImage) == "" {
-		return "", nil, nil, fmt.Errorf("docker compose service %q has no image or build", resolved.Service)
+		return "", nil, nil, nil, fmt.Errorf("docker compose service %q has no image or build", resolved.Service)
 	}
 	if service.Build == nil {
 		baseImage, err = e.resolveAndPullImage(ctx, baseImage, resolved.Cache)
 		if err != nil {
-			return "", nil, nil, err
+			return "", nil, nil, nil, err
 		}
 	}
 	repositoryConfiguration := resolved.Configuration
 	metadata, err := e.readImageMetadata(ctx, baseImage)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	imageConfiguration := metadata.Configuration
 	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
@@ -563,17 +582,17 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		repositoryConfiguration.ContainerUser = service.User
 	}
 	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	featureImage, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, repositoryConfiguration)
+	featureImage, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	featureImage, err = e.prepareUserImage(ctx, featureImage, resolved, hostUser)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
 	if err != nil {
-		return "", nil, nil, err
+		return "", nil, nil, nil, err
 	}
 	service.Image = featureImage
 	service.Build = nil
@@ -581,7 +600,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	overriddenVolumeTargets := map[string]struct{}{}
 	for _, item := range configuredMounts {
 		if err := item.Validate(); err != nil {
-			return "", nil, nil, err
+			return "", nil, nil, nil, err
 		}
 		overriddenVolumeTargets[item.Target] = struct{}{}
 	}
@@ -669,12 +688,12 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		relatedService, ok := project.Services[name]
 		if !ok {
-			return "", nil, nil, fmt.Errorf("docker compose runServices service %q does not exist", name)
+			return "", nil, nil, nil, fmt.Errorf("docker compose runServices service %q does not exist", name)
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name
 			if err := e.buildService(ctx, project, name, resolved.Cache, stage); err != nil {
-				return "", nil, nil, fmt.Errorf("build Docker Compose service %s: %w", name, err)
+				return "", nil, nil, nil, fmt.Errorf("build Docker Compose service %s: %w", name, err)
 			}
 			continue
 		}
@@ -683,7 +702,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		localImage, err := e.resolveAndPullImage(ctx, relatedService.Image, resolved.Cache)
 		if err != nil {
-			return "", nil, nil, fmt.Errorf("pull Docker Compose service %s image: %w", name, err)
+			return "", nil, nil, nil, fmt.Errorf("pull Docker Compose service %s image: %w", name, err)
 		}
 		relatedService.Image = localImage
 		project.Services[name] = relatedService
@@ -693,16 +712,18 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		Start:  api.StartOptions{Project: project, Services: services, Wait: true, WaitTimeout: 2 * time.Minute},
 	}); err != nil {
 		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
-		return "", nil, nil, fmt.Errorf("start Docker Compose Dev Container: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("start Docker Compose Dev Container: %w", err)
 	}
 	containers, err := e.compose.Ps(ctx, projectName, api.PsOptions{All: true})
 	if err != nil {
 		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
-		return "", nil, nil, fmt.Errorf("inspect Docker Compose Dev Container: %w", err)
+		return "", nil, nil, nil, fmt.Errorf("inspect Docker Compose Dev Container: %w", err)
 	}
 	var primary string
 	related := make([]string, 0, len(containers)-1)
+	composeContainers := make(map[string]string, len(containers))
 	for _, item := range containers {
+		composeContainers[item.Service] = item.ID
 		if item.Service == resolved.Service {
 			primary = item.ID
 		} else {
@@ -711,10 +732,10 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	if primary == "" {
 		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
-		return "", nil, nil, fmt.Errorf("docker compose service %q did not create a container", resolved.Service)
+		return "", nil, nil, nil, fmt.Errorf("docker compose service %q did not create a container", resolved.Service)
 	}
 	sort.Strings(related)
-	return primary, related, featureDigests, nil
+	return primary, related, composeContainers, featureDigests, nil
 }
 
 func findRunArgsUser(arguments []string) string {
@@ -742,155 +763,6 @@ func resolvePathInsideRoot(allowedRoot, value string) (string, error) {
 		}
 	}
 	return resolved, nil
-}
-
-func (e *Engine) initializeContainer(ctx context.Context, environment *devcontainer.State, secrets map[string]string, prepareLifecycle PrepareLifecycleFunc, ready ReadyFunc) error {
-	inspect, err := e.client.ContainerInspect(ctx, environment.PrimaryContainerID)
-	if err != nil {
-		return fmt.Errorf("inspect Dev Container: %w", err)
-	}
-	if environment.RemoteUser == "" {
-		environment.RemoteUser = strings.TrimSpace(inspect.Config.User)
-		if environment.RemoteUser == "" {
-			environment.RemoteUser = "root"
-		}
-	}
-	remoteEnv, err := e.probeRemoteEnvironment(ctx, environment)
-	if err != nil {
-		return err
-	}
-	for name, value := range environment.Configuration.RemoteEnv {
-		if value == nil {
-			delete(remoteEnv, name)
-		} else {
-			remoteEnv[name] = *value
-		}
-	}
-	environment.RemoteEnvironment = remoteEnv
-	if prepareLifecycle != nil {
-		if err := prepareLifecycle(ctx, e, environment); err != nil {
-			return fmt.Errorf("prepare Dev Container lifecycle: %w", err)
-		}
-	}
-	readySent := false
-	emitReady := func(stage devcontainer.LifecycleStage) {
-		if !readySent && environment.Configuration.WaitFor == stage {
-			readySent = true
-			if ready != nil {
-				ready(environment, stage)
-			}
-		}
-	}
-	emitReady(devcontainer.LifecycleStageInitialize)
-	commands := []struct {
-		name    devcontainer.LifecycleStage
-		command devcontainer.Command
-		mark    *bool
-	}{
-		{name: devcontainer.LifecycleStageOnCreate, command: environment.Configuration.OnCreateCommand, mark: &environment.Lifecycle.OnCreateComplete},
-		{name: devcontainer.LifecycleStageUpdateContent, command: environment.Configuration.UpdateContentCommand, mark: &environment.Lifecycle.UpdateContentComplete},
-		{name: devcontainer.LifecycleStagePostCreate, command: environment.Configuration.PostCreateCommand, mark: &environment.Lifecycle.PostCreateComplete},
-		{name: devcontainer.LifecycleStagePostStart, command: environment.Configuration.PostStartCommand},
-	}
-	for _, item := range commands {
-		if err := e.runLifecycleCommand(ctx, environment, string(item.name), item.command, secrets); err != nil {
-			return err
-		}
-		if item.mark != nil {
-			*item.mark = true
-		}
-		emitReady(item.name)
-	}
-	return nil
-}
-
-// Start resumes an existing environment and runs postStartCommand.
-func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, secrets map[string]string, prepare PrepareLifecycleFunc) (*devcontainer.State, error) {
-	if err := environment.Validate(); err != nil {
-		return nil, err
-	}
-	if environment.ComposeProject != "" {
-		if err := e.compose.Start(ctx, environment.ComposeProject, api.StartOptions{Wait: true, WaitTimeout: 2 * time.Minute}); err != nil {
-			return nil, fmt.Errorf("resume Docker Compose Dev Container: %w", err)
-		}
-	} else {
-		ids := append(slices.Clone(environment.RelatedContainerIDs), environment.PrimaryContainerID)
-		for _, id := range ids {
-			inspect, err := e.client.ContainerInspect(ctx, id)
-			if err != nil {
-				return nil, fmt.Errorf("inspect Dev Container %s: %w", id, err)
-			}
-			if !inspect.State.Running {
-				if err := e.client.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
-					return nil, fmt.Errorf("resume Dev Container %s: %w", id, err)
-				}
-			}
-		}
-	}
-	if prepare != nil {
-		if err := prepare(ctx, e, environment); err != nil {
-			return nil, err
-		}
-	}
-	if err := e.runLifecycleCommand(ctx, environment, string(devcontainer.LifecycleStagePostStart), environment.Configuration.PostStartCommand, secrets); err != nil {
-		return nil, err
-	}
-	return e.Inspect(ctx, environment)
-}
-
-// Stop stops all resources belonging to an environment without deleting them.
-func (e *Engine) Stop(ctx context.Context, environment *devcontainer.State) (*devcontainer.State, error) {
-	if err := environment.Validate(); err != nil {
-		return nil, err
-	}
-	timeout := 20 * time.Second
-	if environment.ComposeProject != "" {
-		if err := e.compose.Stop(ctx, environment.ComposeProject, api.StopOptions{Timeout: &timeout}); err != nil {
-			return nil, fmt.Errorf("stop Docker Compose Dev Container: %w", err)
-		}
-		return environment, nil
-	}
-	timeoutSeconds := int(timeout.Seconds())
-	for _, id := range environmentContainerIDs(environment) {
-		if err := e.client.ContainerStop(ctx, id, container.StopOptions{Timeout: &timeoutSeconds}); err != nil && !cerrdefs.IsNotFound(err) {
-			return nil, fmt.Errorf("stop Dev Container %s: %w", id, err)
-		}
-	}
-	return environment, nil
-}
-
-// Inspect verifies resource identity and requires the primary container to be running.
-func (e *Engine) Inspect(ctx context.Context, environment *devcontainer.State) (*devcontainer.State, error) {
-	for _, id := range environmentContainerIDs(environment) {
-		inspect, err := e.client.ContainerInspect(ctx, id)
-		if err != nil {
-			return nil, fmt.Errorf("inspect Dev Container %s: %w", id, err)
-		}
-		if id == environment.PrimaryContainerID && !inspect.State.Running {
-			return nil, fmt.Errorf("dev container %s is not running", id)
-		}
-		if inspect.Config.Labels[labelOwnerID] != environment.OwnerID || inspect.Config.Labels[labelEnvironmentID] != environment.ID {
-			return nil, fmt.Errorf("dev container %s identity does not match runtime state", id)
-		}
-	}
-	return environment, nil
-}
-
-// Delete removes all resources belonging to an environment.
-func (e *Engine) Delete(ctx context.Context, environment *devcontainer.State) error {
-	var result error
-	if environment.ComposeProject != "" {
-		result = errors.Join(result, e.downComposeProject(ctx, environment.ComposeProject))
-	}
-	for _, id := range environmentContainerIDs(environment) {
-		if id == "" {
-			continue
-		}
-		if err := e.client.ContainerRemove(ctx, id, container.RemoveOptions{Force: true}); err != nil && !cerrdefs.IsNotFound(err) {
-			result = errors.Join(result, err)
-		}
-	}
-	return result
 }
 
 func (e *Engine) cleanupIncompleteCreate(ctx context.Context, ownerID, composeProject string) error {
@@ -1040,10 +912,6 @@ func environmentList(values map[string]string) []string {
 		result = append(result, name+"="+values[name])
 	}
 	return result
-}
-
-func environmentContainerIDs(environment *devcontainer.State) []string {
-	return append([]string{environment.PrimaryContainerID}, environment.RelatedContainerIDs...)
 }
 
 type dockerProgressMessage struct {

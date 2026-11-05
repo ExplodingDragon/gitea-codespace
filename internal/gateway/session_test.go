@@ -17,8 +17,20 @@ type testGatewaySessionRegistry struct {
 	*SessionRegistry
 }
 
+func validGatewayConfig() configpkg.GatewayConfig {
+	return configpkg.GatewayConfig{
+		HTTP: configpkg.GatewayHTTPConfig{Listen: ":18081", PublicURL: "http://gateway.example.com:18081"},
+		SSH: configpkg.GatewaySSHConfig{
+			Listen: ":2222", PublicAddr: "gateway.example.com:22", HandshakeTimeout: configpkg.Duration(30 * time.Second), MaxChannelsPerConnection: 32,
+			Auth: configpkg.GatewaySSHAuthConfig{MaxAttemptsPerIP: 30, MaxAttemptsPerCodespace: 20, MaxAttemptsPerIPCodespace: 10, MaxAttemptsPerPublicKey: 30, FailureWindow: configpkg.Duration(10 * time.Minute)},
+		},
+		Sessions: configpkg.GatewaySessionConfig{TTL: configpkg.Duration(8 * time.Hour), IdleTimeout: configpkg.Duration(30 * time.Minute), RevalidateInterval: configpkg.Duration(5 * time.Minute), MaxPerCodespace: 32, MaxPerUser: 128},
+		Limits:   configpkg.GatewayLimitsConfig{MaxInflightTotal: 4096, MaxInflightPerSession: 32, PublicMaxConnectionsPerEndpoint: 64, PublicMaxConnectionsPerIP: 16, ValidationMaxInflight: 128},
+	}
+}
+
 func newGatewaySessionRegistry(t *testing.T) *testGatewaySessionRegistry {
-	return newGatewaySessionRegistryFromConfig(t, configpkg.DefaultGatewayConfig())
+	return newGatewaySessionRegistryFromConfig(t, validGatewayConfig())
 }
 
 func newGatewaySessionRegistryFromConfig(t *testing.T, config configpkg.GatewayConfig) *testGatewaySessionRegistry {
@@ -58,7 +70,7 @@ func gatewaySessionTestConfig(ttl, idleTimeout configpkg.Duration, maxPerCodespa
 }
 
 func TestGatewaySessionRegistryRejectsInvalidKey(t *testing.T) {
-	_, err := NewSessionRegistryFromConfig(configpkg.DefaultGatewayConfig(), make([]byte, 31))
+	_, err := NewSessionRegistryFromConfig(validGatewayConfig(), make([]byte, 31))
 	require.ErrorContains(t, err, "gateway session key must contain 32 bytes")
 }
 

@@ -6,6 +6,7 @@ package docker
 import (
 	"archive/tar"
 	"bufio"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
@@ -15,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -23,6 +25,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Masterminds/semver/v3"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
@@ -38,13 +41,17 @@ const (
 )
 
 type resolvedFeature struct {
-	reference string
-	resolved  string
-	digest    string
-	directory string
-	options   map[string]string
-	metadata  featureMetadata
-	lockable  bool
+	reference        string
+	references       []string
+	resolved         string
+	digest           string
+	directory        string
+	options          map[string]string
+	providedOptions  map[string]string
+	metadata         featureMetadata
+	lockable         bool
+	hardDependencies []*resolvedFeature
+	softDependencies []*resolvedFeature
 }
 
 type featureMetadata struct {
@@ -83,7 +90,7 @@ type featureOption struct {
 	Enum        []string        `json:"enum"`
 }
 
-func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration, repositoryConfiguration devcontainer.Configuration) (string, map[string]string, error) {
+func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration devcontainer.Configuration, imageSources []devcontainer.Configuration, repositoryConfiguration devcontainer.Configuration) (string, map[string]string, error) {
 	lockfile, lockfileExists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
 	if err != nil {
 		return "", nil, err
@@ -93,25 +100,52 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
 	for reference, options := range resolved.Features {
-		requestedFeatures[reference] = options
+		enabled, normalized, err := normalizeFeatureRequest(options)
+		if err != nil {
+			return "", nil, fmt.Errorf("dev container feature %s: %w", reference, err)
+		}
+		if enabled {
+			requestedFeatures[reference] = normalized
+		}
 	}
 	buildContext, err := os.MkdirTemp("", "devcontainer-features-*")
 	if err != nil {
 		return "", nil, err
 	}
 	defer func() { _ = os.RemoveAll(buildContext) }()
-	features := map[string]*resolvedFeature{}
-	var resolveFeature func(string, json.RawMessage) error
-	resolveFeature = func(reference string, rawOptions json.RawMessage) error {
-		if _, ok := features[reference]; ok {
-			return nil
-		}
-		directory := filepath.Join(buildContext, strconv.Itoa(len(features)))
-		feature, err := e.fetchFeature(ctx, reference, rawOptions, directory, lockfile.Features[reference], resolved.Cache, resolved.ConfigurationDir, resolved.AllowedPathRoot)
+	var features []*resolvedFeature
+	requests := map[string]*resolvedFeature{}
+	directoryIndex := 0
+	var resolveFeature func(string, json.RawMessage) (*resolvedFeature, error)
+	resolveFeature = func(reference string, rawOptions json.RawMessage) (*resolvedFeature, error) {
+		enabled, normalized, err := normalizeFeatureRequest(rawOptions)
 		if err != nil {
-			return err
+			return nil, err
 		}
-		features[reference] = feature
+		if !enabled {
+			return nil, fmt.Errorf("dependency Feature %s cannot be disabled", reference)
+		}
+		requestKey := strings.ToLower(strings.TrimSpace(reference)) + "\x00" + string(normalized)
+		if feature := requests[requestKey]; feature != nil {
+			return feature, nil
+		}
+		directory := filepath.Join(buildContext, strconv.Itoa(directoryIndex))
+		directoryIndex++
+		feature, err := e.fetchFeature(ctx, reference, normalized, directory, lockfile.Features[strings.ToLower(reference)], resolved.Cache, resolved.ConfigurationDir, resolved.AllowedPathRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, existing := range features {
+			if featuresEqual(existing, feature) {
+				existing.references = append(existing.references, reference)
+				requests[requestKey] = existing
+				_ = os.RemoveAll(directory)
+				return existing, nil
+			}
+		}
+		feature.references = []string{reference}
+		features = append(features, feature)
+		requests[requestKey] = feature
 		dependencies := make([]string, 0, len(feature.metadata.DependsOn))
 		for dependency := range feature.metadata.DependsOn {
 			dependencies = append(dependencies, dependency)
@@ -122,11 +156,13 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			if requestedOptions, explicitlyRequested := requestedFeatures[dependency]; explicitlyRequested {
 				options = requestedOptions
 			}
-			if err := resolveFeature(dependency, options); err != nil {
-				return fmt.Errorf("resolve dependency of Feature %s: %w", reference, err)
+			resolvedDependency, err := resolveFeature(dependency, options)
+			if err != nil {
+				return nil, fmt.Errorf("resolve dependency of Feature %s: %w", reference, err)
 			}
+			feature.hardDependencies = append(feature.hardDependencies, resolvedDependency)
 		}
-		return nil
+		return feature, nil
 	}
 	references := make([]string, 0, len(requestedFeatures))
 	for reference := range requestedFeatures {
@@ -134,8 +170,13 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	sort.Strings(references)
 	for _, reference := range references {
-		if err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
+		if _, err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
 			return "", nil, err
+		}
+	}
+	for _, feature := range features {
+		for _, requested := range feature.metadata.InstallsAfter {
+			feature.softDependencies = append(feature.softDependencies, findFeatureMatches(features, requested)...)
 		}
 	}
 	orderedFeatures, err := orderFeatures(features, resolved.OverrideFeatureInstallOrder)
@@ -169,6 +210,18 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		containerEnvironment[name] = value
 	}
 	effectiveConfiguration := imageConfiguration
+	var lifecycle devcontainer.LifecycleCommands
+	for _, source := range imageSources {
+		source, err = devcontainer.ResolveLocalVariables(source, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
+		if err != nil {
+			return "", nil, err
+		}
+		source, err = devcontainer.ResolveContainerVariables(source, resolved.WorkspaceFolder, containerEnvironment)
+		if err != nil {
+			return "", nil, err
+		}
+		lifecycle.Append(source)
+	}
 	for _, feature := range orderedFeatures {
 		featureConfiguration, err := devcontainer.ResolveLocalVariables(featureConfigurationFromMetadata(feature.metadata), resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 		if err != nil {
@@ -184,8 +237,16 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 			containerEnvironment[name] = value
 		}
 		effectiveConfiguration = devcontainer.Merge(effectiveConfiguration, featureConfiguration)
+		lifecycle.Append(featureConfiguration)
 		if strings.TrimSpace(feature.metadata.Entrypoint) != "" {
-			if _, installOnly := resolved.InstallOnlyFeatures[feature.reference]; !installOnly {
+			installOnly := len(feature.references) > 0
+			for _, reference := range feature.references {
+				if _, ok := resolved.InstallOnlyFeatures[reference]; !ok {
+					installOnly = false
+					break
+				}
+			}
+			if !installOnly {
 				resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, feature.metadata.Entrypoint)
 			}
 		}
@@ -204,6 +265,8 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, err
 	}
 	resolved.Configuration = devcontainer.Merge(effectiveConfiguration, repositoryConfiguration)
+	lifecycle.Append(repositoryConfiguration)
+	resolved.LifecycleCommands = lifecycle
 	if err := resolved.Finalize(); err != nil {
 		return "", nil, err
 	}
@@ -212,21 +275,28 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	digests := make(map[string]string, len(orderedFeatures))
 	for _, feature := range orderedFeatures {
-		digests[feature.reference] = feature.digest
+		for _, reference := range feature.references {
+			digests[reference] = feature.digest
+		}
 	}
 	if !resolved.Synthetic {
 		generated := devcontainer.Lockfile{Features: map[string]devcontainer.LockedFeature{}}
 		for _, feature := range orderedFeatures {
-			if _, excluded := resolved.InjectedFeatureReferences[feature.reference]; excluded || !feature.lockable {
+			if !feature.lockable {
 				continue
 			}
 			dependencies := make([]string, 0, len(feature.metadata.DependsOn))
 			for dependency := range feature.metadata.DependsOn {
-				dependencies = append(dependencies, dependency)
+				dependencies = append(dependencies, strings.ToLower(dependency))
 			}
 			sort.Strings(dependencies)
-			generated.Features[feature.reference] = devcontainer.LockedFeature{
-				Version: feature.metadata.Version, Resolved: feature.resolved, Integrity: feature.digest, DependsOn: dependencies,
+			for _, reference := range feature.references {
+				if _, excluded := resolved.PlatformFeatureReferences[strings.ToLower(strings.TrimSpace(reference))]; excluded {
+					continue
+				}
+				generated.Features[strings.ToLower(reference)] = devcontainer.LockedFeature{
+					Version: feature.metadata.Version, Resolved: feature.resolved, Integrity: feature.digest, DependsOn: dependencies,
+				}
 			}
 		}
 		if err := devcontainer.WriteLockfile(resolved.ConfigurationPath, generated, resolved.FrozenLockfile); err != nil {
@@ -446,11 +516,11 @@ func loadFeatureDirectory(reference, resolved, digest string, rawOptions json.Ra
 	if _, err := os.Stat(filepath.Join(directory, "install.sh")); err != nil {
 		return nil, fmt.Errorf("dev container feature %s install.sh is missing", reference)
 	}
-	options, err := resolveFeatureOptions(metadata.Options, rawOptions)
+	options, providedOptions, err := resolveFeatureOptions(metadata.Options, rawOptions)
 	if err != nil {
 		return nil, fmt.Errorf("dev container feature %s: %w", reference, err)
 	}
-	return &resolvedFeature{reference: reference, resolved: resolved, digest: digest, directory: directory, options: options, metadata: metadata, lockable: lockable}, nil
+	return &resolvedFeature{reference: reference, resolved: resolved, digest: digest, directory: directory, options: options, providedOptions: providedOptions, metadata: metadata, lockable: lockable}, nil
 }
 
 func extractFeatureLayer(reader io.Reader, directory string) error {
@@ -534,26 +604,67 @@ func extractFeatureLayer(reader io.Reader, directory string) error {
 	}
 }
 
-func resolveFeatureOptions(declared map[string]featureOption, raw json.RawMessage) (map[string]string, error) {
-	provided := map[string]json.RawMessage{}
-	if len(raw) > 0 && string(raw) != "true" && string(raw) != "null" {
-		if err := json.Unmarshal(raw, &provided); err != nil {
-			return nil, fmt.Errorf("options must be true or an object")
+func normalizeFeatureRequest(raw json.RawMessage) (bool, json.RawMessage, error) {
+	trimmed := bytes.TrimSpace(raw)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("true")) {
+		return true, json.RawMessage(`{}`), nil
+	}
+	if bytes.Equal(trimmed, []byte("null")) {
+		return false, nil, fmt.Errorf("options must be a string, boolean, or object")
+	}
+	if bytes.Equal(trimmed, []byte("false")) {
+		return false, nil, nil
+	}
+	var version string
+	if json.Unmarshal(trimmed, &version) == nil {
+		encoded, _ := json.Marshal(map[string]string{"version": version})
+		return true, encoded, nil
+	}
+	var options map[string]json.RawMessage
+	if err := json.Unmarshal(trimmed, &options); err != nil || options == nil {
+		return false, nil, fmt.Errorf("options must be a string, boolean, or object")
+	}
+	for name, value := range options {
+		var scalar any
+		if err := json.Unmarshal(value, &scalar); err != nil {
+			return false, nil, fmt.Errorf("option %q is invalid", name)
 		}
+		if _, stringValue := scalar.(string); !stringValue {
+			if _, booleanValue := scalar.(bool); !booleanValue {
+				return false, nil, fmt.Errorf("option %q must be a string or boolean", name)
+			}
+		}
+	}
+	encoded, err := json.Marshal(options)
+	return true, encoded, err
+}
+
+func resolveFeatureOptions(declared map[string]featureOption, raw json.RawMessage) (map[string]string, map[string]string, error) {
+	enabled, normalized, err := normalizeFeatureRequest(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	if !enabled {
+		return nil, nil, fmt.Errorf("feature is disabled")
+	}
+	provided := map[string]json.RawMessage{}
+	if err := json.Unmarshal(normalized, &provided); err != nil {
+		return nil, nil, err
 	}
 	for name := range provided {
 		if _, ok := declared[name]; !ok {
-			return nil, fmt.Errorf("option %q is not declared", name)
+			return nil, nil, fmt.Errorf("option %q is not declared", name)
 		}
 	}
 	result := make(map[string]string, len(declared))
+	providedValues := make(map[string]string, len(provided))
 	for name, option := range declared {
 		environmentName := featureOptionEnvironmentName(name)
 		if environmentName == "" {
-			return nil, fmt.Errorf("option name %q is invalid", name)
+			return nil, nil, fmt.Errorf("option name %q is invalid", name)
 		}
-		value := provided[name]
-		if len(value) == 0 {
+		value, userProvided := provided[name]
+		if !userProvided {
 			value = option.Default
 		}
 		if len(value) == 0 {
@@ -561,31 +672,52 @@ func resolveFeatureOptions(declared map[string]featureOption, raw json.RawMessag
 		}
 		var scalar any
 		if err := json.Unmarshal(value, &scalar); err != nil {
-			return nil, fmt.Errorf("option %q is invalid", name)
+			return nil, nil, fmt.Errorf("option %q is invalid", name)
 		}
+		var setting string
 		switch option.Type {
 		case "", "string":
-			setting, ok := scalar.(string)
-			if !ok {
-				return nil, fmt.Errorf("option %q must be a string", name)
+			switch value := scalar.(type) {
+			case string:
+				setting = value
+			case bool:
+				if !userProvided {
+					return nil, nil, fmt.Errorf("option %q default must be a string", name)
+				}
+				setting = strconv.FormatBool(value)
+			default:
+				return nil, nil, fmt.Errorf("option %q must be a string or boolean", name)
 			}
 			if len(option.Enum) > 0 {
 				if !slices.Contains(option.Enum, setting) {
-					return nil, fmt.Errorf("option %q value %q is not allowed", name, setting)
+					return nil, nil, fmt.Errorf("option %q value %q is not allowed", name, setting)
 				}
 			}
-			result[environmentName] = setting
 		case "boolean":
-			setting, ok := scalar.(bool)
-			if !ok {
-				return nil, fmt.Errorf("option %q must be a boolean", name)
+			switch value := scalar.(type) {
+			case bool:
+				setting = strconv.FormatBool(value)
+			case string:
+				if !userProvided || value != "true" && value != "false" {
+					return nil, nil, fmt.Errorf("option %q must be a boolean or boolean text", name)
+				}
+				setting = value
+			default:
+				return nil, nil, fmt.Errorf("option %q must be a boolean or boolean text", name)
 			}
-			result[environmentName] = strconv.FormatBool(setting)
 		default:
-			return nil, fmt.Errorf("option %q has unsupported type %q", name, option.Type)
+			return nil, nil, fmt.Errorf("option %q has unsupported type %q", name, option.Type)
+		}
+		result[environmentName] = setting
+		if userProvided {
+			providedValues[name] = setting
 		}
 	}
-	return result, nil
+	return result, providedValues, nil
+}
+
+func featuresEqual(left, right *resolvedFeature) bool {
+	return left.lockable && right.lockable && left.digest == right.digest && maps.Equal(left.options, right.options)
 }
 
 func featureOptionEnvironmentName(name string) string {
@@ -598,92 +730,71 @@ func featureOptionEnvironmentName(name string) string {
 		}
 	}
 	value := result.String()
-	if value != "" && value[0] >= '0' && value[0] <= '9' {
-		value = "_" + value
+	leading := 0
+	for leading < len(value) && (value[leading] == '_' || value[leading] >= '0' && value[leading] <= '9') {
+		leading++
+	}
+	if leading > 0 {
+		value = "_" + value[leading:]
 	}
 	return value
 }
 
-func orderFeatures(features map[string]*resolvedFeature, override []string) ([]*resolvedFeature, error) {
-	dependencies := make(map[string][]string, len(features))
-	installsAfter := make(map[string][]string, len(features))
-	for reference, feature := range features {
-		for dependency := range feature.metadata.DependsOn {
-			resolved, ok := findFeatureReference(features, dependency)
-			if !ok {
-				return nil, fmt.Errorf("feature %s dependency %s is not resolved", reference, dependency)
-			}
-			dependencies[reference] = appendUnique(dependencies[reference], []string{resolved})
-		}
-		for _, dependency := range feature.metadata.InstallsAfter {
-			if resolved, ok := findFeatureReference(features, dependency); ok {
-				installsAfter[reference] = appendUnique(installsAfter[reference], []string{resolved})
-			}
-		}
-	}
-	priorities := map[string]int{}
+func orderFeatures(features []*resolvedFeature, override []string) ([]*resolvedFeature, error) {
+	priorities := map[*resolvedFeature]int{}
 	for index, requested := range override {
-		reference, ok := findFeatureReference(features, requested)
-		if !ok {
+		matches := findFeatureMatches(features, requested)
+		if len(matches) == 0 {
 			return nil, fmt.Errorf("overrideFeatureInstallOrder: Feature %s is not resolved", requested)
 		}
-		priorities[reference] = len(override) - index
+		for _, feature := range matches {
+			priorities[feature] = len(override) - index
+		}
 	}
-	installed := map[string]bool{}
+	installed := map[*resolvedFeature]bool{}
 	ordered := make([]*resolvedFeature, 0, len(features))
 	for len(ordered) < len(features) {
-		var candidates []string
-		for reference := range features {
-			if installed[reference] {
+		var candidates []*resolvedFeature
+		for _, feature := range features {
+			if installed[feature] {
 				continue
 			}
 			ready := true
-			for _, dependency := range dependencies[reference] {
+			for _, dependency := range append(slices.Clone(feature.hardDependencies), feature.softDependencies...) {
 				if !installed[dependency] {
 					ready = false
 					break
 				}
 			}
 			if ready {
-				candidates = append(candidates, reference)
+				candidates = append(candidates, feature)
 			}
 		}
 		if len(candidates) == 0 {
 			return nil, fmt.Errorf("dev container feature dependency graph contains a cycle")
 		}
-		preferred := slices.DeleteFunc(slices.Clone(candidates), func(reference string) bool {
-			return slices.ContainsFunc(installsAfter[reference], func(dependency string) bool {
-				return !installed[dependency]
-			})
-		})
-		if len(preferred) > 0 {
-			candidates = preferred
-		}
 		maxPriority := 0
-		for _, reference := range candidates {
-			if priorities[reference] > maxPriority {
-				maxPriority = priorities[reference]
+		for _, feature := range candidates {
+			if priorities[feature] > maxPriority {
+				maxPriority = priorities[feature]
 			}
 		}
-		candidates = slices.DeleteFunc(candidates, func(reference string) bool { return priorities[reference] != maxPriority })
-		sort.Strings(candidates)
-		for _, reference := range candidates {
-			installed[reference] = true
-			ordered = append(ordered, features[reference])
+		candidates = slices.DeleteFunc(candidates, func(feature *resolvedFeature) bool { return priorities[feature] != maxPriority })
+		slices.SortFunc(candidates, compareFeatures)
+		for _, feature := range candidates {
+			installed[feature] = true
+			ordered = append(ordered, feature)
 		}
 	}
 	return ordered, nil
 }
 
-func findFeatureReference(features map[string]*resolvedFeature, requested string) (string, bool) {
-	if _, ok := features[requested]; ok {
-		return requested, true
-	}
+func findFeatureMatches(features []*resolvedFeature, requested string) []*resolvedFeature {
 	requestedID, _ := featureReferenceID(requested)
-	var match string
-	for reference, feature := range features {
-		candidateID, _ := featureReferenceID(reference)
-		matched := requestedID != "" && strings.EqualFold(candidateID, requestedID) || strings.EqualFold(feature.metadata.ID, requested)
+	var matches []*resolvedFeature
+	for _, feature := range features {
+		candidateID, _ := featureReferenceID(feature.reference)
+		matched := slices.ContainsFunc(feature.references, func(reference string) bool { return strings.EqualFold(reference, requested) }) || requestedID != "" && strings.EqualFold(candidateID, requestedID) || strings.EqualFold(feature.metadata.ID, requested)
 		if !matched {
 			for _, legacyID := range feature.metadata.LegacyIDs {
 				if strings.EqualFold(legacyID, requested) {
@@ -693,13 +804,53 @@ func findFeatureReference(features map[string]*resolvedFeature, requested string
 			}
 		}
 		if matched {
-			if match != "" {
-				return "", false
-			}
-			match = reference
+			matches = append(matches, feature)
 		}
 	}
-	return match, match != ""
+	return matches
+}
+
+func compareFeatures(left, right *resolvedFeature) int {
+	leftID, _ := featureReferenceID(left.reference)
+	rightID, _ := featureReferenceID(right.reference)
+	if compared := strings.Compare(leftID, rightID); compared != 0 {
+		return compared
+	}
+	leftTag, rightTag := featureReferenceVersion(left.reference), featureReferenceVersion(right.reference)
+	if leftTag != rightTag {
+		if leftTag == "latest" {
+			return 1
+		}
+		if rightTag == "latest" {
+			return -1
+		}
+		leftVersion, leftErr := semver.NewVersion(leftTag)
+		rightVersion, rightErr := semver.NewVersion(rightTag)
+		if leftErr == nil && rightErr == nil {
+			if compared := leftVersion.Compare(rightVersion); compared != 0 {
+				return compared
+			}
+		} else if compared := strings.Compare(leftTag, rightTag); compared != 0 {
+			return compared
+		}
+	}
+	if len(left.providedOptions) != len(right.providedOptions) {
+		return len(right.providedOptions) - len(left.providedOptions)
+	}
+	leftOptions, _ := json.Marshal(left.providedOptions)
+	rightOptions, _ := json.Marshal(right.providedOptions)
+	if compared := bytes.Compare(leftOptions, rightOptions); compared != 0 {
+		return compared
+	}
+	return strings.Compare(left.resolved+"\x00"+left.reference, right.resolved+"\x00"+right.reference)
+}
+
+func featureReferenceVersion(reference string) string {
+	parsed, err := registry.ParseReference(reference)
+	if err != nil || parsed.Reference == "" || strings.HasPrefix(parsed.Reference, "sha256:") {
+		return "latest"
+	}
+	return parsed.Reference
 }
 
 func featureReferenceID(reference string) (string, error) {
@@ -813,21 +964,6 @@ func featureConfigurationFromMetadata(metadata featureMetadata) devcontainer.Con
 		PostCreateCommand: metadata.PostCreateCommand, PostStartCommand: metadata.PostStartCommand,
 		PostAttachCommand: metadata.PostAttachCommand, Customizations: metadata.Customizations,
 	}
-}
-
-func appendUnique(values ...[]string) []string {
-	seen := map[string]struct{}{}
-	var result []string
-	for _, list := range values {
-		for _, value := range list {
-			if _, ok := seen[value]; ok {
-				continue
-			}
-			seen[value] = struct{}{}
-			result = append(result, value)
-		}
-	}
-	return result
 }
 
 func shellQuote(value string) string {

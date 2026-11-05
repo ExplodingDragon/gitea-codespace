@@ -139,15 +139,20 @@ func TestLoadFeatureTarball(t *testing.T) {
 func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 	t.Parallel()
 
-	options, err := resolveFeatureOptions(map[string]featureOption{
-		"port":    {Type: "string", Default: json.RawMessage(`"8080"`), Enum: []string{"8080", "13337"}},
-		"enabled": {Type: "boolean", Default: json.RawMessage(`false`)},
-	}, json.RawMessage(`{"port":"13337","enabled":true}`))
+	options, provided, err := resolveFeatureOptions(map[string]featureOption{
+		"port":     {Type: "string", Default: json.RawMessage(`"8080"`), Enum: []string{"8080", "13337"}},
+		"enabled":  {Type: "boolean", Default: json.RawMessage(`false`)},
+		"1_option": {Type: "boolean", Default: json.RawMessage(`false`)},
+	}, json.RawMessage(`{"port":"13337","enabled":"true","1_option":true}`))
 	if err != nil {
 		t.Fatalf("resolve Feature options: %v", err)
 	}
-	if options["PORT"] != "13337" || options["ENABLED"] != "true" {
+	if options["PORT"] != "13337" || options["ENABLED"] != "true" || options["_OPTION"] != "true" || len(provided) != 3 {
 		t.Fatalf("Feature options = %#v", options)
+	}
+	shorthand, _, err := resolveFeatureOptions(map[string]featureOption{"version": {Type: "string"}}, json.RawMessage(`"1.18"`))
+	if err != nil || shorthand["VERSION"] != "1.18" {
+		t.Fatalf("Feature shorthand = %#v, %v", shorthand, err)
 	}
 
 	configuration := devcontainer.Merge(devcontainer.Configuration{}, featureConfigurationFromMetadata(featureMetadata{
@@ -158,10 +163,33 @@ func TestResolveFeatureOptionsAndMergeMetadata(t *testing.T) {
 	if configuration.ContainerEnv["PATH_PREFIX"] != "/tools" || len(configuration.Customizations["vscode"]) == 0 {
 		t.Fatalf("merged Feature metadata = %#v", configuration)
 	}
-	if _, err := resolveFeatureOptions(map[string]featureOption{
+	if _, _, err := resolveFeatureOptions(map[string]featureOption{
 		"channel": {Type: "string", Enum: []string{"stable"}},
 	}, json.RawMessage(`{"channel":"nightly"}`)); err == nil {
 		t.Fatal("Feature option outside enum was accepted")
+	}
+}
+
+func TestNormalizeFeatureRequestSupportsBooleanAndStringForms(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []json.RawMessage{nil, json.RawMessage(`true`), json.RawMessage(`{}`)} {
+		enabled, _, err := normalizeFeatureRequest(value)
+		if err != nil || !enabled {
+			t.Fatalf("normalize Feature request %s: enabled=%v, err=%v", value, enabled, err)
+		}
+	}
+	enabled, _, err := normalizeFeatureRequest(json.RawMessage(`false`))
+	if err != nil || enabled {
+		t.Fatalf("disabled Feature = %v, %v", enabled, err)
+	}
+	_, _, err = normalizeFeatureRequest(json.RawMessage(`null`))
+	if err == nil {
+		t.Fatal("null Feature options were accepted")
+	}
+	_, _, err = normalizeFeatureRequest(json.RawMessage(`{"version":1}`))
+	if err == nil {
+		t.Fatal("numeric Feature option was accepted")
 	}
 }
 
@@ -173,53 +201,31 @@ func TestFindRunArgsUserUsesLastValue(t *testing.T) {
 	}
 }
 
-func TestMergeFeatureLifecycleCommandsFlattensObjects(t *testing.T) {
+func TestFeatureLifecycleCommandsPreserveSourceOrder(t *testing.T) {
 	t.Parallel()
 
-	configuration := devcontainer.Configuration{
-		PostCreateCommand: devcontainer.Command{Value: json.RawMessage(`{"repository":"echo repository"}`)},
-	}
-	configuration = devcontainer.Merge(featureConfigurationFromMetadata(featureMetadata{
+	var commands devcontainer.LifecycleCommands
+	commands.Append(featureConfigurationFromMetadata(featureMetadata{
 		ID:                "first",
 		PostCreateCommand: devcontainer.Command{Value: json.RawMessage(`{"install":"echo first"}`)},
-	}), configuration)
-	configuration = devcontainer.Merge(featureConfigurationFromMetadata(featureMetadata{
+	}))
+	commands.Append(featureConfigurationFromMetadata(featureMetadata{
 		ID:                "second",
 		PostCreateCommand: devcontainer.Command{Value: json.RawMessage(`{"install":"echo second"}`)},
-	}), configuration)
-
-	var commands map[string]json.RawMessage
-	if err := json.Unmarshal(configuration.PostCreateCommand.Value, &commands); err != nil {
-		t.Fatalf("decode merged lifecycle commands: %v", err)
-	}
-	want := map[string]bool{`"echo second"`: false, `"echo first"`: false, `"echo repository"`: false}
-	if len(commands) != len(want) {
-		t.Fatalf("merged lifecycle commands = %s", configuration.PostCreateCommand.Value)
-	}
-	for _, value := range commands {
-		want[string(value)] = true
-	}
-	for value, found := range want {
-		if !found {
-			t.Fatalf("merged lifecycle command %s is missing from %s", value, configuration.PostCreateCommand.Value)
-		}
+	}))
+	commands.Append(devcontainer.Configuration{PostCreateCommand: devcontainer.Command{Value: json.RawMessage(`{"repository":"echo repository"}`)}})
+	if len(commands.PostCreate) != 3 || !bytes.Contains(commands.PostCreate[0].Value, []byte("first")) || !bytes.Contains(commands.PostCreate[2].Value, []byte("repository")) {
+		t.Fatalf("lifecycle command groups = %#v", commands.PostCreate)
 	}
 }
 
 func TestOrderFeaturesUsesDependenciesAndSoftInstallHints(t *testing.T) {
 	t.Parallel()
 
-	features := map[string]*resolvedFeature{
-		"ghcr.io/example/base:1": {reference: "ghcr.io/example/base:1", metadata: featureMetadata{ID: "base"}},
-		"ghcr.io/example/tool:1": {
-			reference: "ghcr.io/example/tool:1",
-			metadata:  featureMetadata{ID: "tool", DependsOn: map[string]json.RawMessage{"ghcr.io/example/base:1": json.RawMessage(`{}`)}},
-		},
-		"ghcr.io/example/editor:1": {
-			reference: "ghcr.io/example/editor:1",
-			metadata:  featureMetadata{ID: "editor", InstallsAfter: []string{"ghcr.io/example/tool:1"}},
-		},
-	}
+	base := &resolvedFeature{reference: "ghcr.io/example/base:1", references: []string{"ghcr.io/example/base:1"}, metadata: featureMetadata{ID: "base"}}
+	tool := &resolvedFeature{reference: "ghcr.io/example/tool:1", references: []string{"ghcr.io/example/tool:1"}, metadata: featureMetadata{ID: "tool"}, hardDependencies: []*resolvedFeature{base}}
+	editor := &resolvedFeature{reference: "ghcr.io/example/editor:1", references: []string{"ghcr.io/example/editor:1"}, metadata: featureMetadata{ID: "editor"}, softDependencies: []*resolvedFeature{tool}}
+	features := []*resolvedFeature{editor, tool, base}
 	ordered, err := orderFeatures(features, nil)
 	if err != nil {
 		t.Fatalf("order Features: %v", err)
@@ -232,8 +238,26 @@ func TestOrderFeaturesUsesDependenciesAndSoftInstallHints(t *testing.T) {
 		t.Fatalf("Feature order = %#v", positions)
 	}
 
-	features["ghcr.io/example/base:1"].metadata.InstallsAfter = []string{"ghcr.io/example/editor:1"}
-	if _, err := orderFeatures(features, nil); err != nil {
-		t.Fatalf("soft installsAfter cycle rejected: %v", err)
+	base.softDependencies = []*resolvedFeature{editor}
+	if _, err := orderFeatures(features, nil); err == nil {
+		t.Fatal("soft installsAfter cycle was accepted")
+	}
+}
+
+func TestFeatureEqualityUsesContentAndResolvedOptions(t *testing.T) {
+	t.Parallel()
+
+	first := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "1"}}
+	same := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "1"}}
+	differentOptions := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "2"}}
+	local := &resolvedFeature{digest: "sha256:content", options: map[string]string{"VERSION": "1"}}
+	if !featuresEqual(first, same) {
+		t.Fatal("identical resolved Features were not equal")
+	}
+	if featuresEqual(first, differentOptions) {
+		t.Fatal("Features with different options were equal")
+	}
+	if featuresEqual(first, local) {
+		t.Fatal("local Feature was equal to a fetched Feature")
 	}
 }

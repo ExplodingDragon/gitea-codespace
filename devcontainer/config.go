@@ -195,17 +195,14 @@ func (c *Configuration) Validate() error {
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.Service) == "" {
 		return fmt.Errorf("docker compose Dev Container service is required")
 	}
-	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceFolder) == "" {
-		return fmt.Errorf("docker compose Dev Container workspaceFolder is required")
-	}
 	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceMount) != "" {
 		return fmt.Errorf("docker compose Dev Container uses service volumes instead of workspaceMount")
 	}
 	if c.Build != nil && strings.TrimSpace(c.Build.Dockerfile) == "" {
 		return fmt.Errorf("dev container build.dockerfile is required")
 	}
-	if c.HostRequirements.CPUs < 0 {
-		return fmt.Errorf("dev container hostRequirements.cpus must be a positive number")
+	if c.HostRequirements.CPUs != nil && *c.HostRequirements.CPUs < 1 {
+		return fmt.Errorf("dev container hostRequirements.cpus must be an integer greater than zero")
 	}
 	for name, value := range map[string]string{"memory": c.HostRequirements.Memory, "storage": c.HostRequirements.Storage} {
 		if value != "" && !byteRequirementPattern.MatchString(value) {
@@ -275,6 +272,9 @@ func (c *Configuration) Finalize() error {
 			c.ShutdownAction = "stopContainer"
 		}
 	}
+	if len(c.DockerComposeFile) > 0 && strings.TrimSpace(c.WorkspaceFolder) == "" {
+		c.WorkspaceFolder = "/"
+	}
 	return c.Validate()
 }
 
@@ -307,8 +307,8 @@ func validateGPURequirement(value json.RawMessage) error {
 		return nil
 	}
 	var requirement struct {
-		Cores  *float64 `json:"cores"`
-		Memory string   `json:"memory"`
+		Cores  *int   `json:"cores"`
+		Memory string `json:"memory"`
 	}
 	decoder := json.NewDecoder(bytes.NewReader(value))
 	decoder.DisallowUnknownFields()
@@ -518,6 +518,15 @@ func resolveConfigurationVariables(configuration Configuration, substitute func(
 // PortAttributesFor returns the most specific configured attributes for a port.
 func PortAttributesFor(configuration Configuration, port uint16) PortAttributes {
 	return PortAttributesForProcess(configuration, port, "")
+}
+
+// PortAttributesForAddress applies an exact host-and-port setting before the
+// numeric, range, process, and fallback forms.
+func PortAttributesForAddress(configuration Configuration, address string, port uint16) PortAttributes {
+	if attributes, ok := configuration.PortsAttributes[strings.TrimSpace(address)]; ok {
+		return attributes
+	}
+	return PortAttributesFor(configuration, port)
 }
 
 // PortAttributesForProcess returns attributes selected by port, range, or the

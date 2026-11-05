@@ -5,9 +5,7 @@ package agent
 
 import (
 	"fmt"
-	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -22,9 +20,8 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	if access == nil || strings.TrimSpace(access.GiteaToken) == "" {
 		return nil, fmt.Errorf("gitea access token is empty")
 	}
-	serverURL, err := url.Parse(strings.TrimSpace(access.GiteaServerUrl))
-	if err != nil || (serverURL.Scheme != "http" && serverURL.Scheme != "https") || serverURL.Host == "" || serverURL.User != nil || serverURL.RawQuery != "" || serverURL.Fragment != "" {
-		return nil, fmt.Errorf("gitea server URL is invalid")
+	if _, err := canonicalGiteaURL(access.GiteaServerUrl); err != nil {
+		return nil, fmt.Errorf("gitea server URL: %w", err)
 	}
 	privateKey, err := r.Journal.GitSSHPrivateKey(keyType)
 	if err != nil {
@@ -45,25 +42,30 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 			remaining = rest
 		}
 	}
-	for _, directory := range []string{runtimeRunDirectory + "/git", runtimeRunDirectory + "/bin", runtimeVolume + "/runtime"} {
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return nil, err
-		}
+	if err := os.Chmod(runtimeRunDirectory, 0o711); err != nil {
+		return nil, err
+	}
+	if err := os.MkdirAll(runtimeGitDirectory, 0o700); err != nil {
+		return nil, err
+	}
+	if err := os.Chown(runtimeGitDirectory, int(owner.UID), int(owner.GID)); err != nil {
+		return nil, err
+	}
+	if err := os.Chmod(runtimeGitDirectory, 0o700); err != nil {
+		return nil, err
 	}
 	files := []struct {
 		path string
 		data []byte
 		mode os.FileMode
 	}{
-		{runtimeRunDirectory + "/gitea-token", []byte(access.GiteaToken), 0o600},
-		{runtimeRunDirectory + "/git/id", privateKey, 0o600},
-		{runtimeRunDirectory + "/git/id.pub", ssh.MarshalAuthorizedKey(signer.PublicKey()), 0o644},
-		{runtimeRunDirectory + "/git/known_hosts", []byte(knownHosts), 0o600},
-		{runtimeRunDirectory + "/bin/gitea-codespace-git-credential", []byte(gitCredentialHelper), 0o755},
-		{runtimeRunDirectory + "/bin/gitea-codespace-git-ssh", []byte(gitSSHHelper), 0o755},
+		{runtimeGiteaTokenPath, []byte(access.GiteaToken), 0o600},
+		{runtimeGitDirectory + "/id", privateKey, 0o600},
+		{runtimeGitDirectory + "/id.pub", ssh.MarshalAuthorizedKey(signer.PublicKey()), 0o644},
+		{runtimeGitDirectory + "/known_hosts", []byte(knownHosts), 0o600},
 	}
 	for _, file := range files {
-		if err := writeCredential(file.path, file.data, file.mode, owner); err != nil {
+		if err := replaceFileAtomically(file.path, file.data, file.mode, &owner); err != nil {
 			return nil, err
 		}
 	}
@@ -80,42 +82,10 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	return secrets, nil
 }
 
-func writeCredential(path string, data []byte, mode os.FileMode, owner devcontainer.HostUser) error {
-	temporary, err := os.CreateTemp(filepath.Dir(path), ".credential-*")
-	if err != nil {
-		return err
-	}
-	temporaryPath := temporary.Name()
-	defer func() { _ = os.Remove(temporaryPath) }()
-	if _, err := temporary.Write(data); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Sync(); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Chmod(mode); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Chown(int(owner.UID), int(owner.GID)); err != nil {
-		_ = temporary.Close()
-		return err
-	}
-	if err := temporary.Close(); err != nil {
-		return err
-	}
-	return os.Rename(temporaryPath, path)
+func gitCredentialCommand(tokenPath string) string {
+	return `!f() { while IFS= read -r line; do [ -n "$line" ] || break; done; printf 'username=codespace\npassword=%s\n\n' "$(cat ` + tokenPath + `)"; }; f`
 }
 
-const gitCredentialHelper = `#!/bin/sh
-set -eu
-while IFS= read -r line; do [ -n "$line" ] || break; done
-printf 'username=codespace\npassword=%s\n\n' "$(cat /var/lib/gitea-codespace/gitea-token)"
-`
-
-const gitSSHHelper = `#!/bin/sh
-set -eu
-exec ssh -i /var/lib/gitea-codespace/git/id -o IdentitiesOnly=yes -o UserKnownHostsFile=/var/lib/gitea-codespace/git/known_hosts -o StrictHostKeyChecking=yes "$@"
-`
+func gitSSHCommand(directory string) string {
+	return "ssh -i " + directory + "/id -o IdentitiesOnly=yes -o UserKnownHostsFile=" + directory + "/known_hosts -o StrictHostKeyChecking=yes"
+}

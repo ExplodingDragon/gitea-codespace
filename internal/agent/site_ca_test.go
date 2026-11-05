@@ -46,11 +46,11 @@ func TestWritePlatformCABundleRotation(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, os.FileMode(0o444), info.Mode().Perm())
 
-	environment := siteTrust{url: "https://gitea.example.com", customCA: true}.gitEnvironment(nil, true)
+	environment := siteTrust{giteaURL: "https://gitea.example.com", customCA: true}.gitEnvironment(nil, true)
 	require.ElementsMatch(t, []string{
 		"GIT_CONFIG_COUNT=2",
-		"GIT_CONFIG_KEY_0=credential.helper",
-		"GIT_CONFIG_VALUE_0=!/run/codespace/bin/gitea-codespace-git-credential",
+		"GIT_CONFIG_KEY_0=credential.https://gitea.example.com.helper",
+		"GIT_CONFIG_VALUE_0=" + gitCredentialCommand(runtimeGiteaTokenPath),
 		"GIT_CONFIG_KEY_1=http.https://gitea.example.com/.sslCAInfo",
 		"GIT_CONFIG_VALUE_1=/run/codespace/ca/bundle.pem",
 	}, environment)

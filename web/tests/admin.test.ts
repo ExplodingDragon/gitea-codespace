@@ -220,7 +220,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(page.getByText('Request failed', {exact: false})).toBeVisible();
   await expect(field('Tag')).toHaveValue('standard');
   await page.getByRole('button', {name: 'Save template'}).click();
-  await expect(page.getByText('Pending verification', {exact: true})).toBeVisible();
+  await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
     enabled: true,
     version: '4.121.0',
