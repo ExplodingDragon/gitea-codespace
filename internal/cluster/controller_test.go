@@ -21,6 +21,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -47,7 +48,9 @@ func testEnvironment() api.EnvironmentConfiguration {
 		Isolation: "sysbox", RuntimeClassName: "sysbox-runc",
 		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, AccessMode: corev1.ReadWriteOnce,
 		Resources:     corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
-		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.Configuration{},
+		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.Configuration{
+			WebIDE: devcontainerruntime.WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+		},
 	}
 }
 

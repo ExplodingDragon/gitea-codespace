@@ -7,7 +7,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"regexp"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -16,11 +15,9 @@ import (
 
 const (
 	maxInjectedFeatures    = 32
-	maxWebIDESettingsBytes = 64 * 1024
-	webIDEFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2.0.0"
+	maxFeatureOptionsBytes = 16 * 1024
+	webIDEFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2"
 )
-
-var webIDEExtensionPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9-]*\.[A-Za-z0-9][A-Za-z0-9-]*$`)
 
 // Configuration defines administrator-owned additions to a repository's Dev
 // Container configuration. It is copied into the Codespace runtime snapshot.
@@ -31,10 +28,10 @@ type Configuration struct {
 
 // WebIDEConfiguration defines the platform-managed code-server installation.
 type WebIDEConfiguration struct {
-	Enabled    bool                 `json:"enabled"`
-	Version    string               `json:"version,omitempty"`
-	Extensions []string             `json:"extensions,omitempty"`
-	Settings   apiextensionsv1.JSON `json:"settings,omitempty"`
+	Enabled bool `json:"enabled"`
+	// Options are passed to the code-server Feature. Codespace overwrites the
+	// options that control its internal listener, authentication, and lifecycle.
+	Options apiextensionsv1.JSON `json:"options"`
 }
 
 // InjectedFeature adds one standard Dev Container Feature to an environment.
@@ -46,39 +43,18 @@ type InjectedFeature struct {
 // Validate checks that the configuration can be merged deterministically.
 func (c Configuration) Validate() error {
 	seen := make(map[string]string, len(c.Features)+1)
+	if len(bytes.TrimSpace(c.WebIDE.Options.Raw)) == 0 {
+		return fmt.Errorf("web IDE options are required")
+	}
+	if err := validateFeatureOptions("web IDE", c.WebIDE.Options.Raw); err != nil {
+		return err
+	}
 	if c.WebIDE.Enabled {
-		if strings.TrimSpace(c.WebIDE.Version) == "" || len(c.WebIDE.Version) > 128 {
-			return fmt.Errorf("web IDE requires a version of at most 128 characters")
-		}
 		id, err := validateFeatureReference(webIDEFeatureReference)
 		if err != nil {
 			return fmt.Errorf("platform web IDE Feature: %w", err)
 		}
 		seen[id] = webIDEFeatureReference
-	} else if c.WebIDE.Version != "" || len(c.WebIDE.Extensions) != 0 || len(c.WebIDE.Settings.Raw) != 0 {
-		return fmt.Errorf("disabled web IDE configuration must be empty")
-	}
-	if raw := bytes.TrimSpace(c.WebIDE.Settings.Raw); len(raw) != 0 {
-		if len(raw) > maxWebIDESettingsBytes || !json.Valid(raw) || raw[0] != '{' {
-			return fmt.Errorf("web IDE settings must be a JSON object no larger than 64 KiB")
-		}
-	}
-	if len(c.WebIDE.Extensions) > 128 {
-		return fmt.Errorf("web IDE supports at most 128 extensions")
-	}
-	extensions := make(map[string]struct{}, len(c.WebIDE.Extensions))
-	for _, value := range c.WebIDE.Extensions {
-		identity, _, remove, err := parseWebIDEExtension(value)
-		if err != nil {
-			return fmt.Errorf("web IDE extension %q: %w", value, err)
-		}
-		if remove {
-			return fmt.Errorf("web IDE extension %q must install an extension rather than remove one", value)
-		}
-		if _, exists := extensions[identity]; exists {
-			return fmt.Errorf("web IDE extension %q is duplicated", value)
-		}
-		extensions[identity] = struct{}{}
 	}
 	if len(c.Features) > maxInjectedFeatures {
 		return fmt.Errorf("environment supports at most %d injected Features", maxInjectedFeatures)
@@ -92,30 +68,22 @@ func (c Configuration) Validate() error {
 			return fmt.Errorf("features %q and %q have the same identity", existing, feature.Reference)
 		}
 		seen[id] = feature.Reference
-		if len(feature.Options.Raw) == 0 {
-			continue
-		}
-		if len(feature.Options.Raw) > 16*1024 || !json.Valid(feature.Options.Raw) || !bytes.HasPrefix(bytes.TrimSpace(feature.Options.Raw), []byte("{")) {
-			return fmt.Errorf("feature %q options must be a JSON object no larger than 16 KiB", feature.Reference)
+		if err := validateFeatureOptions(fmt.Sprintf("feature %q", feature.Reference), feature.Options.Raw); err != nil {
+			return err
 		}
 	}
 	return nil
 }
 
-func parseWebIDEExtension(value string) (identity, extension string, remove bool, err error) {
-	extension = strings.TrimSpace(value)
-	if len(extension) > 255 || extension == "" || strings.ContainsAny(extension, " \t\r\n") {
-		return "", "", false, fmt.Errorf("identifier is empty, too long, or contains whitespace")
+func validateFeatureOptions(name string, raw []byte) error {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 {
+		return nil
 	}
-	if strings.HasPrefix(extension, "-") {
-		remove = true
-		extension = strings.TrimPrefix(extension, "-")
+	if len(raw) > maxFeatureOptionsBytes || !json.Valid(raw) || raw[0] != '{' {
+		return fmt.Errorf("%s options must be a JSON object no larger than 16 KiB", name)
 	}
-	identifier, version, versioned := strings.Cut(extension, "@")
-	if !webIDEExtensionPattern.MatchString(identifier) || versioned && (version == "" || strings.Contains(version, "@")) {
-		return "", "", false, fmt.Errorf("identifier must use publisher.name with an optional version")
-	}
-	return strings.ToLower(identifier), extension, remove, nil
+	return nil
 }
 
 func validateFeatureReference(value string) (string, error) {
@@ -138,8 +106,7 @@ func validateFeatureReference(value string) (string, error) {
 // DeepCopyInto supports use of Configuration in Kubernetes API objects.
 func (c *Configuration) DeepCopyInto(out *Configuration) {
 	*out = *c
-	out.WebIDE.Extensions = append([]string(nil), c.WebIDE.Extensions...)
-	out.WebIDE.Settings.Raw = append([]byte(nil), c.WebIDE.Settings.Raw...)
+	c.WebIDE.Options.DeepCopyInto(&out.WebIDE.Options)
 	if c.Features != nil {
 		out.Features = make([]InjectedFeature, len(c.Features))
 		for i := range c.Features {

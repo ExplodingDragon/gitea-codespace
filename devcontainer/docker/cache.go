@@ -8,7 +8,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"io"
 	"maps"
 	"net/url"
 	"path"
@@ -160,27 +159,11 @@ func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImag
 		return
 	}
 	defer func() { _ = reader.Close() }()
-	if err := streamDockerProgress(reader); err != nil {
+	if err := readDockerProgress(reader, nil); err != nil {
 		_, _ = fmt.Fprintf(e.stderr, "Warning: publish %s image cache: %v\n", stage, err)
 		return
 	}
 	_, _ = fmt.Fprintf(e.stdout, "Dev Container %s image cache published\n", stage)
-}
-
-func streamDockerProgress(reader io.Reader) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var message dockerProgressMessage
-		if err := decoder.Decode(&message); err != nil {
-			if err == io.EOF {
-				return nil
-			}
-			return err
-		}
-		if err := message.err(); err != nil {
-			return err
-		}
-	}
 }
 
 func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string, platformEnvironment map[string]string) error {

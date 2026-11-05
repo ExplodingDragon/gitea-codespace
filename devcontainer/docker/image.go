@@ -7,7 +7,6 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -188,23 +187,12 @@ func (p *dockerPullProgress) observe(message dockerProgressMessage, now time.Tim
 }
 
 func streamDockerPullProgress(reader io.Reader, output io.Writer) error {
-	decoder := json.NewDecoder(reader)
 	progress := dockerPullProgress{}
-	for {
-		var message dockerProgressMessage
-		if err := decoder.Decode(&message); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if err := message.err(); err != nil {
-			return err
-		}
+	return readDockerProgress(reader, func(message dockerProgressMessage) {
 		if summary := progress.observe(message, time.Now()); summary != "" {
 			_, _ = fmt.Fprintln(output, summary)
 		}
-	}
+	})
 }
 
 type imageMetadata struct {

@@ -2,9 +2,9 @@
 
 - Follow [`DEVELOPMENT.md`](DEVELOPMENT.md) for the supported build, generation,
   test, and validation workflows.
-- Keep every field defined by the Dev Container specification represented
-  throughout parsing, merging, and resolution, including fields that the
-  current runtime does not consume yet.
+- Preserve every field defined by the Dev Container specification throughout
+  parsing, merging, and resolution so standard configurations round-trip
+  without losing data.
 - Change Kubernetes APIs in `internal/cluster/api` and regenerate both CRD
   copies with `make generate-kubernetes`.
 - Change internal RPC definitions in their `.proto` sources and regenerate the

@@ -4,69 +4,40 @@ Gitea Codespace provides isolated, Dev Container-based development
 environments for Gitea repositories on Kubernetes. Users create and manage
 their environments from Gitea, then connect through a browser, SSH, or SFTP.
 
-## What it provides
+## Use a Codespace
 
-- Dev Container environments created from a repository and revision;
-- Kata Containers or Sysbox workload isolation;
-- browser, SSH, SFTP, and authorized forwarded-port access;
-- reusable environment templates and an optional registry cache; and
-- a web administration page for sites, templates, components, and runtimes.
+After an administrator connects Gitea to a Codespace deployment:
 
-## Requirements
+1. open a supported repository, commit, or pull request page in Gitea;
+2. choose **Create Codespace**, then select an available runtime environment
+   and Dev Container configuration;
+3. follow creation progress and logs from the Codespace page; and
+4. open the environment in the browser or connect through SSH or SFTP.
 
-- Kubernetes 1.31 or later;
-- Helm 4.3 or later;
-- a Gitea installation with Codespace support;
-- a verified Kata Containers or Sysbox RuntimeClass; and
-- a StorageClass compatible with the selected runtime.
+Codespaces retain their workspace when stopped and can be resumed later.
+Repository Dev Container configuration controls the development environment,
+while administrators provide reusable runtime templates and optional shared
+image caching.
 
-Prepare and verify either Kata Containers or Sysbox before creating an
-environment template. The [Helm guide](charts/gitea-codespace/README.md)
-explains the required RuntimeClass labels and storage behavior.
+## Access and ports
 
-## Quick start
+The Codespace page lists the available browser, SSH, and SFTP connections.
+Applications can publish HTTP ports from inside the Dev Container with the
+`gitea-codespace-endpoint` command. Private endpoints follow the current Gitea
+user's access, while public endpoints are explicitly selected when published.
 
-Create an administration token and install the newest development chart:
+## Deploy
 
-```sh
-kubectl create namespace codespace-system
-kubectl -n codespace-system create secret generic codespace-admin \
-  --from-literal=token="$(openssl rand -hex 32)"
-
-helm upgrade --install codespace \
-  oci://ghcr.io/explodingdragon/charts/gitea-codespace \
-  --devel \
-  --namespace codespace-system \
-  --set admin.tokenSecret.name=codespace-admin \
-  --wait \
-  --timeout 5m
-```
-
-Use `--version <chart-version>` for a reproducible release instead of the
-development chart.
-
-## Configure
-
-The administration Service is private by default. Open it locally with:
-
-```sh
-kubectl -n codespace-system port-forward \
-  service/codespace-gitea-codespace-admin 18080:18080
-```
-
-Open <http://127.0.0.1:18080>, sign in with the administration token, and:
-
-1. create a Gateway and any optional Cache components;
-2. create an environment template from verified runtime and storage classes;
-3. create a registration token on Gitea's Codespace Managers page;
-4. register the Gitea site and assign its templates and components; and
-5. enable the site after it reports that it is ready.
-
-Users can then create Codespaces from supported repository pages in Gitea.
+Cluster operators install Gitea Codespace with its OCI Helm chart. A deployment
+requires Kubernetes 1.31 or later, Helm 4.3 or later, a Gitea installation with
+Codespace support, and a verified Kata Containers or Sysbox runtime. Follow the
+[Helm installation and operations guide](charts/gitea-codespace/README.md) to
+prepare isolation, storage, network entry points, and the Gitea registration.
 
 ## Documentation
 
-- [Helm installation and operations](charts/gitea-codespace/README.md)
+- [Helm installation and operations](charts/gitea-codespace/README.md) for
+  cluster administrators
 - [Developer guide](DEVELOPMENT.md)
 - [Architecture and design](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
 

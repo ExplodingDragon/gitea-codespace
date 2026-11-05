@@ -70,16 +70,30 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		injected = append(injected, devcontainer.InjectedFeature{Reference: strings.TrimSpace(feature.Reference), Origin: "environment template", Options: options})
 	}
 	if webIDE := request.DevContainer.WebIDE; webIDE.Enabled {
+		options := map[string]json.RawMessage{}
+		if len(webIDE.Options.Raw) != 0 {
+			if err := json.Unmarshal(webIDE.Options.Raw, &options); err != nil {
+				return containerdocker.CreateOptions{}, fmt.Errorf("decode platform Web IDE Feature options: %w", err)
+			}
+		}
+		for name, value := range map[string]json.RawMessage{
+			"auth":               json.RawMessage(`"none"`),
+			"host":               json.RawMessage(`"0.0.0.0"`),
+			"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
+			"workspace":          json.RawMessage(`"."`),
+			"cert":               json.RawMessage(`""`),
+			"certHost":           json.RawMessage(`""`),
+			"certKey":            json.RawMessage(`""`),
+			"socket":             json.RawMessage(`""`),
+			"socketMode":         json.RawMessage(`""`),
+			"disableTelemetry":   json.RawMessage("true"),
+			"disableUpdateCheck": json.RawMessage("true"),
+		} {
+			options[name] = value
+		}
 		injected = append(injected, devcontainer.InjectedFeature{
 			Reference: webIDEFeatureReference, Origin: "platform Web IDE", InstallOnly: true,
-			Options: map[string]json.RawMessage{
-				"version":            json.RawMessage(strconv.Quote(strings.TrimSpace(webIDE.Version))),
-				"auth":               json.RawMessage(`"none"`),
-				"host":               json.RawMessage(`"0.0.0.0"`),
-				"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
-				"disableTelemetry":   json.RawMessage("true"),
-				"disableUpdateCheck": json.RawMessage("true"),
-			},
+			Options: options,
 		})
 	}
 	containerEnvironment := map[string]string{
@@ -185,10 +199,8 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 		"GITEA_WORKSPACE":          state.RemoteWorkdir,
 	})
 	var settingsReader io.Reader
-	customizations := webIDECustomizations{}
 	if initializeWebIDE {
-		var err error
-		customizations, err = resolveWebIDECustomizations(configuration.WebIDE, state.Configuration.Customizations["vscode"])
+		customizations, err := resolveWebIDECustomizations(state.Configuration.Customizations["vscode"])
 		if err != nil {
 			return err
 		}
@@ -197,21 +209,20 @@ func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine,
 			return fmt.Errorf("encode Web IDE settings: %w", err)
 		}
 		settingsReader = bytes.NewReader(settings)
+		if len(customizations.Extensions) > 0 {
+			_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
+		}
+		for _, extension := range customizations.Extensions {
+			if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--force", "--install-extension", extension}, values, nil); err != nil {
+				_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
+			}
+		}
 	}
 	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", startWebIDEScript}, values, settingsReader); err != nil {
 		return fmt.Errorf("start platform Web IDE: %w", err)
 	}
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
 		return err
-	}
-	if !initializeWebIDE {
-		return nil
-	}
-	_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
-	for _, extension := range customizations.Extensions {
-		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--install-extension", extension}, values, nil); err != nil {
-			_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
-		}
 	}
 	return nil
 }
@@ -221,53 +232,20 @@ type webIDECustomizations struct {
 	Extensions []string                   `json:"extensions"`
 }
 
-func resolveWebIDECustomizations(configuration WebIDEConfiguration, repository json.RawMessage) (webIDECustomizations, error) {
+func resolveWebIDECustomizations(repository json.RawMessage) (webIDECustomizations, error) {
 	result := webIDECustomizations{Settings: map[string]json.RawMessage{}}
-	if len(configuration.Settings.Raw) != 0 {
-		if err := json.Unmarshal(configuration.Settings.Raw, &result.Settings); err != nil {
-			return webIDECustomizations{}, fmt.Errorf("decode environment-template Web IDE settings: %w", err)
-		}
-	}
-	repositoryConfiguration := webIDECustomizations{}
 	if len(repository) != 0 {
-		if err := json.Unmarshal(repository, &repositoryConfiguration); err != nil {
+		if err := json.Unmarshal(repository, &result); err != nil {
 			return webIDECustomizations{}, fmt.Errorf("decode VS Code customizations: %w", err)
 		}
 	}
-	for name, value := range repositoryConfiguration.Settings {
-		result.Settings[name] = value
+	if result.Settings == nil {
+		result.Settings = map[string]json.RawMessage{}
 	}
-
-	extensions := make(map[string]string, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
-	ordered := make(map[string]struct{}, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
-	order := make([]string, 0, len(configuration.Extensions)+len(repositoryConfiguration.Extensions))
-	apply := func(values []string) error {
-		for _, value := range values {
-			identity, extension, remove, err := parseWebIDEExtension(value)
-			if err != nil {
-				return fmt.Errorf("VS Code extension %q: %w", value, err)
-			}
-			if remove {
-				delete(extensions, identity)
-				continue
-			}
-			if _, exists := ordered[identity]; !exists {
-				ordered[identity] = struct{}{}
-				order = append(order, identity)
-			}
-			extensions[identity] = extension
-		}
-		return nil
-	}
-	if err := apply(configuration.Extensions); err != nil {
-		return webIDECustomizations{}, err
-	}
-	if err := apply(repositoryConfiguration.Extensions); err != nil {
-		return webIDECustomizations{}, err
-	}
-	for _, identity := range order {
-		if extension := extensions[identity]; extension != "" {
-			result.Extensions = append(result.Extensions, extension)
+	for i, extension := range result.Extensions {
+		result.Extensions[i] = strings.TrimSpace(extension)
+		if result.Extensions[i] == "" || len(result.Extensions[i]) > 255 || strings.ContainsAny(result.Extensions[i], " \t\r\n") {
+			return webIDECustomizations{}, fmt.Errorf("VS Code extension %q is empty, too long, or contains whitespace", extension)
 		}
 	}
 	return result, nil

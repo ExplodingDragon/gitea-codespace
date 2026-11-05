@@ -215,8 +215,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(selectField('RuntimeClass')).toBeVisible();
   await expect(selectField('StorageClass')).toBeVisible();
   await field('Tag').fill('standard');
-  await field('code-server version').fill('4.121.0');
-  await field('Web IDE settings').fill('{"editor.tabSize": 2}');
+  await field('code-server Feature options').fill('{"extensions":"golang.go","locale":"en"}');
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
   await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
   await page.getByRole('button', {name: 'Save template'}).click();
@@ -228,9 +227,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
     enabled: true,
-    version: '4.121.0',
-    extensions: [],
-    settings: {'editor.tabSize': 2},
+    options: {extensions: 'golang.go', locale: 'en'},
   });
   expect(environments[0].spec.runtime.resources).toEqual({
     requests: {cpu: '100m', memory: '256Mi'},

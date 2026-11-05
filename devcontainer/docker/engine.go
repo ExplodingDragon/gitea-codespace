@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -247,12 +246,16 @@ func devContainerID(ownerID string) string {
 
 func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injected []devcontainer.InjectedFeature) error {
 	repositoryFeatures := make(map[string]string, len(resolved.Features))
+	repositoryFeatureIdentities := make(map[string][]string, len(resolved.Features))
 	for reference := range resolved.Features {
 		canonicalReference := strings.ToLower(strings.TrimSpace(reference))
 		if existing := repositoryFeatures[canonicalReference]; existing != "" {
 			return fmt.Errorf("repository Dev Container Features %s and %s differ only by case", existing, reference)
 		}
 		repositoryFeatures[canonicalReference] = reference
+		if identity, err := featureReferenceID(reference); err == nil {
+			repositoryFeatureIdentities[identity] = append(repositoryFeatureIdentities[identity], reference)
+		}
 	}
 	resolved.PlatformFeatureReferences = map[string]struct{}{}
 	resolved.InstallOnlyFeatures = map[string]struct{}{}
@@ -268,6 +271,13 @@ func mergeInjectedFeatures(resolved *devcontainer.ResolvedConfiguration, injecte
 			return fmt.Errorf("encode %s Feature %s options: %w", origin, reference, err)
 		}
 		repositoryReference, repositoryOwned := repositoryFeatures[canonicalReference]
+		if identity, parseErr := featureReferenceID(reference); parseErr == nil {
+			existing := repositoryFeatureIdentities[identity]
+			if len(existing) > 1 || (len(existing) == 1 && !strings.EqualFold(existing[0], reference)) {
+				slices.Sort(existing)
+				return fmt.Errorf("repository Dev Container Feature %s conflicts with injected Feature %s from %s because they select different versions of the same Feature", strings.Join(existing, ", "), reference, origin)
+			}
+		}
 		if repositoryOwned {
 			reference = repositoryReference
 		}
@@ -738,7 +748,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, nil, fmt.Errorf("docker compose service %q did not create a container", resolved.Service)
 	}
-	sort.Strings(related)
+	slices.Sort(related)
 	return primary, related, composeContainers, featureDigests, nil
 }
 
@@ -794,7 +804,7 @@ func composeProxyEnvironment(services composetypes.Services, platform map[string
 			}
 		}
 	}
-	sort.Strings(destinations)
+	slices.Sort(destinations)
 	return mergePlatformEnvironment(map[string]string{"NO_PROXY": strings.Join(destinations, ",")}, platform)
 }
 
@@ -984,12 +994,24 @@ type dockerProgressMessage struct {
 	} `json:"errorDetail"`
 }
 
-func (m dockerProgressMessage) err() error {
-	if m.ErrorDetail.Message != "" {
-		return errors.New(m.ErrorDetail.Message)
+func readDockerProgress(reader io.Reader, observe func(dockerProgressMessage)) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var message dockerProgressMessage
+		if err := decoder.Decode(&message); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if message.ErrorDetail.Message != "" {
+			return errors.New(message.ErrorDetail.Message)
+		}
+		if message.Error != "" {
+			return errors.New(message.Error)
+		}
+		if observe != nil {
+			observe(message)
+		}
 	}
-	if m.Error != "" {
-		return errors.New(m.Error)
-	}
-	return nil
 }

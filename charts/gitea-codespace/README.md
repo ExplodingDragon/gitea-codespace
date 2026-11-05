@@ -13,38 +13,24 @@ resources configured in the administration page.
 - a verified Kata Containers or Sysbox RuntimeClass; and
 - a StorageClass compatible with the selected runtime.
 
-Runtime support depends on the worker operating system, architecture, CRI, and
-container runtime as well as the Kubernetes version. Check the runtime's
-support matrix before changing worker nodes.
+Runtime support also depends on the worker operating system, architecture,
+CRI, and container runtime. Verify the selected runtime on the same worker pool
+and storage used by Codespaces.
 
 ## Prepare a workload runtime
 
-Codespace runs Docker inside each Runtime Pod and runs the Dev Container in
-that Docker environment. Kata provides VM-backed isolation and needs block
+Codespace runs Docker inside each Runtime Pod, then runs the Dev Container in
+that Docker environment. Kata provides VM-backed isolation and uses block
 storage. Sysbox provides user-namespace isolation and uses filesystem storage.
-The chart uses an existing RuntimeClass so runtime installation and node
-maintenance remain under the cluster operator's control.
+The chart consumes an existing RuntimeClass because installing either runtime
+changes the worker nodes and remains a cluster operation.
 
 ### Kata Containers
 
-Install a supported, pinned Kata release by following the
-[Kata installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md).
-The upstream OCI chart is one supported installation method:
-
-```sh
-helm upgrade --install kata-deploy \
-  oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
-  --version <supported-release> \
-  --namespace kube-system \
-  --create-namespace \
-  --set shims.disableAll=true \
-  --set shims.qemu-runtime-rs.enabled=true \
-  --wait \
-  --timeout 10m
-```
-
-Run a test Pod with the selected class and confirm that it reports a guest
-kernel. Then make the verified class available to the administration page:
+Install a pinned release using the
+[Kata installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md)
+or its upstream OCI chart. Run a test Pod with the selected class and confirm
+that it reports a guest kernel, then expose the verified class to Codespace:
 
 ```sh
 kubectl label runtimeclass kata-qemu-runtime-rs \
@@ -52,14 +38,13 @@ kubectl label runtimeclass kata-qemu-runtime-rs \
   --overwrite
 ```
 
-The selected StorageClass must provision a raw block volume for Kata. Test the
-RuntimeClass and StorageClass together before publishing a template because a
-StorageClass object does not advertise every volume mode supported by its CSI
-driver.
+Kata templates require a StorageClass that provisions raw block volumes. Test
+the RuntimeClass and StorageClass together because Kubernetes StorageClass
+metadata alone does not describe every mode supported by its CSI driver.
 
 ### Sysbox
 
-Install a supported, pinned Sysbox release by following the
+Install a pinned Sysbox release by following the
 [Sysbox Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Run a Pod with `sysbox-runc` and confirm that its nested Docker daemon responds.
 Review the [Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
@@ -74,8 +59,8 @@ kubectl label runtimeclass sysbox-runc \
   --overwrite
 ```
 
-Sysbox templates use a filesystem PVC. Verify that the chosen StorageClass can
-provision and remount that volume on the worker pool.
+Sysbox templates use a filesystem PVC. Verify that the StorageClass can
+provision and remount the volume on the intended worker pool.
 
 List the runtime choices visible to Manager with:
 
@@ -107,14 +92,12 @@ digest. For a private registry, add existing pull Secret names to
 `image.pullSecrets`; Manager makes those credentials available to managed
 site namespaces.
 
-Verify Manager and its installation identity:
+Verify Manager after installation:
 
 ```sh
 kubectl -n codespace-system rollout status \
   deployment/codespace-gitea-codespace \
   --timeout=120s
-kubectl -n codespace-system get secret \
-  codespace-gitea-codespace-internal-ca
 kubectl -n codespace-system get pods
 ```
 
@@ -127,9 +110,10 @@ kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-Visit <http://127.0.0.1:18080> and sign in with the administration token. To
-publish the page, configure `admin.ingress`; it can remain HTTP behind a
-trusted proxy or reference an existing TLS Secret.
+Visit <http://127.0.0.1:18080> and sign in with the administration token.
+Configure `admin.ingress` when the administration page needs a shared cluster
+entry point; the default private Service keeps initial setup off the public
+network.
 
 Complete the initial setup in this order:
 
@@ -141,24 +125,39 @@ Complete the initial setup in this order:
 5. assign the template and components, then configure optional quotas; and
 6. enable the site after its status reports that it is ready.
 
-## Certificates and recovery
+## Identity and trust
 
-Manager stores its internal root and issuing CA in
-`Secret/<release>-internal-ca`. This identity secures Manager, Agent, Gateway,
-and Cache communication and Cache HTTPS. Back up the Secret and enable
-Kubernetes Secret encryption at rest. It is intentionally retained across
-ordinary Helm upgrades so existing workloads keep the same trust root.
-
-Restore the original Secret if Manager reports that the identity is missing
-while managed resources still exist. Create a new identity only for an empty
-installation. Browser-facing HTTPS remains separate and can use an existing
-TLS Secret or cert-manager through the Gateway configuration.
+Manager keeps the internal root and issuing CA in
+`Secret/<release>-internal-ca`. It secures Manager, Agent, Gateway, Cache, and
+Cache HTTPS communication. Back up this Secret and enable Kubernetes Secret
+encryption at rest because restoring the same identity lets existing workloads
+retain their trust after Manager recovery. Public HTTPS uses the TLS Secret or
+cert-manager configuration selected for the corresponding Ingress.
 
 When Gitea uses a private CA, add its PEM bundle to the site. Manager uses it
 for site communication and makes it available to Git and the Dev Container.
 Leave the field empty for a publicly trusted Gitea certificate.
 
-## Network and proxy configuration
+## Network access
+
+### Gateway publication
+
+Each Gateway has a same-name `ClusterIP` Service. Port `80` carries HTTP and
+WebSocket traffic, while port `22` carries SSH and SFTP. HTTP can use the
+Ingress configured in the administration page or an operator-managed route.
+SSH can use the optional LoadBalancer Service or an operator-managed TCP
+route. These choices keep public DNS, TLS, and load-balancer policy under the
+cluster operator's control.
+
+Set trusted proxy CIDRs only for proxies that connect directly to the Gateway
+Service. Gateway then accepts their forwarded client address without trusting
+headers from arbitrary callers.
+
+Gateway replica count is configured on the component. Multiple replicas share
+current routing state and are distributed across nodes when possible;
+connection limits apply to each replica.
+
+### Outbound proxies
 
 An environment-template proxy applies to Git over HTTP(S), image pulls and
 builds, Dev Container Features, and applications that use standard proxy
@@ -174,27 +173,6 @@ loopback traffic out of the proxy.
 If a template uses a proxy IP address, allow its CIDR and port in every site
 that selects the template so the namespace NetworkPolicy permits the traffic.
 
-## Gateway publication
-
-Each Gateway has a same-name `ClusterIP` Service. Port `80` carries HTTP and
-WebSocket traffic; port `22` carries SSH and SFTP. Users can also use direct
-commands, VS Code Remote-SSH, and localhost TCP forwarding through SSH.
-
-HTTP can remain operator-managed or use an Ingress configured in the
-administration page. HTTPS references an existing TLS Secret or a cert-manager
-Issuer. SSH can remain operator-managed or use the separate LoadBalancer
-Service created by Manager. In operator-managed mode, route external HTTP and
-SSH traffic to ports `80` and `22` of the Gateway Service.
-
-Only configure trusted proxy CIDRs when an HTTP proxy connects directly to the
-Gateway Service. This allows Gateway to use the real client address without
-trusting forwarded headers from arbitrary callers.
-
-Gateway replica count is configured on the component. Manager distributes
-multiple replicas across nodes when possible and keeps their sessions
-interoperable. Connection limits apply per replica. Cache components use one
-replica because their storage and maintenance lease have a single writer.
-
 ## Cache
 
 Each Cache has a same-name internal Service on port `443`. Runtime Docker and
@@ -203,21 +181,28 @@ credentials. Cache traffic stays inside the cluster; an unavailable or empty
 Cache falls back to the allowed upstream registry.
 
 Cache supports local persistent storage or S3. Configure its upstream allow
-rules and optional proxy in the administration page. The component uses one
-replica with a Recreate update strategy so only one process writes its storage
-at a time.
+rules and optional proxy in the administration page. It uses one replica with
+a Recreate update strategy because the storage and maintenance lease have one
+writer.
 
-## Configuration reference
+## Environment templates
 
-The administration page discovers RuntimeClasses, StorageClasses,
-IngressClasses, TLS Secrets, and cert-manager Issuers from the cluster. It also
-validates resource requests, optional limits, quotas, component relationships,
-and referenced objects before applying changes.
+The administration page discovers runtime, storage, Ingress, and certificate
+resources from the cluster. Templates select from those verified resources and
+define workspace storage, optional compute limits, proxy settings, and
+platform additions to the repository Dev Container.
 
-Environment templates can define the initial Web IDE version, extensions, and
-settings. Repository `customizations.vscode` values refine that configuration
-for newly created Codespaces; existing Codespaces keep their persistent IDE
-state when resumed.
+Environment templates can enable the platform Web IDE and pass an options
+object to `ghcr.io/coder/devcontainer-features/code-server:2`. This keeps the
+upstream Feature options available without duplicating its version or extension
+fields in the administration API. Codespace supplies the internal listener,
+authentication, workspace, TLS boundary, telemetry, and update-check options
+because those values must match Gateway and the Codespace lifecycle.
+
+Repository `customizations.vscode` remains the project-owned source of editor
+settings and extensions. Feature options can provide an administrator baseline,
+while repositories add project-specific tools. Existing Codespaces retain
+their persistent editor state when resumed.
 
 [`values.yaml`](values.yaml) contains the chart defaults, and
 [`values.schema.json`](values.schema.json) defines all supported Helm values.

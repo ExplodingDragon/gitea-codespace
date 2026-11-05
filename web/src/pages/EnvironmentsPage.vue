@@ -25,8 +25,7 @@ const editing = ref(false);
 const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
 const name = ref('');
-const extensionsJSON = ref('[]');
-const settingsJSON = ref('{}');
+const webIDEOptionsJSON = ref('{}');
 const featuresJSON = ref('{}');
 const error = ref('');
 const loading = ref(false);
@@ -36,8 +35,7 @@ const limitsDraft = ref({cpu: '1', memory: '1Gi'});
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   form: form.value,
-  extensions: extensionsJSON.value,
-  settings: settingsJSON.value,
+  webIDEOptions: webIDEOptionsJSON.value,
   features: featuresJSON.value,
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
@@ -134,7 +132,7 @@ function edit(item?: Resource<Environment>) {
           accessMode: 'ReadWriteOncePod',
           resources: {requests: {cpu: '100m', memory: '256Mi'}},
           gitSSHKeyType: 'ed25519',
-          devContainer: {webIDE: {enabled: true, version: '4.121.0', extensions: [], settings: {}}, features: []},
+          devContainer: {webIDE: {enabled: true, options: {}}, features: []},
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
@@ -146,8 +144,7 @@ function edit(item?: Resource<Environment>) {
     limitsEnabled.value = false;
     limitsDraft.value = {cpu: '1', memory: '1Gi'};
   }
-  extensionsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.extensions ?? [], null, 2);
-  settingsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.settings ?? {}, null, 2);
+  webIDEOptionsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.options ?? {}, null, 2);
   featuresJSON.value = JSON.stringify(
     Object.fromEntries(
       (form.value.runtime.devContainer.features ?? []).map(({reference, options}) => [reference, options ?? {}]),
@@ -165,7 +162,7 @@ function close() {
   dirty.endTracking();
 }
 
-function parseDevContainerAdditions(webIDEEnabled: boolean) {
+function parseDevContainerAdditions() {
   const featureObject: unknown = JSON.parse(featuresJSON.value);
   if (!featureObject || Array.isArray(featureObject) || typeof featureObject !== 'object')
     throw new Error(t('environment.invalidFeatures'));
@@ -174,22 +171,11 @@ function parseDevContainerAdditions(webIDEEnabled: boolean) {
       throw new Error(t('environment.invalidFeatures'));
     return {reference: reference.trim(), options: options as Record<string, unknown>};
   });
-  if (!webIDEEnabled) return {extensions: [], settings: {}, features};
-
-  const extensions: unknown = JSON.parse(extensionsJSON.value);
-  if (
-    !Array.isArray(extensions) ||
-    extensions.some((value) => typeof value !== 'string' || !value.trim()) ||
-    new Set(extensions.map((value) => value.trim())).size !== extensions.length
-  ) {
-    throw new Error(t('environment.invalidExtensions'));
-  }
-  const settings: unknown = JSON.parse(settingsJSON.value);
-  if (!settings || Array.isArray(settings) || typeof settings !== 'object')
-    throw new Error(t('environment.invalidSettings'));
+  const webIDEOptions: unknown = JSON.parse(webIDEOptionsJSON.value);
+  if (!webIDEOptions || Array.isArray(webIDEOptions) || typeof webIDEOptions !== 'object')
+    throw new Error(t('environment.invalidWebIDEOptions'));
   return {
-    extensions: extensions.map((value) => value.trim()),
-    settings: settings as Record<string, unknown>,
+    webIDEOptions: webIDEOptions as Record<string, unknown>,
     features,
   };
 }
@@ -224,12 +210,9 @@ async function save() {
     else delete spec.runtime.resources.limits;
     if ((measurementBaseValue(spec.runtime.storage.storage, 'storage') ?? 0) <= 0)
       throw new Error(t('environment.invalidStorageSize'));
-    const {extensions, settings, features} = parseDevContainerAdditions(spec.runtime.devContainer.webIDE.enabled);
+    const {webIDEOptions, features} = parseDevContainerAdditions();
     spec.runtime.devContainer.features = features;
-    if (spec.runtime.devContainer.webIDE.enabled) {
-      spec.runtime.devContainer.webIDE.extensions = extensions;
-      spec.runtime.devContainer.webIDE.settings = settings;
-    } else spec.runtime.devContainer.webIDE = {enabled: false};
+    spec.runtime.devContainer.webIDE.options = webIDEOptions;
     const saved = await request<Resource<Environment>>(
       `environments${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',
@@ -440,6 +423,16 @@ function remove(item: Resource<Environment>) {
     </div>
 
     <h2>{{ t('environment.webIDESection') }}</h2>
+    <p class="section-help">
+      {{ t('environment.webIDEHelp') }}
+      <a
+        href="https://github.com/coder/devcontainer-features/tree/main/src/code-server"
+        target="_blank"
+        rel="noreferrer"
+      >
+        {{ t('environment.featureOptionsDocs') }}
+      </a>
+    </p>
     <div class="form-grid">
       <NFormItem class="field-wide">
         <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
@@ -447,28 +440,13 @@ function remove(item: Resource<Environment>) {
         </NCheckbox>
       </NFormItem>
       <template v-if="form.runtime.devContainer.webIDE.enabled">
-        <NFormItem :label="t('environment.webIDEVersion')">
-          <NInput
-            v-model:value="form.runtime.devContainer.webIDE.version"
-            required
-          />
-        </NFormItem>
         <NFormItem
           class="field-wide"
-          :label="t('environment.extensions')"
+          :label="t('environment.webIDEOptions')"
         >
           <JsonEditor
-            v-model="extensionsJSON"
-            :label="t('environment.jsonExtensionsLabel')"
-          />
-        </NFormItem>
-        <NFormItem
-          class="field-wide"
-          :label="t('environment.settings')"
-        >
-          <JsonEditor
-            v-model="settingsJSON"
-            :label="t('environment.jsonSettingsLabel')"
+            v-model="webIDEOptionsJSON"
+            :label="t('environment.jsonWebIDEOptionsLabel')"
           />
         </NFormItem>
       </template>

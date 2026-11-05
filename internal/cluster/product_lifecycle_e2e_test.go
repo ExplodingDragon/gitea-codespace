@@ -35,6 +35,7 @@ import (
 	"golang.org/x/crypto/ssh"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -411,7 +412,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
 			Enabled: true,
-			Version: "4.121.0",
+			Options: apiextensionsv1.JSON{Raw: []byte(`{}`)},
 		},
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
@@ -505,7 +506,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	createLog := strings.Join(remote.logs[1], "\n")
 	remote.mu.Unlock()
 	require.Contains(t, createLog, "Dev Container Feature ghcr.io/devcontainers/features/common-utils:2 fetched through mirror")
-	require.Contains(t, createLog, "Dev Container Feature ghcr.io/coder/devcontainer-features/code-server:2.0.0 fetched through mirror")
+	require.Contains(t, createLog, "Dev Container Feature ghcr.io/coder/devcontainer-features/code-server:2 fetched through mirror")
 	if !strings.Contains(createLog, "Dev Container features image cache published") {
 		t.Fatalf("Dev Container feature image cache was not published; create log:\n%s", createLog)
 	}

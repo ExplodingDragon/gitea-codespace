@@ -269,30 +269,19 @@ func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
 	}
 }
 
-func TestMergeInjectedFeaturesKeepsDistinctFeatureVersions(t *testing.T) {
+func TestMergeInjectedFeaturesRejectsVersionConflict(t *testing.T) {
 	t.Parallel()
 
 	resolved := &devcontainer.ResolvedConfiguration{Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
 		"ghcr.io/example/features/tool:1": json.RawMessage(`{"version":"1"}`),
 	}}}
-	if err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
+	err := mergeInjectedFeatures(resolved, []devcontainer.InjectedFeature{{
 		Reference: "ghcr.io/example/features/tool:2",
 		Origin:    "user",
 		Options:   map[string]json.RawMessage{"channel": json.RawMessage(`"stable"`)},
-	}}); err != nil {
-		t.Fatalf("override repository Feature: %v", err)
-	}
-	if _, exists := resolved.Features["ghcr.io/example/features/tool:1"]; !exists {
-		t.Fatal("repository Feature is missing")
-	}
-	want := `{"channel":"stable"}`
-	got := resolved.Features["ghcr.io/example/features/tool:2"]
-	var gotOptions, wantOptions map[string]any
-	if json.Unmarshal(got, &gotOptions) != nil || json.Unmarshal([]byte(want), &wantOptions) != nil || !maps.Equal(gotOptions, wantOptions) {
-		t.Fatalf("merged Feature options = %s, want %s", got, want)
-	}
-	if _, exists := resolved.PlatformFeatureReferences["ghcr.io/example/features/tool:2"]; !exists {
-		t.Fatal("platform-only Feature is not excluded from the repository lockfile")
+	}})
+	if err == nil || !strings.Contains(err.Error(), "different versions of the same Feature") {
+		t.Fatalf("Feature version conflict error = %v", err)
 	}
 }
 

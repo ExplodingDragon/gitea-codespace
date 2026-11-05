@@ -8,8 +8,8 @@ while architectural decisions are maintained in the
 ## Prerequisites
 
 - the Go version declared in [`go.mod`](go.mod);
-- pnpm and a Node.js version supported by the current frontend dependencies;
-- Helm and kubectl for chart or Kubernetes work; and
+- Node.js and pnpm for the administration interface;
+- Helm and kubectl for chart or Kubernetes changes; and
 - Docker or another compatible container tool for building the platform image.
 
 Install the pinned Go development tools and frontend dependencies:
@@ -20,25 +20,19 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-`make install-tools` installs Buf, protobuf generators, shfmt, actionlint, and
-staticcheck at the versions used by the Makefile. Using these versions keeps
-local checks consistent with CI.
+The Makefile pins the Go tools used by CI, so local generation and validation
+produce the same results.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd` | CLI commands for Manager, Agent, Gateway, Cache, and runtime tools |
-| `devcontainer` | Dev Container parsing, resolution, Docker execution, and interoperability tests |
-| `internal/cluster` | Kubernetes APIs, controllers, administration API, and site coordination |
-| `internal/agent` | Runtime Agent lifecycle and workspace operations |
-| `internal/gateway` | Authorized HTTP, SSH, and SFTP routing |
-| `internal/cache` | OCI mirror and build-cache service |
-| `internal/rpc` | Internal Agent and component protocol sources and generated Go bindings |
+| `cmd` | CLI entry points for Manager, Agent, Gateway, Cache, and runtime tools |
+| `devcontainer` | Dev Container parsing, merging, Docker execution, and interoperability tests |
+| `internal` | Runtime services, Kubernetes controllers, protocols, and shared implementation |
 | `web` | Vue administration interface and Playwright tests |
-| `charts/gitea-codespace` | Helm chart and packaged CRDs |
-| `deploy` | Container image and standalone CRD artifacts |
-| `tests/e2e` | Kubernetes lifecycle test harness |
+| `charts` and `deploy` | Helm package, CRDs, and platform image |
+| `tests/e2e` | Real-cluster lifecycle test harness |
 
 The public Dev Container model preserves specification-defined fields even
 when a field is not yet consumed by the runtime. This keeps repository
@@ -65,9 +59,8 @@ make build
 - `make test-frontend` runs the administration workflow tests with Playwright.
 - `make build` builds the frontend and the local `gitea-codespace` binary.
 
-Run focused package tests while iterating. Before submitting, use the complete
-commands above; they are the same entry points used by CI. `make clean` removes
-binaries, generated frontend output, temporary workspaces, and test reports.
+Run focused package tests while iterating, then use the complete commands above
+before submitting. `make clean` removes local build and test output.
 
 ## Generated sources
 
@@ -75,17 +68,17 @@ Kubernetes and protobuf outputs are checked in because releases and the Helm
 chart consume them directly. Update their sources first, then regenerate the
 derived files.
 
-For Kubernetes API changes:
+Regenerate Kubernetes APIs with:
 
 ```sh
 make generate-kubernetes
 make kubernetes-check
 ```
 
-`make generate-kubernetes` writes the canonical CRDs to `deploy/crds` and
-copies the same files into the Helm chart.
+The command writes the canonical CRDs to `deploy/crds` and copies them into the
+Helm chart because both release paths consume the same schema.
 
-For internal Agent or component protocol changes:
+Regenerate internal Agent or component protocols with:
 
 ```sh
 make proto-format
@@ -93,11 +86,13 @@ make proto-generate
 make proto-check
 ```
 
-The public Gitea-to-Manager protocol comes from the separate
-`gitea.dev/codespace-proto-go` module. Publish that module first, then update
-the dependency in this repository without a local `replace` directive.
+The public Gitea-to-Manager protocol belongs to the separate
+`gitea.dev/codespace-proto-go` module so Gitea does not depend on Manager
+implementation packages. Publish that module before updating this dependency.
 
-## Administration interface
+## Focused workflows
+
+### Administration interface
 
 Start the frontend development server with:
 
@@ -105,13 +100,12 @@ Start the frontend development server with:
 make admin-dev
 ```
 
-Vite serves the interface on its local development address and proxies `/api`
-to `http://127.0.0.1:18080`. Run a local Manager administration server or
-port-forward a Manager Service to that address before testing API-backed
-workflows. User-visible text belongs in the JSON locale catalogs under
+Vite proxies `/api` to `http://127.0.0.1:18080`; run a local Manager or
+port-forward its administration Service when testing API-backed workflows.
+User-visible text belongs in the shared JSON locale catalogs under
 `web/locales`.
 
-## Platform image and E2E
+### Platform image
 
 Build the Linux binary before packaging the platform image. Keeping the Go
 build outside the container build makes local and CI artifacts follow the same
@@ -122,8 +116,10 @@ make build-linux
 make images
 ```
 
-Override `CODESPACE_IMAGE` or `CONTAINER_TOOL` when using another image name or
-Docker-compatible builder.
+Override `CODESPACE_IMAGE` or `CONTAINER_TOOL` for another image name or
+container builder.
+
+### Kubernetes E2E
 
 The E2E suite exercises the Manager, controllers, Gateway, Cache, Runtime
 Agent, persistent Docker state, and Dev Container creation in a real cluster.
@@ -145,15 +141,12 @@ make test-e2e \
 ```
 
 The harness creates isolated resources, collects failure diagnostics, and
-removes its resources when it exits. CI runs this entry point for both Kata
-and Sysbox; ordinary local development only needs the standard test suite.
+removes its resources when it exits. CI runs the same entry point for Kata and
+Sysbox; ordinary changes use the standard test suite.
 
 ## Before submitting
 
-- generated protobuf and CRD files match their sources;
-- Go, TypeScript, shell, workflow, and Helm checks pass through `make lint`;
-- `make test` and `make test-frontend` pass;
-- lifecycle or isolation changes include focused tests;
-- user-facing behavior and operational prerequisites are documented for the
-  audience that uses them; and
-- temporary binaries, test reports, and cluster resources are removed.
+Run `make lint`, `make test`, and `make test-frontend`. Add focused coverage for
+changed lifecycle or isolation behavior, update the document used by the
+affected audience, and remove temporary test resources. These shared entry
+points also verify that checked-in protobuf and CRD output matches its source.

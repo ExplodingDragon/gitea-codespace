@@ -16,40 +16,46 @@ func TestConfigurationValidation(t *testing.T) {
 		configuration Configuration
 		wantError     string
 	}{
-		{name: "disabled", configuration: Configuration{}},
+		{
+			name: "disabled",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Options: apiextensionsv1.JSON{Raw: []byte(`{}`)},
+			}},
+		},
+		{name: "options required", configuration: Configuration{}, wantError: "options are required"},
 		{
 			name: "duplicate feature identity",
-			configuration: Configuration{Features: []InjectedFeature{
-				{Reference: "ghcr.io/example/features/tool:1"},
-				{Reference: "ghcr.io/example/features/tool:2"},
-			}},
+			configuration: Configuration{
+				WebIDE: WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				Features: []InjectedFeature{
+					{Reference: "ghcr.io/example/features/tool:1"},
+					{Reference: "ghcr.io/example/features/tool:2"},
+				},
+			},
 			wantError: "same identity",
 		},
 		{
-			name:          "disabled web IDE has configuration",
-			configuration: Configuration{WebIDE: WebIDEConfiguration{Version: "4.121.0"}},
-			wantError:     "must be empty",
+			name: "web IDE options are an object",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`[]`)},
+			}},
+			wantError: "options must be a JSON object",
 		},
 		{
-			name: "web IDE settings are an object",
+			name: "web IDE accepts upstream options",
 			configuration: Configuration{WebIDE: WebIDEConfiguration{
-				Enabled: true, Version: "4.121.0", Settings: apiextensionsv1.JSON{Raw: []byte(`[]`)},
+				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`{"version":"4.121.0","extensions":"example.tool"}`)},
 			}},
-			wantError: "settings must be a JSON object",
-		},
-		{
-			name: "template extensions install rather than remove",
-			configuration: Configuration{WebIDE: WebIDEConfiguration{
-				Enabled: true, Version: "4.121.0", Extensions: []string{"-example.tool"},
-			}},
-			wantError: "rather than remove",
 		},
 		{
 			name: "feature options are an object",
-			configuration: Configuration{Features: []InjectedFeature{{
-				Reference: "ghcr.io/example/features/tool:1",
-				Options:   apiextensionsv1.JSON{Raw: []byte(`true`)},
-			}}},
+			configuration: Configuration{
+				WebIDE: WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				Features: []InjectedFeature{{
+					Reference: "ghcr.io/example/features/tool:1",
+					Options:   apiextensionsv1.JSON{Raw: []byte(`true`)},
+				}},
+			},
 			wantError: "must be a JSON object",
 		},
 	}

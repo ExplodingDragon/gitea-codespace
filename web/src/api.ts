@@ -106,7 +106,7 @@ export type Runtime = {
   resources: {requests: Record<string, string>; limits?: Record<string, string>};
   gitSSHKeyType: string;
   devContainer: {
-    webIDE: {enabled: boolean; version?: string; extensions?: string[]; settings?: Record<string, unknown>};
+    webIDE: {enabled: boolean; options: Record<string, unknown>};
     features?: {reference: string; options?: Record<string, unknown>}[];
   };
   proxy?: OutboundProxy;

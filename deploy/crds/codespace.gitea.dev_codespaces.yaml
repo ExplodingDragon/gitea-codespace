@@ -111,16 +111,14 @@ spec:
                         properties:
                           enabled:
                             type: boolean
-                          extensions:
-                            items:
-                              type: string
-                            type: array
-                          settings:
+                          options:
+                            description: |-
+                              Options are passed to the code-server Feature. Codespace overwrites the
+                              options that control its internal listener, authentication, and lifecycle.
                             x-kubernetes-preserve-unknown-fields: true
-                          version:
-                            type: string
                         required:
                         - enabled
+                        - options
                         type: object
                     required:
                     - webIDE

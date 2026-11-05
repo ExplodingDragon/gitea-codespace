@@ -21,7 +21,12 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 		Source:        devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
 		DevContainer: Configuration{WebIDE: WebIDEConfiguration{
 			Enabled: true,
-			Version: "4.121.0",
+			Options: apiextensionsv1.JSON{Raw: []byte(`{
+				"version": "4.121.0",
+				"locale": "zh-CN",
+				"auth": "password",
+				"socket": "/tmp/code-server.sock"
+			}`)},
 		}},
 		Cache: devcontainer.CacheOptions{
 			BuildRegistry: "https://registry.example.com/cache",
@@ -29,7 +34,6 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 		},
 		GiteaCustomCA: true,
 	}
-	request.DevContainer.WebIDE.Version = " 4.121.0 "
 	options, err := buildCreateOptions(request)
 	if err != nil {
 		t.Fatalf("create options: %v", err)
@@ -43,8 +47,16 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if !options.InjectedFeatures[0].InstallOnly {
 		t.Fatal("platform Web IDE Feature must leave process startup to the Codespace runtime")
 	}
-	if string(options.InjectedFeatures[0].Options["version"]) != `"4.121.0"` {
-		t.Fatalf("platform Web IDE version = %s", options.InjectedFeatures[0].Options["version"])
+	webIDEOptions := options.InjectedFeatures[0].Options
+	if string(webIDEOptions["version"]) != `"4.121.0"` || string(webIDEOptions["locale"]) != `"zh-CN"` {
+		t.Fatalf("platform Web IDE administrator options = %#v", webIDEOptions)
+	}
+	for name, want := range map[string]string{
+		"auth": `"none"`, "host": `"0.0.0.0"`, "workspace": `"."`, "socket": `""`, "disableTelemetry": "true", "disableUpdateCheck": "true",
+	} {
+		if string(webIDEOptions[name]) != want {
+			t.Fatalf("platform Web IDE option %s = %s, want %s", name, webIDEOptions[name], want)
+		}
 	}
 	if options.Labels["dev.gitea.codespace.uuid"] != request.CodespaceUUID {
 		t.Fatalf("Codespace label = %#v", options.Labels)
@@ -68,25 +80,17 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 func TestResolveWebIDECustomizations(t *testing.T) {
 	t.Parallel()
 
-	configuration := WebIDEConfiguration{
-		Extensions: []string{"example.base@1.0.0", "example.remove", "example.keep"},
-		Settings: apiextensionsv1.JSON{Raw: []byte(`{
-			"editor.formatOnSave": true,
-			"editor.tabSize": 4
-		}`)},
-	}
 	repository := json.RawMessage(`{
-		"extensions": ["example.base@2.0.0", "-example.remove", "example.repository", "example.repository"],
+		"extensions": ["example.base@2.0.0", "example.repository"],
 		"settings": {
 			"editor.tabSize": 2,
 			"files.autoSave": "afterDelay"
 		}
 	}`)
 
-	resolved, err := resolveWebIDECustomizations(configuration, repository)
+	resolved, err := resolveWebIDECustomizations(repository)
 	require.NoError(t, err)
-	require.Equal(t, []string{"example.base@2.0.0", "example.keep", "example.repository"}, resolved.Extensions)
-	require.JSONEq(t, `true`, string(resolved.Settings["editor.formatOnSave"]))
+	require.Equal(t, []string{"example.base@2.0.0", "example.repository"}, resolved.Extensions)
 	require.JSONEq(t, `2`, string(resolved.Settings["editor.tabSize"]))
 	require.JSONEq(t, `"afterDelay"`, string(resolved.Settings["files.autoSave"]))
 }
