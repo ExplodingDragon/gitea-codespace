@@ -153,6 +153,12 @@ function defaultCache(): Component {
   };
 }
 function edit(item?: Resource<Component, ComponentStatus>) {
+  const requests = item?.spec.resources.requests;
+  const limits = item?.spec.resources.limits;
+  if (item && (!requests?.cpu || !requests.memory || !limits?.cpu || !limits.memory)) {
+    error.value = t('component.invalidResources');
+    return;
+  }
   selected.value = item;
   name.value = item?.name ?? '';
   error.value = '';

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {computed, onMounted, ref, toRaw} from 'vue';
-import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, useDialog} from 'naive-ui';
+import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, NTag, useDialog} from 'naive-ui';
 import {Pencil, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {errorMessage, request, upsertResource, type ClusterOptions, type Environment, type Resource} from '../api';
@@ -108,6 +108,12 @@ function setIsolation(value: string) {
 }
 
 function edit(item?: Resource<Environment>) {
+  const requests = item?.spec.runtime.resources.requests;
+  const limits = item?.spec.runtime.resources.limits;
+  if (item && (!requests?.cpu || !requests.memory || Boolean(limits?.cpu) !== Boolean(limits?.memory))) {
+    error.value = t('environment.invalidResources');
+    return;
+  }
   selected.value = item;
   name.value = item?.name ?? '';
   verification.value = '';
@@ -125,19 +131,20 @@ function edit(item?: Resource<Environment>) {
             (cluster.value.storageClasses.length === 1 ? cluster.value.storageClasses[0].name : ''),
           storage: {storage: '20Gi'},
           accessMode: 'ReadWriteOncePod',
-          resources: {requests: {cpu: '100m', memory: '256Mi'}, limits: {}},
+          resources: {requests: {cpu: '100m', memory: '256Mi'}},
           gitSSHKeyType: 'ed25519',
           devContainer: {webIDE: {enabled: true, version: '4.121.0', extensions: []}, features: []},
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
-  limitsEnabled.value = Boolean(form.value.runtime.resources.limits.cpu && form.value.runtime.resources.limits.memory);
-  limitsDraft.value = limitsEnabled.value
-    ? {
-        cpu: form.value.runtime.resources.limits.cpu,
-        memory: form.value.runtime.resources.limits.memory,
-      }
-    : {cpu: '1', memory: '1Gi'};
+  const currentLimits = form.value.runtime.resources.limits;
+  if (currentLimits?.cpu && currentLimits.memory) {
+    limitsEnabled.value = true;
+    limitsDraft.value = {cpu: currentLimits.cpu, memory: currentLimits.memory};
+  } else {
+    limitsEnabled.value = false;
+    limitsDraft.value = {cpu: '1', memory: '1Gi'};
+  }
   extensionsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.extensions ?? [], null, 2);
   featuresJSON.value = JSON.stringify(
     Object.fromEntries(
@@ -202,7 +209,8 @@ async function save() {
       )
         throw new Error(t('environment.invalidResourceRange', {resource: t(`units.${kind}`)}));
     }
-    spec.runtime.resources.limits = limitsEnabled.value ? structuredClone(toRaw(limitsDraft.value)) : {};
+    if (limitsEnabled.value) spec.runtime.resources.limits = structuredClone(toRaw(limitsDraft.value));
+    else delete spec.runtime.resources.limits;
     if ((measurementBaseValue(spec.runtime.storage.storage, 'storage') ?? 0) <= 0)
       throw new Error(t('environment.invalidStorageSize'));
     const {extensions, features} = parseDevContainerAdditions();
@@ -496,17 +504,40 @@ function remove(item: Resource<Environment>) {
             <p class="muted">{{ item.spec.runtime.runtimeClassName }}</p>
           </td>
           <td>
-            {{ item.spec.runtime.resources.requests.cpu }} CPU / {{ item.spec.runtime.resources.requests.memory }}
-            <p class="muted">
-              {{
-                item.spec.runtime.resources.limits.cpu
-                  ? t('environment.resourceLimits', {
-                      cpu: item.spec.runtime.resources.limits.cpu,
-                      memory: item.spec.runtime.resources.limits.memory,
-                    })
-                  : t('environment.noResourceLimits')
-              }}
-            </p>
+            <template v-if="item.spec.runtime.resources.requests?.cpu && item.spec.runtime.resources.requests.memory">
+              {{ item.spec.runtime.resources.requests.cpu }} CPU / {{ item.spec.runtime.resources.requests.memory }}
+              <p
+                v-if="item.spec.runtime.resources.limits?.cpu && item.spec.runtime.resources.limits?.memory"
+                class="muted"
+              >
+                {{
+                  t('environment.resourceLimits', {
+                    cpu: item.spec.runtime.resources.limits?.cpu,
+                    memory: item.spec.runtime.resources.limits?.memory,
+                  })
+                }}
+              </p>
+              <p
+                v-else-if="!item.spec.runtime.resources.limits?.cpu && !item.spec.runtime.resources.limits?.memory"
+                class="muted"
+              >
+                {{ t('environment.noResourceLimits') }}
+              </p>
+              <NTag
+                v-else
+                size="small"
+                type="error"
+              >
+                {{ t('environment.invalidResources') }}
+              </NTag>
+            </template>
+            <NTag
+              v-else
+              size="small"
+              type="error"
+            >
+              {{ t('environment.invalidResources') }}
+            </NTag>
             <p class="muted">{{ item.spec.runtime.storage.storage }} / {{ item.spec.runtime.storageClassName }}</p>
           </td>
           <td><ResourceStatus :resource="item" /></td>

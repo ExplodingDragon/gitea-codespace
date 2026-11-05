@@ -105,7 +105,7 @@ export type Runtime = {
   storageClassName: string;
   storage: {storage: string};
   accessMode: string;
-  resources: {requests: Record<string, string>; limits: Record<string, string>};
+  resources: {requests: Record<string, string>; limits?: Record<string, string>};
   gitSSHKeyType: string;
   devContainer: {
     webIDE: {enabled: boolean; version?: string; extensions?: string[]};
