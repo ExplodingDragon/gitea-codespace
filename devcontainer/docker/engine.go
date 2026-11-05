@@ -544,15 +544,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, nil, fmt.Errorf("load Docker Compose project: %w", err)
 	}
-	var composeDestinations []string
-	for name, service := range project.Services {
-		composeDestinations = append(composeDestinations, name)
-		for _, network := range service.Networks {
-			composeDestinations = append(composeDestinations, network.Aliases...)
-		}
-	}
-	sort.Strings(composeDestinations)
-	platformEnvironment = mergePlatformEnvironment(map[string]string{"NO_PROXY": strings.Join(composeDestinations, ",")}, platformEnvironment)
+	platformEnvironment = composeProxyEnvironment(project.Services, platformEnvironment)
 	for name, candidate := range project.Services {
 		if candidate.Build == nil {
 			continue
@@ -800,6 +792,31 @@ func mergePlatformEnvironment(base, platform map[string]string) map[string]strin
 		result["NO_PROXY"], result["no_proxy"] = value, value
 	}
 	return result
+}
+
+func composeProxyEnvironment(services composetypes.Services, platform map[string]string) map[string]string {
+	proxyEnabled := false
+	for name, value := range platform {
+		switch strings.ToUpper(name) {
+		case "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY":
+			proxyEnabled = proxyEnabled || strings.TrimSpace(value) != ""
+		}
+	}
+	if !proxyEnabled {
+		return platform
+	}
+
+	var destinations []string
+	for name, service := range services {
+		destinations = append(destinations, name)
+		for _, network := range service.Networks {
+			if network != nil {
+				destinations = append(destinations, network.Aliases...)
+			}
+		}
+	}
+	sort.Strings(destinations)
+	return mergePlatformEnvironment(map[string]string{"NO_PROXY": strings.Join(destinations, ",")}, platform)
 }
 
 func findRunArgsUser(arguments []string) string {

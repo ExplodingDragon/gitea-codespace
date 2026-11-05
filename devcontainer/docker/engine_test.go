@@ -9,10 +9,12 @@ import (
 	"errors"
 	"io"
 	"maps"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 
+	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
 	composeapi "github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/docker/api/types/container"
@@ -93,6 +95,46 @@ func TestPlatformProxyEnvironmentDoesNotMutateInputs(t *testing.T) {
 	build := mergeBuildProxyArguments(map[string]*string{"VERSION": nil}, platform)
 	if build["HTTP_PROXY"] == nil || *build["HTTP_PROXY"] != platform["HTTP_PROXY"] || build["VERSION"] != nil {
 		t.Fatalf("build proxy arguments = %#v", build)
+	}
+}
+
+func TestComposeProxyEnvironment(t *testing.T) {
+	t.Parallel()
+
+	composeFile, err := filepath.Abs(filepath.Join("testdata", "official-interop", ".devcontainer", "compose.yaml"))
+	if err != nil {
+		t.Fatalf("resolve Compose fixture: %v", err)
+	}
+	options, err := composecli.NewProjectOptions([]string{composeFile},
+		composecli.WithName("proxy-environment-test"),
+		composecli.WithWorkingDirectory(filepath.Dir(composeFile)),
+		composecli.WithResolvedPaths(true),
+	)
+	if err != nil {
+		t.Fatalf("prepare Compose fixture: %v", err)
+	}
+	project, err := options.LoadProject(t.Context())
+	if err != nil {
+		t.Fatalf("load Compose fixture: %v", err)
+	}
+	workspace := project.Services["workspace"]
+	workspace.Networks = maps.Clone(workspace.Networks)
+	if workspace.Networks == nil {
+		workspace.Networks = map[string]*composetypes.ServiceNetworkConfig{}
+	}
+	workspace.Networks["internal"] = &composetypes.ServiceNetworkConfig{Aliases: []string{"workspace-alias"}}
+	project.Services["workspace"] = workspace
+
+	withoutProxy := map[string]string{"NO_PROXY": "registry.internal"}
+	if result := composeProxyEnvironment(project.Services, withoutProxy); !maps.Equal(result, withoutProxy) {
+		t.Fatalf("environment without a proxy = %#v", result)
+	}
+	withProxy := composeProxyEnvironment(project.Services, map[string]string{
+		"HTTPS_PROXY": "http://proxy.example:3128",
+		"NO_PROXY":    "registry.internal",
+	})
+	if withProxy["NO_PROXY"] != "sidecar,workspace,workspace-alias,registry.internal" || withProxy["no_proxy"] != withProxy["NO_PROXY"] {
+		t.Fatalf("Compose proxy environment = %#v", withProxy)
 	}
 }
 
