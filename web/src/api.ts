@@ -109,6 +109,15 @@ export type Runtime = {
     webIDE: {enabled: boolean; version?: string; extensions?: string[]};
     features?: {reference: string; options?: Record<string, unknown>}[];
   };
+  proxy?: OutboundProxy;
+};
+
+export type OutboundProxy = {
+  httpProxy?: string;
+  httpsProxy?: string;
+  socksProxy?: string;
+  noProxy?: string[];
+  caBundle?: string;
 };
 
 export type ClusterOptions = {
@@ -200,6 +209,7 @@ export type Component = {
     maxAge: string;
     gcInterval: string;
     upstreams: Record<string, {allow: string[]}>;
+    proxy?: OutboundProxy;
   };
 };
 

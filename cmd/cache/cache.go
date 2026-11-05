@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
@@ -16,6 +18,7 @@ import (
 	cachepkg "gitea.dev/codespace/internal/cache"
 	componentpkg "gitea.dev/codespace/internal/component"
 	configpkg "gitea.dev/codespace/internal/config"
+	transportpkg "gitea.dev/codespace/internal/transport"
 )
 
 // NewCommand creates the managed registry cache component command.
@@ -30,6 +33,11 @@ func NewCommand() *cobra.Command {
 			defer stop()
 			if !configpkg.ValidCacheID(id) {
 				return fmt.Errorf("a valid cache ID is required")
+			}
+			if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
+				if err := transportpkg.ExtendDefaultRootCAs(path); err != nil {
+					return fmt.Errorf("configure proxy CA: %w", err)
+				}
 			}
 			connection, err := componentpkg.NewManagerConnection()
 			if err != nil {

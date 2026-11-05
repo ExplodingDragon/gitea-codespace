@@ -99,10 +99,6 @@ func buildCacheReference(cache devcontainer.CacheOptions, stage string) string {
 	return cacheReference(cache, "build", stage, "cache")
 }
 
-func imageArtifactCacheReference(cache devcontainer.CacheOptions, stage string, parts ...string) string {
-	return cacheReference(cache, append([]string{"image", stage}, parts...)...)
-}
-
 func cacheReference(cache devcontainer.CacheOptions, parts ...string) string {
 	if strings.TrimSpace(cache.BuildRegistry) == "" || strings.TrimSpace(cache.BuildScope) == "" {
 		return ""
@@ -195,7 +191,8 @@ func streamDockerProgress(reader io.Reader) error {
 	}
 }
 
-func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string) error {
+func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string, platformEnvironment map[string]string) error {
+	args = mergeBuildProxyArguments(args, platformEnvironment)
 	if len(options) > 0 {
 		// Docker CLI resolves --file against the process directory, unlike Compose.
 		arguments := []string{"--file", filepath.Join(contextPath, dockerfile), "--tag", imageName}
@@ -242,14 +239,21 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		WorkingDir: contextPath,
 		Services:   types.Services{"image": service},
 	}
-	return e.buildService(ctx, project, "image", cache, stage)
+	return e.buildService(ctx, project, "image", cache, stage, platformEnvironment)
 }
 
-func (e *Engine) buildService(ctx context.Context, project *types.Project, serviceName string, cache devcontainer.CacheOptions, stage string) error {
+func (e *Engine) buildService(ctx context.Context, project *types.Project, serviceName string, cache devcontainer.CacheOptions, stage string, platformEnvironment map[string]string) error {
 	service, ok := project.Services[serviceName]
 	if !ok || service.Build == nil {
 		return nil
 	}
+	originalArgs := service.Build.Args
+	service.Build.Args = types.MappingWithEquals(mergeBuildProxyArguments(service.Build.Args, platformEnvironment))
+	project.Services[serviceName] = service
+	defer func() {
+		service.Build.Args = originalArgs
+		project.Services[serviceName] = service
+	}()
 	cacheReference := buildCacheReference(cache, stage)
 	originalCacheFrom := append(types.StringList(nil), service.Build.CacheFrom...)
 	originalCacheTo := append(types.StringList(nil), service.Build.CacheTo...)
@@ -277,4 +281,18 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 	project.Services[serviceName] = service
 	_, _ = fmt.Fprintf(e.stdout, "Retry %s build with local cache\n", stage)
 	return e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
+}
+
+func mergeBuildProxyArguments(arguments map[string]*string, environment map[string]string) map[string]*string {
+	result := make(map[string]*string, len(arguments)+8)
+	for name, value := range arguments {
+		result[name] = value
+	}
+	for _, name := range devcontainer.ProxyVariableNames() {
+		if value := environment[name]; value != "" {
+			value := value
+			result[name] = &value
+		}
+	}
+	return result
 }

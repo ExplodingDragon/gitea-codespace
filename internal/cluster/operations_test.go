@@ -111,6 +111,36 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.Empty(t, cs.Status.RecoveryAction)
 }
 
+func TestRuntimeProxyCredentialIsSnapshotted(t *testing.T) {
+	site := testSite("example", "site-uid")
+	template := &api.EnvironmentTemplate{
+		ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"},
+		Spec:       api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()},
+	}
+	template.Spec.Runtime.Proxy = &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128"}
+	source := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: templateProxySecretName(template.Name), Namespace: "codespace-system", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(template, api.GroupVersion.WithKind("EnvironmentTemplate"))}},
+		Data:       map[string][]byte{proxyUsernameKey: []byte("user"), proxyPasswordKey: []byte("password")},
+	}
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "codespace-1", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{EnvironmentTag: "standard", Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: template.Spec.Runtime, Image: testRuntime().Image}},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, source, cs).Build()
+	o := Operations{Client: c, ManagementNamespace: "codespace-system"}
+	require.NoError(t, o.ensureRuntimeProxySecret(t.Context(), site, cs))
+	var target corev1.Secret
+	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: cs.Namespace, Name: runtimeProxySecretName(cs.Name)}, &target))
+	require.True(t, metav1.IsControlledBy(&target, cs))
+	require.Equal(t, "http://user:password@proxy.example:3128", string(target.Data["HTTP_PROXY"]))
+
+	source.Data[proxyPasswordKey] = []byte("changed")
+	require.NoError(t, c.Update(t.Context(), source))
+	require.NoError(t, o.ensureRuntimeProxySecret(t.Context(), site, cs))
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(&target), &target))
+	require.Equal(t, "http://user:password@proxy.example:3128", string(target.Data["HTTP_PROXY"]))
+}
+
 func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2}, Spec: api.CodespaceSpec{RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Bound: true, Result: &api.OperationResult{Version: 1, Succeeded: true}}}
 	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container"}

@@ -75,6 +75,11 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err := devContainer.Validate(); err != nil {
 		return fmt.Errorf("CODESPACE_DEVCONTAINER_CONFIGURATION: %w", err)
 	}
+	if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
+		if err := transport.ExtendDefaultRootCAs(path); err != nil {
+			return fmt.Errorf("configure proxy CA: %w", err)
+		}
+	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	managerIdentity := strings.TrimSpace(os.Getenv("CODESPACE_MANAGER_IDENTITY"))

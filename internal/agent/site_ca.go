@@ -56,14 +56,22 @@ func prepareSiteTrust(options *agentv1.RuntimeOptions, accessURL, identityDirect
 	if err != nil {
 		return siteTrust{}, fmt.Errorf("read internal CA root: %w", err)
 	}
-	customCA, err := writePlatformCABundle(runtimeCADirectory, string(internalRoot), bundle)
+	proxyBundle := ""
+	if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
+		content, err := os.ReadFile(path)
+		if err != nil {
+			return siteTrust{}, fmt.Errorf("read proxy CA bundle: %w", err)
+		}
+		proxyBundle = string(content)
+	}
+	customCA, err := writePlatformCABundle(runtimeCADirectory, string(internalRoot), bundle, proxyBundle)
 	if err != nil {
 		return siteTrust{}, fmt.Errorf("runtime platform CA bundle: %w", err)
 	}
 	return siteTrust{giteaURL: canonicalURL, customCA: customCA}, nil
 }
 
-func writePlatformCABundle(directory, internalBundle, siteBundle string) (bool, error) {
+func writePlatformCABundle(directory, internalBundle, siteBundle, proxyBundle string) (bool, error) {
 	internal, err := certificates.ParseCABundle(internalBundle)
 	if err != nil {
 		return false, fmt.Errorf("internal CA: %w", err)
@@ -73,6 +81,13 @@ func writePlatformCABundle(directory, internalBundle, siteBundle string) (bool, 
 		site, err = certificates.ParseCABundle(siteBundle)
 		if err != nil {
 			return false, fmt.Errorf("gitea site CA: %w", err)
+		}
+	}
+	proxy := map[string]*x509.Certificate{}
+	if strings.TrimSpace(proxyBundle) != "" {
+		proxy, err = certificates.ParseCABundle(proxyBundle)
+		if err != nil {
+			return false, fmt.Errorf("proxy CA: %w", err)
 		}
 	}
 	if err := os.MkdirAll(directory, 0o755); err != nil {
@@ -103,12 +118,26 @@ func writePlatformCABundle(directory, internalBundle, siteBundle string) (bool, 
 		siteFingerprints = append(siteFingerprints, fingerprint)
 	}
 	sort.Strings(siteFingerprints)
-	fingerprints := slices.Concat(internalFingerprints, siteFingerprints)
-	canonicalBundle := make([]byte, 0, len(internalBundle)+len(siteBundle))
+	proxyFingerprints := make([]string, 0, len(proxy))
+	for fingerprint := range proxy {
+		if _, exists := internal[fingerprint]; exists {
+			continue
+		}
+		if _, exists := site[fingerprint]; exists {
+			continue
+		}
+		proxyFingerprints = append(proxyFingerprints, fingerprint)
+	}
+	sort.Strings(proxyFingerprints)
+	fingerprints := slices.Concat(internalFingerprints, siteFingerprints, proxyFingerprints)
+	canonicalBundle := make([]byte, 0, len(internalBundle)+len(siteBundle)+len(proxyBundle))
 	for _, fingerprint := range fingerprints {
 		certificate, prefix := internal[fingerprint], "internal"
 		if certificate == nil {
 			certificate, prefix = site[fingerprint], "site"
+		}
+		if certificate == nil {
+			certificate, prefix = proxy[fingerprint], "proxy"
 		}
 		encoded := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw})
 		canonicalBundle = append(canonicalBundle, encoded...)

@@ -82,7 +82,7 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 	for _, ingressClass := range ingressClasses.Items {
 		options.IngressClasses = append(options.IngressClasses, adminIngressClass{
 			Name: ingressClass.Name, Controller: ingressClass.Spec.Controller,
-			Default: isDefaultIngressClass(ingressClass.Annotations),
+			Default: ingressClass.Annotations["ingressclass.kubernetes.io/is-default-class"] == "true",
 		})
 	}
 	var secrets corev1.SecretList
@@ -140,8 +140,4 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 
 func isDefaultStorageClass(annotations map[string]string) bool {
 	return annotations["storageclass.kubernetes.io/is-default-class"] == "true" || annotations["storageclass.beta.kubernetes.io/is-default-class"] == "true"
-}
-
-func isDefaultIngressClass(annotations map[string]string) bool {
-	return annotations["ingressclass.kubernetes.io/is-default-class"] == "true"
 }

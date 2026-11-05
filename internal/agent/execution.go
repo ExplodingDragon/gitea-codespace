@@ -165,6 +165,7 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 			registries[parsed.Host] = struct{}{}
 		}
 	}
+	var internalRoot []byte
 	if len(registries) > 0 {
 		identityDirectory := r.IdentityDirectory
 		if identityDirectory == "" {
@@ -177,6 +178,7 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 		if parsed, err := certificates.ParseCABundle(string(root)); err != nil || len(parsed) != 1 {
 			return nil, fmt.Errorf("internal cache CA is invalid")
 		}
+		internalRoot = root
 		certificateDirectory := r.DockerCertificateDirectory
 		if certificateDirectory == "" {
 			certificateDirectory = "/etc/docker/certs.d"
@@ -190,38 +192,53 @@ func (r *Runtime) prepareDockerCacheTrust(cache *agentv1.RuntimeCache) ([]byte, 
 				return nil, fmt.Errorf("install Docker registry CA: %w", err)
 			}
 		}
-		systemBundle := r.systemCABundlePath
-		if systemBundle == "" {
-			systemBundle = "/etc/ssl/certs/ca-certificates.crt"
-		}
-		systemRoots, err := os.ReadFile(systemBundle)
+	}
+	var proxyRoot []byte
+	if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
+		var err error
+		proxyRoot, err = os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read system CA bundle: %w", err)
+			return nil, fmt.Errorf("read proxy CA bundle: %w", err)
 		}
-		dockerBundle := r.dockerCABundlePath
-		if dockerBundle == "" {
-			dockerBundle = runtimeRunDirectory + "/docker-ca-bundle.pem"
+		if _, err := certificates.ParseCABundle(string(proxyRoot)); err != nil {
+			return nil, fmt.Errorf("proxy CA bundle: %w", err)
 		}
-		combined := make([]byte, 0, len(systemRoots)+len(root)+1)
-		combined = append(combined, systemRoots...)
+	}
+	if len(internalRoot) == 0 && len(proxyRoot) == 0 {
+		return nil, nil
+	}
+	systemBundle := r.systemCABundlePath
+	if systemBundle == "" {
+		systemBundle = "/etc/ssl/certs/ca-certificates.crt"
+	}
+	systemRoots, err := os.ReadFile(systemBundle)
+	if err != nil {
+		return nil, fmt.Errorf("read system CA bundle: %w", err)
+	}
+	dockerBundle := r.dockerCABundlePath
+	if dockerBundle == "" {
+		dockerBundle = runtimeRunDirectory + "/docker-ca-bundle.pem"
+	}
+	combined := append([]byte(nil), systemRoots...)
+	for _, bundle := range [][]byte{internalRoot, proxyRoot} {
+		if len(bundle) == 0 {
+			continue
+		}
 		if len(combined) > 0 && combined[len(combined)-1] != '\n' {
 			combined = append(combined, '\n')
 		}
-		combined = append(combined, root...)
-		if err := os.MkdirAll(filepath.Dir(dockerBundle), 0o700); err != nil {
-			return nil, fmt.Errorf("create Docker CA bundle directory: %w", err)
-		}
-		if err := replaceCAFile(dockerBundle, combined); err != nil {
-			return nil, fmt.Errorf("install Docker CA bundle: %w", err)
-		}
-		// Docker CLI subprocesses use this bundle together with the transient
-		// Docker configuration written for the create operation.
-		if err := os.Setenv("SSL_CERT_FILE", dockerBundle); err != nil {
-			return nil, fmt.Errorf("configure Docker CA bundle: %w", err)
-		}
-		return root, nil
+		combined = append(combined, bundle...)
 	}
-	return nil, nil
+	if err := os.MkdirAll(filepath.Dir(dockerBundle), 0o700); err != nil {
+		return nil, fmt.Errorf("create Docker CA bundle directory: %w", err)
+	}
+	if err := replaceCAFile(dockerBundle, combined); err != nil {
+		return nil, fmt.Errorf("install Docker CA bundle: %w", err)
+	}
+	if err := os.Setenv("SSL_CERT_FILE", dockerBundle); err != nil {
+		return nil, fmt.Errorf("configure Docker CA bundle: %w", err)
+	}
+	return internalRoot, nil
 }
 
 // Close stops Docker before the caller releases the Runtime volume lock.

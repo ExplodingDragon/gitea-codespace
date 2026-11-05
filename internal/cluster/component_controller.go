@@ -19,6 +19,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -186,7 +187,20 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 		if !metav1.IsControlledBy(secret, component) || secret.Labels[ComponentUIDLabel] != string(component.UID) {
 			return nil, fmt.Errorf("component credential ownership conflicts")
 		}
-		if role != "gateway" || len(secret.Data[gatewaySessionKey]) == 32 {
+		if role != "gateway" {
+			previous := secret.DeepCopy().Data
+			secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, "", "", false)
+			if err != nil {
+				return nil, err
+			}
+			if !apiequality.Semantic.DeepEqual(previous, secret.Data) {
+				if err := r.Client.Update(ctx, secret); err != nil {
+					return nil, err
+				}
+			}
+			return secret, nil
+		}
+		if len(secret.Data[gatewaySessionKey]) == 32 {
 			return secret, nil
 		}
 		if secret.Data == nil {
@@ -226,6 +240,10 @@ func (r *ComponentReconciler) reconcileComponentCredential(ctx context.Context, 
 			return nil, err
 		}
 		secret.Data = map[string][]byte{"registryKey": registryKey, "tokenKey": tokenKey, "s3AccessKey": {}, "s3SecretKey": {}}
+		secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, "", "", false)
+		if err != nil {
+			return nil, err
+		}
 	}
 	if err := controllerutil.SetControllerReference(component, secret, r.Client.Scheme()); err != nil {
 		return nil, err
@@ -489,6 +507,12 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: "identity", MountPath: "/var/run/codespace/identity", ReadOnly: true}},
 		}
+		if role == "cache" && component.Spec.Cache.Proxy != nil {
+			container.Env = append(container.Env, proxyEnvironmentFromSecret(credential.Name)...)
+			if len(credential.Data[proxyCAKey]) != 0 {
+				container.Env = append(container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/var/run/codespace/cache/" + proxyCAKey})
+			}
+		}
 		for index, port := range ports {
 			name := "https"
 			if role == "gateway" {
@@ -518,6 +542,9 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
 			if cache.Storage.Driver == "s3" {
 				items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})
+			}
+			if len(credential.Data[proxyCAKey]) != 0 {
+				items = append(items, corev1.KeyToPath{Key: proxyCAKey, Path: proxyCAKey})
 			}
 			container.VolumeMounts = append(container.VolumeMounts,
 				corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true},

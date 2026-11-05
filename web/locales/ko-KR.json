@@ -288,6 +288,23 @@
     "invalidCacheSizes": "캐시 용량과 예약 여유 공간은 0보다 크고 합계가 볼륨 용량 이하여야 합니다.",
     "invalidDuration": "캐시 보존 기간과 정리 간격은 0보다 커야 합니다."
   },
+  "proxy": {
+    "section": "아웃바운드 프록시",
+    "enabled": "아웃바운드 프록시 사용",
+    "help": "런타임과 Dev Container는 Git, 이미지 가져오기, 빌드, Feature 다운로드 및 애플리케이션 통신에 이 설정을 사용합니다.",
+    "http": "HTTP 프록시",
+    "httpHelp": "포트를 명시한 완전한 HTTP 또는 HTTPS URL을 입력하세요.",
+    "https": "HTTPS 프록시",
+    "socks": "SOCKS5 프록시",
+    "socksHelp": "별도 프록시가 없는 프로토콜의 대체 경로로 사용합니다.",
+    "noProxy": "직접 연결 대상",
+    "noProxyHelp": "호스트, 도메인 접미사, IP 주소 또는 CIDR을 한 줄에 하나씩 입력하세요. 클러스터 내부 대상은 자동으로 추가됩니다.",
+    "username": "사용자 이름 교체",
+    "password": "비밀번호 교체",
+    "clearCredential": "저장된 프록시 자격 증명 제거",
+    "caBundle": "프록시 CA 인증서",
+    "caBundleHelp": "시스템 루트에 추가로 신뢰할 PEM 인증서입니다."
+  },
   "runtime": {
     "title": "실행 환경",
     "refresh": "실행 환경 새로 고침",

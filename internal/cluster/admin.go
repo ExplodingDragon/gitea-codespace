@@ -11,6 +11,8 @@ import (
 	"encoding/pem"
 	"fmt"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"sort"
 	"strconv"
 	"strings"
@@ -76,14 +78,20 @@ type adminSiteWrite struct {
 
 type adminTemplateWrite struct {
 	adminWriteIdentity
-	Spec api.EnvironmentTemplateSpec `json:"spec"`
+	Spec                 api.EnvironmentTemplateSpec `json:"spec"`
+	ProxyUsername        string                      `json:"proxyUsername,omitempty"`
+	ProxyPassword        string                      `json:"proxyPassword,omitempty"`
+	ClearProxyCredential bool                        `json:"clearProxyCredential,omitempty"`
 }
 
 type adminComponentWrite struct {
 	adminWriteIdentity
-	Spec        api.CodespaceComponentSpec `json:"spec"`
-	S3AccessKey string                     `json:"s3AccessKey,omitempty"`
-	S3SecretKey string                     `json:"s3SecretKey,omitempty"`
+	Spec                 api.CodespaceComponentSpec `json:"spec"`
+	S3AccessKey          string                     `json:"s3AccessKey,omitempty"`
+	S3SecretKey          string                     `json:"s3SecretKey,omitempty"`
+	ProxyUsername        string                     `json:"proxyUsername,omitempty"`
+	ProxyPassword        string                     `json:"proxyPassword,omitempty"`
+	ClearProxyCredential bool                       `json:"clearProxyCredential,omitempty"`
 }
 
 type adminRuntimeRecovery struct {
@@ -236,7 +244,7 @@ func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request
 		identity = body.adminWriteIdentity
 		object = &api.EnvironmentTemplate{}
 		save = func(ctx context.Context, object client.Object, creating bool) error {
-			return s.saveTemplate(ctx, object.(*api.EnvironmentTemplate), body.Spec, creating)
+			return s.saveTemplateWrite(ctx, object.(*api.EnvironmentTemplate), body, creating)
 		}
 		prefix = "environment-"
 	case "components":
@@ -670,6 +678,9 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 			return apierrors.NewBadRequest("template reference is stale or duplicated")
 		}
 		seen[ref.UID] = true
+		if err := validateProxyDestination(site.Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
+			return apierrors.NewBadRequest(fmt.Sprintf("template %s: %v", template.Name, err))
+		}
 	}
 	refs := append([]api.ResourceReference{site.Spec.Gateway}, site.Spec.Caches...)
 	for index, ref := range refs {
@@ -688,18 +699,74 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 	return nil
 }
 
-func (s *AdminServer) saveTemplate(ctx context.Context, template *api.EnvironmentTemplate, spec api.EnvironmentTemplateSpec, creating bool) error {
-	template.Spec = spec
+func (s *AdminServer) saveTemplateWrite(ctx context.Context, template *api.EnvironmentTemplate, body adminTemplateWrite, creating bool) error {
+	template.Spec = body.Spec
 	if err := template.Validate(); err != nil {
+		return apierrors.NewBadRequest(err.Error())
+	}
+	if _, err := reconcileProxySecretData(nil, template.Spec.Runtime.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
 	if err := validateEnvironmentDependencies(ctx, s.Client, template.Spec.Runtime); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
-	if creating {
-		return s.Client.Create(ctx, template)
+	if !creating && template.Spec.Runtime.Proxy != nil {
+		var sites api.GiteaSiteList
+		if err := s.Client.List(ctx, &sites); err != nil {
+			return err
+		}
+		for i := range sites.Items {
+			for _, ref := range sites.Items[i].Spec.Templates {
+				if ref.UID != template.UID {
+					continue
+				}
+				if err := validateProxyDestination(sites.Items[i].Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
+					return apierrors.NewBadRequest(fmt.Sprintf("site %s: %v", sites.Items[i].Name, err))
+				}
+			}
+		}
 	}
-	return s.Client.Update(ctx, template)
+	var err error
+	if creating {
+		err = s.Client.Create(ctx, template)
+	} else {
+		err = s.Client.Update(ctx, template)
+	}
+	if err != nil {
+		return err
+	}
+	return reconcileTemplateProxySecret(ctx, s.Client, s.Namespace, template, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
+}
+
+func validateProxyDestination(upstreams []api.NetworkDestination, proxy *api.OutboundProxy) error {
+	if proxy == nil {
+		return nil
+	}
+	for _, raw := range []string{proxy.HTTPProxy, proxy.HTTPSProxy, proxy.SOCKSProxy} {
+		if raw == "" {
+			continue
+		}
+		parsed, _ := url.Parse(raw)
+		address, err := netip.ParseAddr(parsed.Hostname())
+		if err != nil {
+			continue
+		}
+		port, _ := strconv.ParseInt(parsed.Port(), 10, 32)
+		allowed := false
+		for _, destination := range upstreams {
+			prefix, err := netip.ParsePrefix(destination.CIDR)
+			if err != nil || !prefix.Contains(address) {
+				continue
+			}
+			for _, allowedPort := range destination.Ports {
+				allowed = allowed || allowedPort == int32(port)
+			}
+		}
+		if !allowed {
+			return fmt.Errorf("proxy %s:%d requires a matching upstream CIDR and port", address, port)
+		}
+	}
+	return nil
 }
 
 func (s *AdminServer) saveComponent(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite, creating bool) error {
@@ -708,6 +775,11 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 	component.Spec.DisplayName = strings.TrimSpace(component.Spec.DisplayName)
 	if err := component.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
+	}
+	if component.Spec.Role == "cache" {
+		if _, err := reconcileProxySecretData(nil, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential); err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
 	}
 	if !creating && previousRole != body.Spec.Role {
 		return apierrors.NewBadRequest("component role is immutable")
@@ -774,13 +846,53 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 	} else {
 		err = s.Client.Update(ctx, component)
 	}
-	if err != nil || component.Spec.Role != "cache" || body.S3AccessKey == "" {
+	if err != nil || component.Spec.Role != "cache" {
 		return err
 	}
-	return s.saveCacheCredentials(ctx, component, body.S3AccessKey, body.S3SecretKey)
+	return s.saveCacheCredentials(ctx, component, body)
 }
 
-func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.CodespaceComponent, accessKey, secretKey string) error {
+func reconcileTemplateProxySecret(ctx context.Context, writer client.Client, namespace string, template *api.EnvironmentTemplate, username, password string, clear bool) error {
+	key := types.NamespacedName{Namespace: namespace, Name: templateProxySecretName(template.Name)}
+	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		var secret corev1.Secret
+		err := writer.Get(ctx, key, &secret)
+		if apierrors.IsNotFound(err) {
+			if template.Spec.Runtime.Proxy == nil {
+				return nil
+			}
+			secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace}}
+			if err := controllerutil.SetControllerReference(template, &secret, writer.Scheme()); err != nil {
+				return err
+			}
+			secret.Data, err = reconcileProxySecretData(nil, template.Spec.Runtime.Proxy, username, password, clear)
+			if err != nil {
+				return apierrors.NewBadRequest(err.Error())
+			}
+			if err := writer.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
+				return apierrors.NewConflict(corev1.Resource("secrets"), key.Name, err)
+			} else {
+				return err
+			}
+		}
+		if err != nil {
+			return err
+		}
+		if !metav1.IsControlledBy(&secret, template) || !secret.DeletionTimestamp.IsZero() {
+			return apierrors.NewConflict(corev1.Resource("secrets"), key.Name, fmt.Errorf("environment proxy Secret ownership changed"))
+		}
+		if template.Spec.Runtime.Proxy == nil {
+			return writer.Delete(ctx, &secret, client.Preconditions{UID: &secret.UID})
+		}
+		secret.Data, err = reconcileProxySecretData(secret.Data, template.Spec.Runtime.Proxy, username, password, clear)
+		if err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
+		return writer.Update(ctx, &secret)
+	})
+}
+
+func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite) error {
 	name := component.Name + "-cache"
 	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		var secret corev1.Secret
@@ -797,7 +909,13 @@ func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.C
 			if err := controllerutil.SetControllerReference(component, &secret, s.Client.Scheme()); err != nil {
 				return err
 			}
-			secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(accessKey), []byte(secretKey)
+			if body.S3AccessKey != "" {
+				secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
+			}
+			secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
+			if err != nil {
+				return apierrors.NewBadRequest(err.Error())
+			}
 			if err := s.Client.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
 				return apierrors.NewConflict(corev1.Resource("secrets"), name, err)
 			} else {
@@ -810,7 +928,13 @@ func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.C
 		if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, component) || !secret.DeletionTimestamp.IsZero() {
 			return apierrors.NewConflict(corev1.Resource("secrets"), name, fmt.Errorf("cache Secret ownership changed"))
 		}
-		secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(accessKey), []byte(secretKey)
+		if body.S3AccessKey != "" {
+			secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
+		}
+		secret.Data, err = reconcileProxySecretData(secret.Data, component.Spec.Cache.Proxy, body.ProxyUsername, body.ProxyPassword, body.ClearProxyCredential)
+		if err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
 		return s.Client.Update(ctx, &secret)
 	})
 }

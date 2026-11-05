@@ -15,6 +15,7 @@ import (
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/stretchr/testify/require"
@@ -27,6 +28,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -322,6 +324,29 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	require.Contains(t, container.Env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/run/codespace/docker-config"})
 	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "ephemeral", MountPath: "/run/codespace"})
 	require.Equal(t, corev1.PullIfNotPresent, container.ImagePullPolicy)
+}
+
+func TestRuntimePodUsesProxySecret(t *testing.T) {
+	runtime := testRuntime()
+	runtime.Proxy = &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128", CABundle: "certificate"}
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
+	}
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	require.NoError(t, err)
+	container := pod.Spec.Containers[0]
+	require.Contains(t, container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/proxy-ca.crt"})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
+	require.Contains(t, pod.Spec.Volumes, corev1.Volume{Name: "proxy-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+		SecretName: "runtime-proxy", DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: proxyCAKey}},
+	}}})
+	for _, name := range devcontainer.ProxyVariableNames() {
+		require.Contains(t, container.Env, corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{
+			LocalObjectReference: corev1.LocalObjectReference{Name: "runtime-proxy"}, Key: name, Optional: ptr.To(true),
+		}}})
+	}
 }
 
 func TestExitedRuntimePreservesVolume(t *testing.T) {

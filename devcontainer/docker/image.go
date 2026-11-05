@@ -26,7 +26,7 @@ import (
 //go:embed builtin/update-user.sh
 var updateUserScript string
 
-func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.ResolvedConfiguration) (string, map[string]string, error) {
+func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, platformEnvironment map[string]string) (string, map[string]string, error) {
 	var baseImage string
 	if resolved.Image != "" {
 		var err error
@@ -64,7 +64,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 		for name, value := range buildConfig.Args {
 			args[name] = &value
 		}
-		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, buildConfig.Options, resolved.Cache, "repository"); err != nil {
+		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, buildConfig.Options, resolved.Cache, "repository", platformEnvironment); err != nil {
 			return "", nil, fmt.Errorf("build Dev Container image: %w", err)
 		}
 		baseImage = imageName
@@ -77,7 +77,7 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 	imageConfiguration := metadata.Configuration
 	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
 	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration)
+	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration, platformEnvironment)
 }
 
 func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cache devcontainer.CacheOptions) (string, error) {
@@ -362,7 +362,7 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 		return "", err
 	}
 	imageName := "devcontainer-user:" + resolved.DevContainerID
-	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "remote-user"); err != nil {
+	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "remote-user", nil); err != nil {
 		return "", fmt.Errorf("build Dev Container user image: %w", err)
 	}
 	return imageName, nil

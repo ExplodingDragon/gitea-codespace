@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
 
 // Operations serializes a site's Gitea replies within the elected Manager term.
@@ -172,6 +173,11 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			return err
 		}
 	}
+	if operationType == "create" && cs.Spec.Runtime.Proxy != nil {
+		if err := o.ensureRuntimeProxySecret(ctx, site, &cs); err != nil {
+			return err
+		}
+	}
 	if !cs.Status.Bound {
 		if operationType == "create" {
 			if err := o.bind(ctx, &cs, remote); err != nil {
@@ -214,6 +220,59 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	}
 	if o.Activity != nil && settings != nil {
 		return o.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, settings, time.Now())
+	}
+	return nil
+}
+
+func (o *Operations) ensureRuntimeProxySecret(ctx context.Context, site *api.GiteaSite, cs *api.Codespace) error {
+	var selected *api.EnvironmentTemplate
+	for _, ref := range site.Spec.Templates {
+		var template api.EnvironmentTemplate
+		if err := o.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &template); err != nil {
+			return err
+		}
+		if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() || template.Spec.Tag != cs.Spec.EnvironmentTag {
+			continue
+		}
+		if selected != nil {
+			return fmt.Errorf("create environment is ambiguous")
+		}
+		selected = &template
+	}
+	if selected == nil {
+		return fmt.Errorf("create environment is not authorized by this site")
+	}
+
+	var source corev1.Secret
+	if err := o.Client.Get(ctx, types.NamespacedName{Namespace: o.ManagementNamespace, Name: templateProxySecretName(selected.Name)}, &source); err != nil {
+		return fmt.Errorf("read environment proxy credential: %w", err)
+	}
+	if !metav1.IsControlledBy(&source, selected) || !source.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("environment proxy Secret ownership changed")
+	}
+	data, err := reconcileProxySecretData(nil, cs.Spec.Runtime.Proxy, string(source.Data[proxyUsernameKey]), string(source.Data[proxyPasswordKey]), false)
+	if err != nil {
+		return fmt.Errorf("snapshot environment proxy: %w", err)
+	}
+	key := types.NamespacedName{Namespace: cs.Namespace, Name: runtimeProxySecretName(cs.Name)}
+	secret := corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID), RuntimeUIDLabel: string(cs.UID)}},
+		Data:       data,
+	}
+	if err := controllerutil.SetControllerReference(cs, &secret, o.Client.Scheme()); err != nil {
+		return err
+	}
+	if err := o.Client.Create(ctx, &secret); err == nil {
+		return nil
+	} else if !apierrors.IsAlreadyExists(err) {
+		return err
+	}
+	var existing corev1.Secret
+	if err := o.Client.Get(ctx, key, &existing); err != nil {
+		return err
+	}
+	if !metav1.IsControlledBy(&existing, cs) || existing.Labels[RuntimeUIDLabel] != string(cs.UID) || !existing.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("runtime proxy Secret ownership changed")
 	}
 	return nil
 }

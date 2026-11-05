@@ -288,6 +288,23 @@
     "invalidCacheSizes": "キャッシュ容量と予約空き容量は 0 より大きく、合計がボリューム容量以下である必要があります。",
     "invalidDuration": "キャッシュ保持期間とクリーンアップ間隔は 0 より大きい必要があります。"
   },
+  "proxy": {
+    "section": "外向きプロキシ",
+    "enabled": "外向きプロキシを使用",
+    "help": "ランタイムと Dev Container は、Git、イメージ取得、ビルド、Feature 取得、アプリケーション通信にこの設定を使用します。",
+    "http": "HTTP プロキシ",
+    "httpHelp": "ポートを明示した完全な HTTP または HTTPS URL を入力します。",
+    "https": "HTTPS プロキシ",
+    "socks": "SOCKS5 プロキシ",
+    "socksHelp": "専用プロキシがないプロトコルのフォールバックとして使用します。",
+    "noProxy": "直接接続する宛先",
+    "noProxyHelp": "ホスト、ドメイン接尾辞、IP アドレス、CIDR を 1 行ずつ入力します。クラスター内の宛先は自動追加されます。",
+    "username": "ユーザー名を置換",
+    "password": "パスワードを置換",
+    "clearCredential": "保存済みプロキシ認証情報を削除",
+    "caBundle": "プロキシ CA 証明書",
+    "caBundleHelp": "システムルートに追加して信頼する PEM 証明書です。"
+  },
   "runtime": {
     "title": "実行環境",
     "refresh": "実行環境を更新",

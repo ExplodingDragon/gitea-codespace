@@ -89,6 +89,15 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (r.Authority == nil || r.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) <= 0) {
 		return r.condition(ctx, &cs, "AwaitingExecutionLease", fmt.Errorf("current Leader has not renewed this operation with Gitea"))
 	}
+	if cs.Spec.Runtime.Proxy != nil {
+		var proxySecret corev1.Secret
+		if err := r.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: runtimeProxySecretName(cs.Name)}, &proxySecret); err != nil {
+			return r.condition(ctx, &cs, "ProxyUnavailable", err)
+		}
+		if !metav1.IsControlledBy(&proxySecret, &cs) || proxySecret.Labels[RuntimeUIDLabel] != string(cs.UID) || !proxySecret.DeletionTimestamp.IsZero() {
+			return r.condition(ctx, &cs, "OwnershipConflict", fmt.Errorf("runtime proxy Secret ownership changed"))
+		}
+	}
 	if err := r.ensureVolume(ctx, &cs); err != nil {
 		return r.condition(ctx, &cs, "VolumeUnavailable", err)
 	}
@@ -163,7 +172,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if pod.Status.Phase == corev1.PodFailed || pod.Status.Phase == corev1.PodSucceeded {
 		r.Authority.RevokeVersion(cs.UID, operationVersion)
 		err := updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
-			if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Status.Pod.Name != podName || (current.Status.Pod.UID != "" && current.Status.Pod.UID != podUID) {
+			if !runtimePodStatusIsCurrent(current, operationVersion, operationType, podName, podUID) {
 				return errObservedResourceChanged
 			}
 			current.Status.Pod.UID = podUID
@@ -183,7 +192,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
 	err = updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
-		if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Status.Pod.Name != podName || (current.Status.Pod.UID != "" && current.Status.Pod.UID != podUID) {
+		if !runtimePodStatusIsCurrent(current, operationVersion, operationType, podName, podUID) {
 			return errObservedResourceChanged
 		}
 		current.Status.Pod.UID = podUID
@@ -197,6 +206,11 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		return r.condition(ctx, &cs, "IdentityUnavailable", err)
 	}
 	return r.condition(ctx, &cs, "AgentPending", nil)
+}
+
+func runtimePodStatusIsCurrent(cs *api.Codespace, operationVersion int64, operationType, podName string, podUID types.UID) bool {
+	return cs.Spec.Operation.Version == operationVersion && cs.Spec.Operation.Type == operationType && cs.Status.Pod.Name == podName &&
+		(cs.Status.Pod.UID == "" || cs.Status.Pod.UID == podUID)
 }
 
 func (r *RuntimeReconciler) consumeWriterStoppedConfirmation(ctx context.Context, cs *api.Codespace, podUID types.UID) error {
@@ -338,6 +352,17 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 				VolumeDevices: volumeDevices,
 			}},
 		},
+	}
+	if runtime.Proxy != nil {
+		secretName := runtimeProxySecretName(cs.Name)
+		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, proxyEnvironmentFromSecret(secretName)...)
+		if runtime.Proxy.CABundle != "" {
+			pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "proxy-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+				SecretName: secretName, DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: proxyCAKey}},
+			}}})
+			pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
+			pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/" + proxyCAKey})
+		}
 	}
 	if runtime.Isolation == api.IsolationKata {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}

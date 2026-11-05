@@ -51,6 +51,31 @@ spec:
                     type: string
                   maxSize:
                     type: string
+                  proxy:
+                    description: |-
+                      OutboundProxy configures one administrator-managed network proxy. Credentials
+                      are stored separately because Kubernetes API objects are not secret storage.
+                    properties:
+                      caBundle:
+                        description: CABundle extends the system trust store for the
+                          configured proxy.
+                        maxLength: 262144
+                        type: string
+                      httpProxy:
+                        maxLength: 2048
+                        type: string
+                      httpsProxy:
+                        maxLength: 2048
+                        type: string
+                      noProxy:
+                        items:
+                          type: string
+                        maxItems: 128
+                        type: array
+                      socksProxy:
+                        maxLength: 2048
+                        type: string
+                    type: object
                   storage:
                     properties:
                       driver:

@@ -70,22 +70,23 @@ type RunLifecycleFunc func(context.Context, devcontainer.LifecycleStage, func(co
 
 // CreateOptions contains caller identity, configuration input, and product integration hooks.
 type CreateOptions struct {
-	OwnerID          string
-	Workspace        string
-	Source           devcontainer.Source
-	AllowedPathRoot  string
-	HostUser         devcontainer.HostUser
-	LocalEnvironment map[string]string
-	Secrets          map[string]string
-	InjectedFeatures []devcontainer.InjectedFeature
-	AdditionalMounts []devcontainer.Mount
-	ContainerEnv     map[string]string
-	Labels           map[string]string
-	FrozenLockfile   bool
-	Cache            devcontainer.CacheOptions
-	PrepareLifecycle PrepareLifecycleFunc
-	RunLifecycle     RunLifecycleFunc
-	Ready            ReadyFunc
+	OwnerID             string
+	Workspace           string
+	Source              devcontainer.Source
+	AllowedPathRoot     string
+	HostUser            devcontainer.HostUser
+	LocalEnvironment    map[string]string
+	PlatformEnvironment map[string]string
+	Secrets             map[string]string
+	InjectedFeatures    []devcontainer.InjectedFeature
+	AdditionalMounts    []devcontainer.Mount
+	ContainerEnv        map[string]string
+	Labels              map[string]string
+	FrozenLockfile      bool
+	Cache               devcontainer.CacheOptions
+	PrepareLifecycle    PrepareLifecycleFunc
+	RunLifecycle        RunLifecycleFunc
+	Ready               ReadyFunc
 }
 
 // New connects an Engine to the Docker endpoint selected by the standard Docker client configuration.
@@ -195,9 +196,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var composeContainers map[string]string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser)
+		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment)
 	} else {
-		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser)
+		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment)
 	}
 	if err != nil {
 		return nil, err
@@ -319,8 +320,8 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 	return json.Marshal(merged)
 }
 
-func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser) (string, map[string]string, error) {
-	imageName, featureDigests, err := e.resolveImage(ctx, resolved)
+func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string) (string, map[string]string, error) {
+	imageName, featureDigests, err := e.resolveImage(ctx, resolved, platformEnvironment)
 	if err != nil {
 		return "", nil, err
 	}
@@ -347,7 +348,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	override := resolved.OverrideCommand == nil || *resolved.OverrideCommand
 	config := &container.Config{
 		Image:      imageName,
-		Env:        environmentList(resolved.ContainerEnv),
+		Env:        environmentList(mergePlatformEnvironment(resolved.ContainerEnv, platformEnvironment)),
 		Labels:     labels,
 		Tty:        true,
 		OpenStdin:  true,
@@ -506,7 +507,7 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	return arguments, nil
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser) (string, []string, map[string]string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string) (string, []string, map[string]string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -543,6 +544,15 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, nil, fmt.Errorf("load Docker Compose project: %w", err)
 	}
+	var composeDestinations []string
+	for name, service := range project.Services {
+		composeDestinations = append(composeDestinations, name)
+		for _, network := range service.Networks {
+			composeDestinations = append(composeDestinations, network.Aliases...)
+		}
+	}
+	sort.Strings(composeDestinations)
+	platformEnvironment = mergePlatformEnvironment(map[string]string{"NO_PROXY": strings.Join(composeDestinations, ",")}, platformEnvironment)
 	for name, candidate := range project.Services {
 		if candidate.Build == nil {
 			continue
@@ -557,7 +567,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	if service.Build != nil {
 		stage := "compose-" + resolved.Service
-		if err := e.buildService(ctx, project, resolved.Service, resolved.Cache, stage); err != nil {
+		if err := e.buildService(ctx, project, resolved.Service, resolved.Cache, stage, platformEnvironment); err != nil {
 			return "", nil, nil, nil, fmt.Errorf("build Docker Compose Dev Container service: %w", err)
 		}
 	}
@@ -582,7 +592,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		repositoryConfiguration.ContainerUser = service.User
 	}
 	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	featureImage, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration)
+	featureImage, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration, platformEnvironment)
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
@@ -626,6 +636,16 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		service.Environment = composetypes.MappingWithEquals{}
 	}
 	for name, value := range resolved.ContainerEnv {
+		service.Environment[name] = &value
+	}
+	serviceEnvironment := make(map[string]string, len(service.Environment))
+	for name, value := range service.Environment {
+		if value != nil {
+			serviceEnvironment[name] = *value
+		}
+	}
+	for name, value := range mergePlatformEnvironment(serviceEnvironment, platformEnvironment) {
+		value := value
 		service.Environment[name] = &value
 	}
 	if service.Labels == nil {
@@ -673,6 +693,19 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		for label, value := range labels {
 			relatedService.Labels[label] = value
 		}
+		if relatedService.Environment == nil {
+			relatedService.Environment = composetypes.MappingWithEquals{}
+		}
+		relatedEnvironment := make(map[string]string, len(relatedService.Environment))
+		for environmentName, value := range relatedService.Environment {
+			if value != nil {
+				relatedEnvironment[environmentName] = *value
+			}
+		}
+		for environmentName, value := range mergePlatformEnvironment(relatedEnvironment, platformEnvironment) {
+			value := value
+			relatedService.Environment[environmentName] = &value
+		}
 		project.Services[name] = relatedService
 	}
 	services := slices.Clone(resolved.RunServices)
@@ -692,7 +725,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		if relatedService.Build != nil {
 			stage := "compose-" + name
-			if err := e.buildService(ctx, project, name, resolved.Cache, stage); err != nil {
+			if err := e.buildService(ctx, project, name, resolved.Cache, stage, platformEnvironment); err != nil {
 				return "", nil, nil, nil, fmt.Errorf("build Docker Compose service %s: %w", name, err)
 			}
 			continue
@@ -736,6 +769,37 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	sort.Strings(related)
 	return primary, related, composeContainers, featureDigests, nil
+}
+
+func mergePlatformEnvironment(base, platform map[string]string) map[string]string {
+	result := maps.Clone(base)
+	if result == nil {
+		result = map[string]string{}
+	}
+	for name, value := range platform {
+		result[name] = value
+	}
+	var bypass []string
+	seen := map[string]struct{}{}
+	for _, value := range []string{base["NO_PROXY"], base["no_proxy"], platform["NO_PROXY"], platform["no_proxy"]} {
+		for _, item := range strings.Split(value, ",") {
+			item = strings.TrimSpace(item)
+			key := strings.ToLower(item)
+			if item == "" {
+				continue
+			}
+			if _, exists := seen[key]; exists {
+				continue
+			}
+			seen[key] = struct{}{}
+			bypass = append(bypass, item)
+		}
+	}
+	if len(bypass) > 0 {
+		value := strings.Join(bypass, ",")
+		result["NO_PROXY"], result["no_proxy"] = value, value
+	}
+	return result
 }
 
 func findRunArgsUser(arguments []string) string {

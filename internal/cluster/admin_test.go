@@ -119,7 +119,7 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.Contains(t, w.Body.String(), `"isolation":"sysbox"`)
 
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
-	require.NoError(t, server.saveTemplate(t.Context(), template, api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}, true))
+	require.NoError(t, server.saveTemplateWrite(t.Context(), template, adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
 	template.Spec.Runtime.Isolation = api.IsolationKata
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
 

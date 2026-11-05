@@ -90,7 +90,7 @@ type featureOption struct {
 	Enum        []string        `json:"enum"`
 }
 
-func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration devcontainer.Configuration, imageSources []devcontainer.Configuration, repositoryConfiguration devcontainer.Configuration) (string, map[string]string, error) {
+func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration devcontainer.Configuration, imageSources []devcontainer.Configuration, repositoryConfiguration devcontainer.Configuration, platformEnvironment map[string]string) (string, map[string]string, error) {
 	lockfile, lockfileExists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
 	if err != nil {
 		return "", nil, err
@@ -328,7 +328,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, err
 	}
 	imageName := "devcontainer-feature:" + resolved.DevContainerID
-	if err := e.buildImage(ctx, buildContext, "Dockerfile.features", imageName, "", nil, nil, nil, resolved.Cache, "features"); err != nil {
+	if err := e.buildImage(ctx, buildContext, "Dockerfile.features", imageName, "", nil, nil, nil, resolved.Cache, "features", platformEnvironment); err != nil {
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
 	e.publishCachedImage(ctx, imageName, cacheReference, "features")
@@ -349,7 +349,7 @@ func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseIma
 			"options", stringMapCachePart(feature.options),
 		)
 	}
-	return imageArtifactCacheReference(cache, "features", parts...)
+	return cacheReference(cache, append([]string{"image", "features"}, parts...)...)
 }
 
 func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, cache devcontainer.CacheOptions, configurationDir, allowedRoot string) (*resolvedFeature, error) {

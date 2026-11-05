@@ -14,6 +14,7 @@ import {
 } from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
+import ProxySettings from '../components/ProxySettings.vue';
 import {measurementBaseValue} from '../utils/measurement';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
@@ -31,6 +32,9 @@ const name = ref('');
 const form = ref<Component>();
 const s3AccessKey = ref('');
 const s3SecretKey = ref('');
+const proxyUsername = ref('');
+const proxyPassword = ref('');
+const clearProxyCredential = ref(false);
 const upstreams = ref<{host: string; allow: string}[]>([]);
 const trustedProxyCIDRs = ref('');
 const error = ref('');
@@ -41,6 +45,9 @@ const dirty = useDirtyForm(() => ({
   form: form.value,
   s3AccessKey: s3AccessKey.value,
   s3SecretKey: s3SecretKey.value,
+  proxyUsername: proxyUsername.value,
+  proxyPassword: proxyPassword.value,
+  clearProxyCredential: clearProxyCredential.value,
   upstreams: upstreams.value,
   trustedProxyCIDRs: trustedProxyCIDRs.value,
 }));
@@ -164,6 +171,9 @@ function edit(item?: Resource<Component, ComponentStatus>) {
   error.value = '';
   s3AccessKey.value = '';
   s3SecretKey.value = '';
+  proxyUsername.value = '';
+  proxyPassword.value = '';
+  clearProxyCredential.value = false;
   form.value = item ? structuredClone(toRaw(item.spec)) : defaultGateway();
   trustedProxyCIDRs.value = form.value.gateway?.trustedProxyCIDRs?.join('\n') ?? '';
   upstreams.value = Object.entries(form.value.cache?.upstreams ?? {}).map(([host, config]) => ({
@@ -294,6 +304,9 @@ async function save() {
         spec,
         s3AccessKey: s3AccessKey.value,
         s3SecretKey: s3SecretKey.value,
+        proxyUsername: proxyUsername.value,
+        proxyPassword: proxyPassword.value,
+        clearProxyCredential: clearProxyCredential.value,
       },
     );
     items.value = upsertResource(items.value, saved);
@@ -745,6 +758,13 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <NFormItem>
         <NCheckbox v-model:checked="form.cache.enabled">{{ t('component.acceptCache') }}</NCheckbox>
       </NFormItem>
+      <h2>{{ t('proxy.section') }}</h2>
+      <ProxySettings
+        v-model="form.cache.proxy"
+        v-model:username="proxyUsername"
+        v-model:password="proxyPassword"
+        v-model:clear-credential="clearProxyCredential"
+      />
     </template>
     <div class="form-actions">
       <NButton

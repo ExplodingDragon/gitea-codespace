@@ -30,3 +30,24 @@ func TestEnvironmentConfigurationRejectsUnsupportedResourceLimit(t *testing.T) {
 
 	require.ErrorContains(t, configuration.Validate(), "only positive CPU and memory limits")
 }
+
+func TestOutboundProxyValidation(t *testing.T) {
+	valid := &OutboundProxy{
+		HTTPProxy:  "http://proxy.example:3128",
+		HTTPSProxy: "https://proxy.example:8443",
+		SOCKSProxy: "socks5h://proxy.example:1080",
+		NoProxy:    []string{"registry.internal", "10.0.0.0/8"},
+	}
+	require.NoError(t, validateOutboundProxy(valid))
+
+	for _, proxy := range []*OutboundProxy{
+		{},
+		{HTTPProxy: "http://user:password@proxy.example:3128"},
+		{HTTPSProxy: "https://proxy.example"},
+		{HTTPSProxy: "https://proxy.example:65536"},
+		{SOCKSProxy: "http://proxy.example:1080"},
+		{HTTPProxy: "http://proxy.example:3128", NoProxy: []string{"example", "EXAMPLE"}},
+	} {
+		require.Error(t, validateOutboundProxy(proxy))
+	}
+}

@@ -288,6 +288,23 @@
     "invalidCacheSizes": "缓存容量和预留空间必须大于零，且总量不能超过卷容量。",
     "invalidDuration": "缓存保留时间和清理间隔必须大于零。"
   },
+  "proxy": {
+    "section": "出站代理",
+    "enabled": "使用出站代理",
+    "help": "运行环境及其 Dev Container 会将这些设置用于 Git、镜像拉取、构建、Feature 下载和应用网络访问。",
+    "http": "HTTP 代理",
+    "httpHelp": "填写带有明确端口的完整 HTTP 或 HTTPS 地址。",
+    "https": "HTTPS 代理",
+    "socks": "SOCKS5 代理",
+    "socksHelp": "没有单独代理配置的协议会使用此地址。",
+    "noProxy": "直连目标",
+    "noProxyHelp": "每行填写一个主机、域名后缀、IP 地址或 CIDR；集群内部目标会自动加入。",
+    "username": "替换用户名",
+    "password": "替换密码",
+    "clearCredential": "清除已保存的代理凭据",
+    "caBundle": "代理 CA 证书",
+    "caBundleHelp": "填写 PEM 证书，在系统根证书之外增加对代理证书的信任。"
+  },
   "runtime": {
     "title": "运行环境",
     "refresh": "刷新运行环境",

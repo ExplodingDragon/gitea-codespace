@@ -79,6 +79,23 @@ func TestEngineConfigurationHelpers(t *testing.T) {
 	}
 }
 
+func TestPlatformProxyEnvironmentDoesNotMutateInputs(t *testing.T) {
+	t.Parallel()
+	base := map[string]string{"NO_PROXY": "repository.internal", "VALUE": "repository"}
+	platform := map[string]string{"HTTP_PROXY": "http://proxy.example:3128", "NO_PROXY": ".svc,repository.internal"}
+	merged := mergePlatformEnvironment(base, platform)
+	if merged["HTTP_PROXY"] != platform["HTTP_PROXY"] || merged["NO_PROXY"] != "repository.internal,.svc" || merged["no_proxy"] != merged["NO_PROXY"] {
+		t.Fatalf("merged platform environment = %#v", merged)
+	}
+	if len(base) != 2 || len(platform) != 2 {
+		t.Fatalf("proxy merge mutated its inputs: %#v / %#v", base, platform)
+	}
+	build := mergeBuildProxyArguments(map[string]*string{"VERSION": nil}, platform)
+	if build["HTTP_PROXY"] == nil || *build["HTTP_PROXY"] != platform["HTTP_PROXY"] || build["VERSION"] != nil {
+		t.Fatalf("build proxy arguments = %#v", build)
+	}
+}
+
 func TestDockerCreateArgumentsWithRunArgsPreserveFeatureStartup(t *testing.T) {
 	t.Parallel()
 
@@ -197,7 +214,7 @@ func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
 	}}}
 	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
 	reference := buildCacheReference(cache, "repository")
-	if err := engine.buildService(t.Context(), project, "image", cache, "repository"); err != nil {
+	if err := engine.buildService(t.Context(), project, "image", cache, "repository", nil); err != nil {
 		t.Fatal(err)
 	}
 	registryImport := "type=registry,ref=" + reference
@@ -224,7 +241,7 @@ func TestMergeInjectedFeaturesKeepsDistinctFeatureVersions(t *testing.T) {
 		t.Fatalf("override repository Feature: %v", err)
 	}
 	if _, exists := resolved.Features["ghcr.io/example/features/tool:1"]; !exists {
-		t.Fatal("repository Feature was removed")
+		t.Fatal("repository Feature is missing")
 	}
 	want := `{"channel":"stable"}`
 	got := resolved.Features["ghcr.io/example/features/tool:2"]

@@ -288,6 +288,23 @@
     "invalidCacheSizes": "The cache size and reserved free space must be positive and fit within the volume.",
     "invalidDuration": "Cache retention and cleanup intervals must be positive."
   },
+  "proxy": {
+    "section": "Outbound proxy",
+    "enabled": "Use an outbound proxy",
+    "help": "The runtime and its Dev Containers use these settings for Git, image pulls, builds, Features, and application traffic.",
+    "http": "HTTP proxy",
+    "httpHelp": "Use an absolute HTTP or HTTPS URL with an explicit port.",
+    "https": "HTTPS proxy",
+    "socks": "SOCKS5 proxy",
+    "socksHelp": "Used as the fallback for protocols without a dedicated proxy.",
+    "noProxy": "Direct destinations",
+    "noProxyHelp": "Enter one host, domain suffix, IP address, or CIDR per line. Cluster-local destinations are added automatically.",
+    "username": "Replace username",
+    "password": "Replace password",
+    "clearCredential": "Remove the stored proxy credential",
+    "caBundle": "Proxy CA certificates",
+    "caBundleHelp": "PEM certificates trusted in addition to the system roots."
+  },
   "runtime": {
     "title": "Running environments",
     "refresh": "Refresh environments",

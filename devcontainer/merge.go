@@ -51,7 +51,7 @@ func Merge(base, override Configuration) Configuration {
 	}
 	result.Mounts = mergeMounts(result.Mounts, override.Mounts)
 	result.ContainerEnv = mergeMap(result.ContainerEnv, override.ContainerEnv)
-	result.RemoteEnv = mergeRemoteEnvironment(result.RemoteEnv, override.RemoteEnv)
+	result.RemoteEnv = mergeMap(result.RemoteEnv, override.RemoteEnv)
 	if override.ContainerUser != "" {
 		result.ContainerUser = override.ContainerUser
 	}
@@ -93,8 +93,8 @@ func Merge(base, override Configuration) Configuration {
 		result.OverrideFeatureInstallOrder = slices.Clone(override.OverrideFeatureInstallOrder)
 	}
 	result.Customizations = mergeCustomizations(result.Customizations, override.Customizations)
-	result.ForwardPorts = appendUniqueComparable(result.ForwardPorts, override.ForwardPorts)
-	result.PortsAttributes = mergeStructMap(result.PortsAttributes, override.PortsAttributes)
+	result.ForwardPorts = appendUnique(result.ForwardPorts, override.ForwardPorts)
+	result.PortsAttributes = mergeMap(result.PortsAttributes, override.PortsAttributes)
 	if override.OtherPortsAttributes != nil {
 		attributes := *override.OtherPortsAttributes
 		result.OtherPortsAttributes = &attributes
@@ -113,7 +113,7 @@ func Merge(base, override Configuration) Configuration {
 		result.OverrideCommand = override.OverrideCommand
 	}
 	result.HostRequirements = mergeHostRequirements(result.HostRequirements, override.HostRequirements)
-	result.Secrets = mergeStructMap(result.Secrets, override.Secrets)
+	result.Secrets = mergeMap(result.Secrets, override.Secrets)
 	return result
 }
 
@@ -161,21 +161,10 @@ func gpuRequirementRank(value json.RawMessage) int {
 	}
 }
 
-func mergeMap(base, override map[string]string) map[string]string {
+func mergeMap[Map ~map[string]Value, Value any](base, override Map) Map {
 	result := maps.Clone(base)
 	if result == nil && len(override) > 0 {
-		result = map[string]string{}
-	}
-	for key, value := range override {
-		result[key] = value
-	}
-	return result
-}
-
-func mergeRemoteEnvironment(base, override RemoteEnvironment) RemoteEnvironment {
-	result := maps.Clone(base)
-	if result == nil && len(override) > 0 {
-		result = RemoteEnvironment{}
+		result = Map{}
 	}
 	for key, value := range override {
 		result[key] = value
@@ -194,28 +183,7 @@ func mergeRawMap(base, override map[string]json.RawMessage) map[string]json.RawM
 	return result
 }
 
-func mergeStructMap[T any](base, override map[string]T) map[string]T {
-	result := maps.Clone(base)
-	if result == nil && len(override) > 0 {
-		result = map[string]T{}
-	}
-	for key, value := range override {
-		result[key] = value
-	}
-	return result
-}
-
-func appendUnique(base, override []string) []string {
-	result := slices.Clone(base)
-	for _, value := range override {
-		if !slices.Contains(result, value) {
-			result = append(result, value)
-		}
-	}
-	return result
-}
-
-func appendUniqueComparable[T comparable](base, override []T) []T {
+func appendUnique[Value comparable](base, override []Value) []Value {
 	result := slices.Clone(base)
 	for _, value := range override {
 		if !slices.Contains(result, value) {

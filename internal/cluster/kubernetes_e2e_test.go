@@ -156,7 +156,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 			t.Errorf("delete E2E EnvironmentTemplate %s: %v", template.Name, err)
 		}
 	})
-	_, err := (&TemplateReconciler{Client: c}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(template)})
+	_, err := (&TemplateReconciler{Client: c, ManagementNamespace: cluster.managementNamespace}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(template)})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(template), template))
 	require.True(t, meta.IsStatusConditionTrue(template.Status.Conditions, "Ready"))

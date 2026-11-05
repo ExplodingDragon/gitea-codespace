@@ -111,6 +111,11 @@ func runtimeLocalEnvironment(hostUser devcontainer.HostUser) map[string]string {
 			environment[name] = value
 		}
 	}
+	for _, name := range devcontainer.ProxyVariableNames() {
+		if value := os.Getenv(name); value != "" {
+			environment[name] = value
+		}
+	}
 	return environment
 }
 

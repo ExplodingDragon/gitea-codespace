@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 	"uuid"
@@ -26,6 +27,13 @@ import (
 const MaxObjectBytes = 1024 * 1024
 
 var tagPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+
+const (
+	maxNoProxyEntries = 128
+	maxProxyCABundle  = 256 * 1024
+	maxProxyURL       = 2048
+	maxNoProxyEntry   = 1024
+)
 
 func SiteNamespace(name, managementNamespace string) (string, error) {
 	if len(name) > 53 || len(validation.IsDNS1123Label(name)) != 0 {
@@ -176,6 +184,9 @@ func validateGatewayComponent(gateway *GatewayComponentSpec) error {
 }
 
 func validateCacheComponent(cache *CacheComponentSpec) error {
+	if err := validateOutboundProxy(cache.Proxy); err != nil {
+		return err
+	}
 	switch cache.Storage.Driver {
 	case "filesystem":
 		volumeSize, err := resource.ParseQuantity(cache.Storage.VolumeSize)
@@ -231,6 +242,71 @@ func validateCacheComponent(cache *CacheComponentSpec) error {
 		return fmt.Errorf("invalid cache configuration: %w", err)
 	}
 	return nil
+}
+
+func validateOutboundProxy(proxy *OutboundProxy) error {
+	if proxy == nil {
+		return nil
+	}
+	if proxy.HTTPProxy == "" && proxy.HTTPSProxy == "" && proxy.SOCKSProxy == "" {
+		return fmt.Errorf("outbound proxy requires at least one proxy URL")
+	}
+	for name, value := range map[string]string{"HTTP": proxy.HTTPProxy, "HTTPS": proxy.HTTPSProxy} {
+		if value == "" {
+			continue
+		}
+		if err := validateProxyURL(value, "http", "https"); err != nil {
+			return fmt.Errorf("%s proxy: %w", name, err)
+		}
+	}
+	if proxy.SOCKSProxy != "" {
+		if err := validateProxyURL(proxy.SOCKSProxy, "socks5", "socks5h"); err != nil {
+			return fmt.Errorf("SOCKS proxy: %w", err)
+		}
+	}
+	if len(proxy.NoProxy) > maxNoProxyEntries {
+		return fmt.Errorf("outbound proxy supports at most %d bypass entries", maxNoProxyEntries)
+	}
+	seen := make(map[string]struct{}, len(proxy.NoProxy))
+	for _, value := range proxy.NoProxy {
+		if value == "" || len(value) > maxNoProxyEntry || value != strings.TrimSpace(value) || strings.ContainsAny(value, "\r\n,") {
+			return fmt.Errorf("proxy bypass entry %q is invalid", value)
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return fmt.Errorf("proxy bypass entry %q is duplicated", value)
+		}
+		seen[key] = struct{}{}
+	}
+	if len(proxy.CABundle) > maxProxyCABundle {
+		return fmt.Errorf("proxy CA bundle exceeds %d bytes", maxProxyCABundle)
+	}
+	if proxy.CABundle != "" {
+		if _, err := certificates.ParseCABundle(proxy.CABundle); err != nil {
+			return fmt.Errorf("proxy CA bundle: %w", err)
+		}
+	}
+	return nil
+}
+
+func validateProxyURL(value string, schemes ...string) error {
+	if len(value) > maxProxyURL || value != strings.TrimSpace(value) {
+		return fmt.Errorf("URL contains surrounding whitespace")
+	}
+	u, err := url.Parse(value)
+	if err != nil || u.Hostname() == "" || u.Port() == "" || u.User != nil || u.Path != "" && u.Path != "/" || u.RawQuery != "" || u.Fragment != "" {
+		return fmt.Errorf("URL must contain a host and port without credentials, path, query, or fragment")
+	}
+	port, err := strconv.ParseUint(u.Port(), 10, 16)
+	if err != nil || port == 0 {
+		return fmt.Errorf("URL port must be between 1 and 65535")
+	}
+	for _, scheme := range schemes {
+		if u.Scheme == scheme {
+			return nil
+		}
+	}
+	return fmt.Errorf("URL scheme must be %s", strings.Join(schemes, " or "))
 }
 
 func validateGatewayHTTPExposure(gateway *GatewayComponentSpec, endpoint *url.URL) error {
@@ -328,6 +404,9 @@ func (r EnvironmentConfiguration) Validate() error {
 	}
 	if r.GitSSHKeyType != "ed25519" && r.GitSSHKeyType != "rsa-4096" {
 		return fmt.Errorf("git SSH key type must be ed25519 or rsa-4096")
+	}
+	if err := validateOutboundProxy(r.Proxy); err != nil {
+		return err
 	}
 	return r.DevContainer.Validate()
 }

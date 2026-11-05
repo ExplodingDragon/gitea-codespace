@@ -18,7 +18,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
-type TemplateReconciler struct{ Client client.Client }
+type TemplateReconciler struct {
+	Client              client.Client
+	ManagementNamespace string
+}
 
 func validateEnvironmentDependencies(ctx context.Context, reader client.Reader, configuration api.EnvironmentConfiguration) error {
 	var runtime nodev1.RuntimeClass
@@ -44,6 +47,9 @@ func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	problem := template.Validate()
 	if problem == nil {
 		problem = validateEnvironmentDependencies(ctx, r.Client, template.Spec.Runtime)
+	}
+	if problem == nil {
+		problem = reconcileTemplateProxySecret(ctx, r.Client, r.ManagementNamespace, &template, "", "", false)
 	}
 	err := updateTemplateStatus(ctx, r.Client, &template, func(current *api.EnvironmentTemplate) error {
 		if current.Generation != observedGeneration {

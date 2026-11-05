@@ -7,6 +7,7 @@ import {errorMessage, request, upsertResource, type ClusterOptions, type Environ
 import {useDirtyForm} from '../composables/useDirtyForm';
 import JsonEditor from '../components/JsonEditor.vue';
 import MeasurementInput from '../components/MeasurementInput.vue';
+import ProxySettings from '../components/ProxySettings.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
 import {measurementBaseValue} from '../utils/measurement';
 
@@ -30,6 +31,9 @@ const loading = ref(false);
 const saving = ref(false);
 const limitsEnabled = ref(false);
 const limitsDraft = ref({cpu: '1', memory: '1Gi'});
+const proxyUsername = ref('');
+const proxyPassword = ref('');
+const clearProxyCredential = ref(false);
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   form: form.value,
@@ -37,6 +41,9 @@ const dirty = useDirtyForm(() => ({
   features: featuresJSON.value,
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
+  proxyUsername: proxyUsername.value,
+  proxyPassword: proxyPassword.value,
+  clearProxyCredential: clearProxyCredential.value,
 }));
 
 const isolationOptions = computed(() => {
@@ -85,6 +92,9 @@ const storageOptions = computed(() => {
 async function load() {
   loading.value = true;
   error.value = '';
+  proxyUsername.value = '';
+  proxyPassword.value = '';
+  clearProxyCredential.value = false;
   try {
     [items.value, cluster.value] = await Promise.all([
       request<Resource<Environment>[]>('environments'),
@@ -222,6 +232,9 @@ async function save() {
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
+        proxyUsername: proxyUsername.value,
+        proxyPassword: proxyPassword.value,
+        clearProxyCredential: clearProxyCredential.value,
       },
     );
     items.value = upsertResource(items.value, saved);
@@ -448,6 +461,13 @@ function remove(item: Resource<Environment>) {
         :label="t('environment.jsonFeaturesLabel')"
       />
     </NFormItem>
+    <h2>{{ t('proxy.section') }}</h2>
+    <ProxySettings
+      v-model="form.runtime.proxy"
+      v-model:username="proxyUsername"
+      v-model:password="proxyPassword"
+      v-model:clear-credential="clearProxyCredential"
+    />
     <div class="form-actions">
       <NButton
         type="primary"

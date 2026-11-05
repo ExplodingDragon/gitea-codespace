@@ -114,6 +114,22 @@ type EnvironmentTemplateSpec struct {
 	Runtime     EnvironmentConfiguration `json:"runtime"`
 }
 
+// OutboundProxy configures one administrator-managed network proxy. Credentials
+// are stored separately because Kubernetes API objects are not secret storage.
+type OutboundProxy struct {
+	// +kubebuilder:validation:MaxLength=2048
+	HTTPProxy string `json:"httpProxy,omitempty"`
+	// +kubebuilder:validation:MaxLength=2048
+	HTTPSProxy string `json:"httpsProxy,omitempty"`
+	// +kubebuilder:validation:MaxLength=2048
+	SOCKSProxy string `json:"socksProxy,omitempty"`
+	// +kubebuilder:validation:MaxItems=128
+	NoProxy []string `json:"noProxy,omitempty"`
+	// CABundle extends the system trust store for the configured proxy.
+	// +kubebuilder:validation:MaxLength=262144
+	CABundle string `json:"caBundle,omitempty"`
+}
+
 // EnvironmentConfiguration defines administrator-selected runtime behavior.
 type EnvironmentConfiguration struct {
 	// +kubebuilder:validation:Enum=kata;sysbox
@@ -127,6 +143,7 @@ type EnvironmentConfiguration struct {
 	// +kubebuilder:validation:Enum=ed25519;rsa-4096
 	GitSSHKeyType string                            `json:"gitSSHKeyType"`
 	DevContainer  devcontainerruntime.Configuration `json:"devContainer"`
+	Proxy         *OutboundProxy                    `json:"proxy,omitempty"`
 }
 
 // StorageVolumeMode returns the volume representation required by the selected
@@ -302,6 +319,7 @@ type CacheComponentSpec struct {
 	// +kubebuilder:validation:Pattern=`^[0-9]+(ns|us|ms|s|m|h)$`
 	GCInterval string                   `json:"gcInterval"`
 	Upstreams  map[string]CacheUpstream `json:"upstreams,omitempty"`
+	Proxy      *OutboundProxy           `json:"proxy,omitempty"`
 }
 
 type CodespaceComponentSpec struct {

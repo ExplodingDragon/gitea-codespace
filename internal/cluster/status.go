@@ -24,25 +24,27 @@ func reconcileStatusError(err error) (ctrl.Result, error) {
 	return ctrl.Result{}, err
 }
 
-func retryStatusUpdate[T client.Object](
+func retryStatusUpdate[Object any, Pointer interface {
+	*Object
+	client.Object
+}](
 	ctx context.Context,
 	kubeClient client.Client,
-	observed T,
-	newObject func() T,
-	status func(T) any,
-	mutate func(T) error,
-) (T, error) {
+	observed Pointer,
+	status func(Pointer) any,
+	mutate func(Pointer) error,
+) error {
 	key, uid := client.ObjectKeyFromObject(observed), observed.GetUID()
-	var saved T
+	var saved Pointer
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		current := newObject()
+		current := Pointer(new(Object))
 		if err := kubeClient.Get(ctx, key, current); err != nil {
 			return err
 		}
 		if current.GetUID() != uid {
 			return errObservedResourceChanged
 		}
-		before := current.DeepCopyObject().(T)
+		before := current.DeepCopyObject().(Pointer)
 		if err := mutate(current); err != nil {
 			return err
 		}
@@ -57,53 +59,36 @@ func retryStatusUpdate[T client.Object](
 		saved = current
 		return nil
 	})
-	return saved, err
+	if err == nil {
+		*observed = *saved
+	}
+	return err
 }
 
 func updateSiteStatus(ctx context.Context, kubeClient client.Client, observed *api.GiteaSite, mutate func(*api.GiteaSite) error) error {
-	saved, err := retryStatusUpdate(ctx, kubeClient, observed,
-		func() *api.GiteaSite { return &api.GiteaSite{} },
+	return retryStatusUpdate[api.GiteaSite](ctx, kubeClient, observed,
 		func(site *api.GiteaSite) any { return site.Status },
 		mutate,
 	)
-	if err == nil {
-		*observed = *saved
-	}
-	return err
 }
 
 func updateTemplateStatus(ctx context.Context, kubeClient client.Client, observed *api.EnvironmentTemplate, mutate func(*api.EnvironmentTemplate) error) error {
-	saved, err := retryStatusUpdate(ctx, kubeClient, observed,
-		func() *api.EnvironmentTemplate { return &api.EnvironmentTemplate{} },
+	return retryStatusUpdate[api.EnvironmentTemplate](ctx, kubeClient, observed,
 		func(template *api.EnvironmentTemplate) any { return template.Status },
 		mutate,
 	)
-	if err == nil {
-		*observed = *saved
-	}
-	return err
 }
 
 func updateComponentStatus(ctx context.Context, kubeClient client.Client, observed *api.CodespaceComponent, mutate func(*api.CodespaceComponent) error) error {
-	saved, err := retryStatusUpdate(ctx, kubeClient, observed,
-		func() *api.CodespaceComponent { return &api.CodespaceComponent{} },
+	return retryStatusUpdate[api.CodespaceComponent](ctx, kubeClient, observed,
 		func(component *api.CodespaceComponent) any { return component.Status },
 		mutate,
 	)
-	if err == nil {
-		*observed = *saved
-	}
-	return err
 }
 
 func updateCodespaceStatus(ctx context.Context, kubeClient client.Client, observed *api.Codespace, mutate func(*api.Codespace) error) error {
-	saved, err := retryStatusUpdate(ctx, kubeClient, observed,
-		func() *api.Codespace { return &api.Codespace{} },
+	return retryStatusUpdate[api.Codespace](ctx, kubeClient, observed,
 		func(codespace *api.Codespace) any { return codespace.Status },
 		mutate,
 	)
-	if err == nil {
-		*observed = *saved
-	}
-	return err
 }
