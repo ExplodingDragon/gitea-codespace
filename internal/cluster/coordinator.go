@@ -418,11 +418,17 @@ func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, ro
 		request.Instances = append(request.Instances, &codespacev1.RuntimeInstanceRef{RuntimeUuid: cs.Spec.RuntimeUUID, RuntimeState: state, ObservedOperationRversion: observed})
 		states[cs.Spec.RuntimeUUID] = state
 	}
-	if site.Status.InventoryGeneration == int64(^uint64(0)>>1) {
-		return fmt.Errorf("site inventory generation exhausted")
-	}
-	site.Status.InventoryGeneration++
-	if err := c.Client.Status().Update(ctx, site); err != nil {
+	observedSiteGeneration := site.Generation
+	if err := updateSiteStatus(ctx, c.Client, site, func(current *api.GiteaSite) error {
+		if current.Generation != observedSiteGeneration {
+			return errObservedResourceChanged
+		}
+		if current.Status.InventoryGeneration == int64(^uint64(0)>>1) {
+			return fmt.Errorf("site inventory generation exhausted")
+		}
+		current.Status.InventoryGeneration++
+		return nil
+	}); err != nil {
 		return err
 	}
 	request.InventoryGeneration = site.Status.InventoryGeneration
@@ -458,21 +464,30 @@ func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, ro
 				}
 			}
 		}
-		switch result.Action {
-		case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_UNSPECIFIED, codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REFETCH_OPERATION:
-			continue
-		case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME:
-			cs.Status.RecoveryAction = "delete"
-		case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME:
-			cs.Status.RecoveryAction = "stop"
-		case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEAR_OPERATION_CONTEXT:
-			cs.Status.SettledOperationVersion = cs.Spec.Operation.Version
-		default:
-			return fmt.Errorf("unsupported inventory action")
-		}
-		c.Authority.Revoke(cs.UID)
-		if err := c.Client.Status().Update(ctx, cs); err != nil {
+		operationVersion, operationType, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.Operation.Type, cs.Spec.RuntimeUUID
+		err := updateCodespaceStatus(ctx, c.Client, cs, func(current *api.Codespace) error {
+			if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Spec.RuntimeUUID != runtimeUUID {
+				return errObservedResourceChanged
+			}
+			switch result.Action {
+			case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_UNSPECIFIED, codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REFETCH_OPERATION:
+				return nil
+			case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME:
+				current.Status.RecoveryAction = "delete"
+			case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_STOP_LOCAL_RUNTIME:
+				current.Status.RecoveryAction = "stop"
+			case codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEAR_OPERATION_CONTEXT:
+				current.Status.SettledOperationVersion = current.Spec.Operation.Version
+			default:
+				return fmt.Errorf("unsupported inventory action")
+			}
+			return nil
+		})
+		if err != nil {
 			return err
+		}
+		if result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_UNSPECIFIED && result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_REFETCH_OPERATION {
+			c.Authority.Revoke(cs.UID)
 		}
 	}
 	return nil

@@ -57,7 +57,7 @@ export async function request<T>(path: string, method = 'GET', body?: unknown): 
         : '';
     throw new APIError(code, response.status, message, detail);
   }
-  return response.status === 204 ? (undefined as T) : response.json();
+  return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
 }
 
 export type ResourceReference = {

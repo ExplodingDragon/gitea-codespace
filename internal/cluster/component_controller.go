@@ -157,18 +157,20 @@ func (r *ComponentReconciler) Reconcile(ctx context.Context, request ctrl.Reques
 		}
 		condition.Message = fmt.Sprintf("Component workload has %d of %d replicas ready", deployment.Status.ReadyReplicas, desired)
 	}
-	changed := meta.SetStatusCondition(&component.Status.Conditions, condition)
-	for _, exposure := range exposureConditions {
-		changed = meta.SetStatusCondition(&component.Status.Conditions, exposure) || changed
-	}
-	if component.Status.ObservedGeneration != component.Generation {
-		component.Status.ObservedGeneration = component.Generation
-		changed = true
-	}
-	if changed {
-		if err := r.Client.Status().Update(ctx, &component); err != nil {
-			return ctrl.Result{}, err
+	observedGeneration := component.Generation
+	err = updateComponentStatus(ctx, r.Client, &component, func(current *api.CodespaceComponent) error {
+		if current.Generation != observedGeneration {
+			return errObservedResourceChanged
 		}
+		meta.SetStatusCondition(&current.Status.Conditions, condition)
+		for _, exposure := range exposureConditions {
+			meta.SetStatusCondition(&current.Status.Conditions, exposure)
+		}
+		current.Status.ObservedGeneration = observedGeneration
+		return nil
+	})
+	if err != nil {
+		return reconcileStatusError(err)
 	}
 	return ctrl.Result{RequeueAfter: min(renewAfter, componentReconcileInterval)}, nil
 }
@@ -313,7 +315,7 @@ func (r *ComponentReconciler) reconcileGatewayIngress(ctx context.Context, compo
 		}
 	}
 	pathType := networkingv1.PathTypePrefix
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, ingress, func() error {
+	_, err = controllerutil.CreateOrPatch(ctx, r.Client, ingress, func() error {
 		if err := controllerutil.SetControllerReference(component, ingress, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -337,7 +339,7 @@ func (r *ComponentReconciler) reconcileGatewayIngress(ctx context.Context, compo
 }
 
 func (r *ComponentReconciler) reconcileGatewaySSHLoadBalancer(ctx context.Context, component *api.CodespaceComponent, service *corev1.Service) error {
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, service, func() error {
 		if err := controllerutil.SetControllerReference(component, service, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -399,7 +401,7 @@ func (r *ComponentReconciler) reconcileService(ctx context.Context, component *a
 		ports = []corev1.ServicePort{{Name: "https", Port: cacheServicePort, TargetPort: intstr.FromString("https"), AppProtocol: &https}}
 	}
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, service, func() error {
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, service, func() error {
 		if err := controllerutil.SetControllerReference(component, service, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -419,7 +421,7 @@ func (r *ComponentReconciler) reconcileCacheVolume(ctx context.Context, componen
 		return fmt.Errorf("cache volume size must be a positive Kubernetes quantity")
 	}
 	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, claim, func() error {
+	_, err = controllerutil.CreateOrPatch(ctx, r.Client, claim, func() error {
 		if err := controllerutil.SetControllerReference(component, claim, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -444,7 +446,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 	}
 	labels := map[string]string{"app.kubernetes.io/name": "codespace", ComponentLabel: role, ComponentUIDLabel: string(component.UID)}
 	deployment := &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
-	_, err = controllerutil.CreateOrUpdate(ctx, r.Client, deployment, func() error {
+	_, err = controllerutil.CreateOrPatch(ctx, r.Client, deployment, func() error {
 		if err := controllerutil.SetControllerReference(component, deployment, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -548,7 +550,7 @@ func (r *ComponentReconciler) reconcileGatewayDisruptionBudget(ctx context.Conte
 		return r.deleteOwned(ctx, component, budget)
 	}
 	labels := map[string]string{"app.kubernetes.io/name": "codespace", ComponentLabel: "gateway", ComponentUIDLabel: string(component.UID)}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, budget, func() error {
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, budget, func() error {
 		if err := controllerutil.SetControllerReference(component, budget, r.Client.Scheme()); err != nil {
 			return err
 		}
@@ -571,7 +573,7 @@ func localObjectReferences(names []string) []corev1.LocalObjectReference {
 
 func (r *ComponentReconciler) reconcileNetworkPolicy(ctx context.Context, component *api.CodespaceComponent, role string, ports []int32) error {
 	policy := &networkingv1.NetworkPolicy{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
-	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, policy, func() error {
+	_, err := controllerutil.CreateOrPatch(ctx, r.Client, policy, func() error {
 		if err := controllerutil.SetControllerReference(component, policy, r.Client.Scheme()); err != nil {
 			return err
 		}

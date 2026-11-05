@@ -273,12 +273,11 @@ func TestAgentStartupRequiresCurrentPrivateWorkspace(t *testing.T) {
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 2, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
 		Target:            &agentv1.AccessTarget{Version: 3, Ready: true, PrimaryContainerId: "container", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace", Public: true}, ContainerId: "container", Port: 13337}}},
 	}
-	server := &AgentControlServer{}
-	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.saveReport(t.Context(), cs, report)))
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(applyAgentReport(cs, report)))
 	report.Boot.OperationRversion = 3
-	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(server.saveReport(t.Context(), cs, report)))
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
 	report.Target.Endpoints = nil
-	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(server.saveReport(t.Context(), cs, report)))
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
 }
 
 func TestExecutionAuthorityVersions(t *testing.T) {
@@ -291,6 +290,11 @@ func TestExecutionAuthorityVersions(t *testing.T) {
 	authority.Grant("runtime", 3, time.Now().Add(-time.Second))
 	require.Zero(t, authority.Remaining("runtime", 2))
 	require.Zero(t, authority.Remaining("runtime", 3))
+	authority.Grant("runtime", 4, time.Now().Add(time.Minute))
+	authority.RevokeVersion("runtime", 3)
+	require.Positive(t, authority.Remaining("runtime", 4))
+	authority.RevokeVersion("runtime", 4)
+	require.Zero(t, authority.Remaining("runtime", 4))
 }
 
 func TestAgentProgressAndTargetRefresh(t *testing.T) {

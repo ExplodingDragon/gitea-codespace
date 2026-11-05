@@ -220,9 +220,9 @@ async function save() {
   try {
     const spec = structuredClone(toRaw(form.value!));
     for (const kind of ['cpu', 'memory'] as const) {
-      const request = measurementBaseValue(spec.resources.requests[kind], kind);
+      const requested = measurementBaseValue(spec.resources.requests[kind], kind);
       const limit = measurementBaseValue(spec.resources.limits[kind], kind);
-      if (request === null || limit === null || request <= 0 || request > limit)
+      if (requested === null || limit === null || requested <= 0 || requested > limit)
         throw new Error(t('component.invalidResourceRange', {resource: t(`units.${kind}`)}));
     }
     if (spec.gateway) {

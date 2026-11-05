@@ -118,23 +118,26 @@ func canonicalGiteaURL(raw string) (string, error) {
 }
 
 func (r *SiteReconciler) condition(ctx context.Context, site *api.GiteaSite, reason string, problem error) (ctrl.Result, error) {
-	condition := metav1.Condition{Type: "InfrastructureReady", Status: metav1.ConditionTrue, Reason: reason, Message: "Site resources and Gitea identity are verified", ObservedGeneration: site.Generation}
+	observedGeneration := site.Generation
+	namespaceUID, canonicalURL := site.Status.NamespaceUID, site.Status.CanonicalURL
+	condition := metav1.Condition{Type: "InfrastructureReady", Status: metav1.ConditionTrue, Reason: reason, Message: "Site resources and Gitea identity are verified", ObservedGeneration: observedGeneration}
 	if problem != nil {
 		condition.Status = metav1.ConditionFalse
 		condition.Message = problem.Error()
 	}
-	meta.SetStatusCondition(&site.Status.Conditions, condition)
-	if err := api.ValidateObjectSize(site); err != nil {
-		return ctrl.Result{}, err
+	err := updateSiteStatus(ctx, r.Client, site, func(current *api.GiteaSite) error {
+		if current.Generation != observedGeneration {
+			return errObservedResourceChanged
+		}
+		current.Status.NamespaceUID = namespaceUID
+		current.Status.CanonicalURL = canonicalURL
+		meta.SetStatusCondition(&current.Status.Conditions, condition)
+		return nil
+	})
+	if err == errObservedResourceChanged {
+		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
-	var current api.GiteaSite
-	if err := r.Client.Get(ctx, client.ObjectKeyFromObject(site), &current); err != nil {
-		return ctrl.Result{}, err
-	}
-	if equality.Semantic.DeepEqual(current.Status, site.Status) {
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-	if err := r.Client.Status().Update(ctx, site); err != nil {
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
@@ -211,7 +214,7 @@ func (r *SiteReconciler) ensureSiteResources(ctx context.Context, site *api.Gite
 		if equality.Semantic.DeepEqual(before, current) {
 			continue
 		}
-		if err := r.Client.Update(ctx, current); err != nil {
+		if err := r.Client.Patch(ctx, current, client.MergeFrom(before)); err != nil {
 			return err
 		}
 	}

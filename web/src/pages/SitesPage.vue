@@ -59,9 +59,11 @@ async function load() {
   loading.value = true;
   error.value = '';
   try {
-    sites.value = await request('sites');
-    environments.value = await request('environments');
-    components.value = await request('components');
+    [sites.value, environments.value, components.value] = await Promise.all([
+      request<Resource<Site>[]>('sites'),
+      request<Resource<Environment>[]>('environments'),
+      request<Resource<Component>[]>('components'),
+    ]);
   } catch (e) {
     error.value = errorMessage(e, t);
   } finally {

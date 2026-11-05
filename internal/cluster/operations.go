@@ -39,34 +39,36 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	if payload == nil || payload.CodespaceId <= 0 || payload.OperationRversion <= 0 || payload.LogOffset < 0 {
 		return fmt.Errorf("invalid Gitea operation identity or offset")
 	}
-	var kind string
+	var operationType string
 	var settings *codespacev1.EffectiveCodespaceRuntimeSettings
 	switch command := payload.Command.(type) {
 	case *codespacev1.OperationPayload_Create:
-		kind = "create"
+		operationType = "create"
 		if command.Create != nil {
 			settings = command.Create.RuntimeSettings
 		}
 	case *codespacev1.OperationPayload_Resume:
-		kind = "resume"
+		operationType = "resume"
 		if command.Resume != nil {
 			settings = command.Resume.RuntimeSettings
 		}
 	case *codespacev1.OperationPayload_Stop:
-		kind = "stop"
+		operationType = "stop"
 	case *codespacev1.OperationPayload_Delete:
-		kind = "delete"
+		operationType = "delete"
 	case *codespacev1.OperationPayload_AbortCreate:
-		kind = "abort_create"
+		operationType = "abort_create"
 	case *codespacev1.OperationPayload_AbortResume:
-		kind = "abort_resume"
+		operationType = "abort_resume"
 	default:
 		return fmt.Errorf("unknown Gitea operation")
 	}
-	if (kind == "create" || kind == "resume") && validateRuntimeSettings(settings) != nil {
-		return fmt.Errorf("%s operation has invalid effective Runtime settings", kind)
+	if operationType == "create" || operationType == "resume" {
+		if err := validateRuntimeSettings(settings); err != nil {
+			return fmt.Errorf("%s operation has invalid effective Runtime settings: %w", operationType, err)
+		}
 	}
-	if kind != "create" && payload.RuntimeUuid == "" {
+	if operationType != "create" && payload.RuntimeUuid == "" {
 		return fmt.Errorf("operation requires the bound runtime UUID")
 	}
 	namespace, err := api.SiteNamespace(site.Name, o.ManagementNamespace)
@@ -91,8 +93,8 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		if payload.RuntimeUuid != "" {
 			return fmt.Errorf("bound runtime record is missing; data recovery is required")
 		}
-		if kind != "create" || payload.GetCreate() == nil {
-			return fmt.Errorf("%s requires an existing runtime record", kind)
+		if operationType != "create" || payload.GetCreate() == nil {
+			return fmt.Errorf("%s requires an existing runtime record", operationType)
 		}
 		var selected *api.EnvironmentTemplate
 		for _, ref := range site.Spec.Templates {
@@ -141,7 +143,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	if err != nil {
 		return err
 	}
-	operation := api.Operation{Type: kind, Version: input.OperationRversion, Payload: runtime.RawExtension{Raw: encoded}}
+	operation := api.Operation{Type: operationType, Version: input.OperationRversion, Payload: runtime.RawExtension{Raw: encoded}}
 	newVersion := operation.Version > cs.Spec.Operation.Version
 	changed := isNew || operation.Version != cs.Spec.Operation.Version || operation.Type != cs.Spec.Operation.Type
 	if !isNew && operation.Version == cs.Spec.Operation.Version {
@@ -150,7 +152,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			return fmt.Errorf("decode saved operation: %w", err)
 		}
 		previous.LogOffset = input.LogOffset
-		aborting := (kind == "abort_create" && cs.Spec.Operation.Type == "create") || (kind == "abort_resume" && cs.Spec.Operation.Type == "resume")
+		aborting := (operationType == "abort_create" && cs.Spec.Operation.Type == "create") || (operationType == "abort_resume" && cs.Spec.Operation.Type == "resume")
 		if !aborting && !proto.Equal(previous, input) {
 			return fmt.Errorf("gitea changed an already persisted operation")
 		}
@@ -171,7 +173,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		}
 	}
 	if !cs.Status.Bound {
-		if kind == "create" {
+		if operationType == "create" {
 			if err := o.bind(ctx, &cs, remote); err != nil {
 				return err
 			}
@@ -179,27 +181,39 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			if payload.RuntimeUuid != cs.Spec.RuntimeUUID {
 				return fmt.Errorf("a subsequent operation must confirm the persisted runtime identity")
 			}
-			cs.Status.Bound = true
-			if err := o.Client.Status().Update(ctx, &cs); err != nil {
+			operationVersion := cs.Spec.Operation.Version
+			if err := updateCodespaceStatus(ctx, o.Client, &cs, func(current *api.Codespace) error {
+				if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Spec.RuntimeUUID != payload.RuntimeUuid {
+					return errObservedResourceChanged
+				}
+				current.Status.Bound = true
+				return nil
+			}); err != nil {
 				return err
 			}
 		}
 	}
 	if cs.Status.RecoveryAction == "stop" && newVersion {
-		cs.Status.RecoveryAction = ""
-		if err := o.Client.Status().Update(ctx, &cs); err != nil {
+		operationVersion := cs.Spec.Operation.Version
+		if err := updateCodespaceStatus(ctx, o.Client, &cs, func(current *api.Codespace) error {
+			if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType {
+				return errObservedResourceChanged
+			}
+			if current.Status.RecoveryAction == "stop" {
+				current.Status.RecoveryAction = ""
+			}
+			return nil
+		}); err != nil {
 			return err
 		}
 	}
-	if kind == "abort_create" || kind == "abort_resume" || cs.Status.RecoveryAction != "" {
+	if operationType == "abort_create" || operationType == "abort_resume" || cs.Status.RecoveryAction != "" {
 		o.Authority.Revoke(cs.UID)
 	} else if payload.LeaseValidForMilliseconds > 0 && payload.LeaseValidForMilliseconds <= int64((24*time.Hour)/time.Millisecond) && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version {
 		o.Authority.Grant(cs.UID, cs.Spec.Operation.Version, sent.Add(time.Duration(payload.LeaseValidForMilliseconds)*time.Millisecond))
 	}
-	if o.Activity != nil {
-		if settings != nil {
-			return o.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, settings, time.Now())
-		}
+	if o.Activity != nil && settings != nil {
+		return o.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, settings, time.Now())
 	}
 	return nil
 }
@@ -215,8 +229,14 @@ func (o *Operations) bind(ctx context.Context, cs *api.Codespace, remote codespa
 	if response.RuntimeUuid != cs.Spec.RuntimeUUID {
 		return fmt.Errorf("gitea binding conflicts with persisted runtime identity")
 	}
-	cs.Status.Bound = true
-	return o.Client.Status().Update(ctx, cs)
+	operationVersion, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.RuntimeUUID
+	return updateCodespaceStatus(ctx, o.Client, cs, func(current *api.Codespace) error {
+		if current.Spec.Operation.Type != "create" || current.Spec.Operation.Version != operationVersion || current.Spec.RuntimeUUID != runtimeUUID || !current.DeletionTimestamp.IsZero() {
+			return errObservedResourceChanged
+		}
+		current.Status.Bound = true
+		return nil
+	})
 }
 
 // Flush publishes ready metadata before final and keeps acknowledgements durable.
@@ -227,8 +247,8 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if cs.Status.RecoveryAction != "" {
 		return nil
 	}
-	kind := cs.Spec.Operation.Type
-	startup := kind == "create" || kind == "resume"
+	operationType := cs.Spec.Operation.Type
+	startup := operationType == "create" || operationType == "resume"
 	if startup && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version && cs.Status.Result.Succeeded && (cs.Status.Target == nil || !cs.Status.Target.Ready || cs.Status.Boot == nil) {
 		return fmt.Errorf("successful startup has no persisted ready target and metadata")
 	}
@@ -255,27 +275,36 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 		if stopped == nil || stopped.Status != metav1.ConditionTrue || stopped.ObservedGeneration != cs.Generation || cs.Status.Pod.Name != "" {
 			return nil
 		}
-		if result == nil || result.Version != cs.Spec.Operation.Version || (strings.HasPrefix(kind, "abort_") && result.Succeeded) {
-			result = &api.OperationResult{Version: cs.Spec.Operation.Version, Succeeded: kind == "stop" || kind == "delete"}
-			cs.Status.Result = result
-			if err := o.Client.Status().Update(ctx, cs); err != nil {
+		if result == nil || result.Version != cs.Spec.Operation.Version || (strings.HasPrefix(operationType, "abort_") && result.Succeeded) {
+			result = &api.OperationResult{Version: cs.Spec.Operation.Version, Succeeded: operationType == "stop" || operationType == "delete"}
+			operationVersion := cs.Spec.Operation.Version
+			if err := updateCodespaceStatus(ctx, o.Client, cs, func(current *api.Codespace) error {
+				if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType {
+					return errObservedResourceChanged
+				}
+				if current.Status.Result == nil || current.Status.Result.Version != operationVersion || (strings.HasPrefix(operationType, "abort_") && current.Status.Result.Succeeded) {
+					current.Status.Result = result
+				}
+				return nil
+			}); err != nil {
 				return err
 			}
+			result = cs.Status.Result
 		}
 	}
 	if result == nil || result.Version != cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= result.Version {
 		return nil
 	}
-	var operationType codespacev1.OperationType
-	switch kind {
+	var finalOperationType codespacev1.OperationType
+	switch operationType {
 	case "create", "abort_create":
-		operationType = codespacev1.OperationType_OPERATION_TYPE_CREATE
+		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_CREATE
 	case "resume", "abort_resume":
-		operationType = codespacev1.OperationType_OPERATION_TYPE_RESUME
+		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_RESUME
 	case "stop":
-		operationType = codespacev1.OperationType_OPERATION_TYPE_STOP
+		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_STOP
 	case "delete":
-		operationType = codespacev1.OperationType_OPERATION_TYPE_DELETE
+		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_DELETE
 	default:
 		return fmt.Errorf("invalid saved operation type")
 	}
@@ -283,23 +312,31 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if result.Succeeded {
 		status = codespacev1.FinalStatus_FINAL_STATUS_DONE
 	}
-	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: result.Version, OperationType: operationType, Status: status})
+	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: result.Version, OperationType: finalOperationType, Status: status})
 	if err != nil {
 		return err
 	}
-	o.Authority.Revoke(cs.UID)
-	cs.Status.SettledOperationVersion = result.Version
-	switch {
-	case response.ResourceAbsent:
-		// Only a complete inventory response authorizes cleanup of an absent resource.
-		cs.Status.RecoveryAction = "stop"
-		cs.Status.Target = nil
-		cs.Status.Boot = nil
-	case kind == "delete" || (!result.Succeeded && (kind == "create" || kind == "abort_create")):
-		cs.Status.RecoveryAction = "delete"
-	case !result.Succeeded:
-		// A failed resume returns to stopped and retains the existing workspace.
-		cs.Status.RecoveryAction = "stop"
+	err = updateCodespaceStatus(ctx, o.Client, cs, func(current *api.Codespace) error {
+		if current.Spec.Operation.Version != result.Version || current.Spec.Operation.Type != operationType || current.Status.Result == nil || *current.Status.Result != *result {
+			return errObservedResourceChanged
+		}
+		current.Status.SettledOperationVersion = result.Version
+		switch {
+		case response.ResourceAbsent:
+			// Only a complete inventory response authorizes cleanup of an absent resource.
+			current.Status.RecoveryAction = "stop"
+			current.Status.Target = nil
+			current.Status.Boot = nil
+		case operationType == "delete" || (!result.Succeeded && (operationType == "create" || operationType == "abort_create")):
+			current.Status.RecoveryAction = "delete"
+		case !result.Succeeded:
+			// A failed resume returns to stopped and retains the existing workspace.
+			current.Status.RecoveryAction = "stop"
+		}
+		return nil
+	})
+	if err == nil {
+		o.Authority.Revoke(cs.UID)
 	}
-	return o.Client.Status().Update(ctx, cs)
+	return err
 }

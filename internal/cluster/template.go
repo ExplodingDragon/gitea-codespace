@@ -11,7 +11,6 @@ import (
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
@@ -41,25 +40,28 @@ func (r *TemplateReconciler) Reconcile(ctx context.Context, request ctrl.Request
 	if err := r.Client.Get(ctx, request.NamespacedName, &template); err != nil {
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
-	previous := template.DeepCopy().Status
-	condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Attested", Message: "An administrator recorded validation for this Runtime and storage configuration", ObservedGeneration: template.Generation}
+	observedGeneration := template.Generation
 	problem := template.Validate()
 	if problem == nil {
 		problem = validateEnvironmentDependencies(ctx, r.Client, template.Spec.Runtime)
 	}
-	if problem != nil {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "DependencyUnavailable", problem.Error()
-	} else if template.Status.VerifiedGeneration != template.Generation || template.Status.Verification == "" {
-		condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "VerificationRequired", "Record an administrator validation reference before publishing this template"
+	err := updateTemplateStatus(ctx, r.Client, &template, func(current *api.EnvironmentTemplate) error {
+		if current.Generation != observedGeneration {
+			return errObservedResourceChanged
+		}
+		condition := metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Attested", Message: "An administrator recorded validation for this Runtime and storage configuration", ObservedGeneration: observedGeneration}
+		if problem != nil {
+			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "DependencyUnavailable", problem.Error()
+		} else if current.Status.VerifiedGeneration != observedGeneration || current.Status.Verification == "" {
+			condition.Status, condition.Reason, condition.Message = metav1.ConditionFalse, "VerificationRequired", "Record an administrator validation reference before publishing this template"
+		}
+		meta.SetStatusCondition(&current.Status.Conditions, condition)
+		return nil
+	})
+	if err == errObservedResourceChanged {
+		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
-	meta.SetStatusCondition(&template.Status.Conditions, condition)
-	if err := api.ValidateObjectSize(&template); err != nil {
-		return ctrl.Result{}, fmt.Errorf("template status: %w", err)
-	}
-	if equality.Semantic.DeepEqual(previous, template.Status) {
-		return ctrl.Result{RequeueAfter: 30 * time.Second}, nil
-	}
-	if err := r.Client.Status().Update(ctx, &template); err != nil {
+	if err != nil {
 		return ctrl.Result{}, err
 	}
 	return ctrl.Result{RequeueAfter: 30 * time.Second}, nil

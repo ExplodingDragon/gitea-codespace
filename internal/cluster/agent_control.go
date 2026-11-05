@@ -27,7 +27,6 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/encoding/protojson"
 	corev1 "k8s.io/api/core/v1"
-	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -69,6 +68,14 @@ func (a *ExecutionAuthority) Revoke(uid types.UID) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	delete(a.leases, uid)
+}
+
+func (a *ExecutionAuthority) RevokeVersion(uid types.UID, version int64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.leases[uid].version == version {
+		delete(a.leases, uid)
+	}
 }
 
 type agentPeerKey struct{}
@@ -174,19 +181,28 @@ func (s *AgentControlServer) PrepareVolume(ctx context.Context, request *agentv1
 	if volume.UID != cs.Status.Volume.UID || !volume.DeletionTimestamp.IsZero() || volume.Labels[RuntimeUIDLabel] != string(cs.UID) || volume.Labels[SiteUIDLabel] != string(site.UID) {
 		return nil, connect.NewError(connect.CodePermissionDenied, "runtime volume identity changed")
 	}
-	if request.Initialized {
-		if cs.Status.VolumeInitialization == "ready" {
-			return &agentv1.PrepareVolumeResponse{}, nil
+	operationVersion, operationType, podUID, volumeUID := cs.Spec.Operation.Version, cs.Spec.Operation.Type, cs.Status.Pod.UID, cs.Status.Volume.UID
+	err = updateCodespaceStatus(ctx, s.Client, cs, func(current *api.Codespace) error {
+		if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || (operationType != "create" && operationType != "resume") || current.Status.Pod.UID != podUID || current.Status.Volume.UID != volumeUID || current.Status.RecoveryAction != "" || !current.DeletionTimestamp.IsZero() || s.Authority.Remaining(current.UID, operationVersion) <= 0 {
+			return errObservedResourceChanged
 		}
-		cs.Status.VolumeInitialization = "ready"
-	} else {
-		if cs.Spec.Operation.Type != "create" || cs.Status.VolumeInitialization != "" {
-			return nil, connect.NewError(connect.CodeFailedPrecondition, "unrecognized data volume requires administrator recovery")
+		if request.Initialized {
+			if current.Status.VolumeInitialization != "ready" {
+				current.Status.VolumeInitialization = "ready"
+			}
+			return nil
+		}
+		if current.Spec.Operation.Type != "create" || current.Status.VolumeInitialization != "" {
+			return connect.NewError(connect.CodeFailedPrecondition, "unrecognized data volume requires administrator recovery")
 		}
 		// Persist before granting permission: a lost reply cannot authorize another format.
-		cs.Status.VolumeInitialization = "started"
+		current.Status.VolumeInitialization = "started"
+		return nil
+	})
+	if errors.Is(err, errObservedResourceChanged) {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime identity or execution permission changed").WithCause(err)
 	}
-	if err := s.Client.Status().Update(ctx, cs); err != nil {
+	if err != nil {
 		return nil, err
 	}
 	return &agentv1.PrepareVolumeResponse{}, nil
@@ -322,10 +338,19 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 }
 
 func (s *AgentControlServer) saveReport(ctx context.Context, cs *api.Codespace, report *agentv1.AgentReport) error {
+	err := updateCodespaceStatus(ctx, s.Client, cs, func(current *api.Codespace) error {
+		return applyAgentReport(current, report)
+	})
+	if errors.Is(err, errObservedResourceChanged) {
+		return connect.NewError(connect.CodeFailedPrecondition, "runtime identity changed while applying Agent report").WithCause(err)
+	}
+	return err
+}
+
+func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 	if report == nil || report.OperationRversion != cs.Spec.Operation.Version {
 		return connect.NewError(connect.CodeFailedPrecondition, "agent report operation changed")
 	}
-	before := cs.DeepCopy().Status
 	result := report.Result
 	if result != nil && (result.OperationRversion != cs.Spec.Operation.Version || len(result.Message) > 4096 || (result.Status != codespacev1.FinalStatus_FINAL_STATUS_DONE && result.Status != codespacev1.FinalStatus_FINAL_STATUS_FAILED)) {
 		return connect.NewError(connect.CodeInvalidArgument, "invalid Agent operation result")
@@ -405,10 +430,7 @@ func (s *AgentControlServer) saveReport(ctx context.Context, cs *api.Codespace, 
 	if err := api.ValidateObjectSize(cs); err != nil {
 		return connect.NewError(connect.CodeResourceExhausted, err.Error()).WithCause(err)
 	}
-	if equality.Semantic.DeepEqual(before, cs.Status) {
-		return nil
-	}
-	return s.Client.Status().Update(ctx, cs)
+	return nil
 }
 
 func (s *AgentControlServer) UploadLogs(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {

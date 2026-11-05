@@ -197,15 +197,13 @@ td:last-child {
   min-width: 72px;
   justify-content: center;
 }
-.upstream-row,
-.feature-row {
+.upstream-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) 34px;
   align-items: center;
   gap: 12px;
 }
-.upstream-row + .upstream-row,
-.feature-row + .feature-row {
+.upstream-row + .upstream-row {
   margin-top: 10px;
 }
 .add-row {
@@ -252,8 +250,7 @@ td:last-child {
   .page-heading {
     flex-wrap: wrap;
   }
-  .upstream-row,
-  .feature-row {
+  .upstream-row {
     grid-template-columns: minmax(0, 1fr);
   }
 }

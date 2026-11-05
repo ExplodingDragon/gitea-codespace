@@ -233,7 +233,7 @@ func writeAdminError(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case apierrors.IsNotFound(err):
 		status, code, detail = http.StatusNotFound, "resource_not_found", ""
-	case apierrors.IsConflict(err), apierrors.IsAlreadyExists(err):
+	case errors.Is(err, errObservedResourceChanged), apierrors.IsConflict(err), apierrors.IsAlreadyExists(err):
 		status, code, detail = http.StatusConflict, "resource_conflict", ""
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		status, code, detail = http.StatusBadRequest, "invalid_configuration", err.Error()

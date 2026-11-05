@@ -390,9 +390,15 @@ func (s *AdminServer) deleteRuntime(w http.ResponseWriter, r *http.Request, name
 		writeAdminProblem(w, r, http.StatusConflict, "resource_in_use", "disable the owning site before cleaning up its runtime data")
 		return
 	}
-	runtime.Status.RecoveryAction = "delete"
-	runtime.Status.Target = nil
-	if err := s.Client.Status().Update(r.Context(), &runtime); err != nil {
+	operationVersion, podUID := runtime.Spec.Operation.Version, runtime.Status.Pod.UID
+	if err := updateCodespaceStatus(r.Context(), s.Client, &runtime, func(current *api.Codespace) error {
+		if current.Spec.Operation.Version != operationVersion || current.Status.Pod.UID != podUID {
+			return errObservedResourceChanged
+		}
+		current.Status.RecoveryAction = "delete"
+		current.Status.Target = nil
+		return nil
+	}); err != nil {
 		writeAdminError(w, r, err)
 		return
 	}
@@ -704,8 +710,14 @@ func (s *AdminServer) saveTemplate(ctx context.Context, template *api.Environmen
 		return err
 	}
 	if body.Verification != "" {
-		template.Status.VerifiedGeneration, template.Status.Verification = template.Generation, body.Verification
-		return s.Client.Status().Update(ctx, template)
+		generation := template.Generation
+		return updateTemplateStatus(ctx, s.Client, template, func(current *api.EnvironmentTemplate) error {
+			if current.Generation != generation {
+				return errObservedResourceChanged
+			}
+			current.Status.VerifiedGeneration, current.Status.Verification = generation, body.Verification
+			return nil
+		})
 	}
 	return nil
 }

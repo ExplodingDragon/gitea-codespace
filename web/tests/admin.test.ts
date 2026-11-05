@@ -228,7 +228,6 @@ test('administration workflows preserve resource identity and validate cluster-b
   });
   expect(environments[0].spec.runtime.resources).toEqual({
     requests: {cpu: '100m', memory: '256Mi'},
-    limits: {},
   });
   await page.locator('.language-select .n-base-selection').click();
   await page.getByText('简体中文', {exact: true}).last().click();

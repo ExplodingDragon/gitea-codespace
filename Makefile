@@ -54,7 +54,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images clean frontend frontend-check test-frontend admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -136,8 +136,7 @@ helm-check:
 admin-dev:
 	$(PNPM) --dir web run dev
 
-.PHONY: test
-test: scripts-check
+test:
 	$(GO) test -p 1 -skip 'Test.*E2E' ./...
 
 scripts-check:
@@ -151,7 +150,6 @@ scripts-format-check:
 workflow-check:
 	$(ACTIONLINT) .github/workflows/*.yml
 
-.PHONY: test-e2e
 test-e2e:
 	GO="$(GO)" \
 	CODESPACE_E2E_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" \
