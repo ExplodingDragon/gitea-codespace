@@ -6,6 +6,7 @@ import type {OutboundProxy} from '../api';
 
 const props = defineProps<{
   modelValue?: OutboundProxy;
+  help: string;
 }>();
 const emit = defineEmits<{
   'update:modelValue': [value: OutboundProxy | undefined];
@@ -59,7 +60,7 @@ function update<K extends keyof OutboundProxy>(key: K, value: OutboundProxy[K]) 
     <NCheckbox v-model:checked="enabled">{{ t('proxy.enabled') }}</NCheckbox>
   </NFormItem>
   <template v-if="modelValue">
-    <p class="section-help">{{ t('proxy.help') }}</p>
+    <p class="section-help">{{ help }}</p>
     <div class="form-grid">
       <NFormItem
         v-for="field in proxyURLFields"

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, onMounted, ref, toRaw} from 'vue';
+import {computed, onMounted, ref} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, NTag, useDialog} from 'naive-ui';
 import {Pencil, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
@@ -9,6 +9,7 @@ import JsonEditor from '../components/JsonEditor.vue';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import ProxySettings from '../components/ProxySettings.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import {cloneFormValue} from '../utils/form';
 import {measurementBaseValue} from '../utils/measurement';
 
 const {t} = useI18n();
@@ -117,7 +118,7 @@ function edit(item?: Resource<Environment>) {
   name.value = item?.name ?? '';
   error.value = '';
   form.value = item
-    ? structuredClone(toRaw(item.spec))
+    ? cloneFormValue(item.spec)
     : {
         tag: '',
         description: '',
@@ -196,7 +197,7 @@ async function save() {
       !cluster.value.storageClasses.some(({name: storageName}) => storageName === form.value!.runtime.storageClassName)
     )
       throw new Error(t('environment.invalidStorageClass'));
-    const spec = structuredClone(toRaw(form.value!));
+    const spec = cloneFormValue(form.value!);
     for (const kind of ['cpu', 'memory'] as const) {
       const requestValue = measurementBaseValue(spec.runtime.resources.requests[kind], kind);
       const limit = limitsEnabled.value ? measurementBaseValue(limitsDraft.value[kind], kind) : null;
@@ -207,7 +208,7 @@ async function save() {
       )
         throw new Error(t('environment.invalidResourceRange', {resource: t(`units.${kind}`)}));
     }
-    if (limitsEnabled.value) spec.runtime.resources.limits = structuredClone(toRaw(limitsDraft.value));
+    if (limitsEnabled.value) spec.runtime.resources.limits = cloneFormValue(limitsDraft.value);
     else delete spec.runtime.resources.limits;
     if ((measurementBaseValue(spec.runtime.storage.storage, 'storage') ?? 0) <= 0)
       throw new Error(t('environment.invalidStorageSize'));
@@ -459,7 +460,10 @@ function remove(item: Resource<Environment>) {
       </NFormItem>
     </div>
     <h2>{{ t('proxy.section') }}</h2>
-    <ProxySettings v-model="form.runtime.proxy" />
+    <ProxySettings
+      v-model="form.runtime.proxy"
+      :help="t('proxy.runtimeHelp')"
+    />
     <div class="form-actions">
       <NButton
         :disabled="saving"

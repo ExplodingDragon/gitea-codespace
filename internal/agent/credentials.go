@@ -11,6 +11,7 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/controlplane"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -20,7 +21,7 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	if access == nil || strings.TrimSpace(access.GiteaToken) == "" {
 		return nil, fmt.Errorf("gitea access token is empty")
 	}
-	if _, err := canonicalGiteaURL(access.GiteaServerUrl); err != nil {
+	if _, err := controlplane.CanonicalGiteaURL(access.GiteaServerUrl); err != nil {
 		return nil, fmt.Errorf("gitea server URL: %w", err)
 	}
 	privateKey, err := r.Journal.GitSSHPrivateKey(keyType)

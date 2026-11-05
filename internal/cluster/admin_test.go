@@ -119,7 +119,7 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.Contains(t, w.Body.String(), `"isolation":"sysbox"`)
 
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
-	require.NoError(t, server.saveTemplateWrite(t.Context(), template, adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
+	require.NoError(t, server.saveEnvironment(t.Context(), template, adminEnvironmentWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
 	template.Spec.Runtime.Isolation = api.IsolationKata
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
 
@@ -236,7 +236,7 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	require.NoError(t, server.pruneCredentials(ctx))
 	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(&old), &old)))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&credential), &credential))
-	require.ErrorContains(t, server.checkDeletion(ctx, template), "selected by site")
+	require.ErrorContains(t, server.validateResourceDeletion(ctx, template), "selected by site")
 
 	runtimeObject := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "codespace-example"}, Spec: api.CodespaceSpec{Operation: api.Operation{Payload: runtime.RawExtension{Raw: []byte(`{"sensitive":"private-value"}`)}}}}
 	require.NoError(t, c.Create(ctx, runtimeObject))
@@ -391,14 +391,14 @@ func TestAdminComponentCredentialsFollowCommittedReferences(t *testing.T) {
 	require.NotContains(t, string(encoded), "initial-secret")
 	require.NotContains(t, string(encoded), string(originalHostKey))
 	require.NotContains(t, string(encoded), "PRIVATE KEY")
-	require.ErrorContains(t, server.checkDeletion(ctx, cache), "disable the cache")
+	require.ErrorContains(t, server.validateResourceDeletion(ctx, cache), "disable the cache")
 	disabled := cache.DeepCopy()
 	disabled.Spec.Cache.Enabled = false
-	require.ErrorContains(t, server.checkDeletion(ctx, disabled), "active writer lease")
+	require.ErrorContains(t, server.validateResourceDeletion(ctx, disabled), "active writer lease")
 	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 	cacheLease.Spec.RenewTime = &expired
 	require.NoError(t, c.Update(ctx, cacheLease))
-	require.NoError(t, server.checkDeletion(ctx, disabled))
+	require.NoError(t, server.validateResourceDeletion(ctx, disabled))
 
 	cacheSpec.DisplayName = "Updated cache"
 	require.NoError(t, server.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name, UID: cache.UID, ResourceVersion: cache.ResourceVersion}, Spec: cacheSpec, S3AccessKey: "rotated-access", S3SecretKey: "rotated-secret"}, false))

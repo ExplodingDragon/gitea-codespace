@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, onMounted, ref, toRaw} from 'vue';
+import {computed, onMounted, ref} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
 import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
@@ -15,6 +15,7 @@ import {
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import ProxySettings from '../components/ProxySettings.vue';
+import {cloneFormValue} from '../utils/form';
 import {measurementBaseValue} from '../utils/measurement';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
@@ -81,6 +82,11 @@ const storageOptions = computed(() => {
     options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
   return options;
 });
+const endpointPlaceholder = computed(() =>
+  form.value?.gateway?.httpExposure.ingress?.tls.source === 'none'
+    ? 'http://codespace.example.com'
+    : 'https://codespace.example.com',
+);
 
 async function load() {
   loading.value = true;
@@ -165,7 +171,7 @@ function edit(item?: Resource<Component, ComponentStatus>) {
   error.value = '';
   s3AccessKey.value = '';
   s3SecretKey.value = '';
-  form.value = item ? structuredClone(toRaw(item.spec)) : defaultGateway();
+  form.value = item ? cloneFormValue(item.spec) : defaultGateway();
   trustedProxyCIDRs.value = form.value.gateway?.trustedProxyCIDRs?.join('\n') ?? '';
   upstreams.value = Object.entries(form.value.cache?.upstreams ?? {}).map(([host, config]) => ({
     host,
@@ -185,6 +191,7 @@ function setRole(role: 'gateway' | 'cache') {
 }
 function setHTTPExposure(value: 'external' | 'ingress') {
   if (!form.value?.gateway) return;
+  const source = /^https:\/\//i.test(form.value.gateway.endpointBaseURL) ? 'secret' : 'none';
   form.value.gateway.httpExposure =
     value === 'external'
       ? {mode: 'external'}
@@ -192,13 +199,36 @@ function setHTTPExposure(value: 'external' | 'ingress') {
           mode: 'ingress',
           ingress: {
             className: cluster.value.ingressClasses.find(({default: isDefault}) => isDefault)?.name ?? '',
-            tls: {source: form.value.gateway.endpointBaseURL.startsWith('https://') ? 'secret' : 'none'},
+            tls: {source},
           },
         };
+  if (value === 'ingress')
+    form.value.gateway.endpointBaseURL = ingressEndpointURL(form.value.gateway.endpointBaseURL, source);
+}
+function ingressEndpointURL(endpoint: string, source: 'none' | 'secret' | 'certManager') {
+  const normalized = endpoint.replace(/^https?:\/\//i, `${source === 'none' ? 'http' : 'https'}://`);
+  if (normalized !== normalized.trim()) return normalized;
+  try {
+    const parsed = new URL(normalized);
+    if (
+      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
+      !parsed.username &&
+      !parsed.password &&
+      (parsed.pathname === '' || parsed.pathname === '/') &&
+      !parsed.search &&
+      !parsed.hash
+    )
+      return parsed.origin;
+  } catch {
+    return normalized;
+  }
+  return normalized;
 }
 function setTLS(source: 'none' | 'secret' | 'certManager') {
-  if (!form.value?.gateway?.httpExposure.ingress) return;
-  form.value.gateway.httpExposure.ingress.tls = {source};
+  const gateway = form.value?.gateway;
+  if (!gateway?.httpExposure.ingress) return;
+  gateway.httpExposure.ingress.tls = {source};
+  gateway.endpointBaseURL = ingressEndpointURL(gateway.endpointBaseURL, source);
 }
 function setIssuer(value: string) {
   const tls = form.value?.gateway?.httpExposure.ingress?.tls;
@@ -209,6 +239,20 @@ function setIssuer(value: string) {
 function setSSHExposure(value: 'external' | 'loadBalancer') {
   if (!form.value?.gateway) return;
   form.value.gateway.sshExposure = {mode: value};
+  if (value === 'loadBalancer')
+    form.value.gateway.sshExternalAddress = loadBalancerSSHAddress(form.value.gateway.sshExternalAddress);
+}
+function loadBalancerSSHAddress(address: string) {
+  if (address !== address.trim() || !address) return address;
+  try {
+    const parsed = new URL(`ssh://${address}`);
+    if (!parsed.hostname || parsed.username || parsed.password || parsed.pathname || parsed.search || parsed.hash)
+      return address;
+    const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
+    return `${host}:22`;
+  } catch {
+    return address;
+  }
 }
 function close() {
   if (!dirty.confirmDiscard()) return;
@@ -219,7 +263,7 @@ async function save() {
   saving.value = true;
   error.value = '';
   try {
-    const spec = structuredClone(toRaw(form.value!));
+    const spec = cloneFormValue(form.value!);
     for (const kind of ['cpu', 'memory'] as const) {
       const requested = measurementBaseValue(spec.resources.requests[kind], kind);
       const limit = measurementBaseValue(spec.resources.limits[kind], kind);
@@ -237,6 +281,14 @@ async function save() {
       if (spec.gateway.httpExposure.mode === 'ingress') {
         if (!ingress || !cluster.value.ingressClasses.some(({name: className}) => className === ingress.className))
           throw new Error(t('component.invalidIngressClass'));
+        spec.gateway.endpointBaseURL = ingressEndpointURL(spec.gateway.endpointBaseURL, ingress.tls.source);
+        let ingressPort = '';
+        try {
+          ingressPort = new URL(spec.gateway.endpointBaseURL).port;
+        } catch {
+          ingressPort = '';
+        }
+        if (ingressPort) throw new Error(t('component.invalidIngressPort'));
         if (ingress.tls.source === 'secret' && !cluster.value.tlsSecrets.includes(ingress.tls.secretName ?? ''))
           throw new Error(t('component.invalidTLSSecret'));
         if (
@@ -247,6 +299,8 @@ async function save() {
         )
           throw new Error(t('component.invalidIssuer'));
       }
+      if (spec.gateway.sshExposure.mode === 'loadBalancer')
+        spec.gateway.sshExternalAddress = loadBalancerSSHAddress(spec.gateway.sshExternalAddress);
     }
     if (spec.cache) {
       if (spec.cache.storage.driver === 'filesystem') {
@@ -455,7 +509,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         <NFormItem :label="t('component.publicHTTPS')">
           <NInput
             v-model:value="form.gateway.endpointBaseURL"
-            placeholder="https://codespace.example.com"
+            :placeholder="endpointPlaceholder"
             required
           />
         </NFormItem>
@@ -754,7 +808,10 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
         {{ t('component.addMirror') }}
       </NButton>
       <h2>{{ t('proxy.section') }}</h2>
-      <ProxySettings v-model="form.cache.proxy" />
+      <ProxySettings
+        v-model="form.cache.proxy"
+        :help="t('proxy.cacheHelp')"
+      />
     </template>
     <div class="form-actions">
       <NButton

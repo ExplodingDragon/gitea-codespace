@@ -7,7 +7,6 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -16,6 +15,7 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
+	"gitea.dev/codespace/internal/controlplane"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 )
 
@@ -33,11 +33,11 @@ func prepareSiteTrust(options *agentv1.RuntimeOptions, accessURL, identityDirect
 	if options == nil {
 		return siteTrust{}, fmt.Errorf("runtime site trust is missing")
 	}
-	canonicalURL, err := canonicalGiteaURL(options.GiteaUrl)
+	canonicalURL, err := controlplane.CanonicalGiteaURL(options.GiteaUrl)
 	if err != nil {
 		return siteTrust{}, err
 	}
-	canonicalAccessURL, err := canonicalGiteaURL(accessURL)
+	canonicalAccessURL, err := controlplane.CanonicalGiteaURL(accessURL)
 	if err != nil {
 		return siteTrust{}, fmt.Errorf("runtime access Gitea URL: %w", err)
 	}
@@ -45,8 +45,7 @@ func prepareSiteTrust(options *agentv1.RuntimeOptions, accessURL, identityDirect
 		return siteTrust{}, fmt.Errorf("runtime access Gitea URL does not match the verified site")
 	}
 	bundle := strings.TrimSpace(options.GiteaCaBundle)
-	u, _ := url.Parse(canonicalURL)
-	if bundle != "" && u.Scheme != "https" {
+	if bundle != "" && !strings.HasPrefix(canonicalURL, "https://") {
 		return siteTrust{}, fmt.Errorf("runtime Gitea CA bundle requires an HTTPS site")
 	}
 	if identityDirectory == "" {
@@ -182,15 +181,6 @@ func replaceFileAtomically(path string, content []byte, mode os.FileMode, owner 
 		return err
 	}
 	return os.Rename(temporaryName, path)
-}
-
-func canonicalGiteaURL(raw string) (string, error) {
-	value := strings.TrimRight(strings.TrimSpace(raw), "/")
-	u, err := url.Parse(value)
-	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("invalid Gitea URL")
-	}
-	return value, nil
 }
 
 func (t siteTrust) gitEnvironment(environment []string, includeCredential bool) []string {

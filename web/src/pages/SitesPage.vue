@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, onMounted, ref, toRaw} from 'vue';
+import {computed, onMounted, ref} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, useDialog} from 'naive-ui';
 import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
@@ -15,6 +15,7 @@ import {
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import {cloneFormValue} from '../utils/form';
 import {measurementBaseValue, type MeasurementKind} from '../utils/measurement';
 
 const sites = ref<Resource<Site>[]>([]);
@@ -77,7 +78,7 @@ function edit(site?: Resource<Site>) {
   registrationToken.value = '';
   error.value = '';
   form.value = site
-    ? structuredClone(toRaw(site.spec))
+    ? cloneFormValue(site.spec)
     : {
         displayName: '',
         url: '',
@@ -95,7 +96,7 @@ function edit(site?: Resource<Site>) {
   form.value.caches ||= [];
   form.value.upstreams ||= [];
   quotaEnabled.value = Object.keys(form.value.quota ?? {}).length > 0;
-  quotaDraft.value = quotaEnabled.value ? structuredClone(toRaw(form.value.quota)) : defaultQuota();
+  quotaDraft.value = quotaEnabled.value ? cloneFormValue(form.value.quota) : defaultQuota();
   editing.value = true;
   dirty.beginTracking();
 }
@@ -115,9 +116,9 @@ async function save() {
           throw new Error(t('site.invalidQuota', {resource: field.label}));
       }
     }
-    const spec = structuredClone(toRaw(form.value!));
+    const spec = cloneFormValue(form.value!);
     if (!siteUsesHTTPS.value) spec.caBundle = '';
-    spec.quota = quotaEnabled.value ? structuredClone(toRaw(quotaDraft.value)) : {};
+    spec.quota = quotaEnabled.value ? cloneFormValue(quotaDraft.value) : {};
     const saved = await request<Resource<Site>>(
       `sites${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',

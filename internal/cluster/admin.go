@@ -5,40 +5,21 @@ package cluster
 
 import (
 	"context"
-	"crypto/ed25519"
-	"crypto/rand"
-	"crypto/x509"
-	"encoding/pem"
 	"fmt"
 	"net/http"
-	"net/netip"
-	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 	"uuid"
 
-	"connectrpc.com/connect/v2"
-	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
-	"gitea.dev/codespace/internal/controlplane"
-	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
-	corev1 "k8s.io/api/core/v1"
-	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
-	"k8s.io/apimachinery/pkg/api/meta"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
-	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 )
-
-const pendingSiteLabel = "codespace.gitea.dev/pending-site"
 
 type adminResource struct {
 	Name            string    `json:"name"`
@@ -68,83 +49,6 @@ type adminWriteIdentity struct {
 	Name            string    `json:"name"`
 	UID             types.UID `json:"uid"`
 	ResourceVersion string    `json:"resourceVersion"`
-}
-
-type adminSiteWrite struct {
-	adminWriteIdentity
-	Spec              adminSiteSpec `json:"spec"`
-	RegistrationToken string        `json:"registrationToken,omitempty"`
-}
-
-type adminTemplateWrite struct {
-	adminWriteIdentity
-	Spec api.EnvironmentTemplateSpec `json:"spec"`
-}
-
-type adminComponentWrite struct {
-	adminWriteIdentity
-	Spec        api.CodespaceComponentSpec `json:"spec"`
-	S3AccessKey string                     `json:"s3AccessKey,omitempty"`
-	S3SecretKey string                     `json:"s3SecretKey,omitempty"`
-}
-
-type adminRuntimeRecovery struct {
-	UID             types.UID `json:"uid"`
-	ResourceVersion string    `json:"resourceVersion"`
-	PodUID          types.UID `json:"podUID"`
-}
-
-type adminSiteSpec struct {
-	DisplayName        string                   `json:"displayName"`
-	URL                string                   `json:"url"`
-	CABundle           string                   `json:"caBundle,omitempty"`
-	Enabled            bool                     `json:"enabled"`
-	AcceptCreates      bool                     `json:"acceptCreates"`
-	StartupConcurrency int32                    `json:"startupConcurrency"`
-	CleanupConcurrency int32                    `json:"cleanupConcurrency"`
-	Templates          []api.ResourceReference  `json:"templates"`
-	Gateway            api.ResourceReference    `json:"gateway"`
-	Caches             []api.ResourceReference  `json:"caches,omitempty"`
-	Quota              corev1.ResourceList      `json:"quota"`
-	Upstreams          []api.NetworkDestination `json:"upstreams,omitempty"`
-}
-
-// adminSiteSpec exposes only fields controlled by administrators. Registration
-// assigns the Manager identity and credential reference on the resource.
-func newAdminSiteSpec(spec api.GiteaSiteSpec) adminSiteSpec {
-	if spec.Quota == nil {
-		spec.Quota = corev1.ResourceList{}
-	}
-	return adminSiteSpec{
-		DisplayName: spec.DisplayName, URL: spec.URL, CABundle: spec.CABundle, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
-		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
-		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
-		Upstreams: spec.Upstreams,
-	}
-}
-
-func (spec adminSiteSpec) resourceSpec() api.GiteaSiteSpec {
-	return api.GiteaSiteSpec{
-		DisplayName: spec.DisplayName, URL: spec.URL, CABundle: spec.CABundle, Enabled: spec.Enabled, AcceptCreates: spec.AcceptCreates,
-		StartupConcurrency: spec.StartupConcurrency, CleanupConcurrency: spec.CleanupConcurrency,
-		Templates: spec.Templates, Gateway: spec.Gateway, Caches: spec.Caches, Quota: spec.Quota,
-		Upstreams: spec.Upstreams,
-	}
-}
-
-type adminComponentStatus struct {
-	Available                bool              `json:"available"`
-	ReadyReplicas            int32             `json:"readyReplicas"`
-	DesiredReplicas          int32             `json:"desiredReplicas"`
-	HTTPExposureConfigured   bool              `json:"httpExposureConfigured,omitempty"`
-	SSHExposureConfigured    bool              `json:"sshExposureConfigured,omitempty"`
-	ServiceNamespace         string            `json:"serviceNamespace,omitempty"`
-	ServiceName              string            `json:"serviceName,omitempty"`
-	SSHLoadBalancerAddresses []string          `json:"sshLoadBalancerAddresses,omitempty"`
-	LastHeartbeat            *metav1.MicroTime `json:"lastHeartbeat,omitempty"`
-	CacheBytes               int64             `json:"cacheBytes,omitempty"`
-	MirrorBytes              int64             `json:"mirrorBytes,omitempty"`
-	CleanupResult            string            `json:"cleanupResult,omitempty"`
 }
 
 func (s *AdminServer) handleResources(w http.ResponseWriter, r *http.Request) {
@@ -231,14 +135,14 @@ func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request
 		}
 		prefix = "site-"
 	case "environments":
-		var body adminTemplateWrite
+		var body adminEnvironmentWrite
 		if !decodeAdminJSON(w, r, &body) {
 			return
 		}
 		identity = body.adminWriteIdentity
 		object = &api.EnvironmentTemplate{}
 		save = func(ctx context.Context, object client.Object, creating bool) error {
-			return s.saveTemplateWrite(ctx, object.(*api.EnvironmentTemplate), body, creating)
+			return s.saveEnvironment(ctx, object.(*api.EnvironmentTemplate), body, creating)
 		}
 		prefix = "environment-"
 	case "components":
@@ -281,7 +185,7 @@ func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request
 		}
 	}
 	if r.Method == http.MethodDelete {
-		if err := s.checkDeletion(r.Context(), object); err != nil {
+		if err := s.validateResourceDeletion(r.Context(), object); err != nil {
 			writeAdminProblem(w, r, http.StatusConflict, "resource_in_use", err.Error())
 			return
 		}
@@ -316,139 +220,6 @@ func (s *AdminServer) handleResourceWrite(w http.ResponseWriter, r *http.Request
 	writeAdminJSON(w, http.StatusOK, resource)
 }
 
-func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Request, name string) {
-	if r.Method != http.MethodPost || len(validation.IsDNS1123Subdomain(name)) != 0 {
-		http.NotFound(w, r)
-		return
-	}
-	var body adminWriteIdentity
-	if !decodeAdminJSON(w, r, &body) {
-		return
-	}
-	var component api.CodespaceComponent
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Name: name}, &component); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	if body.Name != name || body.UID == "" || body.ResourceVersion == "" || component.UID != body.UID || component.ResourceVersion != body.ResourceVersion || !component.DeletionTimestamp.IsZero() {
-		writeAdminProblem(w, r, http.StatusConflict, "resource_conflict", "component changed; reload before rotating its SSH host key")
-		return
-	}
-	if component.Spec.Role != "gateway" {
-		writeAdminProblem(w, r, http.StatusBadRequest, "invalid_configuration", "only Gateway components have an SSH host key")
-		return
-	}
-	var secret corev1.Secret
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: s.Namespace, Name: gatewayHostKeySecretName(component.Name)}, &secret); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, &component) || !secret.DeletionTimestamp.IsZero() {
-		writeAdminProblem(w, r, http.StatusConflict, "resource_conflict", "Gateway SSH host key ownership changed")
-		return
-	}
-	generated, err := newGatewayHostKeySecret(secret.Name, secret.Namespace)
-	if err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	if secret.Data == nil {
-		secret.Data = make(map[string][]byte)
-	}
-	secret.Data["hostKey"] = generated.Data["hostKey"]
-	if err := s.Client.Update(r.Context(), &secret); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	writeAdminJSON(w, http.StatusOK, map[string]string{"name": name})
-}
-
-func (s *AdminServer) deleteRuntime(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	if len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(name)) != 0 {
-		http.NotFound(w, r)
-		return
-	}
-	var body adminRuntimeRecovery
-	if !decodeAdminJSON(w, r, &body) {
-		return
-	}
-	var runtime api.Codespace
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: name}, &runtime); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	if body.UID == "" || body.ResourceVersion == "" || runtime.UID != body.UID || runtime.ResourceVersion != body.ResourceVersion || runtime.Status.Pod.UID != body.PodUID {
-		writeAdminProblem(w, r, http.StatusConflict, "resource_conflict", "runtime identity changed; reload before deleting")
-		return
-	}
-	var site api.GiteaSite
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Name: runtime.Spec.Site.Name}, &site); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	expectedNamespace, err := api.SiteNamespace(site.Name, s.Namespace)
-	if err != nil || site.UID != runtime.Spec.Site.UID || expectedNamespace != namespace || site.Spec.Enabled {
-		writeAdminProblem(w, r, http.StatusConflict, "resource_in_use", "disable the owning site before cleaning up its runtime data")
-		return
-	}
-	operationVersion, podUID := runtime.Spec.Operation.Version, runtime.Status.Pod.UID
-	if err := updateCodespaceStatus(r.Context(), s.Client, &runtime, func(current *api.Codespace) error {
-		if current.Spec.Operation.Version != operationVersion || current.Status.Pod.UID != podUID {
-			return errObservedResourceChanged
-		}
-		current.Status.RecoveryAction = "delete"
-		current.Status.Target = nil
-		return nil
-	}); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusAccepted)
-}
-
-func (s *AdminServer) confirmRuntimeWriterStopped(w http.ResponseWriter, r *http.Request, namespace, name string) {
-	if r.Method != http.MethodPost || len(validation.IsDNS1123Label(namespace)) != 0 || len(validation.IsDNS1123Subdomain(name)) != 0 {
-		http.NotFound(w, r)
-		return
-	}
-	var body adminRuntimeRecovery
-	if !decodeAdminJSON(w, r, &body) {
-		return
-	}
-	var runtime api.Codespace
-	if err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: name}, &runtime); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	condition := meta.FindStatusCondition(runtime.Status.Conditions, "InfrastructureReady")
-	if body.UID == "" || body.ResourceVersion == "" || body.PodUID == "" || runtime.UID != body.UID || runtime.ResourceVersion != body.ResourceVersion ||
-		runtime.Status.Pod.UID != body.PodUID || !runtime.DeletionTimestamp.IsZero() || condition == nil || condition.Status != metav1.ConditionFalse ||
-		(condition.Reason != "RecoveryRequired" && condition.Reason != "WriterUnconfirmed") {
-		writeAdminProblem(w, r, http.StatusConflict, "resource_conflict", "runtime recovery state changed; reload before confirming")
-		return
-	}
-	var pod corev1.Pod
-	err := s.Client.Get(r.Context(), types.NamespacedName{Namespace: namespace, Name: runtime.Status.Pod.Name}, &pod)
-	if err == nil {
-		if pod.UID != body.PodUID || !metav1.IsControlledBy(&pod, &runtime) || pod.DeletionTimestamp.IsZero() {
-			writeAdminProblem(w, r, http.StatusConflict, "resource_conflict", "runtime Pod is still active or its identity changed")
-			return
-		}
-	} else if !apierrors.IsNotFound(err) {
-		writeAdminError(w, r, err)
-		return
-	}
-	if runtime.Annotations == nil {
-		runtime.Annotations = map[string]string{}
-	}
-	runtime.Annotations[WriterStoppedAnnotation] = string(body.PodUID)
-	if err := s.Client.Update(r.Context(), &runtime); err != nil {
-		writeAdminError(w, r, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
 func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminResource, error) {
 	items := []adminResource{}
 	switch kind {
@@ -475,20 +246,13 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 		}
 		for _, item := range list.Items {
 			// Operation payloads and raw metadata are not administration responses.
-			items = append(items, newAdminResource(&item, struct {
-				Site           api.ResourceReference `json:"site"`
-				CodespaceID    string                `json:"codespaceID"`
-				RuntimeUUID    string                `json:"runtimeUUID"`
-				EnvironmentTag string                `json:"environmentTag"`
-				Operation      string                `json:"operation"`
-				Version        int64                 `json:"version"`
-			}{item.Spec.Site, strconv.FormatInt(item.Spec.CodespaceID, 10), item.Spec.RuntimeUUID, item.Spec.EnvironmentTag, item.Spec.Operation.Type, item.Spec.Operation.Version}, struct {
-				Bound      bool                 `json:"bound"`
-				Pod        api.ObservedResource `json:"pod"`
-				Volume     api.ObservedResource `json:"volume"`
-				Ready      bool                 `json:"ready"`
-				Conditions []metav1.Condition   `json:"conditions"`
-			}{item.Status.Bound, item.Status.Pod, item.Status.Volume, item.Status.Target != nil && item.Status.Target.Ready, item.Status.Conditions}))
+			items = append(items, newAdminResource(&item, adminRuntimeSpec{
+				Site: item.Spec.Site, CodespaceID: strconv.FormatInt(item.Spec.CodespaceID, 10), RuntimeUUID: item.Spec.RuntimeUUID,
+				EnvironmentTag: item.Spec.EnvironmentTag, Operation: item.Spec.Operation.Type, Version: item.Spec.Operation.Version,
+			}, adminRuntimeStatus{
+				Bound: item.Status.Bound, Pod: item.Status.Pod, Volume: item.Status.Volume,
+				Ready: item.Status.Target != nil && item.Status.Target.Ready, Conditions: item.Status.Conditions,
+			}))
 		}
 	case "components":
 		var list api.CodespaceComponentList
@@ -506,392 +270,7 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 	return items, nil
 }
 
-func (s *AdminServer) componentStatus(ctx context.Context, component *api.CodespaceComponent) (adminComponentStatus, error) {
-	status := adminComponentStatus{DesiredReplicas: 1}
-	var deployment appsv1.Deployment
-	err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &deployment)
-	if err != nil && !apierrors.IsNotFound(err) {
-		return status, err
-	}
-	if err == nil && metav1.IsControlledBy(&deployment, component) {
-		status.DesiredReplicas = ptr.Deref(deployment.Spec.Replicas, int32(1))
-		status.ReadyReplicas = deployment.Status.ReadyReplicas
-		if component.Spec.Role == "gateway" {
-			status.Available = status.ReadyReplicas > 0
-		} else {
-			status.Available = status.ReadyReplicas == 1
-		}
-	}
-	var service corev1.Service
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &service); err != nil && !apierrors.IsNotFound(err) {
-		return status, err
-	} else if err == nil && metav1.IsControlledBy(&service, component) {
-		status.ServiceNamespace, status.ServiceName = service.Namespace, service.Name
-	}
-	if component.Spec.Role != "cache" {
-		status.HTTPExposureConfigured = meta.IsStatusConditionTrue(component.Status.Conditions, "HTTPExposureConfigured")
-		status.SSHExposureConfigured = meta.IsStatusConditionTrue(component.Status.Conditions, "SSHExposureConfigured")
-		var loadBalancer corev1.Service
-		if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name + "-ssh"}, &loadBalancer); err != nil && !apierrors.IsNotFound(err) {
-			return status, err
-		} else if err == nil && metav1.IsControlledBy(&loadBalancer, component) {
-			for _, ingress := range loadBalancer.Status.LoadBalancer.Ingress {
-				if ingress.IP != "" {
-					status.SSHLoadBalancerAddresses = append(status.SSHLoadBalancerAddresses, ingress.IP)
-				} else if ingress.Hostname != "" {
-					status.SSHLoadBalancerAddresses = append(status.SSHLoadBalancerAddresses, ingress.Hostname)
-				}
-			}
-			sort.Strings(status.SSHLoadBalancerAddresses)
-		}
-		return status, nil
-	}
-	deploymentAvailable := status.Available
-	status.Available = false
-	var lease coordinationv1.Lease
-	err = s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: cacheOwnerLeaseName(component.Name)}, &lease)
-	if apierrors.IsNotFound(err) {
-		return status, nil
-	}
-	if err != nil {
-		return status, err
-	}
-	if lease.Labels[ComponentUIDLabel] != string(component.UID) || lease.Spec.RenewTime == nil {
-		return status, nil
-	}
-	expires := lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second)
-	if time.Now().After(expires) {
-		status.Available = false
-		return status, nil
-	}
-	status.LastHeartbeat = lease.Spec.RenewTime
-	status.Available = deploymentAvailable
-	status.CacheBytes, _ = strconv.ParseInt(lease.Annotations[cacheBytesAnnotation], 10, 64)
-	status.MirrorBytes, _ = strconv.ParseInt(lease.Annotations[cacheMirrorBytesAnnotation], 10, 64)
-	status.CleanupResult = lease.Annotations[cacheCleanupResultAnnotation]
-	return status, nil
-}
-
-func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body adminSiteWrite, creating bool) error {
-	previous := site.DeepCopy()
-	site.Spec = body.Spec.resourceSpec()
-	if !creating {
-		if body.RegistrationToken != "" {
-			return apierrors.NewBadRequest("registration tokens are accepted only when creating a site")
-		}
-		site.Spec.ManagerID = previous.Spec.ManagerID
-		site.Spec.Credential = previous.Spec.Credential
-		if err := site.Validate(s.Namespace); err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		if err := s.checkSiteReferences(ctx, site); err != nil {
-			return err
-		}
-		remote, _, err := siteManagerClientForCheck(ctx, s.Client, s.Namespace, site, s.RegistrationHTTPClient)
-		if err != nil {
-			return err
-		}
-		checked, err := remote.CheckManager(ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: controlplane.ProtocolVersion})
-		if err != nil {
-			return apierrors.NewBadRequest("Gitea Manager connection check failed: " + err.Error())
-		}
-		canonical, err := canonicalGiteaURL(checked.GiteaWebUrl)
-		if err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		if previous.Status.CanonicalURL != "" && previous.Status.CanonicalURL != canonical {
-			return apierrors.NewBadRequest("Gitea Manager connection resolves to a different site identity")
-		}
-		return s.Client.Update(ctx, site)
-	}
-	if len(body.RegistrationToken) != 40 {
-		return apierrors.NewBadRequest("a new site requires a valid registration token")
-	}
-	site.Spec.ManagerID = 1
-	site.Spec.Credential = api.ResourceReference{Name: "pending", UID: "pending"}
-	if err := site.Validate(s.Namespace); err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
-	if err := s.checkSiteReferences(ctx, site); err != nil {
-		return err
-	}
-	httpClient, err := giteaHTTPClient(s.RegistrationHTTPClient, site.Spec.CABundle)
-	if err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
-	registration, err := controlplane.NewManagerRegistrationClient(httpClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace").RegisterManager(ctx, &codespacev1.RegisterManagerRequest{
-		ProtocolVersion: controlplane.ProtocolVersion,
-		Token:           body.RegistrationToken,
-		Name:            site.Spec.DisplayName,
-	})
-	if err != nil {
-		switch connect.CodeOf(err) {
-		case connect.CodeInvalidArgument, connect.CodeUnauthenticated, connect.CodeFailedPrecondition:
-			return apierrors.NewBadRequest("Gitea rejected the Manager registration: " + err.Error())
-		case connect.CodeUnavailable, connect.CodeDeadlineExceeded:
-			return apierrors.NewServiceUnavailable("Gitea Manager registration is unavailable")
-		default:
-			return fmt.Errorf("register Gitea Manager: %w", err)
-		}
-	}
-	if registration.GetManagerId() <= 0 || len(registration.GetManagerSecret()) < 32 || len(registration.GetManagerSecret()) > 4096 || registration.GetManagerName() == "" {
-		return fmt.Errorf("register Gitea Manager: incomplete response")
-	}
-	if _, err := canonicalGiteaURL(registration.GetGiteaWebUrl()); err != nil {
-		return fmt.Errorf("register Gitea Manager: %w", err)
-	}
-	site.Spec.ManagerID = registration.GetManagerId()
-	site.Spec.DisplayName = registration.GetManagerName()
-	if err := site.Validate(s.Namespace); err != nil {
-		return fmt.Errorf("register Gitea Manager: invalid registered identity: %w", err)
-	}
-	credential := &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{GenerateName: "site-credential-", Namespace: s.Namespace, Labels: map[string]string{pendingSiteLabel: site.Name}},
-		Data:       map[string][]byte{"managerSecret": []byte(registration.GetManagerSecret())},
-	}
-	if err := s.Client.Create(ctx, credential); err != nil {
-		return err
-	}
-	site.Spec.Credential = api.ResourceReference{Name: credential.Name, UID: credential.UID}
-	if err := s.Client.Create(ctx, site); err != nil {
-		// A timeout may have committed the reference. Reconciliation removes only
-		// credentials that are positively known to be unreferenced.
-		return err
-	}
-	return bindSiteCredential(ctx, s.Client, s.Namespace, site)
-}
-
-func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSite) error {
-	seen := make(map[types.UID]bool)
-	for _, ref := range site.Spec.Templates {
-		var template api.EnvironmentTemplate
-		if err := s.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &template); err != nil {
-			return err
-		}
-		if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() || seen[ref.UID] {
-			return apierrors.NewBadRequest("template reference is stale or duplicated")
-		}
-		seen[ref.UID] = true
-		if err := validateProxyDestination(site.Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
-			return apierrors.NewBadRequest(fmt.Sprintf("template %s: %v", template.Name, err))
-		}
-	}
-	refs := append([]api.ResourceReference{site.Spec.Gateway}, site.Spec.Caches...)
-	for index, ref := range refs {
-		role := "cache"
-		if index == 0 {
-			role = "gateway"
-		}
-		var component api.CodespaceComponent
-		if err := s.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &component); err != nil {
-			return err
-		}
-		if component.UID != ref.UID || !component.DeletionTimestamp.IsZero() || component.Spec.Role != role {
-			return apierrors.NewBadRequest("component reference is stale or has the wrong role")
-		}
-	}
-	return nil
-}
-
-func (s *AdminServer) saveTemplateWrite(ctx context.Context, template *api.EnvironmentTemplate, body adminTemplateWrite, creating bool) error {
-	template.Spec = body.Spec
-	if err := template.Validate(); err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
-	if err := validateEnvironmentDependencies(ctx, s.Client, template.Spec.Runtime); err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
-	if !creating && template.Spec.Runtime.Proxy != nil {
-		var sites api.GiteaSiteList
-		if err := s.Client.List(ctx, &sites); err != nil {
-			return err
-		}
-		for i := range sites.Items {
-			for _, ref := range sites.Items[i].Spec.Templates {
-				if ref.UID != template.UID {
-					continue
-				}
-				if err := validateProxyDestination(sites.Items[i].Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
-					return apierrors.NewBadRequest(fmt.Sprintf("site %s: %v", sites.Items[i].Name, err))
-				}
-			}
-		}
-	}
-	var err error
-	if creating {
-		err = s.Client.Create(ctx, template)
-	} else {
-		err = s.Client.Update(ctx, template)
-	}
-	return err
-}
-
-func validateProxyDestination(upstreams []api.NetworkDestination, proxy *api.OutboundProxy) error {
-	if proxy == nil {
-		return nil
-	}
-	for _, raw := range []string{proxy.HTTPProxy, proxy.HTTPSProxy, proxy.SOCKSProxy} {
-		if raw == "" {
-			continue
-		}
-		parsed, _ := url.Parse(raw)
-		address, err := netip.ParseAddr(parsed.Hostname())
-		if err != nil {
-			continue
-		}
-		port, _ := strconv.ParseInt(parsed.Port(), 10, 32)
-		allowed := false
-		for _, destination := range upstreams {
-			prefix, err := netip.ParsePrefix(destination.CIDR)
-			if err != nil || !prefix.Contains(address) {
-				continue
-			}
-			for _, allowedPort := range destination.Ports {
-				allowed = allowed || allowedPort == int32(port)
-			}
-		}
-		if !allowed {
-			return fmt.Errorf("proxy %s:%d requires a matching upstream CIDR and port", address, port)
-		}
-	}
-	return nil
-}
-
-func (s *AdminServer) saveComponent(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite, creating bool) error {
-	previousRole := component.Spec.Role
-	component.Spec = body.Spec
-	component.Spec.DisplayName = strings.TrimSpace(component.Spec.DisplayName)
-	if err := component.Validate(); err != nil {
-		return apierrors.NewBadRequest(err.Error())
-	}
-	if !creating && previousRole != body.Spec.Role {
-		return apierrors.NewBadRequest("component role is immutable")
-	}
-	if component.Spec.Role == "gateway" {
-		if _, err := gatewayComponentConfig(component); err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		gateway := component.Spec.Gateway
-		if gateway.HTTPExposure.Mode == "ingress" {
-			if err := gatewayIngressClassAvailable(ctx, s.Client, gateway.HTTPExposure.Ingress.ClassName); err != nil {
-				return apierrors.NewBadRequest(err.Error())
-			}
-			switch tls := gateway.HTTPExposure.Ingress.TLS; tls.Source {
-			case "secret":
-				ready, err := gatewayTLSSecretReady(ctx, s.Client, s.Namespace, tls.SecretName)
-				if err != nil {
-					return err
-				}
-				if !ready {
-					return apierrors.NewBadRequest(fmt.Sprintf("TLS secret %q is unavailable or incomplete", tls.SecretName))
-				}
-			case "certManager":
-				if err := gatewayIssuerAvailable(ctx, s.Client, s.Namespace, tls.Issuer); err != nil {
-					return apierrors.NewBadRequest(err.Error())
-				}
-			}
-		}
-	} else {
-		if _, err := cacheComponentConfig(component); err != nil {
-			return apierrors.NewBadRequest(err.Error())
-		}
-		if component.Spec.Cache.Storage.Driver == "filesystem" {
-			storageClassName := component.Spec.Cache.Storage.StorageClassName
-			if storageClassName != "" {
-				var storage storagev1.StorageClass
-				if err := s.Client.Get(ctx, types.NamespacedName{Name: storageClassName}, &storage); err != nil {
-					return apierrors.NewBadRequest(fmt.Sprintf("storage class %q is unavailable: %v", storageClassName, err))
-				}
-			} else {
-				var storages storagev1.StorageClassList
-				if err := s.Client.List(ctx, &storages); err != nil {
-					return err
-				}
-				hasDefault := false
-				for _, storage := range storages.Items {
-					if isDefaultStorageClass(storage.Annotations) {
-						hasDefault = true
-						break
-					}
-				}
-				if !hasDefault {
-					return apierrors.NewBadRequest("filesystem cache requires an available StorageClass or a cluster default StorageClass")
-				}
-			}
-		}
-	}
-	if (body.S3AccessKey == "") != (body.S3SecretKey == "") {
-		return apierrors.NewBadRequest("S3 access key and secret key must be configured together")
-	}
-	var err error
-	if creating {
-		err = s.Client.Create(ctx, component)
-	} else {
-		err = s.Client.Update(ctx, component)
-	}
-	if err != nil || component.Spec.Role != "cache" {
-		return err
-	}
-	return s.saveCacheCredentials(ctx, component, body)
-}
-
-func (s *AdminServer) saveCacheCredentials(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite) error {
-	name := component.Name + "-cache"
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var secret corev1.Secret
-		err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: name}, &secret)
-		if apierrors.IsNotFound(err) {
-			registryKey, tokenKey := make([]byte, 32), make([]byte, 32)
-			if _, err := rand.Read(registryKey); err != nil {
-				return err
-			}
-			if _, err := rand.Read(tokenKey); err != nil {
-				return err
-			}
-			secret = corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: s.Namespace, Labels: map[string]string{ComponentUIDLabel: string(component.UID)}}, Data: map[string][]byte{"registryKey": registryKey, "tokenKey": tokenKey}}
-			if err := controllerutil.SetControllerReference(component, &secret, s.Client.Scheme()); err != nil {
-				return err
-			}
-			if body.S3AccessKey != "" {
-				secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
-			}
-			secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
-			if err := s.Client.Create(ctx, &secret); apierrors.IsAlreadyExists(err) {
-				return apierrors.NewConflict(corev1.Resource("secrets"), name, err)
-			} else {
-				return err
-			}
-		}
-		if err != nil {
-			return err
-		}
-		if secret.Labels[ComponentUIDLabel] != string(component.UID) || !metav1.IsControlledBy(&secret, component) || !secret.DeletionTimestamp.IsZero() {
-			return apierrors.NewConflict(corev1.Resource("secrets"), name, fmt.Errorf("cache Secret ownership changed"))
-		}
-		if body.S3AccessKey != "" {
-			secret.Data["s3AccessKey"], secret.Data["s3SecretKey"] = []byte(body.S3AccessKey), []byte(body.S3SecretKey)
-		}
-		secret.Data = updateProxySecretData(secret.Data, component.Spec.Cache.Proxy)
-		return s.Client.Update(ctx, &secret)
-	})
-}
-
-func newGatewayHostKeySecret(component, namespace string) (*corev1.Secret, error) {
-	_, privateKey, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		return nil, err
-	}
-	encoded, err := x509.MarshalPKCS8PrivateKey(privateKey)
-	if err != nil {
-		return nil, err
-	}
-	return &corev1.Secret{
-		ObjectMeta: metav1.ObjectMeta{Name: component, Namespace: namespace},
-		Data:       map[string][]byte{"hostKey": pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded})},
-	}, nil
-}
-
-func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) error {
+func (s *AdminServer) validateResourceDeletion(ctx context.Context, object client.Object) error {
 	switch current := object.(type) {
 	case *api.EnvironmentTemplate:
 		var sites api.GiteaSiteList
@@ -953,70 +332,6 @@ func (s *AdminServer) checkDeletion(ctx context.Context, object client.Object) e
 			}
 			if err == nil && lease.Spec.RenewTime != nil && time.Now().Before(lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0))*time.Second)) {
 				return fmt.Errorf("disable the cache and wait for its active writer lease to expire before deleting it")
-			}
-		}
-	}
-	return nil
-}
-
-func bindSiteCredential(ctx context.Context, reader client.Client, namespace string, site *api.GiteaSite) error {
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var credential corev1.Secret
-		if err := reader.Get(ctx, types.NamespacedName{Namespace: namespace, Name: site.Spec.Credential.Name}, &credential); err != nil {
-			return err
-		}
-		if credential.UID != site.Spec.Credential.UID || !credential.DeletionTimestamp.IsZero() {
-			return fmt.Errorf("site credential identity changed")
-		}
-		if credential.Labels[SiteUIDLabel] == string(site.UID) {
-			return nil
-		}
-		if credential.Labels[pendingSiteLabel] != site.Name || credential.Labels[SiteUIDLabel] != "" || len(credential.OwnerReferences) != 0 {
-			return fmt.Errorf("site credential ownership conflicts")
-		}
-		delete(credential.Labels, pendingSiteLabel)
-		credential.Labels[SiteUIDLabel] = string(site.UID)
-		credential.OwnerReferences = []metav1.OwnerReference{{APIVersion: api.GroupVersion.String(), Kind: "GiteaSite", Name: site.Name, UID: site.UID}}
-		return reader.Update(ctx, &credential)
-	})
-}
-
-func (s *AdminServer) pruneCredentials(ctx context.Context) error {
-	var sites api.GiteaSiteList
-	if err := s.Client.List(ctx, &sites); err != nil {
-		return err
-	}
-	used := make(map[types.UID]bool, len(sites.Items))
-	for _, site := range sites.Items {
-		used[site.Spec.Credential.UID] = true
-	}
-	var secrets corev1.SecretList
-	if err := s.Client.List(ctx, &secrets, client.InNamespace(s.Namespace)); err != nil {
-		return err
-	}
-	for _, secret := range secrets.Items {
-		isSiteCredential := secret.Labels[pendingSiteLabel] != "" || secret.Labels[SiteUIDLabel] != ""
-		if !isSiteCredential {
-			continue
-		}
-		validPrefix := strings.HasPrefix(secret.Name, "site-credential-")
-		if !validPrefix || used[secret.UID] || time.Since(secret.CreationTimestamp.Time) < time.Hour {
-			continue
-		}
-		// A fresh live list protects references committed during the cleanup pass.
-		if err := s.Client.List(ctx, &sites); err != nil {
-			return err
-		}
-		referenced := false
-		for _, site := range sites.Items {
-			if site.Spec.Credential.UID == secret.UID {
-				referenced = true
-				break
-			}
-		}
-		if !referenced {
-			if err := s.Client.Delete(ctx, &secret, client.Preconditions{UID: &secret.UID}); err != nil && !apierrors.IsNotFound(err) {
-				return err
 			}
 		}
 	}

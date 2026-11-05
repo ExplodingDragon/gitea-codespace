@@ -308,6 +308,28 @@ registration and coordination, and passes it to the Runtime Agent for Git and
 the primary Dev Container. This site-specific bundle is separate from both
 the internal component CA and the public Gateway certificate.
 
+## Outbound proxies
+
+Configure a proxy on an environment template when its Runtime and Dev
+Container need it for Git over HTTP(S), Docker image pulls and builds, Dev
+Container Features, or applications that use the standard proxy environment
+variables. Configure a proxy on a Cache component when the Cache needs it for
+upstream registries or S3. Keeping these settings separate lets clusters route
+development workloads and shared cache traffic through different egress paths.
+
+HTTP, HTTPS, and SOCKS5 proxy URLs include their port and can include
+credentials in the URL. Bypass entries are written to `NO_PROXY`; Manager also
+adds Kubernetes service and loopback addresses so internal control traffic
+does not leave the cluster. Add the proxy CA bundle when TLS interception uses
+a private authority. Manager installs that authority into the Runtime, Docker,
+and Dev Container trust paths associated with the proxy.
+
+When a template uses a proxy IP address, add its CIDR and port to each Gitea
+site that selects the template. Manager uses those site upstream entries to
+build the Runtime namespace network policy. DNS proxy names follow the
+cluster's DNS and egress policy and therefore do not need an IP entry in the
+site form.
+
 ## Cache access
 
 Each Cache component creates a same-name ClusterIP Service on port `443` and a

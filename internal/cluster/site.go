@@ -7,12 +7,12 @@ import (
 	"context"
 	"fmt"
 	"net/http"
-	"net/url"
 	"strings"
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/controlplane"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
@@ -88,7 +88,7 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))
 	}
-	canonical, err := canonicalGiteaURL(response.GiteaWebUrl)
+	canonical, err := controlplane.CanonicalGiteaURL(response.GiteaWebUrl)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", err)
 	}
@@ -106,15 +106,6 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	}
 	site.Status.CanonicalURL = canonical
 	return r.condition(ctx, &site, "IdentityVerified", nil)
-}
-
-func canonicalGiteaURL(raw string) (string, error) {
-	canonical := strings.TrimRight(raw, "/")
-	u, err := url.Parse(canonical)
-	if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return "", fmt.Errorf("gitea returned an invalid canonical URL")
-	}
-	return canonical, nil
 }
 
 func (r *SiteReconciler) condition(ctx context.Context, site *api.GiteaSite, reason string, problem error) (ctrl.Result, error) {

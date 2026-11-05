@@ -416,7 +416,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveTemplateWrite(ctx, template, adminTemplateWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration}}, true))
+	require.NoError(t, admin.saveEnvironment(ctx, template, adminEnvironmentWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration}}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(template), template) == nil && meta.IsStatusConditionTrue(template.Status.Conditions, "Ready")
 	}, time.Minute, time.Second)
