@@ -85,6 +85,8 @@ type ResourceStatus = {
 export type RuntimeStatus = ResourceStatus & {
   canStop: boolean;
   stopping: boolean;
+  stopped: boolean;
+  deleting: boolean;
 };
 
 export type Resource<T, S = ResourceStatus> = {

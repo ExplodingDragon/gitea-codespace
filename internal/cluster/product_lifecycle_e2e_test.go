@@ -784,9 +784,13 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 				break
 			}
 		}
-		if err != nil || strings.TrimSpace(resized) != "43 107" {
+		if err != nil {
 			_ = session.Close()
-			return fmt.Errorf("verify Gateway SSH resized PTY: output %q: %v", resized, err)
+			return fmt.Errorf("verify Gateway SSH resized PTY: output %q: %w", resized, err)
+		}
+		if strings.TrimSpace(resized) != "43 107" {
+			_ = session.Close()
+			return fmt.Errorf("verify Gateway SSH resized PTY: unexpected output %q", resized)
 		}
 		if _, err := io.WriteString(stdin, "done\n"); err != nil {
 			_ = session.Close()

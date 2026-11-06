@@ -196,9 +196,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err != nil {
 		return "", nil, err
 	}
-	for name, value := range imageConfiguration.ContainerEnv {
-		containerEnvironment[name] = value
-	}
+	maps.Copy(containerEnvironment, imageConfiguration.ContainerEnv)
 	effectiveConfiguration := imageConfiguration
 	var lifecycle devcontainer.LifecycleCommands
 	for _, source := range imageSources {
@@ -242,9 +240,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		}
 	}
 	repositoryEnvironment := make(map[string]string, len(containerEnvironment)+len(repositoryConfiguration.ContainerEnv))
-	for name, value := range containerEnvironment {
-		repositoryEnvironment[name] = value
-	}
+	maps.Copy(repositoryEnvironment, containerEnvironment)
 	for name, value := range repositoryConfiguration.ContainerEnv {
 		if !strings.Contains(value, "${containerEnv:") {
 			repositoryEnvironment[name] = value

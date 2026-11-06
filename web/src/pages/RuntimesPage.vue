@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import {onBeforeUnmount, onMounted, ref} from 'vue';
-import {NAlert, NButton, useDialog} from 'naive-ui';
+import {NAlert, NButton, NTag, useDialog} from 'naive-ui';
 import {RefreshCw} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {errorMessage, request, type RuntimeInstance, type RuntimeStatus, type Resource} from '../api';
@@ -54,6 +54,15 @@ async function stopRuntime(item: Resource<RuntimeInstance, RuntimeStatus>) {
   );
 }
 
+function hasCurrentInfrastructureProblem(item: Resource<RuntimeInstance, RuntimeStatus>) {
+  return item.status?.conditions?.some(
+    (condition) =>
+      condition.type === 'InfrastructureReady' &&
+      condition.status !== 'True' &&
+      condition.observedGeneration === item.generation,
+  );
+}
+
 async function load(background = false) {
   window.clearTimeout(refreshTimer);
   if (!background) {
@@ -67,7 +76,9 @@ async function load(background = false) {
   } finally {
     if (!background) busy.value = false;
   }
-  if (items.value.some((item) => item.status?.stopping)) refreshTimer = window.setTimeout(() => load(true), 1000);
+  if (items.value.some((item) => item.status?.stopping || item.status?.deleting || item.deleting)) {
+    refreshTimer = window.setTimeout(() => load(true), 1000);
+  }
 }
 onMounted(() => load());
 onBeforeUnmount(() => window.clearTimeout(refreshTimer));
@@ -120,8 +131,49 @@ onBeforeUnmount(() => window.clearTimeout(refreshTimer));
           <td>{{ item.spec.environmentTag }}</td>
           <td>{{ item.spec.operation }} #{{ item.spec.version }}</td>
           <td>
-            <ResourceStatus :resource="item" />
-            <p class="muted">{{ item.status?.pod?.name }}</p>
+            <NTag
+              v-if="item.status?.deleting || item.deleting"
+              size="small"
+              type="warning"
+            >
+              {{ t('common.deleting') }}
+            </NTag>
+            <NTag
+              v-else-if="item.status?.stopping"
+              size="small"
+              type="warning"
+            >
+              {{ t('runtime.stopping') }}
+            </NTag>
+            <NTag
+              v-else-if="item.status?.stopped"
+              size="small"
+            >
+              {{ t('runtime.stopped') }}
+            </NTag>
+            <NTag
+              v-else-if="item.status?.ready"
+              size="small"
+              type="success"
+            >
+              {{ t('common.ready') }}
+            </NTag>
+            <ResourceStatus
+              v-else-if="hasCurrentInfrastructureProblem(item)"
+              :resource="item"
+            />
+            <NTag
+              v-else
+              size="small"
+            >
+              {{ t('runtime.starting') }}
+            </NTag>
+            <p
+              v-if="item.status?.pod?.name"
+              class="muted"
+            >
+              {{ item.status.pod.name }}
+            </p>
           </td>
           <td class="table-actions">
             <div class="table-action-buttons">
@@ -136,7 +188,7 @@ onBeforeUnmount(() => window.clearTimeout(refreshTimer));
               <NButton
                 size="small"
                 type="error"
-                :disabled="busy || item.deleting"
+                :disabled="busy || item.deleting || item.status?.deleting"
                 @click="deleteRuntime(item)"
               >
                 {{ t('runtime.deleteData') }}

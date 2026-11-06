@@ -195,9 +195,7 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		return command.Execute()
 	}
 	buildArgs := make(types.MappingWithEquals, len(args))
-	for name, value := range args {
-		buildArgs[name] = value
-	}
+	maps.Copy(buildArgs, args)
 	projectDigest := sha256.Sum256([]byte(imageName))
 	service := types.ServiceConfig{
 		Name:  "image",
@@ -255,9 +253,7 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 
 func mergeBuildProxyArguments(arguments map[string]*string, environment map[string]string) map[string]*string {
 	result := make(map[string]*string, len(arguments)+8)
-	for name, value := range arguments {
-		result[name] = value
-	}
+	maps.Copy(result, arguments)
 	for _, name := range devcontainer.ProxyVariableNames() {
 		if value := environment[name]; value != "" {
 			value := value

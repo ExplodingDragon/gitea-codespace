@@ -267,15 +267,16 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			http.Error(writer, err.Error(), http.StatusUnauthorized)
 			return
 		}
-		if c.storageConfig.Driver == "filesystem" && (action == "push" || strings.HasPrefix(repository, "mirror/")) {
+		mirrorRepository, mirrored := strings.CutPrefix(repository, "mirror/")
+		if c.storageConfig.Driver == "filesystem" && (action == "push" || mirrored) {
 			var disk unix.Statfs_t
 			if err := unix.Statfs(c.storageDir, &disk); err != nil || disk.Bavail*uint64(disk.Bsize) < uint64(c.minFreeBytes) {
 				http.Error(writer, "cache disk free space is below the write threshold", http.StatusServiceUnavailable)
 				return
 			}
 		}
-		if strings.HasPrefix(repository, "mirror/") {
-			host, _, _ := strings.Cut(strings.TrimPrefix(repository, "mirror/"), "/")
+		if mirrored {
+			host, _, _ := strings.Cut(mirrorRepository, "/")
 			forward := request.Clone(request.Context())
 			forward.URL.Path = "/v2/" + strings.TrimPrefix(request.URL.Path, "/v2/mirror/"+host+"/")
 			forward.URL.RawPath = ""
@@ -370,8 +371,8 @@ func (c *registryCache) upstreamAllows(host, imagePath string) bool {
 		return false
 	}
 	for _, pattern := range upstream.allow {
-		if strings.HasSuffix(pattern, "*") {
-			if strings.HasPrefix(imagePath, strings.TrimSuffix(pattern, "*")) {
+		if prefix, wildcard := strings.CutSuffix(pattern, "*"); wildcard {
+			if strings.HasPrefix(imagePath, prefix) {
 				return true
 			}
 			continue

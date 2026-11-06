@@ -82,6 +82,8 @@ test('administration workflows preserve resource identity and validate cluster-b
         ready: false,
         canStop: true,
         stopping: false,
+        stopped: false,
+        deleting: false,
         pod: {name: 'runtime-pod', uid: 'pod-uid'},
         conditions: [],
       },
@@ -324,6 +326,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(runtimeCells.nth(1)).toHaveText('production');
   await expect(runtimeCells.nth(2)).toHaveText('standard');
   await expect(runtimeCells.nth(3)).toHaveText('resume #3');
+  await expect(runtimeCells.nth(4)).toContainText('Starting…');
   await expect(runtimeCells.nth(4)).toContainText('runtime-pod');
   await expect(runtimeCells.nth(5).getByRole('button', {name: 'Stop'})).toBeVisible();
   await runtimeRow.getByRole('button', {name: 'Stop'}).click();

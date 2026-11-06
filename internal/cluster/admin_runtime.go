@@ -39,6 +39,8 @@ type adminRuntimeStatus struct {
 	Ready      bool                 `json:"ready"`
 	CanStop    bool                 `json:"canStop"`
 	Stopping   bool                 `json:"stopping"`
+	Stopped    bool                 `json:"stopped"`
+	Deleting   bool                 `json:"deleting"`
 	Conditions []metav1.Condition   `json:"conditions"`
 }
 

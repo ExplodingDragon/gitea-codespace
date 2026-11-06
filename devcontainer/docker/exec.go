@@ -44,9 +44,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 			process.Stdout = stdout
 			process.Stderr = stderr
 			values := map[string]string{"PATH": os.Getenv("PATH")}
-			for name, value := range environment {
-				values[name] = value
-			}
+			maps.Copy(values, environment)
 			if strings.TrimSpace(user.Name) != "" {
 				values["USER"] = user.Name
 				values["LOGNAME"] = user.Name

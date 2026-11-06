@@ -3,6 +3,8 @@
 
 package devcontainer
 
+import "maps"
+
 // ProxyVariableNames returns the conventional upper- and lower-case
 // proxy variable names understood by Docker and common development tools.
 func ProxyVariableNames() []string {
@@ -20,13 +22,9 @@ func ProcessEnvironment(remote map[string]string, overlays ...map[string]string)
 		length += len(overlay)
 	}
 	result := make(map[string]string, length)
-	for name, value := range remote {
-		result[name] = value
-	}
+	maps.Copy(result, remote)
 	for _, overlay := range overlays {
-		for name, value := range overlay {
-			result[name] = value
-		}
+		maps.Copy(result, overlay)
 	}
 	return result
 }

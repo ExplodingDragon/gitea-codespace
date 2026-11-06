@@ -166,9 +166,7 @@ func mergeMap[Map ~map[string]Value, Value any](base, override Map) Map {
 	if result == nil && len(override) > 0 {
 		result = Map{}
 	}
-	for key, value := range override {
-		result[key] = value
-	}
+	maps.Copy(result, override)
 	return result
 }
 

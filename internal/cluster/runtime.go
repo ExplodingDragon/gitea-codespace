@@ -197,7 +197,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if err := r.ensureIdentity(ctx, &cs, &pod); err != nil {
 		return r.condition(ctx, &cs, "IdentityUnavailable", err)
 	}
-	return r.condition(ctx, &cs, "AgentPending", nil)
+	return r.condition(ctx, &cs, "ResourcesPrepared", nil)
 }
 
 func runtimePodStatusIsCurrent(cs *api.Codespace, operationVersion int64, operationType, podName string, podUID types.UID) bool {
@@ -483,6 +483,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		current.Status.Boot = nil
 		current.Status.Pod = api.ObservedResource{}
 		current.Status.LastNodeName = ""
+		meta.RemoveStatusCondition(&current.Status.Conditions, "InfrastructureReady")
 		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: "Stopped", Status: metav1.ConditionTrue, Reason: "ResourcesStopped", Message: "Runtime Pod has stopped", ObservedGeneration: observedGeneration})
 		if operationType == "stop" || operationType == "delete" {
 			current.Status.Result = &api.OperationResult{Version: operationVersion, Succeeded: true}

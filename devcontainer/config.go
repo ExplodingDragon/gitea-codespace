@@ -471,8 +471,8 @@ func ResolveContainerVariables(configuration Configuration, workspaceFolder stri
 			case "containerWorkspaceFolderBasename":
 				return filepath.Base(workspaceFolder), nil
 			}
-			if strings.HasPrefix(name, "containerEnv:") {
-				parts := strings.SplitN(strings.TrimPrefix(name, "containerEnv:"), ":", 2)
+			if value, ok := strings.CutPrefix(name, "containerEnv:"); ok {
+				parts := strings.SplitN(value, ":", 2)
 				if parts[0] == "" {
 					return match, fmt.Errorf("dev container variable %q has no environment variable name", match)
 				}

@@ -237,12 +237,27 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(&old), &old)))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&credential), &credential))
 	require.ErrorContains(t, server.validateResourceDeletion(ctx, template), "selected by site")
+}
 
-	runtimeObject := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "codespace-example"}, Spec: api.CodespaceSpec{Operation: api.Operation{Payload: runtime.RawExtension{Raw: []byte(`{"sensitive":"private-value"}`)}}}}
-	require.NoError(t, c.Create(ctx, runtimeObject))
-	items, err = server.listResources(ctx, "runtimes")
+func TestAdminRuntimeProjection(t *testing.T) {
+	runtimeObject := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "workspace", Namespace: "codespace-example", Generation: 2},
+		Spec:       api.CodespaceSpec{Operation: api.Operation{Payload: runtime.RawExtension{Raw: []byte(`{"sensitive":"private-value"}`)}}},
+		Status: api.CodespaceStatus{Conditions: []metav1.Condition{{
+			Type: "Stopped", Status: metav1.ConditionTrue, Reason: "ResourcesStopped", ObservedGeneration: 2,
+		}}},
+	}
+	server := &AdminServer{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeObject).Build()}
+	items, err := server.listResources(t.Context(), "runtimes")
 	require.NoError(t, err)
-	encoded, err = json.Marshal(items)
+	require.Len(t, items, 1)
+	runtimeStatus := items[0].Status.(adminRuntimeStatus)
+	require.True(t, runtimeStatus.Stopped)
+	require.False(t, runtimeStatus.Deleting)
+	require.False(t, runtimeStatus.Stopping)
+	require.False(t, runtimeStatus.Ready)
+	require.False(t, runtimeStatus.CanStop)
+	encoded, err := json.Marshal(items)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), "private-value")
 }

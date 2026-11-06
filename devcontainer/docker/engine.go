@@ -324,9 +324,7 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 	if err != nil {
 		return nil, err
 	}
-	for key, value := range values {
-		merged[key] = value
-	}
+	maps.Copy(merged, values)
 	return json.Marshal(merged)
 }
 
@@ -541,9 +539,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 			composeEnvironment[name] = value
 		}
 	}
-	for name, value := range resolved.LocalEnvironment {
-		composeEnvironment[name] = value
-	}
+	maps.Copy(composeEnvironment, resolved.LocalEnvironment)
 	options.Environment = composetypes.Mapping(composeEnvironment)
 	project, err := options.LoadProject(ctx)
 	if err != nil {
@@ -671,9 +667,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		if relatedService.Labels == nil {
 			relatedService.Labels = composetypes.Labels{}
 		}
-		for label, value := range labels {
-			relatedService.Labels[label] = value
-		}
+		maps.Copy(relatedService.Labels, labels)
 		if relatedService.Environment == nil {
 			relatedService.Environment = composetypes.MappingWithEquals{}
 		}
@@ -757,9 +751,7 @@ func mergePlatformEnvironment(base, platform map[string]string) map[string]strin
 	if result == nil {
 		result = map[string]string{}
 	}
-	for name, value := range platform {
-		result[name] = value
-	}
+	maps.Copy(result, platform)
 	var bypass []string
 	seen := map[string]struct{}{}
 	for _, value := range []string{base["NO_PROXY"], base["no_proxy"], platform["NO_PROXY"], platform["no_proxy"]} {

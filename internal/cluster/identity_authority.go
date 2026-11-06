@@ -131,7 +131,7 @@ func (a *IdentityAuthority) sync(ctx context.Context, allowCreate bool) error {
 		}
 		loaded, err := identitypkg.ParseAuthority(secret.Data, time.Now())
 		if err != nil {
-			return fmt.Errorf("%w: validate internal CA Secret %s/%s: %v", errIdentityTrustMaterial, a.namespace, a.secretName, err)
+			return fmt.Errorf("%w: validate internal CA Secret %s/%s: %w", errIdentityTrustMaterial, a.namespace, a.secretName, err)
 		}
 		if loaded.IssuerNeedsRenewal(time.Now()) {
 			loaded, err = loaded.RenewIssuer(time.Now())

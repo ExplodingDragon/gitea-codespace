@@ -15,6 +15,8 @@ import (
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/utils/ptr"
@@ -245,15 +247,19 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			return nil, err
 		}
 		for _, item := range list.Items {
-			stopping := item.Status.Pod.UID != "" && runtimeStopRequested(&item)
-			canStop := item.Status.Pod.UID != "" && !stopping && item.Status.RecoveryAction != "delete" && item.Spec.Operation.Type != "delete" && item.DeletionTimestamp.IsZero()
+			deleting := item.Status.RecoveryAction == "delete" || item.Spec.Operation.Type == "delete" || !item.DeletionTimestamp.IsZero()
+			stoppedCondition := meta.FindStatusCondition(item.Status.Conditions, "Stopped")
+			stopped := !deleting && item.Status.Pod.UID == "" && stoppedCondition != nil && stoppedCondition.Status == metav1.ConditionTrue && stoppedCondition.ObservedGeneration == item.Generation
+			stopping := !deleting && !stopped && runtimeStopRequested(&item)
+			ready := !deleting && !stopping && !stopped && item.Status.Pod.UID != "" && item.Status.Target != nil && item.Status.Target.Ready
+			canStop := !deleting && !stopping && !stopped && item.Status.Pod.UID != ""
 			// Operation payloads and raw metadata are not administration responses.
 			items = append(items, newAdminResource(&item, adminRuntimeSpec{
 				Site: item.Spec.Site, CodespaceID: strconv.FormatInt(item.Spec.CodespaceID, 10), RuntimeUUID: item.Spec.RuntimeUUID,
 				EnvironmentTag: item.Spec.EnvironmentTag, Operation: item.Spec.Operation.Type, Version: item.Spec.Operation.Version,
 			}, adminRuntimeStatus{
 				Bound: item.Status.Bound, Pod: item.Status.Pod, Volume: item.Status.Volume,
-				Ready: item.Status.Target != nil && item.Status.Target.Ready, CanStop: canStop, Stopping: stopping, Conditions: item.Status.Conditions,
+				Ready: ready, CanStop: canStop, Stopping: stopping, Stopped: stopped, Deleting: deleting, Conditions: item.Status.Conditions,
 			}))
 		}
 	case "components":

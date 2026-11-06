@@ -22,14 +22,14 @@ var errCacheServiceBusy = errors.New("another cache service is active")
 
 const cacheStatusScanTimeout = 2 * time.Second
 
-func waitCacheManagerRetry(ctx context.Context) error {
+func waitCacheManagerRetry(ctx context.Context) bool {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
-		return ctx.Err()
+		return false
 	case <-timer.C:
-		return nil
+		return true
 	}
 }
 
@@ -59,7 +59,7 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 			if isCacheAuthorizationError(err) {
 				return fmt.Errorf("cache Manager authorization failed: %w", err)
 			}
-			if waitCacheManagerRetry(ctx) != nil {
+			if !waitCacheManagerRetry(ctx) {
 				return nil
 			}
 			continue
@@ -69,7 +69,7 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 			return fmt.Errorf("manager returned an invalid cache configuration")
 		}
 		if !config.Enabled {
-			if waitCacheManagerRetry(ctx) != nil {
+			if !waitCacheManagerRetry(ctx) {
 				return nil
 			}
 			continue
@@ -238,7 +238,7 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 		<-serveDone
 	}
 	<-maintenanceDone
-	if errors.Is(resultErr, context.Canceled) || resultErr == http.ErrServerClosed {
+	if errors.Is(resultErr, context.Canceled) || errors.Is(resultErr, http.ErrServerClosed) {
 		return nil
 	}
 	return resultErr
