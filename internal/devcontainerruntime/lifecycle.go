@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
+	"time"
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
@@ -42,6 +44,9 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 			_, _, err := ConfiguredEndpoints(state)
 			return err
 		}
+		options.StartTemplateLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			return runTemplateLifecycle(ctx, request, engine, state, "start")
+		}
 		state, err := engine.Create(ctx, options)
 		if err != nil {
 			return nil, err
@@ -49,7 +54,12 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
 		return state, nil
 	case "resume":
+		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			err := runTemplateLifecycle(ctx, request, engine, state, "start")
+			startFailed = err != nil
+			return err
+		}, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
 				return err
 			}
@@ -66,13 +76,38 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 			return nil
 		}, request.RunLifecycle)
 		if err != nil {
+			if startFailed {
+				stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+				defer cancel()
+				_, stopErr := engine.Stop(stopContext, request.Environment)
+				return nil, errors.Join(err, stopErr)
+			}
 			return nil, err
 		}
 		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
 		return state, nil
 	case "stop":
+		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
+		stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		state, stopErr := engine.Stop(stopContext, request.Environment)
+		return state, errors.Join(lifecycleErr, stopErr)
+	case "delete":
 		return engine.Stop(ctx, request.Environment)
 	default:
 		return engine.Inspect(ctx, request.Environment)
 	}
+}
+
+func runTemplateLifecycle(ctx context.Context, request Request, engine *containerdocker.Engine, state *devcontainer.State, action string) error {
+	if strings.TrimSpace(request.DevContainer.LifecycleScript) == "" {
+		return nil
+	}
+	run := func(ctx context.Context) error {
+		return engine.RunTemplateLifecycle(ctx, state, action)
+	}
+	if request.RunTemplateLifecycle != nil {
+		return request.RunTemplateLifecycle(ctx, action, run)
+	}
+	return run(ctx)
 }

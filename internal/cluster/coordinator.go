@@ -411,23 +411,23 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 	}
 	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(gatewayConfig.HTTP.PublicURL, "/"), GatewaySshAddr: gatewayConfig.SSH.PublicAddr, GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
 	var accepted []string
-	seen := make(map[string]bool)
+	seen := make(map[types.UID]bool)
 	for _, ref := range site.Spec.Templates {
 		var template api.EnvironmentTemplate
 		if err := c.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &template); err != nil {
 			return nil, nil, err
 		}
-		if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() || seen[template.Spec.Tag] {
-			return nil, nil, fmt.Errorf("environment identity changed or tag is duplicated")
+		if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() || seen[template.UID] {
+			return nil, nil, fmt.Errorf("environment identity changed or is duplicated")
 		}
 		if err := template.Validate(); err != nil {
 			return nil, nil, err
 		}
-		seen[template.Spec.Tag] = true
-		declaration.Environments = append(declaration.Environments, &codespacev1.EnvironmentTag{Tag: template.Spec.Tag, Description: template.Spec.Description})
+		seen[template.UID] = true
+		declaration.Environments = append(declaration.Environments, &codespacev1.EnvironmentTag{Tag: template.Name, Description: template.Spec.Description})
 		ready := meta.FindStatusCondition(template.Status.Conditions, "Ready")
 		if ready != nil && ready.Status == metav1.ConditionTrue && ready.ObservedGeneration == template.Generation {
-			accepted = append(accepted, template.Spec.Tag)
+			accepted = append(accepted, template.Name)
 		}
 	}
 	return declaration, accepted, nil

@@ -102,6 +102,12 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		}
 		var selected *api.EnvironmentTemplate
 		for _, ref := range site.Spec.Templates {
+			if ref.Name != payload.GetCreate().EnvironmentTag {
+				continue
+			}
+			if selected != nil {
+				return fmt.Errorf("%w: create environment is ambiguous", errOperationRejected)
+			}
 			var template api.EnvironmentTemplate
 			if err := o.Client.Get(ctx, types.NamespacedName{Name: ref.Name}, &template); err != nil {
 				return err
@@ -109,13 +115,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() {
 				return fmt.Errorf("%w: environment template identity changed", errOperationRejected)
 			}
-			if template.Spec.Tag != payload.GetCreate().EnvironmentTag {
-				continue
-			}
 			ready := meta.FindStatusCondition(template.Status.Conditions, "Ready")
-			if selected != nil {
-				return fmt.Errorf("%w: create environment is ambiguous", errOperationRejected)
-			}
 			if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != template.Generation {
 				return fmt.Errorf("create environment is not ready")
 			}
@@ -127,7 +127,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		cs = api.Codespace{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}, Finalizers: []string{RuntimeFinalizer}},
 			Spec: api.CodespaceSpec{
-				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Spec.Tag,
+				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Name,
 				Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: selected.Spec.Runtime, Image: o.PlatformImage},
 			},
 		}

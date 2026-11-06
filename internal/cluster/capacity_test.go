@@ -26,9 +26,10 @@ func testQuota(site *api.GiteaSite, namespace string) *corev1.ResourceQuota {
 func TestSiteCapacity(t *testing.T) {
 	site := testSite("example", "site-uid")
 	quota := testQuota(site, "codespace-example")
-	small := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "small", Runtime: testEnvironment()}}
+	small := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "small", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}
+	site.Spec.Templates[0].Name = small.Name
 	large := small.DeepCopy()
-	large.Name, large.UID, large.Spec.Tag = "large", "large-uid", "large"
+	large.Name, large.UID = "large", "large-uid"
 	large.Spec.Runtime.Resources.Requests[corev1.ResourceMemory] = resource.MustParse("8Gi")
 	site.Spec.Templates = append(site.Spec.Templates, api.ResourceReference{Name: large.Name, UID: large.UID})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(quota).WithObjects(quota, small, large).Build()

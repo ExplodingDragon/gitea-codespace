@@ -26,7 +26,7 @@ import (
 
 const MaxObjectBytes = 1024 * 1024
 
-var tagPattern = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
+var environmentNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
 
 const (
 	maxNoProxyEntries = 128
@@ -111,8 +111,8 @@ func (s *GiteaSite) Validate(managementNamespace string) error {
 }
 
 func (t *EnvironmentTemplate) Validate() error {
-	if len(validation.IsDNS1123Subdomain(t.Name)) != 0 || !tagPattern.MatchString(t.Spec.Tag) || len(t.Spec.Description) > 255 {
-		return fmt.Errorf("invalid environment name, tag or description")
+	if !environmentNamePattern.MatchString(t.Name) || len(t.Spec.Description) > 255 {
+		return fmt.Errorf("environment requires a lowercase DNS label name of at most 63 characters and a description of at most 255 characters")
 	}
 	if err := t.Spec.Runtime.Validate(); err != nil {
 		return err
@@ -436,7 +436,7 @@ func (c *Codespace) Validate(managementNamespace string) error {
 	if err != nil || id[6]>>4 != 4 || id.String() != c.Spec.RuntimeUUID {
 		return fmt.Errorf("runtime UUID must be a canonical UUID v4")
 	}
-	if c.Spec.CodespaceID <= 0 || c.Spec.Operation.Version <= 0 || !tagPattern.MatchString(c.Spec.EnvironmentTag) {
+	if c.Spec.CodespaceID <= 0 || c.Spec.Operation.Version <= 0 || !environmentNamePattern.MatchString(c.Spec.EnvironmentTag) {
 		return fmt.Errorf("codespace identity, operation version and environment tag are required")
 	}
 	switch c.Spec.Operation.Type {

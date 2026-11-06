@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	maxInjectedFeatures    = 32
-	maxFeatureOptionsBytes = 16 * 1024
-	webIDEFeatureReference = "ghcr.io/coder/devcontainer-features/code-server:2"
+	maxInjectedFeatures     = 32
+	maxFeatureOptionsBytes  = 16 * 1024
+	maxLifecycleScriptBytes = 64 * 1024
+	webIDEFeatureReference  = "ghcr.io/coder/devcontainer-features/code-server:2"
 )
 
 // Configuration defines administrator-owned additions to a repository's Dev
@@ -24,6 +25,8 @@ const (
 type Configuration struct {
 	WebIDE   WebIDEConfiguration `json:"webIDE"`
 	Features []InjectedFeature   `json:"features,omitempty"`
+	// +kubebuilder:validation:MaxLength=65536
+	LifecycleScript string `json:"lifecycleScript,omitempty"`
 }
 
 // WebIDEConfiguration defines the platform-managed code-server installation.
@@ -42,6 +45,9 @@ type InjectedFeature struct {
 
 // Validate checks that the configuration can be merged deterministically.
 func (c Configuration) Validate() error {
+	if len(c.LifecycleScript) > maxLifecycleScriptBytes || strings.ContainsRune(c.LifecycleScript, '\x00') {
+		return fmt.Errorf("lifecycle script must be no larger than 64 KiB and cannot contain NUL characters")
+	}
 	seen := make(map[string]string, len(c.Features)+1)
 	if len(bytes.TrimSpace(c.WebIDE.Options.Raw)) == 0 {
 		return fmt.Errorf("options for Web IDE are required")

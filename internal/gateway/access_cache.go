@@ -79,12 +79,14 @@ const (
 
 type gatewayAuthorizationKey struct {
 	kind          gatewayAuthorizationKind
+	siteUID       string
 	userID        int64
 	codespaceUUID string
 	endpointID    string
 }
 
 type gatewayPublicEndpointKey struct {
+	siteUID       string
 	codespaceUUID string
 	endpointID    string
 }
@@ -118,7 +120,7 @@ func NewAccessControllerFromConfig(config configpkg.GatewayConfig) *AccessContro
 	})
 }
 
-func (c *AccessController) reservePublic(codespaceUUID, endpointID, ip string) (*gatewayPublicReservation, int) {
+func (c *AccessController) reservePublic(siteUID, codespaceUUID, endpointID, ip string) (*gatewayPublicReservation, int) {
 	if c == nil {
 		return nil, http.StatusServiceUnavailable
 	}
@@ -128,7 +130,7 @@ func (c *AccessController) reservePublic(codespaceUUID, endpointID, ip string) (
 	if c.totalInflight >= c.Config.MaxInflightTotal {
 		return nil, http.StatusServiceUnavailable
 	}
-	key := gatewayPublicEndpointKey{codespaceUUID: codespaceUUID, endpointID: endpointID}
+	key := gatewayPublicEndpointKey{siteUID: siteUID, codespaceUUID: codespaceUUID, endpointID: endpointID}
 	if c.publicEndpoint[key] >= c.Config.PublicMaxConnectionsPerEndpoint {
 		return nil, http.StatusTooManyRequests
 	}
@@ -206,6 +208,7 @@ func (r *gatewayRequestReservation) Release() {
 
 func (c *AccessController) ValidatePublicEndpoint(
 	ctx context.Context,
+	siteUID string,
 	codespaceUUID string,
 	endpointID string,
 	now time.Time,
@@ -213,6 +216,7 @@ func (c *AccessController) ValidatePublicEndpoint(
 ) (gatewayAccessDecision, bool, error) {
 	key := gatewayAuthorizationKey{
 		kind:          gatewayAuthorizationKindPublic,
+		siteUID:       siteUID,
 		codespaceUUID: codespaceUUID,
 		endpointID:    endpointID,
 	}
@@ -221,6 +225,7 @@ func (c *AccessController) ValidatePublicEndpoint(
 
 func (c *AccessController) validateEndpointSession(
 	ctx context.Context,
+	siteUID string,
 	userID int64,
 	codespaceUUID string,
 	endpointID string,
@@ -229,6 +234,7 @@ func (c *AccessController) validateEndpointSession(
 ) (gatewayAccessDecision, bool, error) {
 	key := gatewayAuthorizationKey{
 		kind:          gatewayAuthorizationKindEndpoint,
+		siteUID:       siteUID,
 		userID:        userID,
 		codespaceUUID: codespaceUUID,
 		endpointID:    endpointID,
@@ -238,12 +244,14 @@ func (c *AccessController) validateEndpointSession(
 
 func (c *AccessController) revalidatePublicEndpoint(
 	ctx context.Context,
+	siteUID string,
 	codespaceUUID string,
 	endpointID string,
 	validate func(context.Context) (gatewayAccessDecision, error),
 ) (gatewayAccessDecision, bool, error) {
 	key := gatewayAuthorizationKey{
 		kind:          gatewayAuthorizationKindPublic,
+		siteUID:       siteUID,
 		codespaceUUID: codespaceUUID,
 		endpointID:    endpointID,
 	}
@@ -252,6 +260,7 @@ func (c *AccessController) revalidatePublicEndpoint(
 
 func (c *AccessController) RevalidateEndpointSession(
 	ctx context.Context,
+	siteUID string,
 	userID int64,
 	codespaceUUID string,
 	endpointID string,
@@ -259,6 +268,7 @@ func (c *AccessController) RevalidateEndpointSession(
 ) (gatewayAccessDecision, bool, error) {
 	key := gatewayAuthorizationKey{
 		kind:          gatewayAuthorizationKindEndpoint,
+		siteUID:       siteUID,
 		userID:        userID,
 		codespaceUUID: codespaceUUID,
 		endpointID:    endpointID,

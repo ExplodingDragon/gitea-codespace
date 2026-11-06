@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -18,6 +20,27 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestTemplateLifecycleBuildContextRunsScriptAsFinalRootStep(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	script := "case \"$1\" in build) touch /etc/configured ;; esac\n"
+	if err := writeTemplateLifecycleBuildContext(directory, "devcontainer-user:environment", "developer", script); err != nil {
+		t.Fatal(err)
+	}
+	dockerfile, err := os.ReadFile(filepath.Join(directory, "Dockerfile"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "FROM devcontainer-user:environment\nUSER root\nCOPY lifecycle.sh /usr/local/lib/gitea-codespace/lifecycle.sh\nRUN chmod 0500 /usr/local/lib/gitea-codespace/lifecycle.sh && /bin/sh /usr/local/lib/gitea-codespace/lifecycle.sh build\nUSER developer\n"
+	if string(dockerfile) != want {
+		t.Fatalf("lifecycle Dockerfile = %q, want %q", dockerfile, want)
+	}
+	stored, err := os.ReadFile(filepath.Join(directory, "lifecycle.sh"))
+	if err != nil || string(stored) != script {
+		t.Fatalf("lifecycle script = %q, %v", stored, err)
+	}
+}
 
 func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
 	t.Parallel()

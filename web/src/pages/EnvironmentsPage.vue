@@ -34,6 +34,7 @@ const limitsEnabled = ref(false);
 const limitsDraft = ref({cpu: '1', memory: '1Gi'});
 const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
+  name: name.value,
   form: form.value,
   webIDEOptions: webIDEOptionsJSON.value,
   features: featuresJSON.value,
@@ -120,7 +121,6 @@ function edit(item?: Resource<Environment>) {
   form.value = item
     ? cloneFormValue(item.spec)
     : {
-        tag: '',
         description: '',
         runtime: {
           isolation: isolationOptions.value[0]?.value ?? 'kata',
@@ -132,7 +132,7 @@ function edit(item?: Resource<Environment>) {
           accessMode: 'ReadWriteOncePod',
           resources: {requests: {cpu: '100m', memory: '256Mi'}},
           gitSSHKeyType: 'ed25519',
-          devContainer: {webIDE: {enabled: true, options: {}}, features: []},
+          devContainer: {webIDE: {enabled: true, options: {}}, features: [], lifecycleScript: ''},
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
@@ -184,6 +184,7 @@ async function save() {
   saving.value = true;
   error.value = '';
   try {
+    if (!/^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/.test(name.value)) throw new Error(t('environment.invalidTag'));
     if (
       !cluster.value.runtimeClasses.some(
         ({name: runtimeName, isolation}) =>
@@ -196,6 +197,9 @@ async function save() {
     )
       throw new Error(t('environment.invalidStorageClass'));
     const spec = cloneFormValue(form.value!);
+    const lifecycleScript = spec.runtime.devContainer.lifecycleScript ?? '';
+    if (new TextEncoder().encode(lifecycleScript).length > 65536 || lifecycleScript.includes('\0'))
+      throw new Error(t('environment.invalidLifecycleScript'));
     for (const kind of ['cpu', 'memory'] as const) {
       const requestValue = measurementBaseValue(spec.runtime.resources.requests[kind], kind);
       const limit = limitsEnabled.value ? measurementBaseValue(limitsDraft.value[kind], kind) : null;
@@ -217,7 +221,7 @@ async function save() {
       `environments${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',
       {
-        name: selected.value ? name.value : '',
+        name: name.value,
         uid: selected.value?.uid ?? '',
         resourceVersion: selected.value?.resourceVersion ?? '',
         spec,
@@ -309,9 +313,14 @@ function remove(item: Resource<Environment>) {
   >
     <h2>{{ t('environment.basicSection') }}</h2>
     <div class="form-grid">
-      <NFormItem :label="t('environment.tag')">
+      <NFormItem
+        :label="t('environment.tag')"
+        :feedback="t('environment.tagHelp')"
+      >
         <NInput
-          v-model:value="form.tag"
+          v-model:value="name"
+          :readonly="Boolean(selected)"
+          maxlength="63"
           required
         />
       </NFormItem>
@@ -463,6 +472,25 @@ function remove(item: Resource<Environment>) {
         />
       </NFormItem>
     </div>
+    <h2>{{ t('environment.lifecycleSection') }}</h2>
+    <p class="section-help">{{ t('environment.lifecycleHelp') }}</p>
+    <div class="form-grid">
+      <NFormItem
+        class="field-wide"
+        :label="t('environment.lifecycleScript')"
+      >
+        <NInput
+          v-model:value="form.runtime.devContainer.lifecycleScript"
+          class="script-input"
+          type="textarea"
+          :autosize="{minRows: 10, maxRows: 24}"
+          :maxlength="65536"
+          show-count
+          :placeholder="t('environment.lifecyclePlaceholder')"
+          :aria-label="t('environment.lifecycleScript')"
+        />
+      </NFormItem>
+    </div>
     <h2>{{ t('proxy.section') }}</h2>
     <ProxySettings
       v-model="form.runtime.proxy"
@@ -505,9 +533,8 @@ function remove(item: Resource<Environment>) {
           :key="item.uid"
         >
           <td>
-            <strong>{{ item.spec.tag }}</strong>
+            <strong>{{ item.name }}</strong>
             <p class="muted">{{ item.spec.description }}</p>
-            <p class="muted">{{ item.name }}</p>
           </td>
           <td>
             {{ item.spec.runtime.isolation }}

@@ -49,10 +49,13 @@ func (c *ComponentControlPlane) ValidateOpenToken(ctx context.Context, code, run
 	return gatewayOpenTokenDecision{Allowed: true, Binding: OpenTokenBinding{SiteUID: result.SiteUid, UserID: result.UserId, CodespaceUUID: result.RuntimeUuid, EndpointID: result.EndpointId}}, nil
 }
 
-func (c *ComponentControlPlane) ValidatePublicEndpoint(ctx context.Context, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
+func (c *ComponentControlPlane) ValidatePublicEndpoint(ctx context.Context, siteUID, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
 	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_PublicEndpoint{PublicEndpoint: &componentv1.PublicEndpointAuthorization{RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
+	}
+	if result.Allowed && result.SiteUid != siteUID {
+		return gatewayAccessDecision{}, fmt.Errorf("manager returned a different site identity")
 	}
 	return gatewayAccessDecision{Allowed: result.Allowed, DeniedCategory: result.DeniedCategory}, nil
 }

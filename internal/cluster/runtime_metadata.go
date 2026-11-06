@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
@@ -55,6 +56,10 @@ func runtimeMetadata(cs *api.Codespace) (*codespacev1.RuntimeMetadata, error) {
 	}
 	metadata := &codespacev1.RuntimeMetadata{Boot: boot}
 	if cs.Status.Target != nil && cs.Status.Target.Ready {
+		if !devcontainer.IsValidWorkspaceFolder(cs.Status.Target.WorkspaceFolder) {
+			return nil, fmt.Errorf("ready Runtime target has an invalid workspace folder")
+		}
+		metadata.WorkspaceFolder = cs.Status.Target.WorkspaceFolder
 		for _, endpoint := range cs.Status.Target.Endpoints {
 			port := uint32(endpoint.Port)
 			if endpoint.ID == runtimeendpoint.WorkspaceEndpointID {

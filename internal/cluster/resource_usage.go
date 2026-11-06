@@ -30,7 +30,7 @@ func (s *ResourceSamples) Record(cs *api.Codespace, usage *codespacev1.RuntimeRe
 		return
 	}
 	now := time.Now().Unix()
-	if usage.ObservedUnix < now-120 || usage.ObservedUnix > now+30 || usage.Cpu.UsedMillicores < 0 || usage.Cpu.LimitMillicores < 0 || usage.Memory.UsedBytes < 0 || usage.Memory.LimitBytes < 0 || usage.Disk.UsedBytes < 0 || usage.Disk.LimitBytes < 0 {
+	if usage.ObservedUnix < now-120 || usage.ObservedUnix > now+30 || usage.Cpu.UsedMillicores < 0 || usage.Cpu.LimitMillicores < 0 || usage.Memory.UsedBytes < 0 || usage.Memory.LimitBytes < 0 || usage.Disk.UsedBytes < 0 || usage.Disk.LimitBytes <= 0 {
 		return
 	}
 	s.mu.Lock()

@@ -69,6 +69,9 @@ spec:
                           - reference
                           type: object
                         type: array
+                      lifecycleScript:
+                        maxLength: 65536
+                        type: string
                       webIDE:
                         description: WebIDEConfiguration defines the platform-managed
                           code-server installation.
@@ -207,12 +210,8 @@ spec:
                 - storage
                 - storageClassName
                 type: object
-              tag:
-                pattern: ^[a-z0-9_-]{1,64}$
-                type: string
             required:
             - runtime
-            - tag
             type: object
           status:
             properties:
@@ -279,6 +278,10 @@ spec:
         required:
         - spec
         type: object
+        x-kubernetes-validations:
+        - message: environment name must be a lowercase Kubernetes DNS label of at
+            most 63 characters
+          rule: size(self.metadata.name) <= 63 && self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')
     served: true
     storage: true
     subresources:

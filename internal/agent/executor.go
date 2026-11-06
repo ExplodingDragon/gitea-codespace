@@ -46,6 +46,9 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		request.RunLifecycle = func(ctx context.Context, lifecycle devcontainer.LifecycleStage, run func(context.Context) error) error {
 			return e.Journal.runActiveStep(ctx, request.OperationVersion, fmt.Sprintf("lifecycle/%s", lifecycle), run)
 		}
+		request.RunTemplateLifecycle = func(ctx context.Context, action string, run func(context.Context) error) error {
+			return e.Journal.runActiveStep(ctx, request.OperationVersion, "template-lifecycle/"+action, run)
+		}
 		state, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
 		if err != nil {
 			return err

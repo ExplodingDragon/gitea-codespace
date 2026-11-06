@@ -50,7 +50,7 @@ func TestOperationBindingRecovery(t *testing.T) {
 	site := testSite("example", "site-uid")
 	site.Status.NamespaceUID = "namespace-uid"
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}
 	meta.SetStatusCondition(&template.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}).WithObjects(template, namespace).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
@@ -178,8 +178,8 @@ func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
 	runtimeConfiguration := testEnvironment()
 	runtimeConfiguration.Proxy = &api.OutboundProxy{HTTPProxy: "http://user:password@proxy.example:3128"}
 	template := &api.EnvironmentTemplate{
-		ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"},
-		Spec:       api.EnvironmentTemplateSpec{Tag: "standard", Runtime: runtimeConfiguration},
+		ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "template-uid"},
+		Spec:       api.EnvironmentTemplateSpec{Runtime: runtimeConfiguration},
 	}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "codespace-1", Namespace: "codespace-example", UID: "runtime-uid"},
@@ -202,7 +202,7 @@ func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
 
 func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2}, Spec: api.CodespaceSpec{CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Bound: true, Result: &api.OperationResult{Version: 1, Succeeded: true}}}
-	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container"}
+	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project"}
 	cs.Status.Boot = &api.RuntimeBoot{OperationVersion: 1, Stage: "ready", StartedUnix: 1, LastUpdateUnix: 2}
 	cs.Status.MetadataGeneration = 1
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
@@ -212,6 +212,7 @@ func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
 	remote := &operationRemote{
 		metadata: func(request *codespacev1.ReportRuntimeMetadataRequest) error {
 			events = append(events, "metadata")
+			require.Equal(t, "/workspaces/project", request.Metadata.WorkspaceFolder)
 			var current api.Codespace
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), &current))
 			require.Equal(t, current.Status.MetadataGeneration, request.MetadataGeneration)

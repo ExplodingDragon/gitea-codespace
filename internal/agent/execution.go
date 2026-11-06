@@ -113,12 +113,12 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, report)
 	case operation.GetStop() != nil:
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer})
 		return err
 	case operation.GetDelete() != nil:
 		// Kubernetes removes the Pod before deleting its PVC. If the control
 		// message arrives first, stopping Docker resources shortens shutdown.
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
 		return err
 	default:
 		return fmt.Errorf("runtime operation is not executable by the Agent")
@@ -406,11 +406,11 @@ func (r *Runtime) accessTarget(version int64, state *devcontainer.State) (*agent
 	if err != nil {
 		return nil, err
 	}
-	return accessTargetForContainer(version, state.PrimaryContainerID, r.DevContainer.WebIDE.Enabled, r.endpoints, containers), nil
+	return accessTargetForContainer(version, state.PrimaryContainerID, state.WorkspaceFolder, r.DevContainer.WebIDE.Enabled, r.endpoints, containers), nil
 }
 
-func accessTargetForContainer(version int64, primaryContainerID string, webIDEEnabled bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
-	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, Ready: true}
+func accessTargetForContainer(version int64, primaryContainerID, workspaceFolder string, webIDEEnabled bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
+	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, WorkspaceFolder: workspaceFolder, Ready: true}
 	if webIDEEnabled {
 		target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
 			Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},

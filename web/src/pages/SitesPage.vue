@@ -249,7 +249,7 @@ function remove(site: Resource<Site>) {
           :value="form.templates.map((item) => item.uid)"
           :options="
             environments.map((item) => ({
-              label: `${item.spec.tag} (${item.name})`,
+              label: item.spec.description ? `${item.name} — ${item.spec.description}` : item.name,
               value: item.uid,
               disabled: item.deleting,
             }))

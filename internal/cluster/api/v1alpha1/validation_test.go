@@ -4,12 +4,21 @@
 package v1alpha1
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
+
+func TestEnvironmentTemplateRejectsInvalidName(t *testing.T) {
+	for _, name := range []string{"", "Standard", "standard_gpu", "standard.gpu", strings.Repeat("a", 64)} {
+		template := EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}}
+		require.ErrorContains(t, template.Validate(), "lowercase DNS label", name)
+	}
+}
 
 func TestEnvironmentConfigurationRejectsUnsupportedResourceLimit(t *testing.T) {
 	configuration := EnvironmentConfiguration{

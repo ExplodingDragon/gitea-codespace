@@ -64,7 +64,7 @@ func testSite(name, uid string) *api.GiteaSite {
 		Spec: api.GiteaSiteSpec{DisplayName: name, URL: "https://gitea.example/", ManagerID: 1, Enabled: true, AcceptCreates: true,
 			StartupConcurrency: 1, CleanupConcurrency: 16,
 			Credential: api.ResourceReference{Name: "site-credential", UID: "credential-uid"}, Gateway: api.ResourceReference{Name: "gateway", UID: "gateway-uid"},
-			Templates: []api.ResourceReference{{Name: "default", UID: "template-uid"}},
+			Templates: []api.ResourceReference{{Name: "standard", UID: "template-uid"}},
 			Quota:     corev1.ResourceList{corev1.ResourcePods: resource.MustParse("2"), corev1.ResourceRequestsCPU: resource.MustParse("2"), corev1.ResourceRequestsMemory: resource.MustParse("2Gi"), corev1.ResourceRequestsStorage: resource.MustParse("10Gi"), corev1.ResourcePersistentVolumeClaims: resource.MustParse("2")},
 		},
 	}
@@ -432,7 +432,7 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
 		Status: api.CodespaceStatus{
 			Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
-			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "ready"},
+			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "ready"},
 		},
 	}
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
@@ -491,7 +491,7 @@ func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
 		},
 		Status: api.CodespaceStatus{
 			Bound: true, SettledOperationVersion: 2, Pod: api.ObservedResource{Name: "lost-pod", UID: "lost-pod-uid"},
-			Volume: api.ObservedResource{Name: "data-933ef4a9-54c7-4f36-aad9-32ea72c4c986", UID: "volume-uid"}, Target: &api.AgentTarget{Ready: true},
+			Volume: api.ObservedResource{Name: "data-933ef4a9-54c7-4f36-aad9-32ea72c4c986", UID: "volume-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"},
 			Conditions: []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionFalse, Reason: "WriterUnconfirmed", Message: "waiting for kubelet to confirm runtime process termination", ObservedGeneration: 3}},
 		},
 	}
@@ -515,6 +515,23 @@ func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
 	require.NotNil(t, cs.Status.Result)
 	require.False(t, cs.Status.Result.Succeeded)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(volume), volume))
+}
+
+func TestFailedStopKeepsFailureAfterRuntimeConverges(t *testing.T) {
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2},
+		Spec: api.CodespaceSpec{
+			Operation: api.Operation{Type: "stop", Version: 4, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
+		},
+		Status: api.CodespaceStatus{Result: &api.OperationResult{Version: 4, Message: "lifecycle stop failed"}},
+	}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
+	r := &RuntimeReconciler{Client: c, Authority: &ExecutionAuthority{}}
+	_, err := r.stopOrDelete(t.Context(), cs, false)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+	require.Equal(t, &api.OperationResult{Version: 4, Message: "lifecycle stop failed"}, cs.Status.Result)
 }
 
 func TestRuntimeCertificateOwnership(t *testing.T) {

@@ -973,8 +973,10 @@ type AccessTarget struct {
 	PrimaryContainerId string                 `protobuf:"bytes,2,opt,name=primary_container_id,json=primaryContainerId,proto3" json:"primary_container_id,omitempty"`
 	Endpoints          []*EndpointTarget      `protobuf:"bytes,3,rep,name=endpoints,proto3" json:"endpoints,omitempty"`
 	Ready              bool                   `protobuf:"varint,4,opt,name=ready,proto3" json:"ready,omitempty"`
-	unknownFields      protoimpl.UnknownFields
-	sizeCache          protoimpl.SizeCache
+	// workspace_folder is the resolved project folder inside the primary Dev Container.
+	WorkspaceFolder string `protobuf:"bytes,5,opt,name=workspace_folder,json=workspaceFolder,proto3" json:"workspace_folder,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *AccessTarget) Reset() {
@@ -1033,6 +1035,13 @@ func (x *AccessTarget) GetReady() bool {
 		return x.Ready
 	}
 	return false
+}
+
+func (x *AccessTarget) GetWorkspaceFolder() string {
+	if x != nil {
+		return x.WorkspaceFolder
+	}
+	return ""
 }
 
 type EndpointTarget struct {
@@ -2124,12 +2133,13 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x05value\x18\x02 \x01(\v2\x1c.agent.v1.RegistryCredentialR\x05value:\x028\x01\"L\n" +
 	"\x12RegistryCredential\x12\x1a\n" +
 	"\busername\x18\x01 \x01(\tR\busername\x12\x1a\n" +
-	"\bpassword\x18\x02 \x01(\tR\bpassword\"\xa8\x01\n" +
+	"\bpassword\x18\x02 \x01(\tR\bpassword\"\xd3\x01\n" +
 	"\fAccessTarget\x12\x18\n" +
 	"\aversion\x18\x01 \x01(\x03R\aversion\x120\n" +
 	"\x14primary_container_id\x18\x02 \x01(\tR\x12primaryContainerId\x126\n" +
 	"\tendpoints\x18\x03 \x03(\v2\x18.agent.v1.EndpointTargetR\tendpoints\x12\x14\n" +
-	"\x05ready\x18\x04 \x01(\bR\x05ready\"\x82\x01\n" +
+	"\x05ready\x18\x04 \x01(\bR\x05ready\x12)\n" +
+	"\x10workspace_folder\x18\x05 \x01(\tR\x0fworkspaceFolder\"\x82\x01\n" +
 	"\x0eEndpointTarget\x129\n" +
 	"\bendpoint\x18\x01 \x01(\v2\x1d.codespace.v1.RuntimeEndpointR\bendpoint\x12!\n" +
 	"\fcontainer_id\x18\x02 \x01(\tR\vcontainerId\x12\x12\n" +

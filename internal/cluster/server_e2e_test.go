@@ -85,7 +85,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	var sessions corev1.SecretList
 	require.NoError(t, cluster.List(cluster.ctx, &sessions, client.InNamespace(namespace.Name), client.MatchingLabels{adminSessionLabel: "true"}))
 	require.Len(t, sessions.Items, 1)
-	body, err := json.Marshal(adminEnvironmentWrite{Spec: api.EnvironmentTemplateSpec{Tag: "e2e", Runtime: runtime.environmentConfiguration()}})
+	body, err := json.Marshal(adminEnvironmentWrite{adminWriteIdentity: adminWriteIdentity{Name: "e2e"}, Spec: api.EnvironmentTemplateSpec{Runtime: runtime.environmentConfiguration()}})
 	require.NoError(t, err)
 	request, err = http.NewRequestWithContext(t.Context(), http.MethodPost, adminURL+"/api/admin/environments", bytes.NewReader(body))
 	require.NoError(t, err)
@@ -100,7 +100,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	require.Equal(t, http.StatusOK, response.StatusCode, string(data))
 	var created adminResource
 	require.NoError(t, json.Unmarshal(data, &created))
-	require.Regexp(t, `^environment-[0-9a-f-]{36}$`, created.Name)
+	require.Equal(t, "e2e", created.Name)
 	var template api.EnvironmentTemplate
 	require.NoError(t, cluster.Get(cluster.ctx, types.NamespacedName{Name: created.Name}, &template))
 	t.Cleanup(func() {
@@ -110,7 +110,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 			t.Errorf("delete E2E environment template: %v", err)
 		}
 	})
-	require.Equal(t, "e2e", template.Spec.Tag)
+	require.Equal(t, "e2e", template.Name)
 	require.Eventually(t, func() bool {
 		return cluster.Get(cluster.ctx, client.ObjectKeyFromObject(&template), &template) == nil && len(template.Status.Conditions) != 0
 	}, 10*time.Second, 100*time.Millisecond)

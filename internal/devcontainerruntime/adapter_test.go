@@ -27,7 +27,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 				"auth": "password",
 				"socket": "/tmp/code-server.sock"
 			}`)},
-		}},
+		}, LifecycleScript: "case \"$1\" in build) : ;; esac\n"},
 		Cache: devcontainer.CacheOptions{
 			BuildRegistry: "https://registry.example.com/cache",
 			BuildScope:    "scope",
@@ -63,6 +63,9 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	}
 	if options.Cache.BuildRegistry != request.Cache.BuildRegistry || options.Cache.BuildScope != request.Cache.BuildScope {
 		t.Fatalf("Codespace cache = %#v", options.Cache)
+	}
+	if options.TemplateLifecycleScript != request.DevContainer.LifecycleScript {
+		t.Fatalf("lifecycle script was not copied into create options")
 	}
 	if options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_CA_BUNDLE"] != containerCABundlePath {
 		t.Fatalf("custom CA environment = %#v", options.ContainerEnv)

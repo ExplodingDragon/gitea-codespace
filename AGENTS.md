@@ -9,12 +9,10 @@
   copies with `make generate-kubernetes`.
 - Change internal RPC definitions in their `.proto` sources and regenerate the
   Go bindings with `make proto-generate`.
-- Keep user-facing behavior documented in `README.md` or the Helm guide, and
-  keep contributor workflows in `DEVELOPMENT.md`.
-- Write documentation for its audience: keep `README.md` focused on users,
-  the Helm guide focused on cluster operators, and `DEVELOPMENT.md` focused on
+- Write documentation for its audience: keep `README.md` focused on users, the
+  Helm guide focused on cluster operators, and `DEVELOPMENT.md` focused on
   contributors. Explain why a choice matters and the action the reader should
-  take, and record protocol or controller rationale in the design docs.
+  take; keep protocol and controller rationale in the design documents.
 - Keep documentation concise and current. Describe the supported workflow in
   positive terms and keep each implementation detail in the single document
   whose audience needs it.

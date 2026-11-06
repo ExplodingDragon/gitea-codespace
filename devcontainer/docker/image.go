@@ -119,7 +119,10 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 	return nil
 }
 
-const dockerPullProgressInterval = 10 * time.Second
+const (
+	dockerPullProgressInterval  = 10 * time.Second
+	templateLifecycleScriptPath = "/usr/local/lib/gitea-codespace/lifecycle.sh"
+)
 
 type dockerPullLayer struct {
 	current  int64
@@ -354,4 +357,35 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 		return "", fmt.Errorf("build Dev Container user image: %w", err)
 	}
 	return imageName, nil
+}
+
+func (e *Engine) prepareTemplateLifecycleImage(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, templateLifecycleScript string, platformEnvironment map[string]string) (string, error) {
+	if strings.TrimSpace(templateLifecycleScript) == "" {
+		return baseImage, nil
+	}
+	directory, err := os.MkdirTemp("", "devcontainer-lifecycle-*")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = os.RemoveAll(directory) }()
+	containerUser := strings.TrimSpace(resolved.ContainerUser)
+	if containerUser == "" {
+		containerUser = "root"
+	}
+	if err := writeTemplateLifecycleBuildContext(directory, baseImage, containerUser, templateLifecycleScript); err != nil {
+		return "", err
+	}
+	imageName := "devcontainer-lifecycle:" + resolved.DevContainerID
+	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "lifecycle", platformEnvironment); err != nil {
+		return "", fmt.Errorf("build Dev Container lifecycle image: %w", err)
+	}
+	return imageName, nil
+}
+
+func writeTemplateLifecycleBuildContext(directory, baseImage, containerUser, script string) error {
+	dockerfile := fmt.Sprintf("FROM %s\nUSER root\nCOPY lifecycle.sh %s\nRUN chmod 0500 %s && /bin/sh %s build\nUSER %s\n", baseImage, templateLifecycleScriptPath, templateLifecycleScriptPath, templateLifecycleScriptPath, containerUser)
+	if err := os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(directory, "lifecycle.sh"), []byte(script), 0o600)
 }

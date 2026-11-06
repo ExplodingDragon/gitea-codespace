@@ -204,6 +204,9 @@ th {
   margin: -8px 0 16px;
   max-width: 720px;
 }
+.script-input textarea {
+  font-family: ui-monospace, SFMono-Regular, Consolas, 'Liberation Mono', monospace;
+}
 .measurement-input {
   width: 100%;
 }

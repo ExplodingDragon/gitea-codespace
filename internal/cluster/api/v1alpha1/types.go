@@ -107,8 +107,6 @@ type GiteaSiteList struct {
 }
 
 type EnvironmentTemplateSpec struct {
-	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]{1,64}$`
-	Tag string `json:"tag"`
 	// +kubebuilder:validation:MaxLength=255
 	Description string                   `json:"description,omitempty"`
 	Runtime     EnvironmentConfiguration `json:"runtime"`
@@ -173,6 +171,7 @@ type EnvironmentTemplateStatus struct {
 // +kubebuilder:object:root=true
 // +kubebuilder:resource:scope=Cluster,shortName=csenv
 // +kubebuilder:subresource:status
+// +kubebuilder:validation:XValidation:rule="size(self.metadata.name) <= 63 && self.metadata.name.matches('^[a-z0-9]([-a-z0-9]*[a-z0-9])?$')",message="environment name must be a lowercase Kubernetes DNS label of at most 63 characters"
 type EnvironmentTemplate struct {
 	metav1.TypeMeta   `json:",inline"`
 	metav1.ObjectMeta `json:"metadata,omitempty"`
@@ -390,10 +389,15 @@ type CodespaceSpec struct {
 }
 
 type AgentTarget struct {
-	Version            int64           `json:"version"`
-	Ready              bool            `json:"ready"`
-	PrimaryContainerID string          `json:"primaryContainerID"`
-	Endpoints          []AgentEndpoint `json:"endpoints"`
+	Version            int64  `json:"version"`
+	Ready              bool   `json:"ready"`
+	PrimaryContainerID string `json:"primaryContainerID"`
+	// WorkspaceFolder is the resolved project folder inside the primary Dev Container.
+	// +optional
+	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^/`
+	WorkspaceFolder string          `json:"workspaceFolder,omitempty"`
+	Endpoints       []AgentEndpoint `json:"endpoints"`
 }
 
 type AgentEndpoint struct {

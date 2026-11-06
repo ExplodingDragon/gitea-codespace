@@ -26,7 +26,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.NoError(t, err)
 	runtime := &Runtime{Journal: journal, DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Enabled: true}}}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
-	target := accessTargetForContainer(1, "container", true, runtime.endpoints, nil)
+	target := accessTargetForContainer(1, "container", "/workspaces/project", true, runtime.endpoints, nil)
 	runtime.setAccessState(target, nil)
 
 	endpoints, err := runtime.setEndpoint(&codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Public: true, Port: 8080})
@@ -34,9 +34,10 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.Len(t, endpoints, 2)
 	updated := runtime.CurrentAccessTarget()
 	require.EqualValues(t, 2, updated.Version)
+	require.Equal(t, "/workspaces/project", updated.WorkspaceFolder)
 	require.Len(t, updated.Endpoints, 3)
 	require.True(t, updated.Endpoints[2].Endpoint.Public)
-	require.Empty(t, accessTargetForContainer(1, "container", false, nil, nil).Endpoints)
+	require.Empty(t, accessTargetForContainer(1, "container", "/workspaces/project", false, nil, nil).Endpoints)
 
 	require.NoError(t, journal.Close())
 	journal, err = OpenJournal(directory, identity)

@@ -485,7 +485,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		current.Status.LastNodeName = ""
 		meta.RemoveStatusCondition(&current.Status.Conditions, "InfrastructureReady")
 		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: "Stopped", Status: metav1.ConditionTrue, Reason: "ResourcesStopped", Message: "Runtime Pod has stopped", ObservedGeneration: observedGeneration})
-		if operationType == "stop" || operationType == "delete" {
+		if (operationType == "stop" || operationType == "delete") && (current.Status.Result == nil || current.Status.Result.Version != operationVersion) {
 			current.Status.Result = &api.OperationResult{Version: operationVersion, Succeeded: true}
 		}
 		return nil

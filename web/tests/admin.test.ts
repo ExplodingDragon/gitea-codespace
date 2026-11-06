@@ -157,7 +157,7 @@ test('administration workflows preserve resource identity and validate cluster-b
         return;
       }
       environments.push({
-        name: 'environment-generated',
+        name: body.name,
         uid: 'template-uid',
         resourceVersion: '1',
         generation: 1,
@@ -253,7 +253,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     .filter({hasText: /^Environment templates/})
     .locator('.n-base-selection')
     .click();
-  await page.getByText('standard (environment-generated)', {exact: true}).click();
+  await page.getByText('standard', {exact: true}).last().click();
   await page.keyboard.press('Escape');
   await page
     .locator('.n-form-item')

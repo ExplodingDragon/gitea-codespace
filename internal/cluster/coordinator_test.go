@@ -98,7 +98,7 @@ func TestCoordinatorRequestsIdleStopAfterObservedInactivity(t *testing.T) {
 	_, ready := tracker.IdleRequest(string(site.UID), "runtime", string(site.Spec.Gateway.UID), true, now.Add(-2*time.Second))
 	require.False(t, ready)
 
-	cs := api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", UID: "runtime-uid"}, Spec: api.CodespaceSpec{RuntimeUUID: "runtime", Operation: api.Operation{Version: 1}}, Status: api.CodespaceStatus{Bound: true, SettledOperationVersion: 1, Pod: api.ObservedResource{UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true}}}
+	cs := api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", UID: "runtime-uid"}, Spec: api.CodespaceSpec{RuntimeUUID: "runtime", Operation: api.Operation{Version: 1}}, Status: api.CodespaceStatus{Bound: true, SettledOperationVersion: 1, Pod: api.ObservedResource{UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}}}
 	requests := 0
 	remote := &coordinatorRemote{idleStop: func(request *codespacev1.RequestIdleStopRequest) *codespacev1.RequestIdleStopResponse {
 		requests++
@@ -168,7 +168,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	site.Status.NamespaceUID, site.Status.CanonicalURL = "namespace-uid", remote.url
 	site.Status.Conditions = []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionTrue, Reason: "IdentityVerified", ObservedGeneration: 1}}
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}, Status: api.EnvironmentTemplateStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1}}}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}, Status: api.EnvironmentTemplateStatus{Conditions: []metav1.Condition{{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1}}}}
 	_, private, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	block, err := ssh.MarshalPrivateKey(private, "")
@@ -200,7 +200,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	require.NoError(t, control.saveReport(t.Context(), &cs, &agentv1.AgentReport{
 		OperationRversion: 1, Result: &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:   &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
-		Target: &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
+		Target: &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
 	}))
 	require.Eventually(t, func() bool {
 		return c.Get(t.Context(), key, &cs) == nil && cs.Spec.Operation.Version == 2

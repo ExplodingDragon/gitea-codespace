@@ -4,6 +4,7 @@
 package devcontainerruntime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -57,6 +58,22 @@ func TestConfigurationValidation(t *testing.T) {
 				}},
 			},
 			wantError: "must be a JSON object",
+		},
+		{
+			name: "lifecycle script is bounded",
+			configuration: Configuration{
+				WebIDE:          WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				LifecycleScript: strings.Repeat("x", maxLifecycleScriptBytes+1),
+			},
+			wantError: "lifecycle script",
+		},
+		{
+			name: "lifecycle script rejects NUL",
+			configuration: Configuration{
+				WebIDE:          WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				LifecycleScript: "echo before\x00after",
+			},
+			wantError: "lifecycle script",
 		},
 	}
 

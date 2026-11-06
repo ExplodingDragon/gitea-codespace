@@ -40,7 +40,7 @@ func TestAgentResultReplay(t *testing.T) {
 		OperationRversion: 1,
 		Result:            &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
-		Target:            &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
+		Target:            &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
 	}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
@@ -265,18 +265,21 @@ func (s *runtimeAccessTestServer) UpdateLog(_ context.Context, request *codespac
 	return nil, err
 }
 
-func TestAgentStartupValidatesOptionalWorkspace(t *testing.T) {
+func TestAgentStartupValidatesReadyTarget(t *testing.T) {
 	cs := &api.Codespace{Spec: api.CodespaceSpec{Operation: api.Operation{Type: "resume", Version: 3}}}
 	report := &agentv1.AgentReport{
 		OperationRversion: 3,
 		Result:            &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 2, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
-		Target:            &agentv1.AccessTarget{Version: 3, Ready: true, PrimaryContainerId: "container", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace", Public: true}, ContainerId: "container", Port: 13337}}},
+		Target:            &agentv1.AccessTarget{Version: 3, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace", Public: true}, ContainerId: "container", Port: 13337}}},
 	}
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(applyAgentReport(cs, report)))
 	report.Boot.OperationRversion = 3
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
 	report.Target.Endpoints = nil
+	report.Target.WorkspaceFolder = ""
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
+	report.Target.WorkspaceFolder = "/workspaces/project"
 	require.NoError(t, applyAgentReport(cs, report))
 	require.True(t, cs.Status.Target.Ready)
 	require.Empty(t, cs.Status.Target.Endpoints)
@@ -311,9 +314,10 @@ func TestAgentProgressAndTargetRefresh(t *testing.T) {
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
 	require.Equal(t, version, cs.ResourceVersion)
 	report.Boot.Stage, report.Boot.LastUpdateUnix = codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, 3
-	report.Target = &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}}
+	report.Target = &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}}
 	report.Result = &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
+	require.Equal(t, "/workspaces/project", cs.Status.Target.WorkspaceFolder)
 	report.Result = nil
 	report.Target.Version++
 	report.Target.Endpoints = append(report.Target.Endpoints, &agentv1.EndpointTarget{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "p8000", Label: "Preview", Public: true, Port: 8000}, ContainerId: "container", Port: 8000})

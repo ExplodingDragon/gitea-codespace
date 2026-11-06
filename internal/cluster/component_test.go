@@ -131,7 +131,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		Status: api.CodespaceStatus{
 			Bound:  true,
 			Pod:    api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"},
-			Target: &api.AgentTarget{Version: 4, Ready: true, PrimaryContainerID: "container", Endpoints: []api.AgentEndpoint{{ID: "workspace", Label: "Workspace", ContainerID: "container", Port: 13337}}},
+			Target: &api.AgentTarget{Version: 4, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []api.AgentEndpoint{{ID: "workspace", Label: "Workspace", ContainerID: "container", Port: 13337}}},
 		},
 	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: cs.Namespace, UID: cs.Status.Pod.UID, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}}, Status: corev1.PodStatus{Phase: corev1.PodRunning, PodIP: "10.1.2.3", PodIPs: []corev1.PodIP{{IP: "10.1.2.3"}}}}

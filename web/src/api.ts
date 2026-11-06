@@ -117,6 +117,7 @@ export type Runtime = {
   devContainer: {
     webIDE: {enabled: boolean; options: Record<string, unknown>};
     features?: {reference: string; options?: Record<string, unknown>}[];
+    lifecycleScript?: string;
   };
   proxy?: OutboundProxy;
 };
@@ -138,7 +139,6 @@ export type ClusterOptions = {
 };
 
 export type Environment = {
-  tag: string;
   description: string;
   runtime: Runtime;
 };

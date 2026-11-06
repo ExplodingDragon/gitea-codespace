@@ -30,7 +30,7 @@ type gatewaySSHPty struct {
 }
 
 type gatewayWorkspaceTargetStore interface {
-	RuntimeAvailable(codespaceUUID string) (bool, error)
+	RuntimeSiteUID(codespaceUUID string) (string, bool)
 }
 
 type SSHServer struct {
@@ -112,8 +112,7 @@ func (s *SSHServer) authenticatePublicKey(ctx context.Context, conn ssh.ConnMeta
 		s.authLimiter.RecordFailure(sourceIP, codespaceUUID, publicKeyHash, decision.deniedCategory, time.Now())
 		return nil, fmt.Errorf("ssh public key denied: %s", decision.deniedCategory)
 	}
-	ok, err = s.runtimeAvailable(codespaceUUID)
-	if err != nil || !ok {
+	if !s.runtimeAvailable(codespaceUUID, decision.SiteUID) {
 		return nil, fmt.Errorf("codespace workspace is unavailable")
 	}
 	return &ssh.Permissions{
@@ -176,7 +175,7 @@ func (s *SSHServer) serveConn(ctx context.Context, conn net.Conn) {
 		}
 	}
 	defer release()
-	if ok, err := s.runtimeAvailable(auth.codespaceUUID); err != nil || !ok {
+	if !s.runtimeAvailable(auth.codespaceUUID, auth.siteUID) {
 		return
 	}
 	activity := make(chan struct{}, 1)
@@ -254,8 +253,7 @@ func (s *SSHServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 	}
 	defer func() { _ = clientChannel.Close() }()
 
-	ok, err := s.runtimeAvailable(auth.codespaceUUID)
-	if err != nil || !ok {
+	if !s.runtimeAvailable(auth.codespaceUUID, auth.siteUID) {
 		_ = clientChannel.Close()
 		return
 	}
@@ -345,11 +343,12 @@ func (s *SSHServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 	}
 }
 
-func (s *SSHServer) runtimeAvailable(codespaceUUID string) (bool, error) {
+func (s *SSHServer) runtimeAvailable(codespaceUUID, siteUID string) bool {
 	if s.state == nil || s.backend == nil {
-		return false, nil
+		return false
 	}
-	return s.state.RuntimeAvailable(codespaceUUID)
+	runtimeSiteUID, found := s.state.RuntimeSiteUID(codespaceUUID)
+	return found && runtimeSiteUID == siteUID
 }
 
 func (s *SSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthContext, channel ssh.NewChannel, activity chan<- struct{}) {
@@ -373,8 +372,7 @@ func (s *SSHServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthCo
 		_ = channel.Reject(ssh.Prohibited, "direct-tcpip target must be localhost, 127.0.0.1, or ::1")
 		return
 	}
-	ok, err := s.runtimeAvailable(auth.codespaceUUID)
-	if err != nil || !ok {
+	if !s.runtimeAvailable(auth.codespaceUUID, auth.siteUID) {
 		_ = channel.Reject(ssh.ConnectionFailed, "workspace tcp target unavailable")
 		return
 	}

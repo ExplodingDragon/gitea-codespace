@@ -18,6 +18,7 @@ import (
 
 // EndpointRoute binds an authorized public address to one site's runtime port.
 type EndpointRoute struct {
+	SiteUID       string `json:"-"`
 	GiteaWebURL   string `json:"-"`
 	PodUID        string `json:"-"`
 	AgentAddress  string `json:"-"`
@@ -96,11 +97,11 @@ func (s *RouteStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool
 	return "", false
 }
 
-func (s *RouteStore) RuntimeAvailable(runtimeUUID string) (bool, error) {
+func (s *RouteStore) RuntimeSiteUID(runtimeUUID string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	_, found := s.runtimes[runtimeUUID]
-	return found && s.backend != nil, nil
+	runtime, found := s.runtimes[runtimeUUID]
+	return runtime.SiteUID, found
 }
 
 func (s *RouteStore) ReplaceSharedGatewayRuntimes(snapshots []RuntimeSnapshot) error {
@@ -119,7 +120,7 @@ func (s *RouteStore) ReplaceSharedGatewayRuntimes(snapshots []RuntimeSnapshot) e
 		runtimes[snapshot.RuntimeUUID] = snapshot
 		for _, endpoint := range snapshot.Endpoints {
 			route := EndpointRoute{
-				GiteaWebURL: snapshot.GiteaWebURL, PodUID: snapshot.PodUID, AgentAddress: snapshot.AgentAddress,
+				SiteUID: snapshot.SiteUID, GiteaWebURL: snapshot.GiteaWebURL, PodUID: snapshot.PodUID, AgentAddress: snapshot.AgentAddress,
 				TargetVersion: snapshot.TargetVersion, CodespaceUUID: snapshot.RuntimeUUID,
 				EndpointID: endpoint.EndpointID, Label: endpoint.Label, Public: endpoint.Public,
 			}
@@ -311,7 +312,8 @@ func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
 }
 
 func sameGatewayEndpointRouting(left, right EndpointRoute) bool {
-	return left.GiteaWebURL == right.GiteaWebURL &&
+	return left.SiteUID == right.SiteUID &&
+		left.GiteaWebURL == right.GiteaWebURL &&
 		left.PodUID == right.PodUID &&
 		left.AgentAddress == right.AgentAddress &&
 		left.CodespaceUUID == right.CodespaceUUID &&
@@ -326,10 +328,14 @@ func sameGatewayRuntimeRouting(left, right RuntimeSnapshot) bool {
 }
 
 func normalizeEndpointRoute(route EndpointRoute) (EndpointRoute, error) {
+	route.SiteUID = strings.TrimSpace(route.SiteUID)
 	route.CodespaceUUID = strings.TrimSpace(route.CodespaceUUID)
 	route.EndpointID = strings.TrimSpace(route.EndpointID)
 	route.Label = strings.TrimSpace(route.Label)
 	route.GiteaWebURL = strings.TrimRight(strings.TrimSpace(route.GiteaWebURL), "/")
+	if route.SiteUID == "" {
+		return EndpointRoute{}, fmt.Errorf("site uid is required")
+	}
 	if route.CodespaceUUID == "" {
 		return EndpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}

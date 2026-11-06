@@ -178,3 +178,42 @@ func TestDockerRunDetached(t *testing.T) {
 	}
 	require.True(t, options.Detach)
 }
+
+func TestTemplateLifecycleRunsAsRoot(t *testing.T) {
+	var options container.ExecOptions
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/container/exec"):
+			if err := json.Unmarshal(body, &options); err != nil {
+				t.Error(err)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Id":"execution"}`)
+		case strings.HasSuffix(r.URL.Path, "/exec/execution/start"):
+			connection, output, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			defer func() { _ = connection.Close() }()
+			_, _ = fmt.Fprint(output, "HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+			_ = output.Flush()
+		case strings.HasSuffix(r.URL.Path, "/exec/execution/json"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Running":false,"ExitCode":0}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	apiClient, err := client.NewClientWithOpts(client.WithHost("tcp://"+server.Listener.Addr().String()), client.WithVersion("1.51"))
+	require.NoError(t, err)
+	defer func() { _ = apiClient.Close() }()
+	engine := &Engine{client: apiClient, stdout: io.Discard, stderr: io.Discard}
+	state := &devcontainer.State{PrimaryContainerID: "container", RemoteWorkdir: "/workspaces/project"}
+	require.NoError(t, engine.RunTemplateLifecycle(t.Context(), state, "start"))
+	require.Equal(t, "0", options.User)
+	require.Equal(t, "/workspaces/project", options.WorkingDir)
+	require.Equal(t, []string{"/bin/sh", templateLifecycleScriptPath, "start"}, options.Cmd)
+}

@@ -45,6 +45,14 @@ func (c *streamTestChannel) SendRequest(name string, _ bool, payload []byte) (bo
 
 type streamTestSession struct{ io.WriteCloser }
 
+type gatewaySiteTargetStore struct {
+	siteUID string
+}
+
+func (s gatewaySiteTargetStore) RuntimeSiteUID(string) (string, bool) {
+	return s.siteUID, true
+}
+
 func (s streamTestSession) Stdin() io.WriteCloser { return s.WriteCloser }
 func (streamTestSession) Stdout() io.Reader       { return strings.NewReader("output") }
 func (streamTestSession) Stderr() io.Reader       { return strings.NewReader("error") }
@@ -73,4 +81,12 @@ func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 		require.Equal(t, "error", channel.stderr.String())
 		require.EqualValues(t, 7, channel.status)
 	})
+}
+
+func TestGatewaySSHRuntimeRequiresAuthorizedSite(t *testing.T) {
+	server := &SSHServer{state: gatewaySiteTargetStore{siteUID: "site-1"}, backend: gatewayHandlerTestBackend{}}
+	available := server.runtimeAvailable("runtime", "site-1")
+	require.True(t, available)
+	available = server.runtimeAvailable("runtime", "site-2")
+	require.False(t, available)
 }

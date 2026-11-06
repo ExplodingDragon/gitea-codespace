@@ -74,7 +74,7 @@ func (c *SiteCoordinator) capacity(ctx context.Context, site *api.GiteaSite, row
 			if template.UID != ref.UID || !template.DeletionTimestamp.IsZero() {
 				return fmt.Errorf("environment identity changed")
 			}
-			if !slices.Contains(tags, template.Spec.Tag) {
+			if !slices.Contains(tags, template.Name) {
 				continue
 			}
 			demand := corev1.ResourceList{
@@ -108,7 +108,7 @@ func (c *SiteCoordinator) capacity(ctx context.Context, site *api.GiteaSite, row
 				}
 			}
 			if fits {
-				accepted = append(accepted, template.Spec.Tag)
+				accepted = append(accepted, template.Name)
 			}
 		}
 	}

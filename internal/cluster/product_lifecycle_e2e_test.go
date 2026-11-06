@@ -50,6 +50,7 @@ type lifecycleRemote struct {
 
 	mu              sync.Mutex
 	baseURL         string
+	environmentName string
 	runtimeUUID     string
 	operation       *codespacev1.OperationPayload
 	delivered       bool
@@ -126,7 +127,7 @@ func (s *lifecycleRemote) RegisterManager(_ context.Context, request *codespacev
 }
 
 func (s *lifecycleRemote) DeclareManager(_ context.Context, request *codespacev1.DeclareManagerRequest) (*codespacev1.DeclareManagerResponse, error) {
-	if request.ProtocolVersion != 1 || len(request.Environments) != 1 || request.Environments[0].Tag != "standard" {
+	if request.ProtocolVersion != 1 || len(request.Environments) != 1 || request.Environments[0].Tag != s.environmentName {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid declaration")
 	}
 	s.mu.Lock()
@@ -402,6 +403,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	admin := &AdminServer{Client: c, Namespace: managementNamespace}
 	suffix := cluster.runID
 	templateName, gatewayName, cacheName, siteName := "e2e-env-"+suffix, "e2e-gateway-"+suffix, "e2e-cache-"+suffix, "e2e-site-"+suffix
+	remote.environmentName = templateName
 	namespace := "codespace-" + siteName
 	externalGatewayService := "e2e-gateway-nodeport-" + suffix
 	t.Cleanup(func() {
@@ -417,7 +419,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: templateName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
-	require.NoError(t, admin.saveEnvironment(ctx, template, adminEnvironmentWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Description: "General development environment", Runtime: runtimeConfiguration}}, true))
+	require.NoError(t, admin.saveEnvironment(ctx, template, adminEnvironmentWrite{adminWriteIdentity: adminWriteIdentity{Name: template.Name}, Spec: api.EnvironmentTemplateSpec{Description: "General development environment", Runtime: runtimeConfiguration}}, true))
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(template), template) == nil && meta.IsStatusConditionTrue(template.Status.Conditions, "Ready")
 	}, time.Minute, time.Second)
@@ -494,7 +496,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	remote.setOperation(&codespacev1.OperationPayload{
 		CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000,
 		Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{
-			EnvironmentTag:  "standard",
+			EnvironmentTag:  template.Name,
 			Repository:      &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
 			GitIdentity:     &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
 			DevContainer:    &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: `{"image":"docker.io/library/debian:bookworm-slim","remoteUser":"root"}`}},

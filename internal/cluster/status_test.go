@@ -53,7 +53,7 @@ func TestStatusUpdateRetriesPreserveIndependentWriters(t *testing.T) {
 			if attempts == 1 {
 				var concurrent api.Codespace
 				require.NoError(t, kubeClient.Get(t.Context(), client.ObjectKeyFromObject(codespace), &concurrent))
-				concurrent.Status.Target = &api.AgentTarget{Version: 3, Ready: true, PrimaryContainerID: "container"}
+				concurrent.Status.Target = &api.AgentTarget{Version: 3, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project"}
 				require.NoError(t, kubeClient.Status().Update(t.Context(), &concurrent))
 			}
 			current.Status.Pod = api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}

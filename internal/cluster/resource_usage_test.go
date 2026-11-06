@@ -24,7 +24,7 @@ func TestRuntimeUsagePublication(t *testing.T) {
 	report := &agentv1.AgentReport{OperationRversion: 1, Boot: &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_RUNTIME, StartedUnix: 1, LastUpdateUnix: 1}}
 	require.NoError(t, control.saveReport(t.Context(), cs, report))
 	version := cs.ResourceVersion
-	usage := &codespacev1.RuntimeResourceUsage{ObservedUnix: time.Now().Unix(), Cpu: &codespacev1.RuntimeCPUUsage{UsedMillicores: 100}, Memory: &codespacev1.RuntimeMemoryUsage{UsedBytes: 1024}, Disk: &codespacev1.RuntimeDiskUsage{UsedBytes: 2048}}
+	usage := &codespacev1.RuntimeResourceUsage{ObservedUnix: time.Now().Unix(), Cpu: &codespacev1.RuntimeCPUUsage{UsedMillicores: 100}, Memory: &codespacev1.RuntimeMemoryUsage{UsedBytes: 1024}, Disk: &codespacev1.RuntimeDiskUsage{UsedBytes: 2048, LimitBytes: 4096}}
 	control.Samples.Record(cs, usage)
 	require.NoError(t, control.saveReport(t.Context(), cs, report))
 	require.Equal(t, version, cs.ResourceVersion)
@@ -33,6 +33,8 @@ func TestRuntimeUsagePublication(t *testing.T) {
 	remote := &operationRemote{metadata: func(request *codespacev1.ReportRuntimeMetadataRequest) error {
 		require.EqualValues(t, 1, request.MetadataGeneration)
 		require.EqualValues(t, 100, request.Metadata.ResourceUsage.Cpu.UsedMillicores)
+		require.Zero(t, request.Metadata.ResourceUsage.Cpu.LimitMillicores)
+		require.Zero(t, request.Metadata.ResourceUsage.Memory.LimitBytes)
 		request.Metadata.ResourceUsage.Cpu.UsedMillicores = 999
 		return nil
 	}}
@@ -40,7 +42,12 @@ func TestRuntimeUsagePublication(t *testing.T) {
 	require.NoError(t, operations.Flush(t.Context(), cs, remote))
 	require.Equal(t, version, cs.ResourceVersion)
 
-	usage.ObservedUnix--
+	usage.ObservedUnix++
+	usage.Disk.LimitBytes = 0
+	control.Samples.Record(cs, usage)
+	require.EqualValues(t, 100, control.Samples.Load(cs).Cpu.UsedMillicores)
+	usage.ObservedUnix -= 2
+	usage.Disk.LimitBytes = 4096
 	usage.Cpu.UsedMillicores = 200
 	control.Samples.Record(cs, usage)
 	require.EqualValues(t, 100, control.Samples.Load(cs).Cpu.UsedMillicores)

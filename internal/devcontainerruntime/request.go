@@ -4,6 +4,7 @@
 package devcontainerruntime
 
 import (
+	"context"
 	"fmt"
 	"net/url"
 	"strings"
@@ -12,24 +13,28 @@ import (
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 )
 
+// RunTemplateLifecycleFunc durably executes one environment-template lifecycle action.
+type RunTemplateLifecycleFunc func(context.Context, string, func(context.Context) error) error
+
 // Request supplies one Agent lifecycle action to the Dev Container executor.
 type Request struct {
-	Action           string
-	CodespaceUUID    string
-	OperationVersion int64
-	Workspace        string
-	Source           devcontainer.Source
-	HostUser         devcontainer.HostUser
-	GitUserName      string
-	GitUserEmail     string
-	GiteaURL         string
-	GiteaCustomCA    bool
-	LocalEnvironment map[string]string
-	Secrets          map[string]string
-	DevContainer     Configuration
-	Cache            devcontainer.CacheOptions
-	Environment      *devcontainer.State
-	RunLifecycle     containerdocker.RunLifecycleFunc
+	Action               string
+	CodespaceUUID        string
+	OperationVersion     int64
+	Workspace            string
+	Source               devcontainer.Source
+	HostUser             devcontainer.HostUser
+	GitUserName          string
+	GitUserEmail         string
+	GiteaURL             string
+	GiteaCustomCA        bool
+	LocalEnvironment     map[string]string
+	Secrets              map[string]string
+	DevContainer         Configuration
+	Cache                devcontainer.CacheOptions
+	Environment          *devcontainer.State
+	RunLifecycle         containerdocker.RunLifecycleFunc
+	RunTemplateLifecycle RunTemplateLifecycleFunc
 }
 
 // Validate checks action-specific identity and state requirements.
@@ -57,7 +62,7 @@ func (r Request) Validate() error {
 		if r.Environment != nil {
 			return fmt.Errorf("create request contains an existing environment")
 		}
-	case "resume", "stop", "inspect":
+	case "resume", "stop", "delete", "inspect":
 		if r.Action != "inspect" && r.OperationVersion <= 0 {
 			return fmt.Errorf("operation version must be positive")
 		}
@@ -69,6 +74,11 @@ func (r Request) Validate() error {
 		}
 		if r.Environment.OwnerID != r.CodespaceUUID {
 			return fmt.Errorf("runtime environment does not belong to codespace")
+		}
+		if r.Action == "resume" || r.Action == "stop" {
+			if err := r.DevContainer.Validate(); err != nil {
+				return fmt.Errorf("invalid Dev Container injection configuration: %w", err)
+			}
 		}
 	default:
 		return fmt.Errorf("runtime action %q is invalid", r.Action)

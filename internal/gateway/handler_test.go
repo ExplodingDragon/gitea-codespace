@@ -12,15 +12,19 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-type gatewayHandlerTestControlPlane struct{}
-
-func (gatewayHandlerTestControlPlane) ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error) {
-	return gatewayOpenTokenDecision{}, nil
+type gatewayHandlerTestControlPlane struct {
+	openDecision gatewayOpenTokenDecision
 }
 
-func (gatewayHandlerTestControlPlane) ValidatePublicEndpoint(context.Context, string, string) (gatewayAccessDecision, error) {
+func (c gatewayHandlerTestControlPlane) ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error) {
+	return c.openDecision, nil
+}
+
+func (gatewayHandlerTestControlPlane) ValidatePublicEndpoint(context.Context, string, string, string) (gatewayAccessDecision, error) {
 	return gatewayAccessDecision{Allowed: true}, nil
 }
 
@@ -89,6 +93,7 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	t.Cleanup(routes.Close)
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
 	if err := routes.Put(EndpointRoute{
+		SiteUID:       "site-1",
 		GiteaWebURL:   "https://gitea.example.test",
 		CodespaceUUID: runtimeUUID,
 		EndpointID:    "app-3000",
@@ -142,4 +147,54 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	if string(payload) != "ping" {
 		t.Fatalf("payload = %q, want ping", payload)
 	}
+}
+
+func TestGatewayRejectsSessionForAnotherSite(t *testing.T) {
+	t.Parallel()
+
+	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	routes := NewRouteStore(gatewayHandlerTestBackend{})
+	t.Cleanup(routes.Close)
+	if err := routes.Put(EndpointRoute{
+		SiteUID:       "site-1",
+		GiteaWebURL:   "https://gitea.example.test",
+		CodespaceUUID: runtimeUUID,
+		EndpointID:    runtimeendpoint.WorkspaceEndpointID,
+		Label:         runtimeendpoint.WorkspaceEndpointLabel,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	policy, err := NewOriginPolicy("https://gateway.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessions := newGatewaySessionRegistry(t)
+	access := NewAccessControllerFromConfig(validGatewayConfig())
+
+	t.Run("open code", func(t *testing.T) {
+		control := gatewayHandlerTestControlPlane{openDecision: gatewayOpenTokenDecision{
+			Allowed: true,
+			Binding: OpenTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
+		}}
+		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/.gitea-codespace/open?code=secret", nil)
+		response := httptest.NewRecorder()
+		NewHandler(nil, sessions.SessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
+		if response.Code != http.StatusForbidden {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+		}
+	})
+
+	t.Run("browser session", func(t *testing.T) {
+		token, err := sessions.Create(OpenTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
+		if err != nil {
+			t.Fatal(err)
+		}
+		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/", nil)
+		request.AddCookie(&http.Cookie{Name: SecureSessionCookieName, Value: token})
+		response := httptest.NewRecorder()
+		NewHandler(nil, sessions.SessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
+		}
+	})
 }

@@ -27,7 +27,9 @@ func TestCoordinationUpdates(t *testing.T) {
 			s.MetadataGeneration++
 			s.Boot = &api.RuntimeBoot{}
 		}, false},
-		{"target changed", &api.Codespace{}, func(o client.Object) { o.(*api.Codespace).Status.Target = &api.AgentTarget{Version: 2, Ready: true} }, true},
+		{"target changed", &api.Codespace{}, func(o client.Object) {
+			o.(*api.Codespace).Status.Target = &api.AgentTarget{Version: 2, Ready: true, WorkspaceFolder: "/workspaces/project"}
+		}, true},
 		{"result ready", &api.Codespace{}, func(o client.Object) {
 			o.(*api.Codespace).Status.Result = &api.OperationResult{Version: 1, Succeeded: true}
 		}, true},

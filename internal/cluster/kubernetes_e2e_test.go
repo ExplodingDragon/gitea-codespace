@@ -147,7 +147,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{})))
 
 	environment := e2eRuntime.environmentConfiguration()
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: environment}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Runtime: environment}}
 	require.NoError(t, c.Create(ctx, template))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
@@ -174,7 +174,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 		return &codespacev1.FinalizeOperationResponse{}, nil
 	}}
 	operations := Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: cluster.managementNamespace, PlatformImage: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE")}
-	require.NoError(t, operations.Accept(ctx, site, remote, &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard", RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}, time.Now()))
+	require.NoError(t, operations.Accept(ctx, site, remote, &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: template.Name, RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}, time.Now()))
 	var allocated api.Codespace
 	key := types.NamespacedName{Namespace: namespace, Name: "codespace-2"}
 	require.NoError(t, c.Get(ctx, key, &allocated))

@@ -5,8 +5,11 @@ package devcontainer
 
 import (
 	"fmt"
+	"path"
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 )
 
 // StateFormatVersion is the only state representation accepted by this package.
@@ -42,6 +45,13 @@ type State struct {
 	LifecycleCommands   LifecycleCommands `json:"lifecycle_commands"`
 }
 
+// IsValidWorkspaceFolder reports whether value is a canonical absolute path
+// inside a Dev Container.
+func IsValidWorkspaceFolder(value string) bool {
+	return value != "" && strings.TrimSpace(value) == value && len(value) <= 4096 && utf8.ValidString(value) &&
+		path.IsAbs(value) && path.Clean(value) == value && !strings.ContainsFunc(value, unicode.IsControl)
+}
+
 // Validate checks the state identity and the resources required for future operations.
 func (s *State) Validate() error {
 	if s == nil || s.Version != StateFormatVersion {
@@ -56,7 +66,8 @@ func (s *State) Validate() error {
 	if !strings.HasPrefix(strings.TrimSpace(s.ConfigurationPath), "/") || len(s.ConfigurationSHA256) != 64 {
 		return fmt.Errorf("dev container configuration identity is incomplete")
 	}
-	if !strings.HasPrefix(strings.TrimSpace(s.Workspace), "/") || !strings.HasPrefix(strings.TrimSpace(s.WorkspaceFolder), "/") || !strings.HasPrefix(strings.TrimSpace(s.RemoteWorkdir), "/") {
+	if !strings.HasPrefix(strings.TrimSpace(s.Workspace), "/") || !strings.HasPrefix(strings.TrimSpace(s.RemoteWorkdir), "/") ||
+		!IsValidWorkspaceFolder(s.WorkspaceFolder) {
 		return fmt.Errorf("dev container state paths must be absolute")
 	}
 	if strings.TrimSpace(s.RemoteUser) == "" {

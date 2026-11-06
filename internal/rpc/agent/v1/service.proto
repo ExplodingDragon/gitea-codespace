@@ -131,6 +131,8 @@ message AccessTarget {
   string primary_container_id = 2;
   repeated EndpointTarget endpoints = 3;
   bool ready = 4;
+  // workspace_folder is the resolved project folder inside the primary Dev Container.
+  string workspace_folder = 5;
 }
 
 message EndpointTarget {

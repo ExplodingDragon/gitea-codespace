@@ -107,20 +107,21 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		containerEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
 	}
 	return containerdocker.CreateOptions{
-		OwnerID:             request.CodespaceUUID,
-		Workspace:           request.Workspace,
-		Source:              request.Source,
-		AllowedPathRoot:     request.Workspace,
-		HostUser:            request.HostUser,
-		LocalEnvironment:    request.LocalEnvironment,
-		PlatformEnvironment: platformEnvironment,
-		Secrets:             request.Secrets,
-		Cache:               request.Cache,
-		RunLifecycle:        request.RunLifecycle,
-		InjectedFeatures:    injected,
-		AdditionalMounts:    mounts,
-		ContainerEnv:        containerEnvironment,
-		Labels:              map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
+		OwnerID:                 request.CodespaceUUID,
+		Workspace:               request.Workspace,
+		Source:                  request.Source,
+		AllowedPathRoot:         request.Workspace,
+		HostUser:                request.HostUser,
+		LocalEnvironment:        request.LocalEnvironment,
+		PlatformEnvironment:     platformEnvironment,
+		Secrets:                 request.Secrets,
+		Cache:                   request.Cache,
+		RunLifecycle:            request.RunLifecycle,
+		TemplateLifecycleScript: request.DevContainer.LifecycleScript,
+		InjectedFeatures:        injected,
+		AdditionalMounts:        mounts,
+		ContainerEnv:            containerEnvironment,
+		Labels:                  map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
 	}, nil
 }
 

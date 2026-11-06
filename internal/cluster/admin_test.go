@@ -119,7 +119,7 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.Contains(t, w.Body.String(), `"isolation":"sysbox"`)
 
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default"}}
-	require.NoError(t, server.saveEnvironment(t.Context(), template, adminEnvironmentWrite{Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}, true))
+	require.NoError(t, server.saveEnvironment(t.Context(), template, adminEnvironmentWrite{adminWriteIdentity: adminWriteIdentity{Name: template.Name}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}, true))
 	template.Spec.Runtime.Isolation = api.IsolationKata
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
 
@@ -146,7 +146,7 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 	t.Cleanup(gitea.Close)
 	registration.webURL = "https://gitea.example.com"
 
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "default", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Tag: "standard", Runtime: testEnvironment()}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}
 	gateway := testGatewayComponent("gateway", "gateway-uid")
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(template, gateway).WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
 		object.SetUID(types.UID(uuid.NewV4().String()))
@@ -296,7 +296,7 @@ func TestAdminStopsRuntimeByExactIdentity(t *testing.T) {
 				ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
 				Spec:       api.CodespaceSpec{Operation: api.Operation{Type: "resume", Version: 3}},
 				Status: api.CodespaceStatus{
-					SettledOperationVersion: 3, Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true},
+					SettledOperationVersion: 3, Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"},
 				},
 			}
 			if test.active {
@@ -333,7 +333,7 @@ func TestAdminDeletesRuntimeOnlyAfterDisablingSite(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}},
-		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true}},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}},
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, cs).Build()
 	s := &AdminServer{Client: c, Namespace: "codespace-system"}

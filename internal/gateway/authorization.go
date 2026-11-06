@@ -7,7 +7,7 @@ import "context"
 
 type gatewayControlPlaneClient interface {
 	ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error)
-	ValidatePublicEndpoint(context.Context, string, string) (gatewayAccessDecision, error)
+	ValidatePublicEndpoint(context.Context, string, string, string) (gatewayAccessDecision, error)
 	VerifySSHPublicKey(context.Context, string, []byte) (gatewaySSHAuthDecision, error)
 	RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error)
 	RevalidateSSHSession(context.Context, string, int64, string) (gatewayAccessDecision, error)

@@ -21,6 +21,7 @@ import (
 	"connectrpc.com/connect/v2/connectproto"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
+	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
@@ -379,10 +380,10 @@ func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 		cs.Status.Boot = boot
 	}
 	if report.Target != nil {
-		if !startup || report.Target.Version <= 0 || (report.Target.Ready && report.Target.PrimaryContainerId == "") {
+		if !startup || report.Target.Version <= 0 || (report.Target.Ready && (report.Target.PrimaryContainerId == "" || !devcontainer.IsValidWorkspaceFolder(report.Target.WorkspaceFolder))) {
 			return connect.NewError(connect.CodeInvalidArgument, "invalid Agent access target")
 		}
-		target := &api.AgentTarget{Version: report.Target.Version, Ready: report.Target.Ready, PrimaryContainerID: report.Target.PrimaryContainerId}
+		target := &api.AgentTarget{Version: report.Target.Version, Ready: report.Target.Ready, PrimaryContainerID: report.Target.PrimaryContainerId, WorkspaceFolder: report.Target.WorkspaceFolder}
 		if len(report.Target.Endpoints) > 64 {
 			return connect.NewError(connect.CodeInvalidArgument, "too many endpoints")
 		}

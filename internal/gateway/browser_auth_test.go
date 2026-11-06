@@ -14,7 +14,7 @@ func newTestGatewayBrowserAuth(t *testing.T, address string) *BrowserAuth {
 	t.Helper()
 	routes := NewRouteStore(nil)
 	t.Cleanup(routes.Close)
-	if err := routes.Put(EndpointRoute{GiteaWebURL: address, CodespaceUUID: "11111111-1111-4111-8111-111111111111", EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
+	if err := routes.Put(EndpointRoute{SiteUID: "site-1", GiteaWebURL: address, CodespaceUUID: "11111111-1111-4111-8111-111111111111", EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
 		t.Fatal(err)
 	}
 	return NewBrowserAuth(routes)
@@ -35,7 +35,7 @@ func TestGatewayBrowserAuthOpenURLUsesCodespaceDetail(t *testing.T) {
 	}
 	otherID := "22222222-2222-4222-8222-222222222222"
 	otherURL := "https://other.example.test/"
-	if err := auth.routes.Put(EndpointRoute{GiteaWebURL: otherURL, CodespaceUUID: otherID, EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
+	if err := auth.routes.Put(EndpointRoute{SiteUID: "site-2", GiteaWebURL: otherURL, CodespaceUUID: otherID, EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
 		t.Fatal(err)
 	}
 	if target, ok := auth.openURL(otherID, "workspace"); !ok || !strings.HasPrefix(target, otherURL) {

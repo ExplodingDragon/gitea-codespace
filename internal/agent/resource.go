@@ -24,17 +24,17 @@ type ResourceSampler struct {
 
 func (s *ResourceSampler) Sample() *codespacev1.RuntimeResourceUsage {
 	now := time.Now()
-	usedCPU, _ := cgroupValue("/sys/fs/cgroup/cpu.stat", "usage_usec")
-	limitCPU := int64(0)
-	if data, err := os.ReadFile("/sys/fs/cgroup/cpu.max"); err == nil {
-		parts := strings.Fields(string(data))
-		if len(parts) == 2 && parts[0] != "max" {
-			quota, quotaErr := strconv.ParseInt(parts[0], 10, 64)
-			period, periodErr := strconv.ParseInt(parts[1], 10, 64)
-			if quotaErr == nil && periodErr == nil && quota >= 0 && period > 0 {
-				limitCPU = quota * 1000 / period
-			}
-		}
+	usedCPU, err := cgroupValue("/sys/fs/cgroup/cpu.stat", "usage_usec")
+	if err != nil {
+		return nil
+	}
+	cpuMax, err := os.ReadFile("/sys/fs/cgroup/cpu.max")
+	if err != nil {
+		return nil
+	}
+	limitCPU, err := parseCPUMax(cpuMax)
+	if err != nil {
+		return nil
 	}
 	s.mu.Lock()
 	usedMillicores := int64(0)
@@ -43,23 +43,64 @@ func (s *ResourceSampler) Sample() *codespacev1.RuntimeResourceUsage {
 	}
 	s.lastCPU, s.lastClock = usedCPU, now
 	s.mu.Unlock()
-	memory, _ := fileInt64("/sys/fs/cgroup/memory.current")
-	memoryLimit := int64(0)
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil && strings.TrimSpace(string(data)) != "max" {
-		memoryLimit, _ = strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	memory, err := fileInt64("/sys/fs/cgroup/memory.current")
+	if err != nil {
+		return nil
+	}
+	memoryMax, err := os.ReadFile("/sys/fs/cgroup/memory.max")
+	if err != nil {
+		return nil
+	}
+	memoryLimit, err := parseMemoryMax(memoryMax)
+	if err != nil {
+		return nil
 	}
 	var filesystem unix.Statfs_t
-	diskUsed, diskLimit := int64(0), int64(0)
-	if err := unix.Statfs(runtimeVolume, &filesystem); err == nil {
-		diskLimit = int64(filesystem.Blocks) * filesystem.Bsize
-		diskUsed = int64(filesystem.Blocks-filesystem.Bavail) * filesystem.Bsize
+	if err := unix.Statfs(runtimeVolume, &filesystem); err != nil {
+		return nil
 	}
+	diskLimit := int64(filesystem.Blocks) * filesystem.Bsize
+	if diskLimit <= 0 {
+		return nil
+	}
+	diskUsed := int64(filesystem.Blocks-filesystem.Bavail) * filesystem.Bsize
 	return &codespacev1.RuntimeResourceUsage{
-		Cpu:          &codespacev1.RuntimeCPUUsage{UsedMillicores: max(usedMillicores, 0), LimitMillicores: max(limitCPU, 0)},
-		Memory:       &codespacev1.RuntimeMemoryUsage{UsedBytes: max(memory, 0), LimitBytes: max(memoryLimit, 0)},
-		Disk:         &codespacev1.RuntimeDiskUsage{UsedBytes: max(diskUsed, 0), LimitBytes: max(diskLimit, 0)},
+		Cpu:          &codespacev1.RuntimeCPUUsage{UsedMillicores: max(usedMillicores, 0), LimitMillicores: limitCPU},
+		Memory:       &codespacev1.RuntimeMemoryUsage{UsedBytes: max(memory, 0), LimitBytes: memoryLimit},
+		Disk:         &codespacev1.RuntimeDiskUsage{UsedBytes: max(diskUsed, 0), LimitBytes: diskLimit},
 		ObservedUnix: now.Unix(),
 	}
+}
+
+func parseCPUMax(data []byte) (int64, error) {
+	parts := strings.Fields(string(data))
+	if len(parts) != 2 {
+		return 0, os.ErrInvalid
+	}
+	period, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || period <= 0 {
+		return 0, os.ErrInvalid
+	}
+	if parts[0] == "max" {
+		return 0, nil
+	}
+	quota, err := strconv.ParseInt(parts[0], 10, 64)
+	if err != nil || quota <= 0 {
+		return 0, os.ErrInvalid
+	}
+	return quota * 1000 / period, nil
+}
+
+func parseMemoryMax(data []byte) (int64, error) {
+	value := strings.TrimSpace(string(data))
+	if value == "max" {
+		return 0, nil
+	}
+	limit, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || limit <= 0 {
+		return 0, os.ErrInvalid
+	}
+	return limit, nil
 }
 
 func cgroupValue(path, name string) (int64, error) {

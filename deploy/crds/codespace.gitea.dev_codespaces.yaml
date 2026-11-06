@@ -105,6 +105,9 @@ spec:
                           - reference
                           type: object
                         type: array
+                      lifecycleScript:
+                        maxLength: 65536
+                        type: string
                       webIDE:
                         description: WebIDEConfiguration defines the platform-managed
                           code-server installation.
@@ -449,6 +452,12 @@ spec:
                   version:
                     format: int64
                     type: integer
+                  workspaceFolder:
+                    description: WorkspaceFolder is the resolved project folder inside
+                      the primary Dev Container.
+                    maxLength: 4096
+                    pattern: ^/
+                    type: string
                 required:
                 - endpoints
                 - primaryContainerID

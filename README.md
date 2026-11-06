@@ -1,45 +1,42 @@
 # Gitea Codespace
 
-Gitea Codespace provides isolated, Dev Container-based development
-environments for Gitea repositories on Kubernetes. Users create and manage
-their environments from Gitea, then connect through a browser, SSH, or SFTP.
+Gitea Codespace provides isolated, Dev Container-based development environments
+for Gitea repositories on Kubernetes. Create, stop, resume, and delete an
+environment from Gitea, then work in a browser IDE or connect with SSH or SFTP.
 
-## Use a Codespace
+## Getting started
 
-After an administrator connects Gitea to a Codespace deployment:
+After a Gitea administrator enables Codespaces:
 
-1. open a supported repository, commit, or pull request page in Gitea;
-2. choose **Create Codespace**, then select an available runtime environment
-   and Dev Container configuration;
-3. follow creation progress and logs from the Codespace page; and
-4. open the environment in the browser or connect through SSH or SFTP.
+1. Open a repository, commit, or pull request in Gitea.
+2. Select **Create Codespace** and choose an environment and Dev Container
+   configuration.
+3. Follow the build log until the environment is ready.
+4. Open the workspace in the browser, VS Code, or Zed, or use the displayed SSH
+   and SFTP connection details.
 
-Codespaces retain their workspace when stopped and can be resumed later.
-Repository Dev Container configuration controls the development environment,
-while administrators provide reusable runtime templates and optional shared
-image caching.
+The workspace persists while a Codespace is stopped, so it can be resumed
+without cloning the repository again. The repository's Dev Container
+configuration defines the project tools, while the selected environment defines
+the Kubernetes isolation, storage, and resource policy.
 
-## Access and ports
+## Application ports
 
-The Codespace page lists the available browser, SSH, and SFTP connections.
 Applications can publish HTTP ports from inside the Dev Container with the
 `gitea-codespace-endpoint` command. Private endpoints follow the current Gitea
-user's access, while public endpoints are explicitly selected when published.
+user's access. Public access is enabled explicitly for an endpoint.
 
-## Deploy
+## Installation
 
-Cluster operators install Gitea Codespace with its OCI Helm chart. A deployment
-requires Kubernetes 1.31 or later, Helm 4.3 or later, a Gitea installation with
-Codespace support, and a verified Kata Containers or Sysbox runtime. Follow the
-[Helm installation and operations guide](charts/gitea-codespace/README.md) to
-prepare isolation, storage, network entry points, and the Gitea registration.
+Cluster operators install Gitea Codespace with the OCI Helm chart. The
+[Helm guide](charts/gitea-codespace/README.md) covers cluster requirements,
+installation, runtime isolation, networking, and Gitea registration.
 
 ## Documentation
 
-- [Helm installation and operations](charts/gitea-codespace/README.md) for
-  cluster administrators
-- [Developer guide](DEVELOPMENT.md)
-- [Architecture and design](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
+- [Helm installation and operations](charts/gitea-codespace/README.md)
+- [Development](DEVELOPMENT.md)
+- [Architecture](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
 
 ## License
 
