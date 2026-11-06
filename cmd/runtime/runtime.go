@@ -17,6 +17,7 @@ func NewCommand() *cobra.Command {
 		newConnectCommand(),
 		newSFTPCommand(),
 		newEndpointCommand(),
+		newWebIDECommand(),
 	)
 	return command
 }

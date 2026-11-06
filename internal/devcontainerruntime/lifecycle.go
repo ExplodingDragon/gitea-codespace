@@ -6,8 +6,8 @@ package devcontainerruntime
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
-	"time"
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
@@ -17,6 +17,12 @@ import (
 func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *devcontainer.State, returnErr error) {
 	if err := request.Validate(); err != nil {
 		return nil, err
+	}
+	if stdout == nil {
+		stdout = io.Discard
+	}
+	if stderr == nil {
+		stderr = io.Discard
 	}
 	engine, err := containerdocker.New(ctx, stdout, stderr)
 	if err != nil {
@@ -40,26 +46,29 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		if err != nil {
 			return nil, err
 		}
-		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr); err != nil {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-			defer cancel()
-			_ = engine.Delete(cleanup, state)
-			return nil, err
-		}
+		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
 		return state, nil
 	case "resume":
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
 				return err
 			}
-			return configureGitCA(ctx, engine, state, request.GiteaURL, request.GiteaCustomCA)
+			values := map[string]string{
+				"GITEA_CONFIGURE_CA_ONLY": "true",
+				"GITEA_URL":               request.GiteaURL,
+			}
+			if request.GiteaCustomCA {
+				values["GITEA_CA_BUNDLE"] = containerCABundlePath
+			}
+			if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
+				return fmt.Errorf("configure Gitea CA for Git in Dev Container: %w", err)
+			}
+			return nil
 		}, request.RunLifecycle)
 		if err != nil {
 			return nil, err
 		}
-		if err := startWorkspaceServices(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr); err != nil {
-			return nil, err
-		}
+		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
 		return state, nil
 	case "stop":
 		return engine.Stop(ctx, request.Environment)

@@ -172,6 +172,21 @@ func (e *Engine) Run(ctx context.Context, containerID, user, workdir string, com
 	return err
 }
 
+// RunDetached starts a long-running command without attaching its streams to
+// the lifecycle operation that launched it.
+func (e *Engine) RunDetached(ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string) error {
+	created, err := e.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
+		User: user, WorkingDir: workdir, Cmd: command, Env: environmentList(environment),
+	})
+	if err != nil {
+		return fmt.Errorf("create detached container exec: %w", err)
+	}
+	if err := e.client.ContainerExecStart(ctx, created.ID, container.ExecStartOptions{Detach: true}); err != nil {
+		return fmt.Errorf("start detached container exec: %w", err)
+	}
+	return nil
+}
+
 const maxExecCaptureBytes = 1024 * 1024
 
 type execOutput struct {

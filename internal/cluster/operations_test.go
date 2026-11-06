@@ -74,7 +74,9 @@ func TestOperationBindingRecovery(t *testing.T) {
 		return &codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: allocated}, nil
 	}}
 	invalid := &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard"}}}
-	require.ErrorContains(t, o.Accept(t.Context(), site, remote, invalid, time.Now()), "invalid effective Runtime settings")
+	err := o.Accept(t.Context(), site, remote, invalid, time.Now())
+	require.ErrorIs(t, err, errOperationRejected)
+	require.ErrorContains(t, err, "invalid effective Runtime settings")
 	require.True(t, apierrors.IsNotFound(c.Get(t.Context(), types.NamespacedName{Namespace: "codespace-example", Name: "codespace-2"}, &api.Codespace{})))
 
 	input := &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard", RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}
@@ -100,7 +102,9 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.Zero(t, o.Authority.Remaining(cs.UID, 1))
 	changed := proto.Clone(input).(*codespacev1.OperationPayload)
 	changed.GetCreate().EnvironmentTag = "another"
-	require.ErrorContains(t, o.Accept(t.Context(), site, remote, changed, time.Now()), "changed an already persisted operation")
+	err = o.Accept(t.Context(), site, remote, changed, time.Now())
+	require.ErrorIs(t, err, errOperationRejected)
+	require.ErrorContains(t, err, "changed an already persisted operation")
 	abort := &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: allocated, OperationRversion: 1, Command: &codespacev1.OperationPayload_AbortCreate{AbortCreate: &codespacev1.AbortCreateOperationPayload{}}}
 	require.NoError(t, o.Accept(t.Context(), site, remote, abort, time.Now()))
 	require.Zero(t, o.Authority.Remaining(cs.UID, 1))
@@ -109,6 +113,64 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.NoError(t, o.Accept(t.Context(), site, remote, resume, time.Now()))
 	require.NoError(t, c.Get(t.Context(), key, &cs))
 	require.Empty(t, cs.Status.RecoveryAction)
+}
+
+func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		operationType  string
+		payload        func() *codespacev1.OperationPayload
+		bound          bool
+		finalType      codespacev1.OperationType
+		finalUUID      string
+		recoveryAction string
+	}{
+		{name: "create", operationType: "create", payload: func() *codespacev1.OperationPayload {
+			return &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE, recoveryAction: "delete"},
+		{name: "resume", operationType: "resume", payload: func() *codespacev1.OperationPayload {
+			return &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", OperationRversion: 3, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{}}}
+		}, bound: true, finalType: codespacev1.OperationType_OPERATION_TYPE_RESUME, finalUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", recoveryAction: "stop"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			site := testSite("example", "site-uid")
+			cs := &api.Codespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "codespace-1", Namespace: "codespace-example", UID: "runtime-uid"},
+				Spec: api.CodespaceSpec{
+					Site:        api.ResourceReference{Name: site.Name, UID: site.UID},
+					CodespaceID: 1,
+					RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986",
+					Operation:   api.Operation{Type: tc.operationType, Version: 3},
+				},
+				Status: api.CodespaceStatus{Bound: tc.bound},
+			}
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
+			authority := &ExecutionAuthority{}
+			authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
+			o := Operations{Client: c, Authority: authority, ManagementNamespace: "codespace-system"}
+			attempts := 0
+			remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
+				require.EqualValues(t, 1, request.CodespaceId)
+				require.Equal(t, tc.finalUUID, request.RuntimeUuid)
+				require.EqualValues(t, 3, request.OperationRversion)
+				require.Equal(t, tc.finalType, request.OperationType)
+				require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
+				attempts++
+				if attempts == 1 {
+					return nil, fmt.Errorf("final response lost")
+				}
+				return &codespacev1.FinalizeOperationResponse{}, nil
+			}}
+
+			require.ErrorContains(t, o.finalizeRejectedOperation(t.Context(), site, remote, tc.payload()), "final response lost")
+			require.Zero(t, authority.Remaining(cs.UID, 3))
+			require.NoError(t, o.finalizeRejectedOperation(t.Context(), site, remote, tc.payload()))
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+			require.EqualValues(t, 3, cs.Status.SettledOperationVersion)
+			require.Equal(t, tc.recoveryAction, cs.Status.RecoveryAction)
+			require.Zero(t, authority.Remaining(cs.UID, 3))
+		})
+	}
 }
 
 func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
@@ -139,7 +201,7 @@ func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
 }
 
 func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2}, Spec: api.CodespaceSpec{RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Bound: true, Result: &api.OperationResult{Version: 1, Succeeded: true}}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2}, Spec: api.CodespaceSpec{CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Bound: true, Result: &api.OperationResult{Version: 1, Succeeded: true}}}
 	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container"}
 	cs.Status.Boot = &api.RuntimeBoot{OperationVersion: 1, Stage: "ready", StartedUnix: 1, LastUpdateUnix: 2}
 	cs.Status.MetadataGeneration = 1
@@ -158,6 +220,7 @@ func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
 		},
 		final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
 			events = append(events, "final")
+			require.EqualValues(t, 1, request.CodespaceId)
 			finalAttempts++
 			if finalAttempts == 1 {
 				return nil, fmt.Errorf("final response lost")

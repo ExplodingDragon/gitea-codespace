@@ -11,22 +11,47 @@ import (
 	"net"
 	"path/filepath"
 	"strconv"
+	"time"
 
 	"github.com/pkg/sftp"
 )
 
 // Connect bridges a stream to an allowed loopback address.
-func Connect(ctx context.Context, host string, port uint16, stdin io.Reader, stdout io.Writer) error {
+func Connect(ctx context.Context, host string, port uint16, wait time.Duration, stdin io.Reader, stdout io.Writer) error {
 	if host != "localhost" && host != "127.0.0.1" && host != "::1" {
 		return fmt.Errorf("runtime TCP host must be localhost")
 	}
 	if port == 0 {
 		return fmt.Errorf("runtime TCP port is invalid")
 	}
+	if wait < 0 || wait > 30*time.Second {
+		return fmt.Errorf("runtime TCP wait must be between zero and 30 seconds")
+	}
+	dialContext := ctx
+	if wait > 0 {
+		var cancel context.CancelFunc
+		dialContext, cancel = context.WithTimeout(ctx, wait)
+		defer cancel()
+	}
 	var dialer net.Dialer
-	connection, err := dialer.DialContext(ctx, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
-	if err != nil {
-		return fmt.Errorf("connect Dev Container localhost port: %w", err)
+	address := net.JoinHostPort(host, strconv.Itoa(int(port)))
+	var connection net.Conn
+	for {
+		var err error
+		connection, err = dialer.DialContext(dialContext, "tcp", address)
+		if err == nil {
+			break
+		}
+		if wait == 0 {
+			return fmt.Errorf("connect Dev Container localhost port: %w", err)
+		}
+		timer := time.NewTimer(200 * time.Millisecond)
+		select {
+		case <-timer.C:
+		case <-dialContext.Done():
+			timer.Stop()
+			return fmt.Errorf("connect Dev Container localhost port: %w", errors.Join(err, dialContext.Err()))
+		}
 	}
 	defer func() { _ = connection.Close() }()
 	copyDone := make(chan error, 1)

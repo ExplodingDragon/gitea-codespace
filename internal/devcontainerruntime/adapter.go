@@ -25,9 +25,6 @@ var configureGitScript string
 //go:embed builtin/install-ca.sh
 var installCAScript string
 
-//go:embed builtin/start-web-ide.sh
-var startWebIDEScript string
-
 //go:embed builtin/endpoint.sh
 var endpointScript []byte
 
@@ -169,62 +166,47 @@ func configureCA(ctx context.Context, engine *containerdocker.Engine, state *dev
 	return nil
 }
 
-func configureGitCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, giteaURL string, custom bool) error {
-	values := map[string]string{
-		"GITEA_CONFIGURE_CA_ONLY": "true",
-		"GITEA_URL":               giteaURL,
-	}
-	if custom {
-		values["GITEA_CA_BUNDLE"] = containerCABundlePath
-	}
-	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
-		return fmt.Errorf("configure Gitea CA for Git in Dev Container: %w", err)
-	}
-	return nil
-}
-
-func startWorkspaceServices(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initializeWebIDE bool, stdout, stderr io.Writer) error {
-	if stdout == nil {
-		stdout = io.Discard
-	}
-	if stderr == nil {
-		stderr = io.Discard
-	}
+func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stdout, stderr io.Writer) {
 	if !configuration.WebIDE.Enabled {
-		return nil
+		return
 	}
-	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets, map[string]string{
-		"GITEA_WEB_IDE_INITIALIZE": strconv.FormatBool(initializeWebIDE),
-		"GITEA_WEB_IDE_PORT":       fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
-		"GITEA_WORKSPACE":          state.RemoteWorkdir,
-	})
-	var settingsReader io.Reader
-	if initializeWebIDE {
+	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
+	var startErr error
+	if initialize {
 		customizations, err := resolveWebIDECustomizations(state.Configuration.Customizations["vscode"])
 		if err != nil {
-			return err
+			startErr = err
 		}
-		settings, err := json.Marshal(customizations.Settings)
-		if err != nil {
-			return fmt.Errorf("encode Web IDE settings: %w", err)
+		if startErr == nil {
+			settings, err := json.Marshal(customizations.Settings)
+			if err != nil {
+				startErr = fmt.Errorf("encode Web IDE settings: %w", err)
+			} else if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "prepare"}, values, bytes.NewReader(settings)); err != nil {
+				startErr = fmt.Errorf("initialize platform Web IDE settings: %w", err)
+			}
 		}
-		settingsReader = bytes.NewReader(settings)
-		if len(customizations.Extensions) > 0 {
-			_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
-		}
-		for _, extension := range customizations.Extensions {
-			if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--force", "--install-extension", extension}, values, nil); err != nil {
-				_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
+		if startErr == nil {
+			if len(customizations.Extensions) > 0 {
+				_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
+			}
+			for _, extension := range customizations.Extensions {
+				if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--force", "--install-extension", extension}, values, nil); err != nil {
+					_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
+				}
 			}
 		}
 	}
-	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", startWebIDEScript}, values, settingsReader); err != nil {
-		return fmt.Errorf("start platform Web IDE: %w", err)
+	if startErr == nil {
+		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "serve"}, values); err != nil {
+			startErr = fmt.Errorf("start platform Web IDE: %w", err)
+		}
+	}
+	if startErr != nil {
+		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE is unavailable and will not affect Codespace access: %v\n", startErr)
 	}
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
-		return err
+		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE postAttachCommand failed without affecting Codespace access: %v\n", err)
 	}
-	return nil
 }
 
 type webIDECustomizations struct {

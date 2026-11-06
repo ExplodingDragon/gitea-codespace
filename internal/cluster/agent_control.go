@@ -404,9 +404,6 @@ func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 			seen[endpoint.Endpoint.EndpointId] = true
 			target.Endpoints = append(target.Endpoints, api.AgentEndpoint{ID: endpoint.Endpoint.EndpointId, Label: endpoint.Endpoint.Label, Public: endpoint.Endpoint.Public, ContainerID: endpoint.ContainerId, Port: int32(endpoint.Port)})
 		}
-		if target.Ready && !seen[runtimeendpoint.WorkspaceEndpointID] {
-			return connect.NewError(connect.CodeInvalidArgument, "ready target requires a workspace endpoint")
-		}
 		if previous := cs.Status.Target; previous != nil && (target.Version < previous.Version || (target.Version == previous.Version && !reflect.DeepEqual(target, previous))) {
 			return connect.NewError(connect.CodeFailedPrecondition, "access target version does not identify the reported content")
 		}

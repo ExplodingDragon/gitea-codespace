@@ -406,15 +406,17 @@ func (r *Runtime) accessTarget(version int64, state *devcontainer.State) (*agent
 	if err != nil {
 		return nil, err
 	}
-	return accessTargetForContainer(version, state.PrimaryContainerID, r.endpoints, containers), nil
+	return accessTargetForContainer(version, state.PrimaryContainerID, r.DevContainer.WebIDE.Enabled, r.endpoints, containers), nil
 }
 
-func accessTargetForContainer(version int64, primaryContainerID string, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
+func accessTargetForContainer(version int64, primaryContainerID string, webIDEEnabled bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
 	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, Ready: true}
-	target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
-		Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},
-		ContainerId: primaryContainerID, Port: runtimeendpoint.WorkspaceEndpointPort,
-	})
+	if webIDEEnabled {
+		target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
+			Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},
+			ContainerId: primaryContainerID, Port: runtimeendpoint.WorkspaceEndpointPort,
+		})
+	}
 	for _, endpoint := range endpoints {
 		containerID := containers[endpoint.EndpointId]
 		if containerID == "" {

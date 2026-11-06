@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,6 +13,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -190,7 +192,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				c.Activity.RetainSite(string(uid), current)
 			}
 			for i := range rows.Items {
-				if !rows.Items[i].Status.Bound {
+				if !rows.Items[i].Status.Bound && rows.Items[i].Status.RecoveryAction == "" {
 					recovered = false
 					break
 				}
@@ -215,17 +217,40 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 			bindingsReady := true
 			for i := range rows.Items {
 				cs := &rows.Items[i]
-				if cs.Status.Bound {
+				if cs.Status.Bound || cs.Status.RecoveryAction != "" {
 					continue
 				}
 				if err := c.bind(ctx, cs, remote); err != nil {
+					if isPermanentOperationError(err) {
+						operationVersion, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.RuntimeUUID
+						if updateErr := updateCodespaceStatus(ctx, c.Client, cs, func(current *api.Codespace) error {
+							if current.Status.Bound || current.Spec.Operation.Version != operationVersion || current.Spec.RuntimeUUID != runtimeUUID {
+								return errObservedResourceChanged
+							}
+							current.Status.RecoveryAction = "delete"
+							return nil
+						}); updateErr != nil {
+							bindingsReady = false
+							recovered = false
+							logger.Error(updateErr, "Schedule rejected runtime cleanup", "codespace", cs.Name)
+						} else {
+							c.Authority.Revoke(cs.UID)
+						}
+						continue
+					}
 					bindingsReady = false
 					recovered = false
 					logger.Error(err, "Bind persisted runtime identity", "codespace", cs.Name)
 				}
 			}
 			if bindingsReady && (!recovered || time.Since(inventoryAt) >= 30*time.Second) {
-				if err := c.inventory(ctx, &site, rows.Items, remote); err != nil {
+				boundRows := make([]api.Codespace, 0, len(rows.Items))
+				for i := range rows.Items {
+					if rows.Items[i].Status.Bound {
+						boundRows = append(boundRows, rows.Items[i])
+					}
+				}
+				if err := c.inventory(ctx, &site, boundRows, remote); err != nil {
 					logger.Error(err, "Report complete runtime inventory")
 					bindingsReady = false
 					recovered = false
@@ -239,7 +264,11 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 			c.requestIdleStops(ctx, &site, rows.Items, remote)
 			request := &codespacev1.FetchOperationsRequest{ProtocolVersion: 1, WaitTimeoutMilliseconds: 5000}
 			for _, cs := range rows.Items {
-				if cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version {
+				accepted := c.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) > 0
+				if cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" {
+					accepted = true
+				}
+				if cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && accepted {
 					request.ObservedOperations = append(request.ObservedOperations, &codespacev1.ObservedOperation{RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version})
 				}
 			}
@@ -266,6 +295,13 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 			}
 			for _, operation := range response.Operations {
 				if err := c.Accept(ctx, &site, remote, operation, sent); err != nil {
+					if isPermanentOperationError(err) {
+						logger.Error(err, "Reject operation")
+						if finalErr := c.finalizeRejectedOperation(ctx, &site, remote, operation); finalErr != nil {
+							logger.Error(finalErr, "Finalize rejected operation")
+						}
+						continue
+					}
 					logger.Error(err, "Accept operation")
 				}
 			}
@@ -287,6 +323,18 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 		case <-ticker.C:
 		case <-changes:
 		}
+	}
+}
+
+func isPermanentOperationError(err error) bool {
+	if errors.Is(err, errOperationRejected) {
+		return true
+	}
+	switch connect.CodeOf(err) {
+	case connect.CodeInvalidArgument, connect.CodeNotFound, connect.CodeFailedPrecondition:
+		return true
+	default:
+		return false
 	}
 }
 

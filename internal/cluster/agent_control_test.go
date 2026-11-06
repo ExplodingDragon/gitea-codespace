@@ -265,7 +265,7 @@ func (s *runtimeAccessTestServer) UpdateLog(_ context.Context, request *codespac
 	return nil, err
 }
 
-func TestAgentStartupRequiresCurrentPrivateWorkspace(t *testing.T) {
+func TestAgentStartupValidatesOptionalWorkspace(t *testing.T) {
 	cs := &api.Codespace{Spec: api.CodespaceSpec{Operation: api.Operation{Type: "resume", Version: 3}}}
 	report := &agentv1.AgentReport{
 		OperationRversion: 3,
@@ -277,7 +277,9 @@ func TestAgentStartupRequiresCurrentPrivateWorkspace(t *testing.T) {
 	report.Boot.OperationRversion = 3
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
 	report.Target.Endpoints = nil
-	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(applyAgentReport(cs, report)))
+	require.NoError(t, applyAgentReport(cs, report))
+	require.True(t, cs.Status.Target.Ready)
+	require.Empty(t, cs.Status.Target.Endpoints)
 }
 
 func TestExecutionAuthorityVersions(t *testing.T) {

@@ -27,8 +27,7 @@ POSIX_SCRIPTS := \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
 	internal/devcontainerruntime/builtin/endpoint.sh \
-	internal/devcontainerruntime/builtin/install-ca.sh \
-	internal/devcontainerruntime/builtin/start-web-ide.sh
+	internal/devcontainerruntime/builtin/install-ca.sh
 GO_FILES := $(shell find . -path './.git' -prune -o -path './.tmp' -prune -o -path './web/node_modules' -prune -o -type f -name '*.go' -print)
 
 define prepare-proto-workspace

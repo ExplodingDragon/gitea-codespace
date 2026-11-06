@@ -25,6 +25,7 @@ import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
@@ -186,6 +187,9 @@ func prepareAccessExec(ctx context.Context, state *devcontainer.State, secrets m
 		}
 		containerID = endpoint.ContainerId
 		command, user, workdir = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(endpoint.Port), 10)}, "", "/"
+		if endpoint.Endpoint.GetEndpointId() == runtimeendpoint.WorkspaceEndpointID {
+			command = append(command, "--wait", "10s")
+		}
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP:
 		port := open.GetTcp().GetPort()
 		if port == 0 || port > 65535 {

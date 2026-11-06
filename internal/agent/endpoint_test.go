@@ -13,6 +13,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"github.com/stretchr/testify/require"
@@ -23,9 +24,9 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
 	journal, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
-	runtime := &Runtime{Journal: journal}
+	runtime := &Runtime{Journal: journal, DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Enabled: true}}}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
-	target := accessTargetForContainer(1, "container", runtime.endpoints, nil)
+	target := accessTargetForContainer(1, "container", true, runtime.endpoints, nil)
 	runtime.setAccessState(target, nil)
 
 	endpoints, err := runtime.setEndpoint(&codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Public: true, Port: 8080})
@@ -35,6 +36,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.EqualValues(t, 2, updated.Version)
 	require.Len(t, updated.Endpoints, 3)
 	require.True(t, updated.Endpoints[2].Endpoint.Public)
+	require.Empty(t, accessTargetForContainer(1, "container", false, nil, nil).Endpoints)
 
 	require.NoError(t, journal.Close())
 	journal, err = OpenJournal(directory, identity)

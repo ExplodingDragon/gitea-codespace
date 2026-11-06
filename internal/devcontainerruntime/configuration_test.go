@@ -22,7 +22,7 @@ func TestConfigurationValidation(t *testing.T) {
 				Options: apiextensionsv1.JSON{Raw: []byte(`{}`)},
 			}},
 		},
-		{name: "options required", configuration: Configuration{}, wantError: "options are required"},
+		{name: "options required", configuration: Configuration{}, wantError: "options for Web IDE are required"},
 		{
 			name: "duplicate feature identity",
 			configuration: Configuration{
@@ -35,14 +35,14 @@ func TestConfigurationValidation(t *testing.T) {
 			wantError: "same identity",
 		},
 		{
-			name: "web IDE options are an object",
+			name: "Web IDE options are an object",
 			configuration: Configuration{WebIDE: WebIDEConfiguration{
 				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`[]`)},
 			}},
-			wantError: "options must be a JSON object",
+			wantError: "options for Web IDE must be a JSON object",
 		},
 		{
-			name: "web IDE accepts upstream options",
+			name: "Web IDE accepts upstream options",
 			configuration: Configuration{WebIDE: WebIDEConfiguration{
 				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`{"version":"4.121.0","extensions":"example.tool"}`)},
 			}},

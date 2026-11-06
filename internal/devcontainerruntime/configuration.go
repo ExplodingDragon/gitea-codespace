@@ -44,15 +44,15 @@ type InjectedFeature struct {
 func (c Configuration) Validate() error {
 	seen := make(map[string]string, len(c.Features)+1)
 	if len(bytes.TrimSpace(c.WebIDE.Options.Raw)) == 0 {
-		return fmt.Errorf("web IDE options are required")
+		return fmt.Errorf("options for Web IDE are required")
 	}
-	if err := validateFeatureOptions("web IDE", c.WebIDE.Options.Raw); err != nil {
+	if err := validateFeatureOptions("Web IDE", c.WebIDE.Options.Raw); err != nil {
 		return err
 	}
 	if c.WebIDE.Enabled {
 		id, err := validateFeatureReference(webIDEFeatureReference)
 		if err != nil {
-			return fmt.Errorf("platform web IDE Feature: %w", err)
+			return fmt.Errorf("platform Web IDE Feature: %w", err)
 		}
 		seen[id] = webIDEFeatureReference
 	}
@@ -81,7 +81,7 @@ func validateFeatureOptions(name string, raw []byte) error {
 		return nil
 	}
 	if len(raw) > maxFeatureOptionsBytes || !json.Valid(raw) || raw[0] != '{' {
-		return fmt.Errorf("%s options must be a JSON object no larger than 16 KiB", name)
+		return fmt.Errorf("options for %s must be a JSON object no larger than 16 KiB", name)
 	}
 	return nil
 }

@@ -219,7 +219,7 @@ func (r *Runtime) updateTargetEndpointsLocked() (*agentv1.AccessTarget, bool, er
 	for _, endpoint := range r.target.Endpoints {
 		containers[endpoint.Endpoint.EndpointId] = endpoint.ContainerId
 	}
-	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.endpoints, containers)
+	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.DevContainer.WebIDE.Enabled, r.endpoints, containers)
 	r.target = proto.Clone(target).(*agentv1.AccessTarget)
 	return target, true, nil
 }

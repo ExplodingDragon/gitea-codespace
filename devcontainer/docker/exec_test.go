@@ -5,6 +5,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/stretchr/testify/require"
@@ -144,4 +146,35 @@ func TestDockerExecOutputAndCancellation(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDockerRunDetached(t *testing.T) {
+	requests := make(chan []byte, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/containers/container/exec"):
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"Id":"execution"}`)
+		case strings.HasSuffix(r.URL.Path, "/exec/execution/start"):
+			requests <- body
+			w.WriteHeader(http.StatusOK)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	apiClient, err := client.NewClientWithOpts(client.WithHost("tcp://"+server.Listener.Addr().String()), client.WithVersion("1.51"))
+	require.NoError(t, err)
+	defer func() { _ = apiClient.Close() }()
+	engine := &Engine{client: apiClient}
+	require.NoError(t, engine.RunDetached(t.Context(), "container", "user", "/workspace", []string{"service"}, map[string]string{"NAME": "value"}))
+	var options container.ExecStartOptions
+	select {
+	case body := <-requests:
+		require.NoError(t, json.Unmarshal(body, &options))
+	case <-time.After(time.Second):
+		t.Fatal("detached Docker execution did not start")
+	}
+	require.True(t, options.Detach)
 }
