@@ -724,7 +724,7 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 			return err
 		}
 		var shellOutput, shellError bytes.Buffer
-		shell.Stdin = strings.NewReader("printf shell-stdin-ok\\n")
+		shell.Stdin = strings.NewReader("printf '%s' shell-stdin-ok\n")
 		shell.Stdout = &shellOutput
 		shell.Stderr = &shellError
 		err = shell.Shell()
