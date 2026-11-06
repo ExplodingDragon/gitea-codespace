@@ -6,6 +6,7 @@ import type {
   Environment,
   Resource,
   RuntimeInstance,
+  RuntimeStatus,
   Site,
 } from '../src/api';
 
@@ -61,7 +62,7 @@ test('administration workflows preserve resource identity and validate cluster-b
       status: {available: true, readyReplicas: 2, desiredReplicas: 2},
     },
   ];
-  const runtimes: Resource<RuntimeInstance>[] = [
+  const runtimes: Resource<RuntimeInstance, RuntimeStatus>[] = [
     {
       name: 'runtime-one',
       namespace: 'codespace-production',
@@ -74,21 +75,15 @@ test('administration workflows preserve resource identity and validate cluster-b
         codespaceID: '42',
         runtimeUUID: '24d0874b-ad2a-4569-82ee-204ca30fb288',
         environmentTag: 'standard',
-        operation: 'stop',
+        operation: 'resume',
         version: 3,
       },
       status: {
         ready: false,
+        canStop: true,
+        stopping: false,
         pod: {name: 'runtime-pod', uid: 'pod-uid'},
-        conditions: [
-          {
-            type: 'InfrastructureReady',
-            status: 'False',
-            reason: 'WriterUnconfirmed',
-            message: 'previous writer has not been confirmed stopped',
-            observedGeneration: 2,
-          },
-        ],
+        conditions: [],
       },
     },
   ];
@@ -101,7 +96,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
-  let recoveryWrite: Record<string, string> | undefined;
+  let runtimeWrite: Record<string, string> | undefined;
   let rotationWrite: Record<string, string> = {};
   let failNextEnvironmentWrite = true;
   const requestedLanguages: string[] = [];
@@ -145,7 +140,10 @@ test('administration workflows preserve resource identity and validate cluster-b
     }
     const body = request.postDataJSON();
     if (kind === 'runtimes' && action) {
-      recoveryWrite = body;
+      runtimeWrite = body;
+      if (request.method() === 'POST') {
+        runtimes[0].status = {...runtimes[0].status, canStop: false, stopping: true};
+      }
       await route.fulfill({status: 204});
       return;
     } else if (kind === 'components' && action === 'rotate-ssh-host-key') {
@@ -325,29 +323,18 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(runtimeCells.nth(0)).toContainText('42');
   await expect(runtimeCells.nth(1)).toHaveText('production');
   await expect(runtimeCells.nth(2)).toHaveText('standard');
-  await expect(runtimeCells.nth(3)).toHaveText('stop #3');
+  await expect(runtimeCells.nth(3)).toHaveText('resume #3');
   await expect(runtimeCells.nth(4)).toContainText('runtime-pod');
-  await expect(runtimeRow.getByText('Waiting for confirmation that the previous writer stopped.')).toBeVisible();
-  await expect(runtimeRow.getByText('previous writer has not been confirmed stopped')).toBeHidden();
-  await runtimeRow.getByText('Technical details').click();
-  await expect(runtimeRow.getByText('previous writer has not been confirmed stopped')).toBeVisible();
-  await expect(runtimeCells.nth(5).getByRole('button', {name: 'Confirm stopped'})).toBeVisible();
-  await runtimeRow.getByRole('button', {name: 'Confirm stopped'}).click();
-  await page.getByRole('button', {name: 'Confirm stopped', exact: true}).last().click();
-  await expect
-    .poll(() => recoveryWrite)
-    .toEqual({
-      uid: 'runtime-uid',
-      resourceVersion: '8',
-      podUID: 'pod-uid',
-    });
-  await expect(page.getByRole('dialog')).toHaveCount(0);
-  recoveryWrite = undefined;
+  await expect(runtimeCells.nth(5).getByRole('button', {name: 'Stop'})).toBeVisible();
+  await runtimeRow.getByRole('button', {name: 'Stop'}).click();
+  await expect.poll(() => runtimeWrite).toEqual({uid: 'runtime-uid', podUID: 'pod-uid'});
+  await expect(runtimeRow.getByRole('button', {name: 'Stopping…'})).toBeDisabled();
+  runtimeWrite = undefined;
   await runtimeRow.getByRole('button', {name: 'Delete data'}).click();
   await expect(page.getByText('Disable the owning site first.', {exact: false})).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', {name: 'Delete', exact: true}).click();
-  await expect.poll(() => recoveryWrite).toEqual({uid: 'runtime-uid', resourceVersion: '8', podUID: 'pod-uid'});
+  await expect.poll(() => runtimeWrite).toEqual({uid: 'runtime-uid', resourceVersion: '8', podUID: 'pod-uid'});
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.setViewportSize({width: 1280, height: 900});
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);

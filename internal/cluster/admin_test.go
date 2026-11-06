@@ -268,30 +268,49 @@ func (s *adminRegistrationService) CheckManager(context.Context, *codespacev1.Ch
 	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.webURL, ManagerName: s.name}, nil
 }
 
-func TestAdminConfirmsMissingRuntimeWriterByExactIdentity(t *testing.T) {
-	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", ResourceVersion: "1"},
-		Status: api.CodespaceStatus{
-			Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"},
-			Conditions: []metav1.Condition{{
-				Type: "InfrastructureReady", Status: metav1.ConditionFalse, Reason: "RecoveryRequired",
-			}},
-		},
-	}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
-	server := &AdminServer{Client: c, Namespace: "codespace-system"}
-	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	body, err := json.Marshal(adminRuntimeRecovery{UID: cs.UID, ResourceVersion: cs.ResourceVersion, PodUID: cs.Status.Pod.UID})
-	require.NoError(t, err)
-	w := httptest.NewRecorder()
-	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
-	require.Equal(t, http.StatusNoContent, w.Code, w.Body.String())
-	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	require.Equal(t, "pod-uid", cs.Annotations[WriterStoppedAnnotation])
+func TestAdminStopsRuntimeByExactIdentity(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		active bool
+	}{
+		{name: "settled operation"},
+		{name: "active operation", active: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			cs := &api.Codespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+				Spec:       api.CodespaceSpec{Operation: api.Operation{Type: "resume", Version: 3}},
+				Status: api.CodespaceStatus{
+					SettledOperationVersion: 3, Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true},
+				},
+			}
+			if test.active {
+				cs.Status.SettledOperationVersion = 2
+			}
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
+			server := &AdminServer{Client: c, Namespace: "codespace-system"}
+			body, err := json.Marshal(adminRuntimeStop{UID: cs.UID, PodUID: cs.Status.Pod.UID})
+			require.NoError(t, err)
+			stop := func(body []byte) *httptest.ResponseRecorder {
+				w := httptest.NewRecorder()
+				server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/stop", bytes.NewReader(body)))
+				return w
+			}
+			require.Equal(t, http.StatusAccepted, stop(body).Code)
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+			require.Nil(t, cs.Status.Target)
+			if test.active {
+				require.Equal(t, &api.OperationResult{Version: 3, Message: "runtime stopped by Manager administrator"}, cs.Status.Result)
+			} else {
+				require.Equal(t, "stop", cs.Status.RecoveryAction)
+			}
+			require.Equal(t, http.StatusAccepted, stop(body).Code)
 
-	w = httptest.NewRecorder()
-	server.handleResources(w, httptest.NewRequest(http.MethodPost, "/api/admin/runtimes/codespace-example/runtime/confirm-writer-stopped", bytes.NewReader(body)))
-	require.Equal(t, http.StatusConflict, w.Code)
+			stale, err := json.Marshal(adminRuntimeStop{UID: cs.UID, PodUID: "old-pod"})
+			require.NoError(t, err)
+			require.Equal(t, http.StatusConflict, stop(stale).Code)
+		})
+	}
 }
 
 func TestAdminDeletesRuntimeOnlyAfterDisablingSite(t *testing.T) {
@@ -304,7 +323,7 @@ func TestAdminDeletesRuntimeOnlyAfterDisablingSite(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, cs).Build()
 	s := &AdminServer{Client: c, Namespace: "codespace-system"}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	body, err := json.Marshal(adminRuntimeRecovery{UID: cs.UID, ResourceVersion: cs.ResourceVersion, PodUID: cs.Status.Pod.UID})
+	body, err := json.Marshal(adminRuntimeDeletion{UID: cs.UID, ResourceVersion: cs.ResourceVersion, PodUID: cs.Status.Pod.UID})
 	require.NoError(t, err)
 	remove := func() *httptest.ResponseRecorder {
 		w := httptest.NewRecorder()

@@ -106,8 +106,8 @@ func (s *AdminServer) handleAdminAction(w http.ResponseWriter, r *http.Request, 
 		s.deleteRuntime(w, r, parts[1], parts[2])
 		return true
 	}
-	if len(parts) == 4 && parts[0] == "runtimes" && parts[3] == "confirm-writer-stopped" {
-		s.confirmRuntimeWriterStopped(w, r, parts[1], parts[2])
+	if len(parts) == 4 && parts[0] == "runtimes" && parts[3] == "stop" {
+		s.stopRuntime(w, r, parts[1], parts[2])
 		return true
 	}
 	if len(parts) == 3 && parts[0] == "components" && parts[2] == "rotate-ssh-host-key" {
@@ -245,13 +245,15 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			return nil, err
 		}
 		for _, item := range list.Items {
+			stopping := item.Status.Pod.UID != "" && runtimeStopRequested(&item)
+			canStop := item.Status.Pod.UID != "" && !stopping && item.Status.RecoveryAction != "delete" && item.Spec.Operation.Type != "delete" && item.DeletionTimestamp.IsZero()
 			// Operation payloads and raw metadata are not administration responses.
 			items = append(items, newAdminResource(&item, adminRuntimeSpec{
 				Site: item.Spec.Site, CodespaceID: strconv.FormatInt(item.Spec.CodespaceID, 10), RuntimeUUID: item.Spec.RuntimeUUID,
 				EnvironmentTag: item.Spec.EnvironmentTag, Operation: item.Spec.Operation.Type, Version: item.Spec.Operation.Version,
 			}, adminRuntimeStatus{
 				Bound: item.Status.Bound, Pod: item.Status.Pod, Volume: item.Status.Volume,
-				Ready: item.Status.Target != nil && item.Status.Target.Ready, Conditions: item.Status.Conditions,
+				Ready: item.Status.Target != nil && item.Status.Target.Ready, CanStop: canStop, Stopping: stopping, Conditions: item.Status.Conditions,
 			}))
 		}
 	case "components":

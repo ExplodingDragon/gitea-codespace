@@ -57,7 +57,9 @@ export async function request<T>(path: string, method = 'GET', body?: unknown): 
         : '';
     throw new APIError(code, response.status, message, detail);
   }
-  return response.status === 204 ? (undefined as T) : (response.json() as Promise<T>);
+  if (response.status === 204) return undefined as T;
+  const text = await response.text();
+  return text ? (JSON.parse(text) as T) : (undefined as T);
 }
 
 export type ResourceReference = {
@@ -78,6 +80,11 @@ type ResourceStatus = {
   ready?: boolean;
   pod?: ResourceReference;
   volume?: ResourceReference;
+};
+
+export type RuntimeStatus = ResourceStatus & {
+  canStop: boolean;
+  stopping: boolean;
 };
 
 export type Resource<T, S = ResourceStatus> = {

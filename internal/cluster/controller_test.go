@@ -435,13 +435,19 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodRunning
+	pod.Finalizers = nil
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
 	r := &RuntimeReconciler{Client: c}
 	ctx := t.Context()
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	// Stop initiates graceful termination even if the Agent cannot submit a result.
+	// Restore the writer finalizer before initiating graceful termination.
+	_, err = r.stopOrDelete(ctx, cs, false)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
+	require.Contains(t, pod.Finalizers, WriterFinalizer)
+	require.True(t, pod.DeletionTimestamp.IsZero())
 	_, err = r.stopOrDelete(ctx, cs, false)
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
@@ -463,43 +469,42 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
 	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
-
-	// A force-removed Pod without the persisted termination fact cannot authorize data deletion.
-	cs.Spec.Operation = api.Operation{Type: "delete", Version: 3}
-	require.NoError(t, c.Update(ctx, cs))
-	cs.Status.Pod = api.ObservedResource{Name: "lost-pod", UID: "lost-uid"}
-	require.NoError(t, c.Status().Update(ctx, cs))
-	_, err = r.stopOrDelete(ctx, cs, true)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.Equal(t, "WriterUnconfirmed", meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady").Reason)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
 }
 
-func TestRuntimeRecoveryConfirmationUnblocksMissingWriter(t *testing.T) {
+func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
+	site := testSite("example", "site-uid")
+	site.Status.NamespaceUID = "namespace-uid"
+	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
 	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{
-			Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid",
-			Annotations: map[string]string{WriterStoppedAnnotation: "lost-pod-uid"},
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: ns.Name, UID: "runtime-uid", Finalizers: []string{RuntimeFinalizer}},
+		Spec: api.CodespaceSpec{
+			Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986",
+			EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Type: "resume", Version: 3, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
 		},
-		Spec: api.CodespaceSpec{Operation: api.Operation{Type: "stop", Version: 3}},
 		Status: api.CodespaceStatus{
-			Pod:    api.ObservedResource{Name: "lost-pod", UID: "lost-pod-uid"},
-			Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
+			Bound: true, SettledOperationVersion: 2, Pod: api.ObservedResource{Name: "lost-pod", UID: "lost-pod-uid"},
+			Volume: api.ObservedResource{Name: "data-933ef4a9-54c7-4f36-aad9-32ea72c4c986", UID: "volume-uid"}, Target: &api.AgentTarget{Ready: true},
 		},
 	}
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{
 		Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID,
-		Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)},
+		Labels: map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(site.UID)},
 	}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs, volume).Build()
-	r := &RuntimeReconciler{Client: c}
-	_, err := r.stopOrDelete(t.Context(), cs, false)
-	require.NoError(t, err)
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, ns, cs, volume).Build()
+	r := &RuntimeReconciler{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system"}
+	r.Authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
+	for range 2 {
+		_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)})
+		require.NoError(t, err)
+	}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
 	require.Equal(t, types.UID("lost-pod-uid"), cs.Status.StoppedPodUID)
-	require.NotContains(t, cs.Annotations, WriterStoppedAnnotation)
+	require.Empty(t, cs.Status.Pod)
+	require.Nil(t, cs.Status.Target)
+	require.NotNil(t, cs.Status.Result)
+	require.False(t, cs.Status.Result.Succeeded)
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(volume), volume))
 }
 
 func TestRuntimeCertificateOwnership(t *testing.T) {

@@ -27,9 +27,8 @@ import (
 )
 
 const (
-	RuntimeFinalizer        = "codespace.gitea.dev/runtime-cleanup"
-	WriterFinalizer         = "codespace.gitea.dev/writer-stopped"
-	WriterStoppedAnnotation = "codespace.gitea.dev/confirmed-stopped-pod-uid"
+	RuntimeFinalizer = "codespace.gitea.dev/runtime-cleanup"
+	WriterFinalizer  = "codespace.gitea.dev/writer-stopped"
 )
 
 type RuntimeReconciler struct {
@@ -80,10 +79,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		}
 		return r.stopOrDelete(ctx, &cs, true)
 	}
-	if cs.Spec.Operation.Type == "stop" || cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" || cs.Status.RecoveryAction == "stop" {
-		return r.stopOrDelete(ctx, &cs, false)
-	}
-	if cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version && !cs.Status.Result.Succeeded {
+	if runtimeStopRequested(&cs) {
 		return r.stopOrDelete(ctx, &cs, false)
 	}
 	if cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (r.Authority == nil || r.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) <= 0) {
@@ -124,32 +120,28 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	err := r.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Pod.Name}, &pod)
 	if apierrors.IsNotFound(err) {
 		if cs.Status.Pod.UID != "" {
-			r.Authority.RevokeVersion(cs.UID, cs.Spec.Operation.Version)
-			if cs.Annotations[WriterStoppedAnnotation] == string(cs.Status.Pod.UID) {
-				stoppedPodUID, operationVersion, operationType := cs.Status.Pod.UID, cs.Spec.Operation.Version, cs.Spec.Operation.Type
-				err := updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
-					if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Status.Pod.UID != stoppedPodUID || current.Annotations[WriterStoppedAnnotation] != string(stoppedPodUID) {
-						return errObservedResourceChanged
-					}
-					current.Status.Target = nil
-					current.Status.Boot = nil
-					current.Status.StoppedPodUID = stoppedPodUID
-					if current.Status.SettledOperationVersion < operationVersion {
-						current.Status.Result = &api.OperationResult{Version: operationVersion, Message: "previous runtime Pod disappeared before operation confirmation"}
-					} else {
-						current.Status.RecoveryAction = "stop"
-					}
-					return nil
-				})
-				if err != nil {
-					return reconcileStatusError(err)
-				}
-				if err := r.consumeWriterStoppedConfirmation(ctx, &cs, stoppedPodUID); err != nil {
-					return ctrl.Result{}, err
-				}
-				return ctrl.Result{RequeueAfter: time.Millisecond}, nil
+			if r.Authority != nil {
+				r.Authority.RevokeVersion(cs.UID, cs.Spec.Operation.Version)
 			}
-			return r.condition(ctx, &cs, "RecoveryRequired", fmt.Errorf("previous runtime Pod disappeared; verify its writer stopped before replacing it"))
+			stoppedPodUID, operationVersion, operationType := cs.Status.Pod.UID, cs.Spec.Operation.Version, cs.Spec.Operation.Type
+			err := updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
+				if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Status.Pod.UID != stoppedPodUID {
+					return errObservedResourceChanged
+				}
+				current.Status.Target = nil
+				current.Status.Boot = nil
+				current.Status.StoppedPodUID = stoppedPodUID
+				if current.Status.SettledOperationVersion < operationVersion {
+					current.Status.Result = &api.OperationResult{Version: operationVersion, Message: "runtime Pod disappeared before operation completion"}
+				} else {
+					current.Status.RecoveryAction = "stop"
+				}
+				return nil
+			})
+			if err != nil {
+				return reconcileStatusError(err)
+			}
+			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets)
 		if err != nil {
@@ -213,29 +205,15 @@ func runtimePodStatusIsCurrent(cs *api.Codespace, operationVersion int64, operat
 		(cs.Status.Pod.UID == "" || cs.Status.Pod.UID == podUID)
 }
 
-func (r *RuntimeReconciler) consumeWriterStoppedConfirmation(ctx context.Context, cs *api.Codespace, podUID types.UID) error {
-	if podUID == "" || cs.Status.StoppedPodUID != podUID || cs.Annotations[WriterStoppedAnnotation] != string(podUID) {
-		return nil
+func runtimeStopRequested(runtime *api.Codespace) bool {
+	if runtime.Status.RecoveryAction == "stop" {
+		return true
 	}
-	key, uid := client.ObjectKeyFromObject(cs), cs.UID
-	return retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		var current api.Codespace
-		if err := r.Client.Get(ctx, key, &current); err != nil {
-			return err
-		}
-		if current.UID != uid || current.Status.StoppedPodUID != podUID {
-			return errObservedResourceChanged
-		}
-		if current.Annotations[WriterStoppedAnnotation] != string(podUID) {
-			return nil
-		}
-		delete(current.Annotations, WriterStoppedAnnotation)
-		if err := r.Client.Update(ctx, &current); err != nil {
-			return err
-		}
-		*cs = current
-		return nil
-	})
+	switch runtime.Spec.Operation.Type {
+	case "stop", "abort_create", "abort_resume":
+		return true
+	}
+	return runtime.Status.Result != nil && runtime.Status.Result.Version == runtime.Spec.Operation.Version && !runtime.Status.Result.Succeeded
 }
 
 func (r *RuntimeReconciler) condition(ctx context.Context, cs *api.Codespace, reason string, problem error) (ctrl.Result, error) {
@@ -388,6 +366,9 @@ func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespac
 func runtimeIdentitySecretName(cs *api.Codespace) string { return cs.Status.Pod.Name + "-identity" }
 
 func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace, remove bool) (ctrl.Result, error) {
+	if r.Authority != nil {
+		r.Authority.Revoke(cs.UID)
+	}
 	// List by claim as well as owner: a second writer must not be missed by labels.
 	var pods corev1.PodList
 	if err := r.Client.List(ctx, &pods, client.InNamespace(cs.Namespace)); err != nil {
@@ -406,14 +387,34 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 			return r.condition(ctx, cs, "WriterConflict", fmt.Errorf("another Pod references the runtime volume"))
 		}
 		if pod.DeletionTimestamp.IsZero() {
+			if !controllerutil.ContainsFinalizer(pod, WriterFinalizer) {
+				key, podUID := client.ObjectKeyFromObject(pod), pod.UID
+				err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+					var current corev1.Pod
+					if err := r.Client.Get(ctx, key, &current); err != nil {
+						return err
+					}
+					if current.UID != podUID || !metav1.IsControlledBy(&current, cs) || !current.DeletionTimestamp.IsZero() {
+						return errObservedResourceChanged
+					}
+					if controllerutil.AddFinalizer(&current, WriterFinalizer) {
+						return r.Client.Update(ctx, &current)
+					}
+					return nil
+				})
+				if err != nil {
+					return reconcileStatusError(err)
+				}
+				return ctrl.Result{RequeueAfter: time.Millisecond}, nil
+			}
 			if err := r.Client.Delete(ctx, pod, client.Preconditions{UID: &pod.UID}); err != nil {
 				return ctrl.Result{}, err
 			}
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		// A ready Node and an absent Pod are not proof that its processes stopped.
+		// DeletionTimestamp alone does not prove that the Pod processes stopped.
 		// Hold the Pod until kubelet reports termination, then persist that fact.
-		stopped := cs.Annotations[WriterStoppedAnnotation] == string(pod.UID) || pod.Spec.NodeName == ""
+		stopped := pod.Spec.NodeName == ""
 		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
 			stopped = len(pod.Status.ContainerStatuses) == len(pod.Spec.Containers)
 			for _, status := range pod.Status.ContainerStatuses {
@@ -436,21 +437,12 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 				return reconcileStatusError(err)
 			}
 		}
-		if err := r.consumeWriterStoppedConfirmation(ctx, cs, pod.UID); err != nil {
-			return ctrl.Result{}, err
-		}
 		if err := r.releaseWriterFinalizer(ctx, cs, pod); err != nil {
 			return ctrl.Result{}, err
 		}
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	stoppedPodUID := cs.Status.Pod.UID
-	if stoppedPodUID != "" && cs.Status.StoppedPodUID != stoppedPodUID {
-		if cs.Annotations[WriterStoppedAnnotation] != string(stoppedPodUID) {
-			return r.condition(ctx, cs, "WriterUnconfirmed", fmt.Errorf("previous runtime Pod disappeared without confirmed termination"))
-		}
-		cs.Status.StoppedPodUID = stoppedPodUID
-	}
 	if remove && cs.Status.Volume.Name != "" {
 		var volume corev1.PersistentVolumeClaim
 		err := r.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Volume.Name}, &volume)
@@ -484,7 +476,9 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		if current.Generation != observedGeneration || current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || (stoppedPodUID != "" && current.Status.Pod.UID != stoppedPodUID) {
 			return errObservedResourceChanged
 		}
-		current.Status.StoppedPodUID = stoppedPodUID
+		if stoppedPodUID != "" {
+			current.Status.StoppedPodUID = stoppedPodUID
+		}
 		current.Status.Target = nil
 		current.Status.Boot = nil
 		current.Status.Pod = api.ObservedResource{}
@@ -498,7 +492,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 	if err != nil {
 		return reconcileStatusError(err)
 	}
-	return ctrl.Result{}, r.consumeWriterStoppedConfirmation(ctx, cs, stoppedPodUID)
+	return ctrl.Result{}, nil
 }
 
 func (r *RuntimeReconciler) releaseWriterFinalizer(ctx context.Context, cs *api.Codespace, observed *corev1.Pod) error {

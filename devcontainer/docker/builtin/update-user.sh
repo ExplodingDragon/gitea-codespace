@@ -1,3 +1,5 @@
+#!/bin/sh
+
 set -eu
 
 user="$1"

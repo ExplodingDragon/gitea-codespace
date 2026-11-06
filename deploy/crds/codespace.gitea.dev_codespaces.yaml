@@ -415,8 +415,8 @@ spec:
                 format: int64
                 type: integer
               stoppedPodUID:
-                description: StoppedPodUID is recorded from kubelet termination before
-                  releasing the Pod finalizer.
+                description: StoppedPodUID records the previous writer identity before
+                  the Runtime converges to stopped.
                 type: string
               target:
                 properties:

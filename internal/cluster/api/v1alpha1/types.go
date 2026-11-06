@@ -422,7 +422,7 @@ type CodespaceStatus struct {
 	Bound        bool             `json:"bound,omitempty"`
 	Pod          ObservedResource `json:"pod,omitempty"`
 	LastNodeName string           `json:"lastNodeName,omitempty"`
-	// StoppedPodUID is recorded from kubelet termination before releasing the Pod finalizer.
+	// StoppedPodUID records the previous writer identity before the Runtime converges to stopped.
 	StoppedPodUID types.UID        `json:"stoppedPodUID,omitempty"`
 	Volume        ObservedResource `json:"volume,omitempty"`
 	// A started format is never retried when the filesystem is unrecognizable.
