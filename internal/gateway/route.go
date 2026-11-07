@@ -16,6 +16,8 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
+const gatewayResponseHeaderTimeout = 30 * time.Second
+
 // An endpoint route binds an authorized public address to one site's Runtime.
 type endpointRoute struct {
 	SiteUID       string
@@ -368,8 +370,9 @@ func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return s.backend.OpenWorkspaceEndpoint(ctx, route.CodespaceUUID, route.EndpointID)
 			},
-			IdleConnTimeout:     90 * time.Second,
-			MaxIdleConnsPerHost: 8,
+			IdleConnTimeout:       90 * time.Second,
+			MaxIdleConnsPerHost:   8,
+			ResponseHeaderTimeout: gatewayResponseHeaderTimeout,
 		}
 	}
 	return entry.transport, nil

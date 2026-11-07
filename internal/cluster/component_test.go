@@ -89,7 +89,7 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 		return []string{object.(*api.Codespace).Spec.RuntimeUUID}
 	}).Build()
 	tracker := &RuntimeActivityTracker{}
-	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Activity: tracker}
+	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Activity: tracker, Connections: newSiteConnectionStore(c, "codespace-system")}
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: "gateway-uid"})
 
 	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
@@ -244,6 +244,19 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 
 func contextWithComponent(ctx context.Context, identity componentIdentity) context.Context {
 	return context.WithValue(ctx, componentIdentityContextKey{}, identity)
+}
+
+func TestGatewayActivityUsesAuthorizedSnapshot(t *testing.T) {
+	tracker := &RuntimeActivityTracker{}
+	server := &ComponentServer{Activity: tracker}
+	identity := componentIdentity{UID: "gateway-uid"}
+
+	err := server.replaceGatewayActivity(identity, "session", map[string]int64{"current": 2, "stale": 3}, map[string]struct{}{"current": {}})
+	require.NoError(t, err)
+	require.Equal(t, map[string]int64{"current": 2}, tracker.gateways[gatewayActivityKey{componentUID: identity.UID, instance: "session"}].counts)
+
+	err = server.replaceGatewayActivity(identity, "session", map[string]int64{"current": -1}, map[string]struct{}{"current": {}})
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
 func TestCacheControlAndRuntimeCredential(t *testing.T) {

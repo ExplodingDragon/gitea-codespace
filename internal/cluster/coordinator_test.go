@@ -185,7 +185,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 			object.SetUID(types.UID(uuid.NewV4().String()))
 			return c.Create(ctx, object, opts...)
 		}}).Build()
-	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system", PlatformImage: testRuntime().Image}, ObservationReader: c}
+	coordinator := &SiteCoordinator{Operations: Operations{Client: c, Authority: &ExecutionAuthority{}, Connections: newSiteConnectionStore(c, "codespace-system"), ManagementNamespace: "codespace-system", PlatformImage: testRuntime().Image}, ObservationReader: c}
 	ctx, cancel := context.WithCancel(t.Context())
 	ctx = log.IntoContext(ctx, testr.New(t))
 	done := make(chan struct{})

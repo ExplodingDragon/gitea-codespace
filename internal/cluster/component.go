@@ -67,6 +67,7 @@ type ComponentServer struct {
 	Tickets             *AccessTickets
 	Activity            *RuntimeActivityTracker
 	Changes             *ChangeNotifier
+	Connections         *siteConnectionStore
 }
 
 func (s *ComponentServer) Handler() (string, http.Handler) {
@@ -158,7 +159,7 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 			return nil, err
 		}
 		for index := range runtimes.Items {
-			route, err := s.route(ctx, s.IdentityIndex, &runtimes.Items[index], componentUID)
+			route, err := s.route(ctx, s.IdentityIndex, &runtimes.Items[index], site, componentUID)
 			if err != nil {
 				return nil, err
 			}
@@ -176,7 +177,7 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 	return response, nil
 }
 
-func (s *ComponentServer) route(ctx context.Context, reader client.Reader, cs *api.Codespace, gatewayUID types.UID) (*componentv1.GatewayRuntimeRoute, error) {
+func (s *ComponentServer) route(ctx context.Context, reader client.Reader, cs *api.Codespace, site *api.GiteaSite, gatewayUID types.UID) (*componentv1.GatewayRuntimeRoute, error) {
 	if !cs.DeletionTimestamp.IsZero() || !cs.Status.Bound || cs.Status.RecoveryAction != "" || cs.Status.Target == nil || !cs.Status.Target.Ready || cs.Status.Pod.UID == "" {
 		return nil, nil
 	}
@@ -187,14 +188,7 @@ func (s *ComponentServer) route(ctx context.Context, reader client.Reader, cs *a
 	if result := cs.Status.Result; result != nil && result.Version == cs.Spec.Operation.Version && !result.Succeeded {
 		return nil, nil
 	}
-	var site api.GiteaSite
-	if err := reader.Get(ctx, types.NamespacedName{Name: cs.Spec.Site.Name}, &site); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, nil
-		}
-		return nil, err
-	}
-	if site.UID != cs.Spec.Site.UID {
+	if site == nil || site.Name != cs.Spec.Site.Name || site.UID != cs.Spec.Site.UID {
 		log.FromContext(ctx).Error(fmt.Errorf("runtime site identity changed"), "Reject runtime access target", "codespace", client.ObjectKeyFromObject(cs))
 		return nil, nil
 	}
@@ -250,7 +244,15 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 		return connect.NewError(connect.CodeInvalidArgument, "gateway control identity is invalid")
 	}
 	session := first.SessionId
-	if err := s.replaceGatewayActivity(ctx, identity, session, first.ActiveSessions); err != nil {
+	snapshot, err := s.gatewaySnapshot(ctx, identity)
+	if err != nil {
+		return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+	}
+	authorizedRuntimes := make(map[string]struct{}, len(snapshot.Runtimes))
+	for _, runtime := range snapshot.Runtimes {
+		authorizedRuntimes[runtime.RuntimeUuid] = struct{}{}
+	}
+	if err := s.replaceGatewayActivity(identity, session, first.ActiveSessions, authorizedRuntimes); err != nil {
 		return err
 	}
 	defer func() {
@@ -286,24 +288,32 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	streamLifetime := time.NewTimer(45 * time.Minute)
 	defer streamLifetime.Stop()
 	sequence, cursor := first.Sequence, ""
+	pendingSnapshot := snapshot
 	sendSnapshot := true
 	for {
 		if sendSnapshot {
-			snapshot, err := s.gatewaySnapshot(ctx, identity)
-			if err != nil {
-				return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			if pendingSnapshot == nil {
+				pendingSnapshot, err = s.gatewaySnapshot(ctx, identity)
+				if err != nil {
+					return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+				}
 			}
-			if snapshot.Cursor != cursor {
-				snapshot.Sequence = sequence
-				snapshot.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
-				if err := stream.Send(snapshot); err != nil {
+			authorizedRuntimes = make(map[string]struct{}, len(pendingSnapshot.Runtimes))
+			for _, runtime := range pendingSnapshot.Runtimes {
+				authorizedRuntimes[runtime.RuntimeUuid] = struct{}{}
+			}
+			if pendingSnapshot.Cursor != cursor {
+				pendingSnapshot.Sequence = sequence
+				pendingSnapshot.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
+				if err := stream.Send(pendingSnapshot); err != nil {
 					return err
 				}
 				if s.Activity != nil {
 					s.Activity.RenewGatewayPermit(identity.UID, session, time.Now())
 				}
-				cursor = snapshot.Cursor
+				cursor = pendingSnapshot.Cursor
 			}
+			pendingSnapshot = nil
 			sendSnapshot = false
 		}
 		select {
@@ -318,7 +328,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 			if request.ProtocolVersion != 1 || request.SessionId != first.SessionId || request.Sequence <= sequence {
 				return connect.NewError(connect.CodeInvalidArgument, "gateway control sequence is invalid")
 			}
-			if err := s.replaceGatewayActivity(ctx, identity, session, request.ActiveSessions); err != nil {
+			if err := s.replaceGatewayActivity(identity, session, request.ActiveSessions, authorizedRuntimes); err != nil {
 				return err
 			}
 			sequence = request.Sequence
@@ -337,17 +347,18 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	}
 }
 
-func (s *ComponentServer) replaceGatewayActivity(ctx context.Context, identity componentIdentity, session string, counts map[string]int64) error {
+func (s *ComponentServer) replaceGatewayActivity(identity componentIdentity, session string, counts map[string]int64, authorizedRuntimes map[string]struct{}) error {
+	filtered := make(map[string]int64, len(counts))
 	for runtimeUUID, count := range counts {
 		if count < 0 {
 			return connect.NewError(connect.CodeInvalidArgument, "gateway activity count is invalid")
 		}
-		if _, _, err := s.runtimeForGateway(ctx, identity, runtimeUUID); err != nil {
-			return connect.NewError(connect.CodeFailedPrecondition, "gateway activity contains a stale Runtime")
+		if _, authorized := authorizedRuntimes[runtimeUUID]; authorized {
+			filtered[runtimeUUID] = count
 		}
 	}
 	if s.Activity != nil {
-		if err := s.Activity.ReplaceGateway(identity.UID, session, counts, false, time.Now()); err != nil {
+		if err := s.Activity.ReplaceGateway(identity.UID, session, filtered, false, time.Now()); err != nil {
 			return connect.NewError(connect.CodeInvalidArgument, err.Error()).WithCause(err)
 		}
 	}
@@ -403,7 +414,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 		if err != nil {
 			return gatewayDenied("runtime_unavailable"), nil
 		}
-		remote, err := siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
+		remote, err := s.Connections.ForSite(ctx, site)
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -442,7 +453,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 	if err != nil {
 		return gatewayDenied("runtime_unavailable"), nil
 	}
-	remote, err := siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
+	remote, err := s.Connections.ForSite(ctx, site)
 	if err != nil {
 		return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
@@ -507,12 +518,12 @@ func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *compone
 	if request.ProtocolVersion != 1 || request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "agent access request is invalid")
 	}
-	cs, _, err := s.runtimeForGateway(ctx, identity, request.RuntimeUuid)
+	cs, site, err := s.runtimeForGateway(ctx, identity, request.RuntimeUuid)
 	if err != nil {
 		return nil, err
 	}
 	// Tickets use live reads; snapshots may lag a stop or Pod replacement.
-	route, err := s.route(ctx, s.Client, cs, types.UID(identity.UID))
+	route, err := s.route(ctx, s.Client, cs, site, types.UID(identity.UID))
 	if err != nil {
 		return nil, err
 	}

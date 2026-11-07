@@ -69,7 +69,7 @@ func TestAgentControlRecovery(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, ns, cs, pod).
 		WithIndex(&api.GiteaSite{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).
 		WithIndex(&api.Codespace{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).Build()
-	server := &AgentControlServer{Client: c, IdentityIndex: c}
+	server := &AgentControlServer{Client: c, IdentityIndex: c, Connections: newSiteConnectionStore(c, "codespace-system")}
 	_, handler := server.Handler()
 	identity, err := url.Parse("spiffe://codespace/agent/site-uid/runtime-uid/pod-uid")
 	require.NoError(t, err)

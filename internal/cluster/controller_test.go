@@ -569,7 +569,7 @@ func TestGiteaCredentialRedirect(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(site), site))
 	require.Equal(t, "IdentityUnavailable", meta.FindStatusCondition(site.Status.Conditions, "InfrastructureReady").Reason)
-	control := &AgentControlServer{Client: c, ManagementNamespace: secret.Namespace}
+	control := &AgentControlServer{Client: c, ManagementNamespace: secret.Namespace, Connections: newSiteConnectionStore(c, secret.Namespace)}
 	remote, err := control.gitea(t.Context(), &api.Codespace{Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}}})
 	require.NoError(t, err)
 	request := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}

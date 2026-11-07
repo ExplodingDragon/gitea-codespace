@@ -34,6 +34,7 @@ type Operations struct {
 	Authority           *ExecutionAuthority
 	Samples             *ResourceSamples
 	Activity            *RuntimeActivityTracker
+	Connections         *siteConnectionStore
 	ManagementNamespace string
 	PlatformImage       string
 }

@@ -76,15 +76,13 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if !site.Spec.Enabled {
 		return r.condition(ctx, &site, "Disabled", fmt.Errorf("site is disabled"))
 	}
-	remote, credential, err := siteManagerClientForCheck(ctx, r.Client, r.ManagementNamespace, &site, r.HTTPClient)
+	connection, err := newSiteManagerConnection(ctx, r.Client, r.ManagementNamespace, &site, r.HTTPClient)
 	if err != nil {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("read site credential: %w", err))
 	}
-	if credential.Labels[SiteUIDLabel] != string(site.UID) {
-		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("site credential ownership or value is invalid"))
-	}
+	defer connection.close()
 	check := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
-	response, err := remote.CheckManager(ctx, check)
+	response, err := connection.client.CheckManager(ctx, check)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))
 	}

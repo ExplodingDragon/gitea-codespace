@@ -262,6 +262,10 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 	activity := &RuntimeActivityTracker{}
+	connections := newSiteConnectionStore(liveClient, options.Namespace)
+	if err := mgr.Add(connections); err != nil {
+		return nil, err
+	}
 	componentChanges := &ChangeNotifier{}
 	siteChanges := &ChangeNotifier{}
 	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}, &api.CodespaceComponent{}, &corev1.Pod{}} {
@@ -301,9 +305,9 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 			return nil, err
 		}
 	}
-	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges}
-	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components}
-	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
+	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges, Connections: connections}
+	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components, Connections: connections}
+	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, Connections: connections, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {

@@ -246,6 +246,7 @@ func (r *sessionRegistry) beginLive(codespaceUUID string, entry gatewayLiveSessi
 	}
 	r.nextLiveID++
 	liveID := r.nextLiveID
+	becameActive := r.live[codespaceUUID] == 0
 	r.live[codespaceUUID]++
 	if r.liveEntries[codespaceUUID] == nil {
 		r.liveEntries[codespaceUUID] = make(map[int64]gatewayLiveSession)
@@ -253,7 +254,9 @@ func (r *sessionRegistry) beginLive(codespaceUUID string, entry gatewayLiveSessi
 	r.liveEntries[codespaceUUID][liveID] = entry
 	r.mu.Unlock()
 	cancelGatewaySessions(cancels)
-	r.signalActivityChange()
+	if becameActive {
+		r.signalActivityChange()
+	}
 
 	var once sync.Once
 	return func() {
@@ -271,9 +274,12 @@ func (r *sessionRegistry) beginLive(codespaceUUID string, entry gatewayLiveSessi
 			if len(r.liveEntries[codespaceUUID]) == 0 {
 				delete(r.liveEntries, codespaceUUID)
 			}
+			becameIdle := r.live[codespaceUUID] == 1
 			r.decrementLiveLocked(codespaceUUID)
 			r.mu.Unlock()
-			r.signalActivityChange()
+			if becameIdle {
+				r.signalActivityChange()
+			}
 		})
 	}
 }

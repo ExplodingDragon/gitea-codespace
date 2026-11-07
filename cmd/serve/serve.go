@@ -34,6 +34,11 @@ func NewCommand() *cobra.Command {
 			if err != nil {
 				return err
 			}
+			// Let API Priority and Fairness regulate the Manager unless kubeconfig
+			// explicitly supplies a client-side rate limit.
+			if config.RateLimiter == nil && config.QPS == 0 {
+				config.QPS = -1
+			}
 			ctx, cancel := signal.NotifyContext(command.Context(), os.Interrupt, syscall.SIGTERM)
 			defer cancel()
 			return cluster.Run(ctx, config, options)

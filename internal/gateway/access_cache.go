@@ -18,6 +18,7 @@ var errGatewayAccessLimitReached = errors.New("gateway access limit reached")
 
 const (
 	defaultGatewaySessionRevalidateInterval = 5 * time.Minute
+	defaultGatewayAccessAllowedTTL          = 30 * time.Second
 	defaultGatewayAccessCacheMaxKeys        = 65536
 )
 
@@ -93,7 +94,7 @@ type gatewayPublicEndpointKey struct {
 
 func newAccessController(config accessConfig) *accessController {
 	if config.AllowedTTL <= 0 {
-		config.AllowedTTL = time.Second
+		config.AllowedTTL = defaultGatewayAccessAllowedTTL
 	}
 	if config.StreamRevalidateInterval <= 0 {
 		config.StreamRevalidateInterval = defaultGatewaySessionRevalidateInterval
@@ -110,7 +111,7 @@ func newAccessController(config accessConfig) *accessController {
 
 func newAccessControllerFromConfig(config configpkg.GatewayConfig) *accessController {
 	return newAccessController(accessConfig{
-		AllowedTTL:                      time.Second,
+		AllowedTTL:                      defaultGatewayAccessAllowedTTL,
 		StreamRevalidateInterval:        config.Sessions.RevalidateInterval.ToStdlib(),
 		MaxInflightTotal:                config.Limits.MaxInflightTotal,
 		MaxInflightPerSession:           config.Limits.MaxInflightPerSession,

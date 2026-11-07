@@ -98,11 +98,12 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 		if err := s.checkSiteReferences(ctx, site); err != nil {
 			return err
 		}
-		remote, _, err := siteManagerClientForCheck(ctx, s.Client, s.Namespace, site, s.RegistrationHTTPClient)
+		connection, err := newSiteManagerConnection(ctx, s.Client, s.Namespace, site, s.RegistrationHTTPClient)
 		if err != nil {
 			return err
 		}
-		checked, err := remote.CheckManager(ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: controlplane.ProtocolVersion})
+		defer connection.close()
+		checked, err := connection.client.CheckManager(ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: controlplane.ProtocolVersion})
 		if err != nil {
 			return apierrors.NewBadRequest("Gitea Manager connection check failed: " + err.Error())
 		}

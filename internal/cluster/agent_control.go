@@ -93,6 +93,7 @@ type AgentControlServer struct {
 	ManagementNamespace string
 	Tickets             *AccessTickets
 	Caches              *ComponentServer
+	Connections         *siteConnectionStore
 	Authority           ExecutionAuthority
 	Samples             ResourceSamples
 	mu                  sync.Mutex
@@ -214,7 +215,7 @@ func (s *AgentControlServer) gitea(ctx context.Context, cs *api.Codespace) (code
 	if err != nil {
 		return nil, err
 	}
-	return siteManagerClient(ctx, s.Client, s.ManagementNamespace, site)
+	return s.Connections.ForSite(ctx, site)
 }
 
 func (s *AgentControlServer) site(ctx context.Context, cs *api.Codespace) (*api.GiteaSite, error) {

@@ -49,6 +49,13 @@ func TestGatewayAccessStateIsScopedBySite(t *testing.T) {
 	second.Release()
 }
 
+func TestGatewayAccessControllerUsesPositiveAuthorizationTTL(t *testing.T) {
+	controller := newAccessControllerFromConfig(validGatewayConfig())
+	if controller.Config.AllowedTTL != 30*time.Second {
+		t.Fatalf("allowed TTL = %s, want 30s", controller.Config.AllowedTTL)
+	}
+}
+
 func TestGatewayAccessCachePrunesExpiredBeforeApplyingLimit(t *testing.T) {
 	cache := newGatewayAccessCache(time.Minute)
 	cache.maxKeys = 2

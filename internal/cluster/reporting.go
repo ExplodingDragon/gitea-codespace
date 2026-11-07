@@ -69,7 +69,7 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 		if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != site.Generation {
 			continue
 		}
-		remote, err := siteManagerClient(ctx, c.Client, c.ManagementNamespace, &site)
+		remote, err := c.Connections.ForSite(ctx, &site)
 		if err != nil {
 			logger.Error(err, "Read Gitea reporting identity")
 			continue

@@ -25,6 +25,8 @@ import (
 	"gitea.dev/codespace/internal/transport"
 )
 
+const agentAccessSetupTimeout = 15 * time.Second
+
 // The Agent backend asks Manager for a fresh target-bound ticket before
 // adapting each Gateway data stream to the current Runtime Agent.
 type agentBackend struct {
@@ -53,9 +55,16 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	if b == nil || b.Manager == nil {
 		return nil, fmt.Errorf("agent backend is unavailable")
 	}
-	issueCtx, cancelIssue := context.WithTimeout(ctx, 10*time.Second)
-	response, err := b.Manager.IssueAgentAccess(issueCtx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, Capability: capability, EndpointId: endpointID})
-	cancelIssue()
+	streamCtx, cancel := context.WithCancel(ctx)
+	setupTimer := time.AfterFunc(agentAccessSetupTimeout, cancel)
+	established := false
+	defer func() {
+		if !established {
+			setupTimer.Stop()
+			cancel()
+		}
+	}()
+	response, err := b.Manager.IssueAgentAccess(streamCtx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, Capability: capability, EndpointId: endpointID})
 	if err != nil {
 		return nil, err
 	}
@@ -67,25 +76,25 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	if err != nil {
 		return nil, err
 	}
-	streamCtx, cancel := context.WithCancel(ctx)
 	stream, err := client.access.Access(streamCtx)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
 	open.Ticket = response.Ticket
 	if err := stream.Send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Open{Open: open}}); err != nil {
-		cancel()
 		return nil, err
 	}
 	accepted, err := stream.Receive()
 	if err != nil || !accepted.GetAccepted() {
-		cancel()
 		if err == nil {
 			err = fmt.Errorf("agent rejected the access stream")
 		}
 		return nil, err
 	}
+	if !setupTimer.Stop() {
+		return nil, context.DeadlineExceeded
+	}
+	established = true
 	return &agentAccessStream{cancel: cancel, stream: stream}, nil
 }
 

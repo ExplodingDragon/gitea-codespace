@@ -1,35 +1,33 @@
 # Gitea Codespace
 
-Gitea Codespace provides isolated, Dev Container-based workspaces for Gitea
-repositories. A workspace can be used from a browser IDE, desktop editor, SSH,
-or SFTP.
+Gitea Codespace provides isolated remote development workspaces for Gitea
+repositories. Each workspace follows the repository's Dev Container
+configuration and is available from a browser IDE, desktop editor, SSH, or
+SFTP.
 
-## Use a codespace
+## Use Codespaces
 
-After an administrator enables Codespaces for the Gitea instance:
+After an administrator connects Gitea to a Codespace installation:
 
 1. Open a repository, commit, or pull request in Gitea.
-2. Select **Create Codespace** and choose an environment and Dev Container
-   configuration.
-3. Wait for the build to finish and open one of the available connections.
+2. Select **Create Codespace** and choose the development environment.
+3. Open the workspace when its build completes.
 
-A stopped codespace retains its files and can be resumed later. Delete the
-codespace when its workspace is no longer needed.
+A stopped codespace keeps its workspace files and can be resumed later. Delete
+it when those files are no longer needed.
 
-Use `gitea-codespace-endpoint` inside the Dev Container to expose an HTTP
-service. It then appears under **Ports** and can require Gitea authentication or
-allow public access.
+Applications exposed with `gitea-codespace-endpoint` appear on the Codespace
+details page. An endpoint can require Gitea authentication or allow public
+access.
 
 ## Install
 
-Cluster administrators install Gitea Codespace with its OCI Helm chart. See the
-[Helm guide](charts/gitea-codespace/README.md) for runtime requirements,
-installation, and initial configuration.
+See the [Helm guide](charts/gitea-codespace/README.md) for cluster requirements,
+installation, upgrades, and Gitea registration.
 
-## Contribute
+## Development
 
-See the [contributor guide](DEVELOPMENT.md) for the local toolchain, common
-commands, generated sources, and Kubernetes testing workflow.
+See [DEVELOPMENT.md](DEVELOPMENT.md) for repository setup and validation.
 
 ## License
 

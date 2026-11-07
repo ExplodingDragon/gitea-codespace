@@ -117,6 +117,12 @@ func TestGatewayActivityCountsOnlyAuthenticatedLiveConnections(t *testing.T) {
 	releaseRequest := registry.BeginSessionCancelable(session.id, runtimeUUID, nil)
 	requireSignal(t, registry.ActivityChanges())
 	require.Equal(t, map[string]int{runtimeUUID: 1}, registry.Activity(time.Now()))
+	releaseSecond := registry.BeginSessionCancelable(session.id, runtimeUUID, nil)
+	requireNoSignal(t, registry.ActivityChanges())
+	require.Equal(t, map[string]int{runtimeUUID: 2}, registry.Activity(time.Now()))
+	releaseSecond()
+	requireNoSignal(t, registry.ActivityChanges())
+	require.Equal(t, map[string]int{runtimeUUID: 1}, registry.Activity(time.Now()))
 	releaseRequest()
 	requireSignal(t, registry.ActivityChanges())
 	require.Empty(t, registry.Activity(time.Now()))
@@ -136,6 +142,15 @@ func requireSignal(t *testing.T, changes <-chan struct{}) {
 	case <-changes:
 	default:
 		t.Fatal("activity change was not signaled")
+	}
+}
+
+func requireNoSignal(t *testing.T, changes <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-changes:
+		t.Fatal("activity change was signaled without an active-state transition")
+	default:
 	}
 }
 
