@@ -1,16 +1,17 @@
 # Developing Gitea Codespace
 
-This guide covers the local build, generation, and test workflow. Use the
-[Helm guide](charts/gitea-codespace/README.md) for deployment and the
-[architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
-for protocol and controller design.
+This guide covers the repository layout and the supported build, generation,
+and test workflows. Deployment belongs in the
+[Helm guide](charts/gitea-codespace/README.md); the rationale for protocol and
+controller decisions belongs in the
+[architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace).
 
 ## Prerequisites
 
 - the Go version declared in [`go.mod`](go.mod);
-- Node.js and pnpm for the administration interface;
-- Helm and kubectl for chart or Kubernetes changes; and
-- Docker or another compatible container tool for building the platform image.
+- Node.js and pnpm;
+- Helm and kubectl for Kubernetes work; and
+- a Docker-compatible tool for building the platform image.
 
 Install the pinned Go development tools and frontend dependencies:
 
@@ -20,26 +21,26 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-The Makefile pins the generators and linters used by CI so generated files and
-validation results remain reproducible.
+The Makefile pins development tools so local generation and CI produce the same
+results.
 
 ## Repository layout
 
 | Path | Responsibility |
 | --- | --- |
-| `cmd` | CLI entry points for Manager, Agent, Gateway, Cache, and runtime tools |
-| `devcontainer` | Dev Container parsing, merging, Docker execution, and interoperability tests |
-| `internal` | Runtime services, Kubernetes controllers, protocols, and shared implementation |
+| `cmd` | Process entry points and runtime tools |
+| `devcontainer` | Dev Container parsing, merging, execution, and specification tests |
+| `internal` | Manager, Agent, Gateway, Cache, controllers, and shared packages |
 | `web` | Vue administration interface and Playwright tests |
-| `charts` and `deploy` | Helm package, CRDs, and platform image |
-| `tests/e2e` | Real-cluster lifecycle test harness |
+| `charts`, `deploy` | Helm chart, CRDs, and platform image |
+| `tests/e2e` | Kubernetes lifecycle test harness |
 
 The public Dev Container model preserves specification-defined fields even
 when a field is not yet consumed by the runtime. This keeps repository
 configurations portable and prevents parsing or merge stages from silently
 discarding standard data.
 
-## Build and test
+## Development workflow
 
 Use the Makefile as the development entry point:
 
@@ -54,20 +55,20 @@ make build
 | Command | Purpose |
 | --- | --- |
 | `make format` | Format Go, shell, protobuf, and frontend sources. |
-| `make lint` | Validate generated files, scripts, workflows, TypeScript, Helm, CRDs, Go, and formatting. |
-| `make test` | Run the standard non-E2E Go suite. |
-| `make test-frontend` | Run the administration workflows with Playwright. |
-| `make build` | Build the frontend and local `gitea-codespace` binary. |
+| `make lint` | Check generated sources, scripts, workflows, TypeScript, Helm, CRDs, and Go. |
+| `make test` | Run the standard Go test suite. |
+| `make test-frontend` | Run administration interface tests. |
+| `make build` | Build the frontend and local binary. |
 
-Use focused package tests while iterating, then run the complete validation
-commands before submitting. `make clean` removes generated local build and test
-output.
+Run focused package tests while iterating, followed by `make lint`, `make test`,
+and `make test-frontend` before submitting. Use `make clean` to remove local
+build and test output.
 
 ## Generated sources
 
-Kubernetes and protobuf outputs are checked in because the binary and Helm
-chart consume them without running generators. Update the source definition,
-then regenerate and validate its derived files.
+Generated Kubernetes and RPC sources are checked in so builds and chart installs
+do not need generator tools. Regenerate them whenever their source definitions
+change.
 
 Regenerate Kubernetes APIs with:
 
@@ -76,10 +77,9 @@ make generate-kubernetes
 make kubernetes-check
 ```
 
-This writes the canonical CRDs to `deploy/crds` and copies the same schema into
-the Helm chart.
+This updates both the canonical CRDs in `deploy/crds` and the Helm copies.
 
-Regenerate internal Agent or component protocols with:
+Regenerate internal Agent and component RPC bindings with:
 
 ```sh
 make proto-format
@@ -87,12 +87,11 @@ make proto-generate
 make proto-check
 ```
 
-The public Gitea-to-Manager protocol is maintained in
-`gitea.dev/codespace-proto-go`. Keeping it in a separate module lets Gitea use
-the public contract without importing Manager implementation packages. Publish
-the protocol module before updating this repository's dependency.
+The public Gitea-to-Manager protocol lives in `gitea.dev/codespace-proto-go` so
+Gitea depends only on the public contract. Publish that module before updating
+this repository's dependency.
 
-## Common tasks
+## Targeted workflows
 
 ### Administration interface
 
@@ -102,30 +101,27 @@ Start the frontend development server with:
 make admin-dev
 ```
 
-Vite proxies `/api` to `http://127.0.0.1:18080`; run a local Manager or
-port-forward its administration Service when testing API-backed workflows.
-User-visible text belongs in the shared JSON locale catalogs under
-`web/locales`.
+Vite proxies `/api` to `http://127.0.0.1:18080`. Run Manager locally or
+port-forward its administration Service for API-backed work. Add user-visible
+text to the JSON catalogs in `web/locales`.
 
 ### Platform image
 
-Build the Linux binary before packaging the platform image. Keeping the Go
-build outside the container build makes local and CI artifacts follow the same
-path:
+Build the Linux binary before packaging the image so local and CI builds use the
+same artifact path:
 
 ```sh
 make build-linux
 make images
 ```
 
-Override `CODESPACE_IMAGE` or `CONTAINER_TOOL` for another image name or
-container builder.
+Set `CODESPACE_IMAGE` or `CONTAINER_TOOL` to use another image name or builder.
 
 ### Kubernetes E2E
 
-The E2E suite verifies the complete lifecycle in a real cluster. It requires a
-prepared Kata or Sysbox RuntimeClass, a compatible StorageClass, a Gitea test
-endpoint reachable from the cluster, and an immutable platform image.
+The E2E suite verifies the complete lifecycle in a real cluster. Prepare a Kata
+or Sysbox RuntimeClass, a compatible StorageClass, a Gitea test endpoint
+reachable from the cluster, and an immutable platform image.
 
 Use an isolated test cluster:
 
@@ -141,7 +137,6 @@ make test-e2e \
   KUBERNETES_STORAGE_CLASS=<storage-class>
 ```
 
-The harness labels all resources with a unique run identifier, collects
-diagnostics on failure, and removes the isolated test resources when it exits.
-CI uses this entry point for both Kata and Sysbox; local development uses the
-standard test suite unless a prepared test cluster is available.
+The harness isolates each run, collects failure diagnostics, and removes its
+resources on exit. CI runs this workflow for Kata and Sysbox; local development
+normally uses the standard test suite.

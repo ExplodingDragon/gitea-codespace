@@ -42,6 +42,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -459,7 +460,12 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NotZero(t, nodePortService.Spec.Ports[1].NodePort)
 	gatewaySpec.Gateway.EndpointBaseURL = fmt.Sprintf("http://%s.test:%d", gatewayName, nodePortService.Spec.Ports[0].NodePort)
 	gatewaySpec.Gateway.SSHExternalAddress = net.JoinHostPort(gatewayName+".test", strconv.Itoa(int(nodePortService.Spec.Ports[1].NodePort)))
-	require.NoError(t, admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, false))
+	require.NoError(t, retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		if err := c.Get(ctx, types.NamespacedName{Name: gatewayName}, gateway); err != nil {
+			return err
+		}
+		return admin.saveComponent(ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gatewayName}, Spec: gatewaySpec}, false)
+	}))
 
 	for _, name := range []string{gatewayName, cacheName} {
 		require.Eventually(t, func() bool {
@@ -534,7 +540,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 2 && meta.IsStatusConditionTrue(codespace.Status.Conditions, "Stopped") && codespace.Status.Pod.UID == ""
 	}, time.Minute, time.Second)
 	require.Equal(t, volumeUID, codespace.Status.Volume.UID)
-	require.NoError(t, verifyGatewayWorkspaceUnavailable(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
+	require.NoError(t, verifyGatewayOpenRejected(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 3, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 2}}}})
 	remote.waitFinal(t, 3, codespacev1.OperationType_OPERATION_TYPE_RESUME, 8*time.Minute)
@@ -634,47 +640,49 @@ func verifyGatewayWorkspace(ctx context.Context, node string, port int32, domain
 	return fmt.Errorf("gateway workspace did not become available: %w", lastError)
 }
 
-func verifyGatewayWorkspaceUnavailable(ctx context.Context, node string, port int32, domain, runtimeUUID string) error {
+func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, domain, runtimeUUID string) error {
 	host := strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/.gitea-codespace/open?code=lifecycle-e2e", node, port), nil)
-	if err != nil {
-		return err
-	}
-	request.Host = host
-	response, err := client.Do(request)
-	if err != nil {
-		return err
-	}
-	_ = response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) == 0 {
-		return fmt.Errorf("gateway did not create the route-removal test session: %s", response.Status)
-	}
-	session := response.Cookies()[0]
-	var lastStatus string
+	var session *http.Cookie
+	var lastResult string
 	for range 30 {
-		request, err = http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", node, port), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/.gitea-codespace/open?code=lifecycle-e2e", node, port), nil)
 		if err != nil {
 			return err
 		}
 		request.Host = host
-		request.AddCookie(session)
-		response, err = client.Do(request)
+		if session != nil {
+			request.AddCookie(session)
+		}
+		response, err := client.Do(request)
 		if err == nil {
+			body, readErr := io.ReadAll(io.LimitReader(response.Body, 1024))
 			_ = response.Body.Close()
-			lastStatus = response.Status
-			if response.StatusCode == http.StatusServiceUnavailable {
+			if readErr != nil {
+				return readErr
+			}
+			lastResult = response.Status + ": " + strings.TrimSpace(string(body))
+			cookies := response.Cookies()
+			if response.StatusCode == http.StatusForbidden {
+				if len(cookies) != 0 {
+					return fmt.Errorf("gateway rejected the stopped runtime but issued a session cookie")
+				}
 				return nil
 			}
+			if response.StatusCode == http.StatusSeeOther && len(cookies) != 0 {
+				session = cookies[0]
+			}
+		} else {
+			lastResult = err.Error()
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return errors.Join(errors.New(lastResult), ctx.Err())
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("gateway retained a workspace route after the Runtime stopped; last response was %s", lastStatus)
+	return fmt.Errorf("gateway continued accepting opens after the Runtime stopped; last response was %s", lastResult)
 }
 
 func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID string, signer ssh.Signer, initialize bool) error {

@@ -1,29 +1,29 @@
 # Gitea Codespace Helm chart
 
-This chart installs the Codespace Manager, CRDs, RBAC, administration Service,
-and NetworkPolicy. Manager then creates Gateway, Cache, and Runtime workloads
-from the resources configured in its administration page.
+This chart installs Codespace Manager, its CRDs, RBAC, administration Service,
+and NetworkPolicy. Manager then creates the Gateway, Cache, and Runtime
+workloads configured through its administration page.
 
 ## Requirements
 
 - Kubernetes 1.31 or later;
 - Helm 4.3 or later;
 - a Gitea installation with Codespace support;
-- an administrator token stored in a Kubernetes Secret;
+- a Kubernetes Secret containing the administration token;
 - a verified Kata Containers or Sysbox RuntimeClass; and
-- a StorageClass compatible with the selected runtime.
+- a StorageClass compatible with that runtime.
 
-Runtime support depends on the worker operating system, architecture, CRI, and
-storage driver. Verify the selected runtime and StorageClass together on the
-worker pool that will run Codespaces.
+Runtime support depends on the worker operating system, architecture, container
+runtime, and storage driver. Validate the RuntimeClass and StorageClass together
+on the worker pool before assigning them to users.
 
 ## Prepare a workload runtime
 
-Codespace runs Docker inside each Runtime Pod. The chart therefore uses an
-existing nested-container RuntimeClass instead of modifying worker nodes during
-installation.
+Each Codespace runs Docker inside its Runtime Pod, so the cluster needs a
+nested-container RuntimeClass. The chart uses an existing RuntimeClass and does
+not change worker nodes.
 
-| Runtime | Isolation | Storage requirement |
+| Runtime | Isolation | Workspace volume |
 | --- | --- | --- |
 | Kata Containers | Virtual machine | Raw block PVC |
 | Sysbox | User namespace | Filesystem PVC |
@@ -32,8 +32,8 @@ installation.
 
 Install a pinned release using the
 [Kata installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md)
-or its upstream OCI chart. Verify the class with a test Pod on the intended
-workers, then label it for Codespace discovery:
+or its upstream OCI chart. Run a test Pod on the intended workers, then label
+the verified RuntimeClass so Manager can discover it:
 
 ```sh
 kubectl label runtimeclass kata-qemu-runtime-rs \
@@ -41,18 +41,16 @@ kubectl label runtimeclass kata-qemu-runtime-rs \
   --overwrite
 ```
 
-Kata templates use a StorageClass that provisions raw block volumes.
+Select a StorageClass that provisions raw block volumes for Kata templates.
 
 ### Sysbox
 
-Install a pinned release by following the
+Install a pinned release using the
 [Sysbox Kubernetes guide](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md).
 Verify nested Docker in a test Pod and review the
 [Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
 for workloads that need devices, privileged containers, host networking, or
-architecture emulation.
-
-After verifying the intended workers, label the class:
+architecture emulation. Label the verified RuntimeClass:
 
 ```sh
 kubectl label runtimeclass sysbox-runc \
@@ -60,17 +58,18 @@ kubectl label runtimeclass sysbox-runc \
   --overwrite
 ```
 
-Sysbox templates use a filesystem PVC.
-
-List the runtime choices visible to Manager with:
+Select a filesystem StorageClass for Sysbox templates. Confirm the resources
+visible to Manager with:
 
 ```sh
 kubectl get runtimeclass -L codespace.gitea.dev/isolation
+kubectl get storageclass
 ```
 
 ## Install
 
-Create the administration token and install the development chart:
+Create the administration token before installing the chart. Keeping the token
+in a Secret prevents it from appearing in Helm values and release history.
 
 ```sh
 kubectl create namespace codespace-system
@@ -86,11 +85,12 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-Use `--version <chart-version>` for a release instead of the development chart.
-Published chart releases reference their matching platform image by digest.
-For a private registry, add existing pull Secret names to `image.pullSecrets`.
+This installs the current `main` chart. For a release, add `--version
+<chart-version>` and omit `--devel`. Published releases select their matching
+platform image by digest. Add existing registry Secret names to
+`image.pullSecrets` when the image registry requires authentication.
 
-Verify Manager after installation:
+Verify the installation:
 
 ```sh
 kubectl -n codespace-system rollout status \
@@ -99,101 +99,62 @@ kubectl -n codespace-system rollout status \
 kubectl -n codespace-system get pods
 ```
 
-## Open the administration page
+## Configure Manager
 
-The administration Service is a `ClusterIP` by default. Open it locally with:
+The administration Service is private by default. Open it from an operator
+workstation with:
 
 ```sh
 kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-Visit <http://127.0.0.1:18080> and sign in with the administration token.
-Configure `admin.ingress` when the administration page needs a shared cluster
-entry point; the default private Service keeps initial setup off the public
-network.
-
-Configure the installation in this order so each later resource can select an
-already verified dependency:
+Visit <http://127.0.0.1:18080> and sign in with the administration token. The
+initial configuration follows the dependency order shown in the interface:
 
 1. create a Gateway and any optional Cache components;
-2. create an environment template using a verified RuntimeClass and
+2. create an environment template from a verified RuntimeClass and
    StorageClass;
-3. create a registration token from Gitea's Codespace Managers page;
-4. add the Gitea site using its URL and registration token;
-5. assign the template and components, then configure optional quotas; and
-6. enable the site after its status reports that it is ready.
+3. create a registration token in Gitea's Codespace Managers page;
+4. register the Gitea site with its URL and token;
+5. assign the template and components, configure quotas when needed, and enable
+   the site after it becomes ready.
 
-## Identity and trust
+To publish the administration page, configure `admin.ingress`. When the chart
+NetworkPolicy is enabled, add the directly connecting ingress source networks
+to `networkPolicy.adminIngressCIDRs`; this allows the ingress controller to
+reach the otherwise private administration port.
 
-Manager keeps its internal certificate authority in
-`Secret/<release>-internal-ca`. Back up this Secret and enable Kubernetes Secret
-encryption at rest. Restoring the same Secret preserves trust between Manager
-and existing workloads. Public HTTPS uses the TLS configuration selected for
-the Gateway Ingress.
+## Trust and networking
 
-When Gitea uses a private CA, add its PEM bundle to the site. Manager uses it
-for site communication and makes it available to Git and the Dev Container.
-Leave the field empty for a publicly trusted Gitea certificate.
+Manager stores its internal certificate authority in
+`Secret/<Helm fullname>-internal-ca`. Back up this Secret and enable Kubernetes
+Secret encryption at rest. Restoring it preserves trust between Manager and
+existing workloads. When Gitea uses a private CA, add that PEM bundle to the
+site configuration so Manager and Dev Containers trust it.
 
-## Network access
+Each Gateway has a same-name ClusterIP Service. Port `80` carries HTTP and
+WebSocket traffic, while port `22` carries SSH and SFTP. Publish HTTP through
+the configured Ingress or an operator-managed route. Publish SSH through the
+optional LoadBalancer Service or an operator-managed TCP route. Public DNS, TLS,
+and load-balancer policy therefore remain under cluster operator control.
 
-### Gateway publication
+Set Gateway trusted proxy CIDRs only for proxies that connect directly to its
+Service. Environment and Cache proxies are configured separately in Manager
+because workspace traffic and shared registry traffic can use different network
+paths. If an environment proxy uses an IP address, allow its CIDR and port in
+each site that uses the template so the site NetworkPolicy permits the traffic.
 
-Each Gateway has a same-name `ClusterIP` Service: port `80` carries HTTP and
-WebSocket traffic, and port `22` carries SSH and SFTP. Publish HTTP through the
-configured Ingress or an operator-managed route. Publish SSH through the
-optional LoadBalancer Service or an operator-managed TCP route. This leaves
-public DNS, TLS, and load-balancer policy under cluster operator control.
+Cache Services remain inside the cluster on port `443` and use Manager's
+internal CA. A persistent local Cache runs as one replica with a Recreate update
+strategy; S3 can be selected instead when shared object storage is preferred.
 
-Set trusted proxy CIDRs only for proxies that connect directly to the Gateway
-Service. Gateway then accepts their forwarded client address without trusting
-headers from arbitrary callers.
+## Chart configuration
 
-Gateway replicas share current routing state. Connection limits apply to each
-replica rather than to the deployment as a whole.
+[`values.yaml`](values.yaml) lists the chart defaults and
+[`values.schema.json`](values.schema.json) defines the accepted values. Reuse
+the same `helm upgrade --install` command for upgrades so Helm preserves the
+release and applies the selected image version consistently.
 
-### Outbound proxies
-
-An environment proxy applies to Runtime and Dev Container traffic. A Cache
-proxy applies to registry and S3 traffic from that Cache. They are configured
-separately because shared Cache traffic may use a different network path.
-
-Proxy URLs include the scheme and port and may include credentials. Add bypass
-entries for destinations that must connect directly and add a CA bundle when
-the proxy intercepts TLS. Manager automatically keeps Kubernetes Service and
-loopback traffic out of the proxy.
-
-If a template uses a proxy IP address, allow its CIDR and port in every site
-that selects the template so the namespace NetworkPolicy permits the traffic.
-
-## Cache
-
-Each Cache has a same-name internal Service on port `443`. Cache traffic stays
-inside the cluster and uses the Manager internal CA. An unavailable or empty
-Cache falls back to an allowed upstream registry.
-
-Cache supports persistent local storage or S3. It uses one replica with a
-Recreate update strategy because cache maintenance has one writer.
-
-## Environment templates
-
-The administration page discovers runtime, storage, Ingress, and certificate
-resources from the cluster. An environment template selects those resources
-and defines workspace storage, compute limits, proxy settings, and platform
-additions to the repository Dev Container.
-
-Templates can enable the Web IDE and provide options for
-`ghcr.io/coder/devcontainer-features/code-server:2`. Repository
-`customizations.vscode` remains the source for project-specific editor settings
-and extensions.
-
-Templates can define a lifecycle script. Codespace invokes it as root with
-`build` while constructing the image, `start` before each managed start, and
-`stop` before each managed stop. The script is stored in the Codespace template
-snapshot, so existing environments retain the behavior they were created with.
-
-[`values.yaml`](values.yaml) contains the chart defaults, and
-[`values.schema.json`](values.schema.json) defines all supported Helm values.
 Source changes and validation commands are documented in the
-[developer guide](../../DEVELOPMENT.md).
+[contributor guide](../../DEVELOPMENT.md).
