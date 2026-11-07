@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,27 +19,6 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
-
-func TestTemplateLifecycleBuildContextRunsScriptAsFinalRootStep(t *testing.T) {
-	t.Parallel()
-	directory := t.TempDir()
-	script := "case \"$1\" in build) touch /etc/configured ;; esac\n"
-	if err := writeTemplateLifecycleBuildContext(directory, "devcontainer-user:environment", "developer", script); err != nil {
-		t.Fatal(err)
-	}
-	dockerfile, err := os.ReadFile(filepath.Join(directory, "Dockerfile"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := "FROM devcontainer-user:environment\nUSER root\nCOPY lifecycle.sh /usr/local/lib/gitea-codespace/lifecycle.sh\nRUN chmod 0500 /usr/local/lib/gitea-codespace/lifecycle.sh && /bin/sh /usr/local/lib/gitea-codespace/lifecycle.sh build\nUSER developer\n"
-	if string(dockerfile) != want {
-		t.Fatalf("lifecycle Dockerfile = %q, want %q", dockerfile, want)
-	}
-	stored, err := os.ReadFile(filepath.Join(directory, "lifecycle.sh"))
-	if err != nil || string(stored) != script {
-		t.Fatalf("lifecycle script = %q, %v", stored, err)
-	}
-}
 
 func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
 	t.Parallel()
@@ -73,6 +51,36 @@ func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
 	}
 	if inspect.ID != "sha256:child" || inspect.Config == nil || len(inspect.Config.Env) != 1 || inspect.Config.Env[0] != "PATH=/usr/bin" {
 		t.Fatalf("image ID = %q", inspect.ID)
+	}
+}
+
+func TestCustomizeImageRequiresDockerfileAndCleansContext(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_, _ = response.Write([]byte(`{"Id":"sha256:base","Os":"linux","Architecture":"amd64","Config":{"User":"developer"}}`))
+	}))
+	defer server.Close()
+	apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
+	if err != nil {
+		t.Fatalf("create Docker client: %v", err)
+	}
+	defer func() { _ = apiClient.Close() }()
+	var contextDir string
+	engine := &Engine{client: apiClient}
+	_, err = engine.customizeImage(t.Context(), "base", &devcontainer.ResolvedConfiguration{}, func(image ImageCustomization) error {
+		contextDir = image.ContextDir
+		if image.BaseImage != "base" || image.ContainerUser != "root" || image.Platform.OS != "linux" || image.Platform.Architecture != "amd64" {
+			t.Fatalf("image customization = %#v", image)
+		}
+		return nil
+	}, nil)
+	if err == nil || !strings.Contains(err.Error(), "Dockerfile") {
+		t.Fatalf("customize image error = %v", err)
+	}
+	if _, err := os.Stat(contextDir); !os.IsNotExist(err) {
+		t.Fatalf("customization context remains after failure: %v", err)
 	}
 }
 

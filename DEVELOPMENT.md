@@ -1,17 +1,18 @@
 # Developing Gitea Codespace
 
-This guide covers the repository layout and contributor workflows. Deployment
-belongs in the
-[Helm guide](charts/gitea-codespace/README.md); the rationale for protocol and
-controller decisions belongs in the
-[architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace).
+This guide covers repository setup, local validation, generated sources, and
+Kubernetes end-to-end testing. Use the [Helm guide](charts/gitea-codespace/README.md)
+for deployment and the
+[architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
+for protocol and controller design.
 
-## Prerequisites
+## Set up
 
-- the Go version declared in [`go.mod`](go.mod);
-- Node.js and pnpm;
-- Helm and kubectl for Kubernetes work; and
-- a Docker-compatible tool for building the platform image.
+- The Go version declared in [`go.mod`](go.mod)
+- Node.js and pnpm
+- Helm and kubectl for Kubernetes work
+- A Docker-compatible tool for building the platform image
+- curl, xz, and sha256sum for downloading and verifying the bundled Gitea CLI
 
 Install the pinned Go development tools and frontend dependencies:
 
@@ -21,7 +22,7 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-The Makefile pins development tools so local generation matches CI.
+Pinned tool versions keep local generation and validation consistent with CI.
 
 ## Repository layout
 
@@ -34,15 +35,12 @@ The Makefile pins development tools so local generation matches CI.
 | `charts`, `deploy` | Helm chart, CRDs, and platform image |
 | `tests/e2e` | Kubernetes lifecycle test harness |
 
-The public Dev Container model preserves specification-defined fields even
-when a field is not yet consumed by the runtime. This keeps repository
-configurations portable and prevents parsing or merge stages from silently
-discarding standard data.
+The Dev Container model preserves specification-defined fields throughout
+parsing, merging, and resolution so repository configurations remain portable.
 
-## Development workflow
+## Work locally
 
-The Makefile is the supported entry point because it applies the same tool
-versions and options as CI.
+Use the Makefile so local commands use the same options as CI.
 
 | Command | Purpose |
 | --- | --- |
@@ -53,14 +51,13 @@ versions and options as CI.
 | `make build` | Build the frontend and local binary |
 | `make clean` | Remove local build and test output |
 
-Run focused package tests while iterating, then run the standard lint and test
-targets before submitting a change.
+Run focused package tests while iterating, then run `make lint`, `make test`,
+and `make test-frontend` before submitting a change.
 
-## Generated sources
+## Generated files
 
-Generated Kubernetes and RPC sources are checked in so ordinary builds and
-chart installs do not need generator tools. Regenerate them after changing a
-source definition.
+Generated Kubernetes and RPC sources are committed so builds and chart installs
+do not require generators. Regenerate them after changing a source definition.
 
 Regenerate Kubernetes APIs with:
 
@@ -69,7 +66,7 @@ make generate-kubernetes
 make kubernetes-check
 ```
 
-This updates the canonical CRDs in `deploy/crds` and their Helm copies.
+This updates the canonical CRDs and their Helm copies.
 
 Regenerate internal Agent and component RPC bindings with:
 
@@ -80,12 +77,9 @@ make proto-check
 ```
 
 The public Gitea-to-Manager protocol lives in `gitea.dev/codespace-proto-go`.
-Publish that module before updating this repository so Gitea and Manager can use
-the same public contract.
+Publish that module before updating its dependency here.
 
-## Targeted workflows
-
-### Administration interface
+## Administration interface
 
 Start the frontend development server with:
 
@@ -94,26 +88,27 @@ make admin-dev
 ```
 
 Vite proxies `/api` to `http://127.0.0.1:18080`. Run Manager locally or
-port-forward its administration Service when the page needs API data. Add
-user-visible text to the JSON catalogs in `web/locales`.
+port-forward its administration Service. Add user-visible text to the JSON
+catalogs in `web/locales`.
 
-### Platform image
+## Platform image
 
-Build the Linux binary before packaging the image so local and CI builds use the
-same artifact path:
+Build the platform image with:
 
 ```sh
-make build-linux
 make images
 ```
 
+The build downloads the latest stable Gitea CLI for `linux/amd64`, verifies the
+official checksum and architecture, and packages it with the platform binary.
+Set `GITEA_CLI_VERSION` when reproducing an image with a specific CLI release.
 Set `CODESPACE_IMAGE` or `CONTAINER_TOOL` to use another image name or builder.
 
-### Kubernetes E2E
+## Kubernetes end-to-end tests
 
 The E2E suite verifies the complete lifecycle in a real cluster. It requires a
-Kata or Sysbox RuntimeClass, a compatible StorageClass, a Gitea test endpoint
-reachable from the cluster, and an immutable platform image.
+Kata or Sysbox RuntimeClass, a matching StorageClass, a reachable Gitea test
+endpoint, and an immutable platform image.
 
 Use an isolated test cluster:
 
@@ -130,5 +125,5 @@ make test-e2e \
 ```
 
 The harness isolates the run, collects failure diagnostics, and removes its
-resources on exit. CI covers Kata and Sysbox; local development normally uses
+resources on exit. CI covers Kata and Sysbox. Local development normally uses
 the standard test suite.

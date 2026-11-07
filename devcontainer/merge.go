@@ -243,17 +243,15 @@ func mergeJSON(base, override any) any {
 	if leftOK && rightOK {
 		result := slices.Clone(leftArray)
 		for _, value := range rightArray {
-			if !slices.ContainsFunc(result, func(item any) bool { return jsonEqual(item, value) }) {
+			encodedValue, _ := json.Marshal(value)
+			if !slices.ContainsFunc(result, func(item any) bool {
+				encodedItem, _ := json.Marshal(item)
+				return bytes.Equal(encodedItem, encodedValue)
+			}) {
 				result = append(result, value)
 			}
 		}
 		return result
 	}
 	return override
-}
-
-func jsonEqual(left, right any) bool {
-	a, _ := json.Marshal(left)
-	b, _ := json.Marshal(right)
-	return string(a) == string(b)
 }

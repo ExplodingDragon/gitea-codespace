@@ -54,7 +54,7 @@ func Load(options LoadOptions) (*ResolvedConfiguration, error) {
 			return nil, fmt.Errorf("dev container content source contains repository fields")
 		}
 		content = []byte(source.Content)
-		configPath = filepath.Join(workspace, ".gitea-devcontainer-template.json")
+		configPath = filepath.Join(workspace, ".devcontainer-inline.json")
 	case strings.TrimSpace(source.Path) != "":
 		configPath = filepath.FromSlash(strings.TrimSpace(source.Path))
 		if !filepath.IsAbs(configPath) {

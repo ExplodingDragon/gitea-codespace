@@ -21,7 +21,8 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	if access == nil || strings.TrimSpace(access.GiteaToken) == "" {
 		return nil, fmt.Errorf("gitea access token is empty")
 	}
-	if _, err := controlplane.CanonicalGiteaURL(access.GiteaServerUrl); err != nil {
+	giteaURL, err := controlplane.CanonicalGiteaURL(access.GiteaServerUrl)
+	if err != nil {
 		return nil, fmt.Errorf("gitea server URL: %w", err)
 	}
 	privateKey, err := r.Journal.GitSSHPrivateKey(keyType)
@@ -70,8 +71,16 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 			return nil, err
 		}
 	}
-	secrets := make(map[string]string, len(access.Secrets))
-	for _, item := range access.Secrets {
+	secrets, err := runtimeAccessEnvironment(access.Secrets, giteaURL, access.GiteaToken)
+	if err != nil {
+		return nil, err
+	}
+	return secrets, nil
+}
+
+func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVariable, giteaURL, token string) (map[string]string, error) {
+	secrets := make(map[string]string, len(items)+2)
+	for _, item := range items {
 		if item == nil || !secretNamePattern.MatchString(item.Name) || strings.ContainsRune(item.Value, 0) {
 			return nil, fmt.Errorf("runtime secret is invalid")
 		}
@@ -80,6 +89,8 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 		}
 		secrets[item.Name] = item.Value
 	}
+	secrets["GITEA_INSTANCE_URL"] = giteaURL
+	secrets["GITEA_TOKEN"] = token
 	return secrets, nil
 }
 

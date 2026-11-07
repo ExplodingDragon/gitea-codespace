@@ -216,6 +216,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(selectField('StorageClass')).toBeVisible();
   await field('Tag').fill('standard');
   await field('code-server Feature options').fill('{"extensions":"golang.go","locale":"en"}');
+  await page.getByRole('checkbox', {name: 'Install the Gitea CLI'}).check();
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
   await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
   await page.getByRole('button', {name: 'Save template'}).click();
@@ -229,6 +230,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     enabled: true,
     options: {extensions: 'golang.go', locale: 'en'},
   });
+  expect(environments[0].spec.runtime.devContainer.giteaCLI).toBe(true);
   expect(environments[0].spec.runtime.resources).toEqual({
     requests: {cpu: '100m', memory: '256Mi'},
   });

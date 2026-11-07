@@ -56,6 +56,19 @@ type Engine struct {
 // environment are known and before the first in-container lifecycle command.
 type PrepareLifecycleFunc func(context.Context, *Engine, *devcontainer.State) error
 
+// ImageCustomization describes the final image layer requested by a caller.
+// The callback writes a Dockerfile and any required assets into ContextDir.
+type ImageCustomization struct {
+	ContextDir    string
+	BaseImage     string
+	ContainerUser string
+	Platform      ocispec.Platform
+}
+
+// CustomizeImageFunc writes caller-owned image contents into a temporary
+// Docker build context managed by the Engine.
+type CustomizeImageFunc func(ImageCustomization) error
+
 // ReadyFunc reports the first lifecycle stage selected by waitFor.
 type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage)
 
@@ -63,27 +76,26 @@ type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage)
 // nil when no external journal is used.
 type RunLifecycleFunc func(context.Context, devcontainer.LifecycleStage, func(context.Context) error) error
 
-// CreateOptions contains caller identity, configuration input, and product integration hooks.
+// CreateOptions contains caller identity, configuration input, and integration hooks.
 type CreateOptions struct {
-	OwnerID                 string
-	Workspace               string
-	Source                  devcontainer.Source
-	AllowedPathRoot         string
-	HostUser                devcontainer.HostUser
-	LocalEnvironment        map[string]string
-	PlatformEnvironment     map[string]string
-	Secrets                 map[string]string
-	InjectedFeatures        []devcontainer.InjectedFeature
-	AdditionalMounts        []devcontainer.Mount
-	ContainerEnv            map[string]string
-	Labels                  map[string]string
-	FrozenLockfile          bool
-	Cache                   devcontainer.CacheOptions
-	TemplateLifecycleScript string
-	StartTemplateLifecycle  PrepareLifecycleFunc
-	PrepareLifecycle        PrepareLifecycleFunc
-	RunLifecycle            RunLifecycleFunc
-	Ready                   ReadyFunc
+	OwnerID             string
+	Workspace           string
+	Source              devcontainer.Source
+	AllowedPathRoot     string
+	HostUser            devcontainer.HostUser
+	LocalEnvironment    map[string]string
+	PlatformEnvironment map[string]string
+	Secrets             map[string]string
+	InjectedFeatures    []devcontainer.InjectedFeature
+	AdditionalMounts    []devcontainer.Mount
+	ContainerEnv        map[string]string
+	Labels              map[string]string
+	FrozenLockfile      bool
+	Cache               devcontainer.CacheOptions
+	CustomizeImage      CustomizeImageFunc
+	PrepareLifecycle    PrepareLifecycleFunc
+	RunLifecycle        RunLifecycleFunc
+	Ready               ReadyFunc
 }
 
 // New connects an Engine to the Docker endpoint selected by the standard Docker client configuration.
@@ -197,9 +209,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var composeContainers map[string]string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.TemplateLifecycleScript)
+		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.CustomizeImage)
 	} else {
-		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.TemplateLifecycleScript)
+		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.CustomizeImage)
 	}
 	if err != nil {
 		return nil, err
@@ -234,7 +246,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
-	if err := e.initializeContainer(ctx, environment, options.Secrets, options.StartTemplateLifecycle, options.PrepareLifecycle, options.RunLifecycle, options.Ready); err != nil {
+	if err := e.initializeContainer(ctx, environment, options.Secrets, options.PrepareLifecycle, options.RunLifecycle, options.Ready); err != nil {
 		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
@@ -330,7 +342,7 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 	return json.Marshal(merged)
 }
 
-func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, templateLifecycleScript string) (string, map[string]string, error) {
+func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, customizeImage CustomizeImageFunc) (string, map[string]string, error) {
 	imageName, featureDigests, err := e.resolveImage(ctx, resolved, platformEnvironment)
 	if err != nil {
 		return "", nil, err
@@ -339,7 +351,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	if err != nil {
 		return "", nil, err
 	}
-	imageName, err = e.prepareTemplateLifecycleImage(ctx, imageName, resolved, templateLifecycleScript, platformEnvironment)
+	imageName, err = e.customizeImage(ctx, imageName, resolved, customizeImage, platformEnvironment)
 	if err != nil {
 		return "", nil, err
 	}
@@ -362,7 +374,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	override := resolved.OverrideCommand == nil || *resolved.OverrideCommand
 	config := &container.Config{
 		Image:      imageName,
-		Env:        environmentList(mergePlatformEnvironment(resolved.ContainerEnv, platformEnvironment)),
+		Env:        devcontainer.EnvironmentList(mergePlatformEnvironment(resolved.ContainerEnv, platformEnvironment)),
 		Labels:     labels,
 		Tty:        true,
 		OpenStdin:  true,
@@ -453,7 +465,9 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 }
 
 func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) ([]string, error) {
-	if hasRunArg(resolved.RunArgs, "--entrypoint") {
+	if slices.ContainsFunc(resolved.RunArgs, func(argument string) bool {
+		return argument == "--entrypoint" || strings.HasPrefix(argument, "--entrypoint=")
+	}) {
 		return nil, fmt.Errorf("runArgs --entrypoint overrides Dev Container Feature startup entrypoints")
 	}
 	arguments := []string{"--tty", "--interactive"}
@@ -613,15 +627,6 @@ func appPortPublishSpecs(ports devcontainer.AppPortList) ([]string, error) {
 	return result, nil
 }
 
-func hasRunArg(arguments []string, name string) bool {
-	for _, argument := range arguments {
-		if argument == name || strings.HasPrefix(argument, name+"=") {
-			return true
-		}
-	}
-	return false
-}
-
 func containerStartupScript(entrypoints []string) string {
 	return "echo Container started\ntrap 'exit 0' TERM\n" + strings.Join(entrypoints, "\n") + "\nexec \"$@\"\nwhile sleep 1 & wait $!; do :; done"
 }
@@ -674,14 +679,6 @@ func devContainerMounts(workspace, workspaceFolder, workspaceMount string, value
 		resolved = append(resolved, value)
 	}
 	return resolved, nil
-}
-
-func environmentList(values map[string]string) []string {
-	result := make([]string, 0, len(values))
-	for _, name := range slices.Sorted(maps.Keys(values)) {
-		result = append(result, name+"="+values[name])
-	}
-	return result
 }
 
 type dockerProgressMessage struct {

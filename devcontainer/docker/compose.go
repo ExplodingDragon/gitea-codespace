@@ -30,7 +30,7 @@ func composeProjectName(ownerID string) string {
 	return fmt.Sprintf("devcontainer-%x", digest[:12])
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, templateLifecycleScript string) (string, []string, map[string]string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, customizeImage CustomizeImageFunc) (string, []string, map[string]string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -113,7 +113,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
-	featureImage, err = e.prepareTemplateLifecycleImage(ctx, featureImage, resolved, templateLifecycleScript, platformEnvironment)
+	featureImage, err = e.customizeImage(ctx, featureImage, resolved, customizeImage, platformEnvironment)
 	if err != nil {
 		return "", nil, nil, nil, err
 	}

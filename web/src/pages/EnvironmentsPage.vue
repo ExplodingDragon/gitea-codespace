@@ -41,7 +41,6 @@ const dirty = useDirtyForm(() => ({
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
 }));
-
 const isolationOptions = computed(() => {
   const available = new Set(cluster.value.runtimeClasses.map(({isolation}) => isolation));
   const options = [
@@ -132,7 +131,12 @@ function edit(item?: Resource<Environment>) {
           accessMode: 'ReadWriteOncePod',
           resources: {requests: {cpu: '100m', memory: '256Mi'}},
           gitSSHKeyType: 'ed25519',
-          devContainer: {webIDE: {enabled: true, options: {}}, features: [], lifecycleScript: ''},
+          devContainer: {
+            webIDE: {enabled: true, options: {}},
+            giteaCLI: false,
+            features: [],
+            lifecycleScript: '',
+          },
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
@@ -459,6 +463,15 @@ function remove(item: Resource<Environment>) {
           />
         </NFormItem>
       </template>
+    </div>
+    <h2>{{ t('environment.giteaCLISection') }}</h2>
+    <p class="section-help">{{ t('environment.giteaCLIHelp') }}</p>
+    <div class="form-grid">
+      <NFormItem class="field-wide">
+        <NCheckbox v-model:checked="form.runtime.devContainer.giteaCLI">
+          {{ t('environment.giteaCLIEnabled') }}
+        </NCheckbox>
+      </NFormItem>
     </div>
     <h2>{{ t('environment.featuresSection') }}</h2>
     <div class="form-grid">

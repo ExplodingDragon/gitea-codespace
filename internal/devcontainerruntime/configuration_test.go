@@ -44,9 +44,11 @@ func TestConfigurationValidation(t *testing.T) {
 		},
 		{
 			name: "Web IDE accepts upstream options",
-			configuration: Configuration{WebIDE: WebIDEConfiguration{
-				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`{"version":"4.121.0","extensions":"example.tool"}`)},
-			}},
+			configuration: Configuration{
+				WebIDE: WebIDEConfiguration{
+					Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`{"version":"4.121.0","extensions":"example.tool"}`)},
+				},
+			},
 		},
 		{
 			name: "feature options are an object",

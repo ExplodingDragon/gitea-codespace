@@ -23,8 +23,10 @@ const (
 // Configuration defines administrator-owned additions to a repository's Dev
 // Container configuration. It is copied into the Codespace runtime snapshot.
 type Configuration struct {
-	WebIDE   WebIDEConfiguration `json:"webIDE"`
-	Features []InjectedFeature   `json:"features,omitempty"`
+	WebIDE WebIDEConfiguration `json:"webIDE"`
+	// GiteaCLI adds the CLI bundled with the platform image to the Dev Container.
+	GiteaCLI bool              `json:"giteaCLI"`
+	Features []InjectedFeature `json:"features,omitempty"`
 	// +kubebuilder:validation:MaxLength=65536
 	LifecycleScript string `json:"lifecycleScript,omitempty"`
 }

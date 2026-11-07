@@ -18,6 +18,7 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	dockerunits "github.com/docker/go-units"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -118,10 +119,7 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 	return nil
 }
 
-const (
-	dockerPullProgressInterval  = 10 * time.Second
-	templateLifecycleScriptPath = "/usr/local/lib/gitea-codespace/lifecycle.sh"
-)
+const dockerPullProgressInterval = 10 * time.Second
 
 type dockerPullLayer struct {
 	current  int64
@@ -358,33 +356,45 @@ func (e *Engine) prepareUserImage(ctx context.Context, baseImage string, resolve
 	return imageName, nil
 }
 
-func (e *Engine) prepareTemplateLifecycleImage(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, templateLifecycleScript string, platformEnvironment map[string]string) (string, error) {
-	if strings.TrimSpace(templateLifecycleScript) == "" {
+func (e *Engine) customizeImage(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, customize CustomizeImageFunc, platformEnvironment map[string]string) (string, error) {
+	if customize == nil {
 		return baseImage, nil
 	}
-	directory, err := os.MkdirTemp("", "devcontainer-lifecycle-*")
+	directory, err := os.MkdirTemp("", "devcontainer-customization-*")
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("create image customization context: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
+	inspect, err := e.inspectImage(ctx, baseImage)
+	if err != nil {
+		return "", fmt.Errorf("inspect image customization base: %w", err)
+	}
 	containerUser := strings.TrimSpace(resolved.ContainerUser)
 	if containerUser == "" {
 		containerUser = "root"
 	}
-	if err := writeTemplateLifecycleBuildContext(directory, baseImage, containerUser, templateLifecycleScript); err != nil {
-		return "", err
+	if err := customize(ImageCustomization{
+		ContextDir:    directory,
+		BaseImage:     baseImage,
+		ContainerUser: containerUser,
+		Platform: ocispec.Platform{
+			OS:           inspect.Os,
+			Architecture: inspect.Architecture,
+			Variant:      inspect.Variant,
+		},
+	}); err != nil {
+		return "", fmt.Errorf("customize Dev Container image: %w", err)
 	}
-	imageName := "devcontainer-lifecycle:" + resolved.DevContainerID
-	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "lifecycle", platformEnvironment); err != nil {
-		return "", fmt.Errorf("build Dev Container lifecycle image: %w", err)
+	dockerfile, err := os.Stat(filepath.Join(directory, "Dockerfile"))
+	if err != nil {
+		return "", fmt.Errorf("inspect customized Dev Container Dockerfile: %w", err)
+	}
+	if !dockerfile.Mode().IsRegular() {
+		return "", fmt.Errorf("customized Dev Container Dockerfile is not a regular file")
+	}
+	imageName := "devcontainer-customized:" + resolved.DevContainerID
+	if err := e.buildImage(ctx, directory, "Dockerfile", imageName, "", nil, nil, nil, resolved.Cache, "customization", platformEnvironment); err != nil {
+		return "", fmt.Errorf("build customized Dev Container image: %w", err)
 	}
 	return imageName, nil
-}
-
-func writeTemplateLifecycleBuildContext(directory, baseImage, containerUser, script string) error {
-	dockerfile := fmt.Sprintf("FROM %s\nUSER root\nCOPY lifecycle.sh %s\nRUN chmod 0500 %s && /bin/sh %s build\nUSER %s\n", baseImage, templateLifecycleScriptPath, templateLifecycleScriptPath, templateLifecycleScriptPath, containerUser)
-	if err := os.WriteFile(filepath.Join(directory, "Dockerfile"), []byte(dockerfile), 0o600); err != nil {
-		return err
-	}
-	return os.WriteFile(filepath.Join(directory, "lifecycle.sh"), []byte(script), 0o600)
 }

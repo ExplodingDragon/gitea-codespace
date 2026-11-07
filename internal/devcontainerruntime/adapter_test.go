@@ -18,16 +18,21 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	request := Request{
 		CodespaceUUID: "11111111-2222-4333-8444-555555555555",
 		Workspace:     "/workspaces/project",
+		GiteaURL:      "https://gitea.example.com",
 		Source:        devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
-		DevContainer: Configuration{WebIDE: WebIDEConfiguration{
-			Enabled: true,
-			Options: apiextensionsv1.JSON{Raw: []byte(`{
+		DevContainer: Configuration{
+			GiteaCLI: true,
+			WebIDE: WebIDEConfiguration{
+				Enabled: true,
+				Options: apiextensionsv1.JSON{Raw: []byte(`{
 				"version": "4.121.0",
 				"locale": "zh-CN",
 				"auth": "password",
 				"socket": "/tmp/code-server.sock"
 			}`)},
-		}, LifecycleScript: "case \"$1\" in build) : ;; esac\n"},
+			},
+			LifecycleScript: "case \"$1\" in build) : ;; esac\n",
+		},
 		Cache: devcontainer.CacheOptions{
 			BuildRegistry: "https://registry.example.com/cache",
 			BuildScope:    "scope",
@@ -64,10 +69,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if options.Cache.BuildRegistry != request.Cache.BuildRegistry || options.Cache.BuildScope != request.Cache.BuildScope {
 		t.Fatalf("Codespace cache = %#v", options.Cache)
 	}
-	if options.TemplateLifecycleScript != request.DevContainer.LifecycleScript {
-		t.Fatalf("lifecycle script was not copied into create options")
-	}
-	if options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_CA_BUNDLE"] != containerCABundlePath {
+	if options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["GITEA_INSTANCE_URL"] != request.GiteaURL || options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"] != "1" {
 		t.Fatalf("custom CA environment = %#v", options.ContainerEnv)
 	}
 	request.GiteaCustomCA = false
@@ -75,7 +77,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create options without custom CA: %v", err)
 	}
-	if len(options.ContainerEnv) != 2 || options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath {
+	if len(options.ContainerEnv) != 4 || options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_INSTANCE_URL"] != request.GiteaURL || options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"] != "1" {
 		t.Fatalf("system CA environment = %#v", options.ContainerEnv)
 	}
 }

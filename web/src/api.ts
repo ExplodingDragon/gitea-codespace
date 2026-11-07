@@ -116,6 +116,7 @@ export type Runtime = {
   gitSSHKeyType: string;
   devContainer: {
     webIDE: {enabled: boolean; options: Record<string, unknown>};
+    giteaCLI: boolean;
     features?: {reference: string; options?: Record<string, unknown>}[];
     lifecycleScript?: string;
   };

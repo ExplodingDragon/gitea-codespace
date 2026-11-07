@@ -3,7 +3,10 @@
 
 package devcontainer
 
-import "maps"
+import (
+	"maps"
+	"slices"
+)
 
 // ProxyVariableNames returns the conventional upper- and lower-case
 // proxy variable names understood by Docker and common development tools.
@@ -25,6 +28,17 @@ func ProcessEnvironment(remote map[string]string, overlays ...map[string]string)
 	maps.Copy(result, remote)
 	for _, overlay := range overlays {
 		maps.Copy(result, overlay)
+	}
+	return result
+}
+
+// EnvironmentList returns Docker-compatible environment assignments in a
+// stable order. A stable representation keeps command construction and logs
+// deterministic wherever a map crosses a process boundary.
+func EnvironmentList(values map[string]string) []string {
+	result := make([]string, 0, len(values))
+	for _, name := range slices.Sorted(maps.Keys(values)) {
+		result = append(result, name+"="+values[name])
 	}
 	return result
 }

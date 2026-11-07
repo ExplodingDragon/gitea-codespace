@@ -52,7 +52,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 			if strings.TrimSpace(user.Home) != "" {
 				values["HOME"] = user.Home
 			}
-			process.Env = environmentList(values)
+			process.Env = devcontainer.EnvironmentList(values)
 			if user.UID != uint32(os.Geteuid()) || user.GID != uint32(os.Getegid()) {
 				if os.Geteuid() != 0 {
 					return fmt.Errorf("command %q requires host user %d:%d, current process is %d:%d", arguments[0], user.UID, user.GID, os.Geteuid(), os.Getegid())
@@ -176,7 +176,7 @@ func (e *Engine) Run(ctx context.Context, containerID, user, workdir string, com
 // the lifecycle operation that launched it.
 func (e *Engine) RunDetached(ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string) error {
 	created, err := e.client.ContainerExecCreate(ctx, containerID, container.ExecOptions{
-		User: user, WorkingDir: workdir, Cmd: command, Env: environmentList(environment),
+		User: user, WorkingDir: workdir, Cmd: command, Env: devcontainer.EnvironmentList(environment),
 	})
 	if err != nil {
 		return fmt.Errorf("create detached container exec: %w", err)
@@ -216,7 +216,7 @@ func (e *Engine) exec(ctx context.Context, containerID, user, workdir string, co
 		User:         user,
 		WorkingDir:   workdir,
 		Cmd:          command,
-		Env:          environmentList(environment),
+		Env:          devcontainer.EnvironmentList(environment),
 		AttachStdin:  stdin != nil,
 		AttachStdout: true,
 		AttachStderr: true,

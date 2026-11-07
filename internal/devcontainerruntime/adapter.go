@@ -97,7 +97,11 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 	}
 	containerEnvironment := map[string]string{
 		"CODESPACE_CA_BUNDLE": containerCABundlePath,
+		"GITEA_INSTANCE_URL":  request.GiteaURL,
 		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
+	}
+	if request.DevContainer.GiteaCLI {
+		containerEnvironment["GITEA_CLI_NO_UPDATE_NOTIFIER"] = "1"
 	}
 	platformEnvironment := map[string]string{}
 	for _, name := range devcontainer.ProxyVariableNames() {
@@ -109,21 +113,20 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		containerEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
 	}
 	return containerdocker.CreateOptions{
-		OwnerID:                 request.CodespaceUUID,
-		Workspace:               request.Workspace,
-		Source:                  request.Source,
-		AllowedPathRoot:         request.Workspace,
-		HostUser:                request.HostUser,
-		LocalEnvironment:        request.LocalEnvironment,
-		PlatformEnvironment:     platformEnvironment,
-		Secrets:                 request.Secrets,
-		Cache:                   request.Cache,
-		RunLifecycle:            request.RunLifecycle,
-		TemplateLifecycleScript: request.DevContainer.LifecycleScript,
-		InjectedFeatures:        injected,
-		AdditionalMounts:        mounts,
-		ContainerEnv:            containerEnvironment,
-		Labels:                  map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
+		OwnerID:             request.CodespaceUUID,
+		Workspace:           request.Workspace,
+		Source:              request.Source,
+		AllowedPathRoot:     request.Workspace,
+		HostUser:            request.HostUser,
+		LocalEnvironment:    request.LocalEnvironment,
+		PlatformEnvironment: platformEnvironment,
+		Secrets:             request.Secrets,
+		Cache:               request.Cache,
+		RunLifecycle:        request.RunLifecycle,
+		InjectedFeatures:    injected,
+		AdditionalMounts:    mounts,
+		ContainerEnv:        containerEnvironment,
+		Labels:              map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
 	}, nil
 }
 

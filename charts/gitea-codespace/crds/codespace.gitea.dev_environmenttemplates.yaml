@@ -69,6 +69,10 @@ spec:
                           - reference
                           type: object
                         type: array
+                      giteaCLI:
+                        description: GiteaCLI adds the CLI bundled with the platform
+                          image to the Dev Container.
+                        type: boolean
                       lifecycleScript:
                         maxLength: 65536
                         type: string
@@ -88,6 +92,7 @@ spec:
                         - options
                         type: object
                     required:
+                    - giteaCLI
                     - webIDE
                     type: object
                   gitSSHKeyType:

@@ -3,7 +3,10 @@
 
 package devcontainer
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func TestProcessEnvironmentPrecedence(t *testing.T) {
 	t.Parallel()
@@ -18,5 +21,13 @@ func TestProcessEnvironmentPrecedence(t *testing.T) {
 	}
 	if remote["SHARED"] != "remote" || secrets["SHARED"] != "secret" {
 		t.Fatalf("source environments were modified")
+	}
+}
+
+func TestEnvironmentList(t *testing.T) {
+	t.Parallel()
+
+	if list := EnvironmentList(map[string]string{"B": "2", "A": "1"}); !slices.Equal(list, []string{"A=1", "B=2"}) {
+		t.Fatalf("environment list = %#v", list)
 	}
 }

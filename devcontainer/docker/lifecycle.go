@@ -18,7 +18,7 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
-func (e *Engine) initializeContainer(ctx context.Context, environment *devcontainer.State, secrets map[string]string, startLifecycle, prepareLifecycle PrepareLifecycleFunc, runLifecycle RunLifecycleFunc, ready ReadyFunc) error {
+func (e *Engine) initializeContainer(ctx context.Context, environment *devcontainer.State, secrets map[string]string, prepareLifecycle PrepareLifecycleFunc, runLifecycle RunLifecycleFunc, ready ReadyFunc) error {
 	inspect, err := e.client.ContainerInspect(ctx, environment.PrimaryContainerID)
 	if err != nil {
 		return fmt.Errorf("inspect Dev Container: %w", err)
@@ -41,11 +41,6 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 		}
 	}
 	environment.RemoteEnvironment = remoteEnv
-	if startLifecycle != nil {
-		if err := startLifecycle(ctx, e, environment); err != nil {
-			return fmt.Errorf("run environment-template start lifecycle: %w", err)
-		}
-	}
 	if prepareLifecycle != nil {
 		if err := prepareLifecycle(ctx, e, environment); err != nil {
 			return fmt.Errorf("prepare Dev Container lifecycle: %w", err)
@@ -80,7 +75,7 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 }
 
 // Start resumes an existing environment and runs postStartCommand.
-func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hostUser devcontainer.HostUser, localEnvironment, secrets map[string]string, startLifecycle, prepare PrepareLifecycleFunc, runLifecycle RunLifecycleFunc) (*devcontainer.State, error) {
+func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hostUser devcontainer.HostUser, localEnvironment, secrets map[string]string, prepare PrepareLifecycleFunc, runLifecycle RunLifecycleFunc) (*devcontainer.State, error) {
 	if err := environment.Validate(); err != nil {
 		return nil, err
 	}
@@ -96,20 +91,15 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hos
 	} else {
 		ids := append(slices.Clone(environment.RelatedContainerIDs), environment.PrimaryContainerID)
 		for _, id := range ids {
-			inspect, err := e.client.ContainerInspect(ctx, id)
+			running, err := e.ContainerRunning(ctx, id)
 			if err != nil {
 				return nil, fmt.Errorf("inspect Dev Container %s: %w", id, err)
 			}
-			if !inspect.State.Running {
+			if !running {
 				if err := e.client.ContainerStart(ctx, id, container.StartOptions{}); err != nil {
 					return nil, fmt.Errorf("resume Dev Container %s: %w", id, err)
 				}
 			}
-		}
-	}
-	if startLifecycle != nil {
-		if err := startLifecycle(ctx, e, environment); err != nil {
-			return nil, fmt.Errorf("run environment-template start lifecycle: %w", err)
 		}
 	}
 	if prepare != nil {
@@ -123,29 +113,13 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hos
 	return e.Inspect(ctx, environment)
 }
 
-// RunTemplateLifecycle executes the environment-template script in the primary container.
-func (e *Engine) RunTemplateLifecycle(ctx context.Context, environment *devcontainer.State, action string) error {
-	if action != "start" && action != "stop" {
-		return fmt.Errorf("invalid environment-template lifecycle action %q", action)
+// ContainerRunning reports whether a container currently has a running process.
+func (e *Engine) ContainerRunning(ctx context.Context, containerID string) (bool, error) {
+	inspect, err := e.client.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return false, err
 	}
-	if action == "stop" {
-		inspect, err := e.client.ContainerInspect(ctx, environment.PrimaryContainerID)
-		if cerrdefs.IsNotFound(err) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("inspect Dev Container before stop lifecycle: %w", err)
-		}
-		if !inspect.State.Running {
-			return nil
-		}
-	}
-	lifecycleContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
-	defer cancel()
-	if err := e.Run(lifecycleContext, environment.PrimaryContainerID, "0", environment.RemoteWorkdir, []string{"/bin/sh", templateLifecycleScriptPath, action}, nil, nil); err != nil {
-		return fmt.Errorf("run environment-template lifecycle %s: %w", action, err)
-	}
-	return nil
+	return inspect.State != nil && inspect.State.Running, nil
 }
 
 // Stop stops all resources belonging to an environment without deleting them.

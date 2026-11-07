@@ -102,7 +102,7 @@ func TestDockerE2EOfficialInterop(t *testing.T) {
 	}
 	state, err = engine.Start(ctx, state, devcontainer.HostUser{
 		Name: os.Getenv("USER"), UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), Home: os.Getenv("HOME"),
-	}, nil, nil, nil, nil, nil)
+	}, nil, nil, nil, nil)
 	if err != nil {
 		t.Fatalf("resume official interoperability environment: %v", err)
 	}

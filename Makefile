@@ -23,6 +23,7 @@ BASH_SCRIPTS := \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
+	deploy/prepare-gitea-cli.sh \
 	devcontainer/docker/builtin/resolve-user-shell.sh \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
@@ -54,7 +55,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux prepare-gitea-cli images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -103,8 +104,15 @@ build: frontend
 build-linux: frontend
 	CGO_ENABLED=0 GOOS=linux GOARCH=amd64 $(GO) build -trimpath -ldflags="-s -w -X 'gitea.dev/codespace/internal/controlplane.buildVersion=$(CODESPACE_VERSION)'" -o bin/gitea-codespace .
 
-images: build-linux
-	$(CONTAINER_TOOL) build -f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
+prepare-gitea-cli:
+	GITEA_CLI_VERSION="$(GITEA_CLI_VERSION)" ./deploy/prepare-gitea-cli.sh linux amd64 bin
+
+images: build-linux prepare-gitea-cli
+	@. bin/gitea-cli.env; \
+	$(CONTAINER_TOOL) build \
+		--build-arg GITEA_CLI_VERSION="$$GITEA_CLI_VERSION" \
+		--build-arg GITEA_CLI_SHA256="$$GITEA_CLI_SHA256" \
+		-f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
 
 clean:
 	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report

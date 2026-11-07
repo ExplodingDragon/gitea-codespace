@@ -231,7 +231,7 @@ func prepareAccessExec(ctx context.Context, state *devcontainer.State, secrets m
 		values["TERM"] = terminal.Term
 		values["COLORTERM"] = "truecolor"
 	}
-	options := container.ExecOptions{User: user, WorkingDir: workdir, Env: stringMapEnvironment(values), Cmd: command, AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: terminal != nil}
+	options := container.ExecOptions{User: user, WorkingDir: workdir, Env: devcontainer.EnvironmentList(values), Cmd: command, AttachStdin: true, AttachStdout: true, AttachStderr: true, Tty: terminal != nil}
 	if terminal != nil && terminal.Size != nil && terminal.Size.Columns > 0 && terminal.Size.Rows > 0 {
 		options.ConsoleSize = &[2]uint{uint(terminal.Size.Rows), uint(terminal.Size.Columns)}
 	}
@@ -386,12 +386,4 @@ func copyFrames(reader io.Reader, send func([]byte) error) error {
 			return err
 		}
 	}
-}
-
-func stringMapEnvironment(values map[string]string) []string {
-	result := make([]string, 0, len(values))
-	for name, value := range values {
-		result = append(result, name+"="+value)
-	}
-	return result
 }

@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
+
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 )
@@ -37,15 +39,16 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		if err != nil {
 			return nil, err
 		}
+		options.CustomizeImage = imageCustomization(request.DevContainer, platformGiteaCLIPath, stdout)
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
+				return err
+			}
 			if err := configureCreate(ctx, engine, state, request); err != nil {
 				return err
 			}
 			_, _, err := ConfiguredEndpoints(state)
 			return err
-		}
-		options.StartTemplateLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			return runTemplateLifecycle(ctx, request, engine, state, "start")
 		}
 		state, err := engine.Create(ctx, options)
 		if err != nil {
@@ -56,10 +59,10 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 	case "resume":
 		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			err := runTemplateLifecycle(ctx, request, engine, state, "start")
-			startFailed = err != nil
-			return err
-		}, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
+				startFailed = true
+				return err
+			}
 			if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
 				return err
 			}
@@ -103,8 +106,28 @@ func runTemplateLifecycle(ctx context.Context, request Request, engine *containe
 	if strings.TrimSpace(request.DevContainer.LifecycleScript) == "" {
 		return nil
 	}
+	if action != "start" && action != "stop" {
+		return fmt.Errorf("invalid environment-template lifecycle action %q", action)
+	}
 	run := func(ctx context.Context) error {
-		return engine.RunTemplateLifecycle(ctx, state, action)
+		if action == "stop" {
+			running, err := engine.ContainerRunning(ctx, state.PrimaryContainerID)
+			if cerrdefs.IsNotFound(err) {
+				return nil
+			}
+			if err != nil {
+				return fmt.Errorf("inspect Dev Container before stop lifecycle: %w", err)
+			}
+			if !running {
+				return nil
+			}
+		}
+		lifecycleContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
+		defer cancel()
+		if err := engine.Run(lifecycleContext, state.PrimaryContainerID, "0", state.RemoteWorkdir, []string{"/bin/sh", templateLifecycleScriptPath, action}, nil, nil); err != nil {
+			return fmt.Errorf("run environment-template lifecycle %s: %w", action, err)
+		}
+		return nil
 	}
 	if request.RunTemplateLifecycle != nil {
 		return request.RunTemplateLifecycle(ctx, action, run)
