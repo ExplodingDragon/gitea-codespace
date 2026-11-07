@@ -25,9 +25,9 @@ import (
 	"gitea.dev/codespace/internal/transport"
 )
 
-// AgentBackend adapts Gateway sessions to the current Runtime Agent. It asks
-// Manager for a fresh target-bound ticket for every new data stream.
-type AgentBackend struct {
+// The Agent backend asks Manager for a fresh target-bound ticket before
+// adapting each Gateway data stream to the current Runtime Agent.
+type agentBackend struct {
 	Manager      componentv1connect.ComponentServiceClient
 	Certificates *transport.FileCertificates
 
@@ -49,7 +49,7 @@ type agentAccessStream struct {
 	mu     sync.Mutex
 }
 
-func (b *AgentBackend) open(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentAccessStream, error) {
+func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentAccessStream, error) {
 	if b == nil || b.Manager == nil {
 		return nil, fmt.Errorf("agent backend is unavailable")
 	}
@@ -89,7 +89,7 @@ func (b *AgentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	return &agentAccessStream{cancel: cancel, stream: stream}, nil
 }
 
-func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agentClient, error) {
+func (b *agentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agentClient, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if b.clients == nil {
@@ -126,7 +126,7 @@ func (b *AgentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 	return client, nil
 }
 
-func (b *AgentBackend) ClosePod(podUID string) {
+func (b *agentBackend) ClosePod(podUID string) {
 	b.mu.Lock()
 	client := b.clients[podUID]
 	delete(b.clients, podUID)
@@ -136,7 +136,7 @@ func (b *AgentBackend) ClosePod(podUID string) {
 	}
 }
 
-func (b *AgentBackend) Close() {
+func (b *agentBackend) Close() {
 	b.mu.Lock()
 	clients := b.clients
 	b.clients = make(map[string]*agentClient)
@@ -197,7 +197,7 @@ func (w *agentInput) Close() error {
 	return err
 }
 
-func (b *AgentBackend) OpenWorkspaceShell(ctx context.Context, request WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+func (b *agentBackend) OpenWorkspaceShell(ctx context.Context, request workspaceShellRequest) (workspaceCommandSession, error) {
 	shell := &agentv1.Shell{}
 	if request.Interactive {
 		shell.Terminal = &agentv1.Terminal{Term: "xterm-256color", Size: &agentv1.TerminalSize{Columns: uint32(max(request.Cols, 1)), Rows: uint32(max(request.Rows, 1))}}
@@ -207,7 +207,7 @@ func (b *AgentBackend) OpenWorkspaceShell(ctx context.Context, request Workspace
 	})
 }
 
-func (b *AgentBackend) OpenWorkspaceCommand(ctx context.Context, request WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
+func (b *agentBackend) OpenWorkspaceCommand(ctx context.Context, request workspaceCommandRequest) (workspaceCommandSession, error) {
 	if request.Command == "" {
 		return nil, fmt.Errorf("workspace command is required")
 	}
@@ -220,7 +220,7 @@ func (b *AgentBackend) OpenWorkspaceCommand(ctx context.Context, request Workspa
 	})
 }
 
-func (b *AgentBackend) openWorkspaceProcess(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, open *agentv1.OpenAccess) (WorkspaceCommandSession, error) {
+func (b *agentBackend) openWorkspaceProcess(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, open *agentv1.OpenAccess) (workspaceCommandSession, error) {
 	access, err := b.open(ctx, runtimeUUID, capability, "", open)
 	if err != nil {
 		return nil, err
@@ -247,7 +247,7 @@ func (b *AgentBackend) openWorkspaceProcess(ctx context.Context, runtimeUUID str
 				if frame.ExitStatus == 0 {
 					session.done <- nil
 				} else {
-					session.done <- &WorkspaceCommandExitError{Status: int(frame.ExitStatus)}
+					session.done <- &workspaceCommandExitError{Status: int(frame.ExitStatus)}
 				}
 				return
 			}
@@ -288,7 +288,7 @@ type agentConn struct {
 	once   sync.Once
 }
 
-func (b *AgentBackend) openStream(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentConn, error) {
+func (b *agentBackend) openStream(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentConn, error) {
 	access, err := b.open(ctx, runtimeUUID, capability, endpointID, open)
 	if err != nil {
 		return nil, err
@@ -327,15 +327,15 @@ func (b *AgentBackend) openStream(ctx context.Context, runtimeUUID string, capab
 	return conn, nil
 }
 
-func (b *AgentBackend) OpenWorkspaceSFTP(ctx context.Context, request WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
+func (b *agentBackend) OpenWorkspaceSFTP(ctx context.Context, request workspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	return b.openStream(ctx, request.RuntimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP, "", &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Sftp{Sftp: &agentv1.SFTP{}}})
 }
 
-func (b *AgentBackend) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, port uint32) (net.Conn, error) {
+func (b *agentBackend) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, port uint32) (net.Conn, error) {
 	return b.openStream(ctx, runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP, "", &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Tcp{Tcp: &agentv1.LoopbackTCP{Port: port}}})
 }
 
-func (b *AgentBackend) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {
+func (b *agentBackend) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {
 	return b.openStream(ctx, runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, endpointID, &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Endpoint{Endpoint: &agentv1.Endpoint{EndpointId: endpointID}}})
 }
 
@@ -370,7 +370,7 @@ type agentAddress string
 func (a agentAddress) Network() string { return "agent-rpc" }
 func (a agentAddress) String() string  { return string(a) }
 
-var _ WorkspaceBackend = (*AgentBackend)(nil)
+var _ workspaceBackend = (*agentBackend)(nil)
 var _ net.Conn = (*agentConn)(nil)
 
 func validAgentAddress(value string) bool {

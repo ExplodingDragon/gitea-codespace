@@ -88,9 +88,8 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 		if err := e.pullImageReference(ctx, fetchReference); err == nil {
 			_, _ = fmt.Fprintf(e.stderr, "Pulled image %s through mirror %s\n", imageName, fetchReference)
 			return fetchReference, nil
-		} else {
-			_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
 		}
+		_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
 	}
 	if err := e.pullImageReference(ctx, imageName); err != nil {
 		return "", err

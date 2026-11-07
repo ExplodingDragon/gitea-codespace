@@ -1,6 +1,8 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package agent owns the Runtime Pod lifecycle, durable execution journal, and
+// authenticated data plane exposed to Gateway.
 package agent
 
 import (

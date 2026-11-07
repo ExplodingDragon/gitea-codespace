@@ -18,8 +18,8 @@ type gatewayAccessDecision struct {
 	DeniedCategory string
 }
 
-// OpenTokenBinding is the user and runtime authorized by one-use browser code.
-type OpenTokenBinding struct {
+// A browser open code authorizes exactly one user and Runtime binding.
+type openTokenBinding struct {
 	SiteUID       string
 	UserID        int64
 	CodespaceUUID string
@@ -28,7 +28,7 @@ type OpenTokenBinding struct {
 
 type gatewayOpenTokenDecision struct {
 	Allowed        bool
-	Binding        OpenTokenBinding
+	Binding        openTokenBinding
 	deniedCategory string
 }
 

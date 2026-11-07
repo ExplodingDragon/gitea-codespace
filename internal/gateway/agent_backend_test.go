@@ -45,7 +45,7 @@ func (s *backendTestServer) Access(ctx context.Context, stream agentv1connect.Ag
 	return s.access(ctx, stream)
 }
 
-func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error) (*AgentBackend, *backendTestServer) {
+func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error) (*agentBackend, *backendTestServer) {
 	t.Helper()
 	route := &componentv1.GatewayRuntimeRoute{RuntimeUuid: "runtime", SiteUid: "site", ResourceUid: "resource", PodUid: "pod", AgentAddress: "agent:8444"}
 	service := &backendTestServer{
@@ -63,7 +63,7 @@ func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1conn
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	client := connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))
-	backend := &AgentBackend{Manager: componentv1connect.NewComponentServiceClient(client), clients: map[string]*agentClient{
+	backend := &agentBackend{Manager: componentv1connect.NewComponentServiceClient(client), clients: map[string]*agentClient{
 		"pod": {address: route.AgentAddress, siteUID: route.SiteUid, resourceUID: route.ResourceUid,
 			transport: server.Client().Transport.(*http.Transport), access: agentv1connect.NewAgentAccessServiceClient(client)},
 	}}
@@ -83,7 +83,7 @@ func TestAgentCommandCloseReleasesBlockedOutput(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	session, err := backend.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{RuntimeUUID: "runtime", Command: "test"})
+	session, err := backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeUUID: "runtime", Command: "test"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 	_, err = io.ReadFull(session.Stdout(), make([]byte, 1))
@@ -109,14 +109,14 @@ func TestAgentBackendPreservesSSHProcessKind(t *testing.T) {
 	tests := []struct {
 		name       string
 		capability agentv1.AccessCapability
-		open       func(context.Context, *AgentBackend) (WorkspaceCommandSession, error)
+		open       func(context.Context, *agentBackend) (workspaceCommandSession, error)
 		assertOpen func(*testing.T, *agentv1.OpenAccess)
 	}{
 		{
 			name:       "shell without terminal",
 			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL,
-			open: func(ctx context.Context, backend *AgentBackend) (WorkspaceCommandSession, error) {
-				return backend.OpenWorkspaceShell(ctx, WorkspaceShellRequest{RuntimeUUID: "runtime"})
+			open: func(ctx context.Context, backend *agentBackend) (workspaceCommandSession, error) {
+				return backend.OpenWorkspaceShell(ctx, workspaceShellRequest{RuntimeUUID: "runtime"})
 			},
 			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
 				require.NotNil(t, open.GetShell())
@@ -126,8 +126,8 @@ func TestAgentBackendPreservesSSHProcessKind(t *testing.T) {
 		{
 			name:       "command with terminal",
 			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND,
-			open: func(ctx context.Context, backend *AgentBackend) (WorkspaceCommandSession, error) {
-				return backend.OpenWorkspaceCommand(ctx, WorkspaceCommandRequest{RuntimeUUID: "runtime", Command: "printf test", Interactive: true, Cols: 91, Rows: 37})
+			open: func(ctx context.Context, backend *agentBackend) (workspaceCommandSession, error) {
+				return backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeUUID: "runtime", Command: "printf test", Interactive: true, Cols: 91, Rows: 37})
 			},
 			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
 				require.Equal(t, "printf test", open.GetCommand().GetCommand())

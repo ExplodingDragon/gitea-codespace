@@ -1,6 +1,8 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package certificates parses and normalizes certificate bundles shared by
+// site, proxy, and internal identity configuration.
 package certificates
 
 import (

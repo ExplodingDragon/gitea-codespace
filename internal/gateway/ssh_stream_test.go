@@ -58,7 +58,7 @@ func (streamTestSession) Stdout() io.Reader       { return strings.NewReader("ou
 func (streamTestSession) Stderr() io.Reader       { return strings.NewReader("error") }
 func (streamTestSession) Resize(int, int) error   { return nil }
 func (streamTestSession) Signal(int) error        { return nil }
-func (streamTestSession) Wait() error             { return &WorkspaceCommandExitError{Status: 7} }
+func (streamTestSession) Wait() error             { return &workspaceCommandExitError{Status: 7} }
 
 func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
@@ -69,7 +69,7 @@ func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			(&SSHServer{}).serveWorkspaceSession(context.Background(), channel, channel.requests, streamTestSession{writer}, gatewaySSHPty{}, nil)
+			(&sshServer{}).serveWorkspaceSession(context.Background(), channel, channel.requests, streamTestSession{writer}, gatewaySSHPty{}, nil)
 		}()
 		synctest.Wait()
 		select {
@@ -84,7 +84,7 @@ func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 }
 
 func TestGatewaySSHRuntimeRequiresAuthorizedSite(t *testing.T) {
-	server := &SSHServer{state: gatewaySiteTargetStore{siteUID: "site-1"}, backend: gatewayHandlerTestBackend{}}
+	server := &sshServer{state: gatewaySiteTargetStore{siteUID: "site-1"}, backend: gatewayHandlerTestBackend{}}
 	available := server.runtimeAvailable("runtime", "site-1")
 	require.True(t, available)
 	available = server.runtimeAvailable("runtime", "site-2")

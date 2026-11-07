@@ -87,7 +87,7 @@ func TestIssuerRenewalPreservesRoot(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, authority.IssuerNeedsRenewal(now))
 
-	renewed, err := authority.RenewIssuer(now.Add(IssuerLifetime - IssuerRenewBefore))
+	renewed, err := authority.RenewIssuer(now.Add(issuerLifetime - issuerRenewBefore))
 	require.NoError(t, err)
 	after, err := renewed.Data()
 	require.NoError(t, err)

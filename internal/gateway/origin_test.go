@@ -12,7 +12,7 @@ import (
 func TestGatewayAuthenticatedSourceUsesGatewayURLSchemeAndPort(t *testing.T) {
 	t.Parallel()
 
-	policy, err := NewOriginPolicy("https://gateway.example.test")
+	policy, err := newOriginPolicy("https://gateway.example.test")
 	if err != nil {
 		t.Fatalf("gateway origin policy: %v", err)
 	}
@@ -31,7 +31,7 @@ func TestGatewayAuthenticatedSourceUsesGatewayURLSchemeAndPort(t *testing.T) {
 func TestGatewayAuthenticatedSourceRequiresGatewayURLPort(t *testing.T) {
 	t.Parallel()
 
-	policy, err := NewOriginPolicy("http://gateway.example.test:18081")
+	policy, err := newOriginPolicy("http://gateway.example.test:18081")
 	if err != nil {
 		t.Fatalf("gateway origin policy: %v", err)
 	}
@@ -54,7 +54,7 @@ func TestGatewayAuthenticatedSourceRequiresGatewayURLPort(t *testing.T) {
 func TestGatewayOriginPolicyParsesEndpointHosts(t *testing.T) {
 	t.Parallel()
 
-	policy, err := NewOriginPolicy("https://gateway.example.test")
+	policy, err := newOriginPolicy("https://gateway.example.test")
 	if err != nil {
 		t.Fatalf("gateway origin policy: %v", err)
 	}
@@ -126,7 +126,7 @@ func TestGatewayOriginPolicyParsesEndpointHosts(t *testing.T) {
 func TestGatewayOriginPolicyParsesEndpointHostPort(t *testing.T) {
 	t.Parallel()
 
-	policy, err := NewOriginPolicy("http://gateway.example.test:18081")
+	policy, err := newOriginPolicy("http://gateway.example.test:18081")
 	if err != nil {
 		t.Fatalf("gateway origin policy: %v", err)
 	}

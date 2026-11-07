@@ -1,8 +1,8 @@
 # Gitea Codespace Helm chart
 
-This chart installs Codespace Manager, its CRDs, RBAC, administration Service,
-and NetworkPolicy. Manager then creates the Gateway, Cache, and Runtime
-workloads configured through its administration page.
+This chart installs Codespace Manager and the Kubernetes resources it needs.
+Manager creates the Gateway, Cache, and Runtime workloads configured through
+its administration page.
 
 ## Requirements
 
@@ -14,14 +14,14 @@ workloads configured through its administration page.
 - a StorageClass compatible with that runtime.
 
 Runtime support depends on the worker operating system, architecture, container
-runtime, and storage driver. Validate the RuntimeClass and StorageClass together
-on the worker pool before assigning them to users.
+runtime, and storage driver. Test the RuntimeClass and StorageClass together on
+the intended worker pool before assigning them to users.
 
 ## Prepare a workload runtime
 
 Each Codespace runs Docker inside its Runtime Pod, so the cluster needs a
-nested-container RuntimeClass. The chart uses an existing RuntimeClass and does
-not change worker nodes.
+nested-container RuntimeClass. Install and verify that runtime on the worker
+nodes before configuring Manager.
 
 | Runtime | Isolation | Workspace volume |
 | --- | --- | --- |
@@ -33,7 +33,7 @@ not change worker nodes.
 Install a pinned release using the
 [Kata installation guide](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md)
 or its upstream OCI chart. Run a test Pod on the intended workers, then label
-the verified RuntimeClass so Manager can discover it:
+the verified RuntimeClass so it appears in Manager:
 
 ```sh
 kubectl label runtimeclass kata-qemu-runtime-rs \
@@ -68,8 +68,8 @@ kubectl get storageclass
 
 ## Install
 
-Create the administration token before installing the chart. Keeping the token
-in a Secret prevents it from appearing in Helm values and release history.
+Create the administration token as a Secret so it does not appear in Helm
+values or release history.
 
 ```sh
 kubectl create namespace codespace-system
@@ -85,10 +85,10 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-This installs the current `main` chart. For a release, add `--version
-<chart-version>` and omit `--devel`. Published releases select their matching
-platform image by digest. Add existing registry Secret names to
-`image.pullSecrets` when the image registry requires authentication.
+This installs the current `main` chart. To install a release, add `--version
+<chart-version>` and omit `--devel`. A published release selects its matching
+platform image by digest. Set `image.pullSecrets` when the image registry
+requires authentication.
 
 Verify the installation:
 
@@ -101,8 +101,8 @@ kubectl -n codespace-system get pods
 
 ## Configure Manager
 
-The administration Service is private by default. Open it from an operator
-workstation with:
+The administration Service is a ClusterIP by default. Access it from an
+operator workstation with:
 
 ```sh
 kubectl -n codespace-system port-forward \
@@ -120,41 +120,44 @@ initial configuration follows the dependency order shown in the interface:
 5. assign the template and components, configure quotas when needed, and enable
    the site after it becomes ready.
 
-To publish the administration page, configure `admin.ingress`. When the chart
-NetworkPolicy is enabled, add the directly connecting ingress source networks
-to `networkPolicy.adminIngressCIDRs`; this allows the ingress controller to
-reach the otherwise private administration port.
+To publish the administration page, configure `admin.ingress`. If the chart
+NetworkPolicy is enabled, add the ingress controller's source networks to
+`networkPolicy.adminIngressCIDRs` so it can reach the administration Service.
 
 ## Trust and networking
 
 Manager stores its internal certificate authority in
-`Secret/<Helm fullname>-internal-ca`. Back up this Secret and enable Kubernetes
-Secret encryption at rest. Restoring it preserves trust between Manager and
-existing workloads. When Gitea uses a private CA, add that PEM bundle to the
-site configuration so Manager and Dev Containers trust it.
+`Secret/<Helm fullname>-internal-ca`. Back up this Secret because it preserves
+trust between Manager and existing workloads, and enable Kubernetes Secret
+encryption at rest. When Gitea uses a private CA, add its PEM bundle to the site
+configuration so Manager and Dev Containers trust it.
 
 Each Gateway has a same-name ClusterIP Service. Port `80` carries HTTP and
-WebSocket traffic, while port `22` carries SSH and SFTP. Publish HTTP through
-the configured Ingress or an operator-managed route. Publish SSH through the
-optional LoadBalancer Service or an operator-managed TCP route. Public DNS, TLS,
-and load-balancer policy therefore remain under cluster operator control.
+WebSocket traffic, while port `22` carries SSH and SFTP. Publish HTTP with the
+configured Ingress or an operator-managed route. Publish SSH with the optional
+LoadBalancer Service or an operator-managed TCP route. The cluster operator
+remains responsible for public DNS, TLS, and load-balancer policy.
 
-Set Gateway trusted proxy CIDRs only for proxies that connect directly to its
-Service. Environment and Cache proxies are configured separately in Manager
-because workspace traffic and shared registry traffic can use different network
-paths. If an environment proxy uses an IP address, allow its CIDR and port in
-each site that uses the template so the site NetworkPolicy permits the traffic.
+Configure Gateway trusted proxy CIDRs for proxies that connect directly to its
+Service. Environment and Cache proxies are separate because workspace and
+registry traffic can use different network paths. If an environment proxy uses
+an IP address, add its CIDR and port to every affected site so the site
+NetworkPolicy permits that traffic.
 
-Cache Services remain inside the cluster on port `443` and use Manager's
-internal CA. A persistent local Cache runs as one replica with a Recreate update
-strategy; S3 can be selected instead when shared object storage is preferred.
+Cache Services use Manager's internal CA and remain inside the cluster on port
+`443`. Use the local backend for a single persistent Cache or S3 for shared
+object storage.
+
+Manager, Gateway, and Cache expose Kubernetes probes on plain HTTP port `8081`
+inside their Pods. This port is only for kubelet health checks and is not
+published through a Service or Ingress.
 
 ## Chart configuration
 
 [`values.yaml`](values.yaml) lists the chart defaults and
-[`values.schema.json`](values.schema.json) defines the accepted values. Reuse
-the same `helm upgrade --install` command for upgrades so Helm preserves the
-release and applies the selected image version consistently.
+[`values.schema.json`](values.schema.json) defines the accepted values. Use
+`helm upgrade --install` for upgrades so Helm preserves the release and applies
+the selected image version consistently.
 
 Source changes and validation commands are documented in the
 [contributor guide](../../DEVELOPMENT.md).

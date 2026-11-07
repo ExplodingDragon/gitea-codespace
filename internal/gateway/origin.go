@@ -13,10 +13,10 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-type OriginPolicy struct {
-	Domain string `json:"-"`
-	Scheme string `json:"-"`
-	Port   string `json:"-"`
+type originPolicy struct {
+	Domain string
+	Scheme string
+	Port   string
 }
 
 type gatewayEndpointHost struct {
@@ -24,29 +24,29 @@ type gatewayEndpointHost struct {
 	endpointID    string
 }
 
-func NewOriginPolicy(gatewayURL string) (OriginPolicy, error) {
+func newOriginPolicy(gatewayURL string) (originPolicy, error) {
 	parsed, err := url.Parse(strings.TrimSpace(gatewayURL))
 	if err != nil {
-		return OriginPolicy{}, fmt.Errorf("parse gateway url: %w", err)
+		return originPolicy{}, fmt.Errorf("parse gateway url: %w", err)
 	}
 	if parsed.Scheme != "http" && parsed.Scheme != "https" {
-		return OriginPolicy{}, fmt.Errorf("gateway url scheme must be http or https")
+		return originPolicy{}, fmt.Errorf("gateway url scheme must be http or https")
 	}
 	if parsed.Host == "" {
-		return OriginPolicy{}, fmt.Errorf("gateway url host is required")
+		return originPolicy{}, fmt.Errorf("gateway url host is required")
 	}
 	domain := strings.ToLower(parsed.Hostname())
 	if domain == "" {
-		return OriginPolicy{}, fmt.Errorf("gateway url host is required")
+		return originPolicy{}, fmt.Errorf("gateway url host is required")
 	}
 	port := parsed.Port()
 	if port == "" {
-		port = DefaultProxyPort(parsed.Scheme)
+		port = defaultProxyPort(parsed.Scheme)
 	}
-	return OriginPolicy{Domain: domain, Scheme: parsed.Scheme, Port: port}, nil
+	return originPolicy{Domain: domain, Scheme: parsed.Scheme, Port: port}, nil
 }
 
-func (p OriginPolicy) parseEndpointHost(hostValue string) (gatewayEndpointHost, bool) {
+func (p originPolicy) parseEndpointHost(hostValue string) (gatewayEndpointHost, bool) {
 	if p.Domain == "" {
 		return gatewayEndpointHost{}, false
 	}
@@ -72,7 +72,7 @@ func (p OriginPolicy) parseEndpointHost(hostValue string) (gatewayEndpointHost, 
 	return parseGatewayEndpointLabel(label)
 }
 
-func (p OriginPolicy) bindingForRequest(request *http.Request) (gatewayEndpointHost, bool) {
+func (p originPolicy) bindingForRequest(request *http.Request) (gatewayEndpointHost, bool) {
 	if p.Domain == "" {
 		return gatewayEndpointHost{}, false
 	}
@@ -137,7 +137,7 @@ func uuid32ToCanonical(value string) string {
 	return value[:8] + "-" + value[8:12] + "-" + value[12:16] + "-" + value[16:20] + "-" + value[20:]
 }
 
-func isGatewayAuthenticatedSourceAllowed(request *http.Request, policy OriginPolicy) bool {
+func isGatewayAuthenticatedSourceAllowed(request *http.Request, policy originPolicy) bool {
 	expectedOrigin, ok := gatewayRequestOrigin(request, policy)
 	if !ok {
 		return false
@@ -172,7 +172,7 @@ func gatewayOriginMatches(values []string, expectedOrigin string) bool {
 	return ok && origin == expectedOrigin
 }
 
-func gatewayRequestOrigin(request *http.Request, policy OriginPolicy) (string, bool) {
+func gatewayRequestOrigin(request *http.Request, policy originPolicy) (string, bool) {
 	scheme := "http"
 	if request.TLS != nil {
 		scheme = "https"
@@ -224,7 +224,7 @@ func canonicalGatewayOrigin(value string) (string, bool) {
 
 func gatewayOriginFromAuthority(scheme, authority string) string {
 	host, port, err := net.SplitHostPort(authority)
-	if err == nil && port == DefaultProxyPort(scheme) {
+	if err == nil && port == defaultProxyPort(scheme) {
 		return scheme + "://" + host
 	}
 	return scheme + "://" + authority

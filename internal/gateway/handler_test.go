@@ -44,15 +44,15 @@ type gatewayHandlerTestBackend struct {
 	address string
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceShell(context.Context, WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+func (gatewayHandlerTestBackend) OpenWorkspaceShell(context.Context, workspaceShellRequest) (workspaceCommandSession, error) {
 	return nil, fmt.Errorf("shell is not available")
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceCommand(context.Context, WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
+func (gatewayHandlerTestBackend) OpenWorkspaceCommand(context.Context, workspaceCommandRequest) (workspaceCommandSession, error) {
 	return nil, fmt.Errorf("command is not available")
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceSFTP(context.Context, WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
+func (gatewayHandlerTestBackend) OpenWorkspaceSFTP(context.Context, workspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	return nil, fmt.Errorf("SFTP is not available")
 }
 
@@ -89,10 +89,10 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamAddress := upstream.Listener.Addr().String()
-	routes := NewRouteStore(gatewayHandlerTestBackend{address: upstreamAddress})
+	routes := newRouteStore(gatewayHandlerTestBackend{address: upstreamAddress})
 	t.Cleanup(routes.Close)
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	if err := routes.Put(EndpointRoute{
+	if err := routes.Put(endpointRoute{
 		SiteUID:       "site-1",
 		GiteaWebURL:   "https://gitea.example.test",
 		CodespaceUUID: runtimeUUID,
@@ -102,11 +102,11 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := NewOriginPolicy("http://gateway.example.test")
+	policy, err := newOriginPolicy("http://gateway.example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
-	access := NewAccessController(AccessConfig{
+	access := newAccessController(accessConfig{
 		AllowedTTL:                      time.Minute,
 		StreamRevalidateInterval:        time.Hour,
 		MaxInflightTotal:                8,
@@ -115,7 +115,7 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 		PublicMaxConnectionsPerIP:       4,
 		ValidationMaxInflight:           4,
 	})
-	gateway := httptest.NewServer(NewHandler(nil, nil, access, gatewayHandlerTestControlPlane{}, policy, nil, routes))
+	gateway := httptest.NewServer(newHandler(nil, access, gatewayHandlerTestControlPlane{}, policy, nil, routes))
 	defer gateway.Close()
 
 	request, err := http.NewRequest(http.MethodGet, gateway.URL+"/socket", nil)
@@ -153,9 +153,9 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	t.Parallel()
 
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	routes := NewRouteStore(gatewayHandlerTestBackend{})
+	routes := newRouteStore(gatewayHandlerTestBackend{})
 	t.Cleanup(routes.Close)
-	if err := routes.Put(EndpointRoute{
+	if err := routes.Put(endpointRoute{
 		SiteUID:       "site-1",
 		GiteaWebURL:   "https://gitea.example.test",
 		CodespaceUUID: runtimeUUID,
@@ -164,35 +164,35 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	policy, err := NewOriginPolicy("https://gateway.example.test")
+	policy, err := newOriginPolicy("https://gateway.example.test")
 	if err != nil {
 		t.Fatal(err)
 	}
 	sessions := newGatewaySessionRegistry(t)
-	access := NewAccessControllerFromConfig(validGatewayConfig())
+	access := newAccessControllerFromConfig(validGatewayConfig())
 
 	t.Run("open code for another site", func(t *testing.T) {
 		control := gatewayHandlerTestControlPlane{openDecision: gatewayOpenTokenDecision{
 			Allowed: true,
-			Binding: OpenTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
+			Binding: openTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
 		}}
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/.gitea-codespace/open?code=secret", nil)
 		response := httptest.NewRecorder()
-		NewHandler(nil, sessions.SessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
+		newHandler(sessions.sessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
 		}
 	})
 
 	t.Run("browser session for another site", func(t *testing.T) {
-		token, err := sessions.Create(OpenTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
+		token, err := sessions.Create(openTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/", nil)
-		request.AddCookie(&http.Cookie{Name: SecureSessionCookieName, Value: token})
+		request.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: token})
 		response := httptest.NewRecorder()
-		NewHandler(nil, sessions.SessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
+		newHandler(sessions.sessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusUnauthorized)
 		}
@@ -202,32 +202,32 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 		const missingRuntimeUUID = "22222222-2222-4222-8222-222222222222"
 		control := gatewayHandlerTestControlPlane{openDecision: gatewayOpenTokenDecision{
 			Allowed: true,
-			Binding: OpenTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: missingRuntimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
+			Binding: openTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: missingRuntimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
 		}}
 		request := httptest.NewRequest(http.MethodGet, "https://22222222222242228222222222222222.gateway.example.test/.gitea-codespace/open?code=secret", nil)
 		response := httptest.NewRecorder()
-		NewHandler(nil, sessions.SessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
+		newHandler(sessions.sessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
 		if response.Code != http.StatusForbidden {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
 		}
 		for _, cookie := range response.Result().Cookies() {
-			if cookie.Name == SecureSessionCookieName {
+			if cookie.Name == secureSessionCookieName {
 				t.Fatal("gateway created a session without a runtime route")
 			}
 		}
 	})
 
 	t.Run("browser session after route removal", func(t *testing.T) {
-		token, err := sessions.Create(OpenTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
+		token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		routes.SetSessionRegistry(sessions.SessionRegistry)
+		routes.SetSessionRegistry(sessions.sessionRegistry)
 		routes.Delete(runtimeUUID, runtimeendpoint.WorkspaceEndpointID)
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/", nil)
-		request.AddCookie(&http.Cookie{Name: SecureSessionCookieName, Value: token})
+		request.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: token})
 		response := httptest.NewRecorder()
-		NewHandler(nil, sessions.SessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
+		newHandler(sessions.sessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
 		if response.Code != http.StatusServiceUnavailable {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 		}

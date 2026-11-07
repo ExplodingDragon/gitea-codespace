@@ -11,7 +11,7 @@ import (
 )
 
 func TestGatewayAccessStateIsScopedBySite(t *testing.T) {
-	controller := NewAccessController(AccessConfig{
+	controller := newAccessController(accessConfig{
 		AllowedTTL:                      time.Minute,
 		MaxInflightTotal:                4,
 		PublicMaxConnectionsPerEndpoint: 1,

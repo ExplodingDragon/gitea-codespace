@@ -25,19 +25,26 @@ import (
 )
 
 const (
-	RootCertificateKey   = "ca.crt"
-	RootPrivateKeyKey    = "ca.key"
+	// RootCertificateKey stores the installation trust anchor.
+	RootCertificateKey = "ca.crt"
+	// RootPrivateKeyKey stores the installation root signing key.
+	RootPrivateKeyKey = "ca.key"
+	// IssuerCertificateKey stores the renewable online issuer.
 	IssuerCertificateKey = "issuer.crt"
-	IssuerPrivateKeyKey  = "issuer.key"
-	TLSCertificateKey    = "tls.crt"
-	TLSPrivateKeyKey     = "tls.key"
+	// IssuerPrivateKeyKey stores the online issuer signing key.
+	IssuerPrivateKeyKey = "issuer.key"
+	// TLSCertificateKey matches the Kubernetes TLS Secret certificate key.
+	TLSCertificateKey = "tls.crt"
+	// TLSPrivateKeyKey matches the Kubernetes TLS Secret private key.
+	TLSPrivateKeyKey = "tls.key"
 
-	RootLifetime      = 10 * 365 * 24 * time.Hour
-	IssuerLifetime    = 365 * 24 * time.Hour
-	IssuerRenewBefore = 30 * 24 * time.Hour
-	LeafLifetime      = 24 * time.Hour
-	LeafRenewBefore   = 8 * time.Hour
-	ClockSkew         = 5 * time.Minute
+	rootLifetime      = 10 * 365 * 24 * time.Hour
+	issuerLifetime    = 365 * 24 * time.Hour
+	issuerRenewBefore = 30 * 24 * time.Hour
+	leafLifetime      = 24 * time.Hour
+	// LeafRenewBefore controls when controllers replace workload certificates.
+	LeafRenewBefore = 8 * time.Hour
+	clockSkew       = 5 * time.Minute
 )
 
 // Authority is the validated root and current issuing certificate. Its
@@ -75,7 +82,7 @@ func NewAuthority(now time.Time) (*Authority, error) {
 	if err != nil {
 		return nil, fmt.Errorf("generate identity root key: %w", err)
 	}
-	rootTemplate, err := caTemplate("Codespace internal root", now.Add(-ClockSkew), now.Add(RootLifetime))
+	rootTemplate, err := caTemplate("Codespace internal root", now.Add(-clockSkew), now.Add(rootLifetime))
 	if err != nil {
 		return nil, err
 	}
@@ -151,12 +158,15 @@ func (a *Authority) Data() (map[string][]byte, error) {
 	}, nil
 }
 
+// RootPEM returns an independent copy of the installation trust anchor.
 func (a *Authority) RootPEM() []byte { return bytes.Clone(a.rootPEM) }
 
+// RootNotAfter returns the installation trust anchor expiry time.
 func (a *Authority) RootNotAfter() time.Time { return a.root.NotAfter }
 
+// IssuerNeedsRenewal reports whether the online issuer is outside its renewal window.
 func (a *Authority) IssuerNeedsRenewal(now time.Time) bool {
-	return now.Before(a.issuer.NotBefore) || !now.Before(a.issuer.NotAfter.Add(-IssuerRenewBefore))
+	return now.Before(a.issuer.NotBefore) || !now.Before(a.issuer.NotAfter.Add(-issuerRenewBefore))
 }
 
 // RenewIssuer preserves the installation root while replacing the online
@@ -166,15 +176,15 @@ func (a *Authority) RenewIssuer(now time.Time) (*Authority, error) {
 }
 
 func newIssuer(root *x509.Certificate, rootKey crypto.Signer, rootPEM, rootKeyPEM []byte, now time.Time) (*Authority, error) {
-	notAfter := minTime(now.Add(IssuerLifetime), root.NotAfter)
-	if !notAfter.After(now.Add(LeafLifetime + ClockSkew)) {
+	notAfter := minTime(now.Add(issuerLifetime), root.NotAfter)
+	if !notAfter.After(now.Add(leafLifetime + clockSkew)) {
 		return nil, fmt.Errorf("identity root certificate expires too soon to renew the issuer")
 	}
 	issuerKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return nil, fmt.Errorf("generate identity issuer key: %w", err)
 	}
-	issuerTemplate, err := caTemplate("Codespace internal issuer", now.Add(-ClockSkew), notAfter)
+	issuerTemplate, err := caTemplate("Codespace internal issuer", now.Add(-clockSkew), notAfter)
 	if err != nil {
 		return nil, err
 	}
@@ -239,11 +249,11 @@ func (a *Authority) issue(template *x509.Certificate, now time.Time) (*Leaf, err
 	if err != nil {
 		return nil, fmt.Errorf("generate identity key: %w", err)
 	}
-	notAfter := minTime(now.Add(LeafLifetime), a.issuer.NotAfter)
+	notAfter := minTime(now.Add(leafLifetime), a.issuer.NotAfter)
 	if !notAfter.After(now) {
 		return nil, fmt.Errorf("identity issuer certificate has expired")
 	}
-	template.NotBefore, template.NotAfter = now.Add(-ClockSkew), notAfter
+	template.NotBefore, template.NotAfter = now.Add(-clockSkew), notAfter
 	certificateDER, err := x509.CreateCertificate(rand.Reader, template, a.issuer, key.Public(), a.issuerKey)
 	if err != nil {
 		return nil, fmt.Errorf("create identity certificate: %w", err)
@@ -351,6 +361,7 @@ func parseURI(raw string) (*url.URL, error) {
 	return identity, nil
 }
 
+// ParseManagerURI validates the installation identity presented by Manager.
 func ParseManagerURI(raw string) (*url.URL, error) {
 	identity, err := parseURI(raw)
 	if err != nil {

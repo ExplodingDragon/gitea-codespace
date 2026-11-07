@@ -14,6 +14,7 @@ import (
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	configpkg "gitea.dev/codespace/internal/config"
+	"gitea.dev/codespace/internal/healthcheck"
 	identitypkg "gitea.dev/codespace/internal/identity"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -496,6 +497,7 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 				{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL},
 				{Name: "GITEA_CODESPACE_MANAGER_IDENTITY", Value: r.ManagerIdentity},
 				{Name: "GITEA_CODESPACE_CERTIFICATE_DIRECTORY", Value: "/var/run/codespace/identity"},
+				{Name: healthcheck.AddressEnvironment, Value: healthcheck.DefaultAddress},
 			},
 			Resources:       component.Spec.Resources,
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
@@ -514,15 +516,19 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			}
 			container.Ports = append(container.Ports, corev1.ContainerPort{Name: name, ContainerPort: port})
 		}
-		probe := corev1.ProbeHandler{TCPSocket: &corev1.TCPSocketAction{Port: intstr.FromString(container.Ports[0].Name)}}
-		if role == "gateway" {
-			probe = corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/api/readyz", Port: intstr.FromString(container.Ports[0].Name)}}
-		}
+		container.Ports = append(container.Ports, corev1.ContainerPort{Name: "health", ContainerPort: healthcheck.DefaultPort})
 		container.ReadinessProbe = &corev1.Probe{
-			ProbeHandler:     probe,
-			PeriodSeconds:    1,
+			ProbeHandler:     corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/readyz", Port: intstr.FromString("health")}},
+			PeriodSeconds:    2,
 			TimeoutSeconds:   1,
-			FailureThreshold: 30,
+			FailureThreshold: 3,
+			SuccessThreshold: 1,
+		}
+		container.LivenessProbe = &corev1.Probe{
+			ProbeHandler:     corev1.ProbeHandler{HTTPGet: &corev1.HTTPGetAction{Path: "/healthz", Port: intstr.FromString("health")}},
+			PeriodSeconds:    10,
+			TimeoutSeconds:   1,
+			FailureThreshold: 3,
 			SuccessThreshold: 1,
 		}
 		volumes := []corev1.Volume{{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: identitySecret, DefaultMode: ptr.To(int32(0o440))}}}}

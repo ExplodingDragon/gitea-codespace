@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/healthcheck"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -69,20 +70,25 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 		require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, deployment.Spec.Template.Spec.ImagePullSecrets)
 		require.Equal(t, string(component.UID), deployment.Spec.Template.Labels[ComponentUIDLabel])
 		require.Equal(t, "sha-test", deployment.Spec.Template.Annotations[platformRevisionAnnotation])
-		probe := deployment.Spec.Template.Spec.Containers[0].ReadinessProbe
+		container := deployment.Spec.Template.Spec.Containers[0]
+		require.Contains(t, container.Env, corev1.EnvVar{Name: healthcheck.AddressEnvironment, Value: healthcheck.DefaultAddress})
+		require.Contains(t, container.Ports, corev1.ContainerPort{Name: "health", ContainerPort: healthcheck.DefaultPort})
+		require.Equal(t, "/readyz", container.ReadinessProbe.HTTPGet.Path)
+		require.Equal(t, intstr.FromString("health"), container.ReadinessProbe.HTTPGet.Port)
+		require.Equal(t, int32(2), container.ReadinessProbe.PeriodSeconds)
+		require.Equal(t, "/healthz", container.LivenessProbe.HTTPGet.Path)
+		require.Equal(t, intstr.FromString("health"), container.LivenessProbe.HTTPGet.Port)
+		require.Equal(t, int32(10), container.LivenessProbe.PeriodSeconds)
 		if component.Spec.Role == "gateway" {
 			require.Equal(t, int32(2), ptr.Deref(deployment.Spec.Replicas, int32(0)))
 			require.Equal(t, appsv1.RollingUpdateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 			require.Equal(t, intstr.FromInt(0), *deployment.Spec.Strategy.RollingUpdate.MaxUnavailable)
 			require.Equal(t, intstr.FromInt(1), *deployment.Spec.Strategy.RollingUpdate.MaxSurge)
 			require.Len(t, deployment.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 1)
-			require.Equal(t, "/api/readyz", probe.HTTPGet.Path)
-			require.Equal(t, deployment.Spec.Template.Spec.Containers[0].Ports[0].Name, probe.HTTPGet.Port.StrVal)
 		} else {
 			require.Equal(t, int32(1), ptr.Deref(deployment.Spec.Replicas, int32(0)))
 			require.Equal(t, appsv1.RecreateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 			require.Nil(t, deployment.Spec.Strategy.RollingUpdate)
-			require.Equal(t, deployment.Spec.Template.Spec.Containers[0].Ports[0].Name, probe.TCPSocket.Port.StrVal)
 		}
 
 		var policy networkingv1.NetworkPolicy

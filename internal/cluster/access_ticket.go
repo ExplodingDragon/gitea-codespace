@@ -1,6 +1,8 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package cluster implements Manager APIs and Kubernetes reconciliation for
+// sites, components, environment templates, and Runtime workloads.
 package cluster
 
 import (

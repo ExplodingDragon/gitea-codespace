@@ -18,15 +18,15 @@ const (
 	gatewayReturnToCookieLife = 5 * time.Minute
 )
 
-type BrowserAuth struct {
-	routes *RouteStore
+type browserAuth struct {
+	routes *routeStore
 }
 
-func NewBrowserAuth(routes *RouteStore) *BrowserAuth {
-	return &BrowserAuth{routes: routes}
+func newBrowserAuth(routes *routeStore) *browserAuth {
+	return &browserAuth{routes: routes}
 }
 
-func (a *BrowserAuth) openURL(codespaceUUID, endpointID string) (string, bool) {
+func (a *browserAuth) openURL(codespaceUUID, endpointID string) (string, bool) {
 	if a == nil || a.routes == nil {
 		return "", false
 	}
@@ -74,8 +74,8 @@ func handleGatewayAuthenticationRequired(
 	request *http.Request,
 	codespaceUUID string,
 	endpointID string,
-	originPolicy OriginPolicy,
-	browserAuth *BrowserAuth,
+	originPolicy originPolicy,
+	browserAuth *browserAuth,
 ) bool {
 	if !isGatewayBrowserAuthNavigation(request) {
 		return false
@@ -147,10 +147,10 @@ func sanitizeGatewayReturnTo(value string) string {
 	return value
 }
 
-func setGatewayReturnToCookie(writer http.ResponseWriter, value string, originPolicy OriginPolicy) {
+func setGatewayReturnToCookie(writer http.ResponseWriter, value string, originPolicy originPolicy) {
 	scheme := strings.ToLower(originPolicy.Scheme)
 	cookie := &http.Cookie{
-		Name:     ReturnToCookieName,
+		Name:     returnToCookieName,
 		Value:    sanitizeGatewayReturnTo(value),
 		Path:     "/",
 		MaxAge:   int(gatewayReturnToCookieLife / time.Second),
@@ -159,21 +159,21 @@ func setGatewayReturnToCookie(writer http.ResponseWriter, value string, originPo
 		SameSite: http.SameSiteLaxMode,
 	}
 	if scheme == "https" {
-		cookie.Name = SecureReturnToCookieName
+		cookie.Name = secureReturnToCookieName
 		cookie.Secure = true
 	}
 	http.SetCookie(writer, cookie)
 }
 
-func gatewayReturnToPathFromRequest(request *http.Request, originPolicy OriginPolicy) (string, bool) {
-	name := ReturnToCookieName
+func gatewayReturnToPathFromRequest(request *http.Request, originPolicy originPolicy) (string, bool) {
+	name := returnToCookieName
 	if strings.EqualFold(originPolicy.Scheme, "https") {
-		name = SecureReturnToCookieName
+		name = secureReturnToCookieName
 	}
 	var values []string
 	hasReturnToCookie := false
 	for _, cookie := range request.Cookies() {
-		if cookie.Name == ReturnToCookieName || cookie.Name == SecureReturnToCookieName {
+		if cookie.Name == returnToCookieName || cookie.Name == secureReturnToCookieName {
 			hasReturnToCookie = true
 		}
 		if cookie.Name == name {
@@ -189,7 +189,7 @@ func gatewayReturnToPathFromRequest(request *http.Request, originPolicy OriginPo
 	return sanitizeGatewayReturnTo(values[0]), true
 }
 
-func clearGatewayReturnToIfPresent(writer http.ResponseWriter, request *http.Request, originPolicy OriginPolicy) {
+func clearGatewayReturnToIfPresent(writer http.ResponseWriter, request *http.Request, originPolicy originPolicy) {
 	if _, ok := gatewayReturnToPathFromRequest(request, originPolicy); ok {
 		clearGatewayReturnToCookies(writer)
 	}
@@ -197,7 +197,7 @@ func clearGatewayReturnToIfPresent(writer http.ResponseWriter, request *http.Req
 
 func clearGatewayReturnToCookies(writer http.ResponseWriter) {
 	http.SetCookie(writer, &http.Cookie{
-		Name:     ReturnToCookieName,
+		Name:     returnToCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -205,7 +205,7 @@ func clearGatewayReturnToCookies(writer http.ResponseWriter) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(writer, &http.Cookie{
-		Name:     SecureReturnToCookieName,
+		Name:     secureReturnToCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

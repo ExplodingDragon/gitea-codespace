@@ -18,6 +18,7 @@ import (
 	cachepkg "gitea.dev/codespace/internal/cache"
 	componentpkg "gitea.dev/codespace/internal/component"
 	configpkg "gitea.dev/codespace/internal/config"
+	"gitea.dev/codespace/internal/healthcheck"
 	transportpkg "gitea.dev/codespace/internal/transport"
 )
 
@@ -44,8 +45,11 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 			defer connection.Close()
-			err = cachepkg.Run(ctx, command.OutOrStdout(), &componentpkg.CacheComponentClient{Client: connection.Service}, cachepkg.RunOptions{
-				ID: id, CertificateDirectory: "/var/run/codespace/registry-tls",
+			health := &healthcheck.State{}
+			err = healthcheck.Run(ctx, healthcheck.Address(), health, func(runCtx context.Context) error {
+				return cachepkg.Run(runCtx, command.OutOrStdout(), &componentpkg.CacheComponentClient{Client: connection.Service}, cachepkg.RunOptions{
+					ID: id, CertificateDirectory: "/var/run/codespace/registry-tls",
+				}, health)
 			})
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil

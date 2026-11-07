@@ -14,10 +14,10 @@ func TestGatewayProxyRequestInjectsAuthenticatedContext(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "https://11111111-1111-4111-8111-111111111111.gateway.example.test/work", nil)
 	request.RemoteAddr = "198.51.100.44:3000"
-	request.Header.Set(ProxyHeaderCodespaceUUID, "spoofed")
-	request.Header.Set(ProxyHeaderEndpointID, "spoofed")
-	request.Header.Set(ProxyHeaderAccess, "public")
-	request.Header.Set(ProxyHeaderUserID, "7")
+	request.Header.Set(proxyHeaderCodespaceUUID, "spoofed")
+	request.Header.Set(proxyHeaderEndpointID, "spoofed")
+	request.Header.Set(proxyHeaderAccess, "public")
+	request.Header.Set(proxyHeaderUserID, "7")
 	request.Header.Set("Forwarded", "for=203.0.113.1")
 	request.Header.Set("X-Forwarded-For", "203.0.113.2")
 	request.Header.Set("X-Forwarded-Proto", "http")
@@ -30,16 +30,16 @@ func TestGatewayProxyRequestInjectsAuthenticatedContext(t *testing.T) {
 		userID:         42,
 		externalScheme: "https",
 	})
-	if got := request.Header.Get(ProxyHeaderCodespaceUUID); got != "11111111-1111-4111-8111-111111111111" {
+	if got := request.Header.Get(proxyHeaderCodespaceUUID); got != "11111111-1111-4111-8111-111111111111" {
 		t.Fatalf("codespace uuid header = %q", got)
 	}
-	if got := request.Header.Get(ProxyHeaderEndpointID); got != "workspace" {
+	if got := request.Header.Get(proxyHeaderEndpointID); got != "workspace" {
 		t.Fatalf("endpoint id header = %q", got)
 	}
-	if got := request.Header.Get(ProxyHeaderAccess); got != "authenticated" {
+	if got := request.Header.Get(proxyHeaderAccess); got != "authenticated" {
 		t.Fatalf("access header = %q", got)
 	}
-	if got := request.Header.Get(ProxyHeaderUserID); got != "42" {
+	if got := request.Header.Get(proxyHeaderUserID); got != "42" {
 		t.Fatalf("user id header = %q", got)
 	}
 	if got := request.Header.Get("Forwarded"); got != "" {
@@ -61,7 +61,7 @@ func TestGatewayProxyRequestInjectsPublicContextWithoutUser(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "http://codespace.gateway.example.test/", nil)
 	request.RemoteAddr = "198.51.100.45"
-	request.Header.Set(ProxyHeaderUserID, "42")
+	request.Header.Set(proxyHeaderUserID, "42")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
 		codespaceUUID:  "codespace-uuid",
@@ -70,10 +70,10 @@ func TestGatewayProxyRequestInjectsPublicContextWithoutUser(t *testing.T) {
 		externalScheme: "http",
 		externalHost:   "web.codespace.gateway.example.test",
 	})
-	if got := request.Header.Get(ProxyHeaderAccess); got != "public" {
+	if got := request.Header.Get(proxyHeaderAccess); got != "public" {
 		t.Fatalf("access header = %q", got)
 	}
-	if got := request.Header.Get(ProxyHeaderUserID); got != "" {
+	if got := request.Header.Get(proxyHeaderUserID); got != "" {
 		t.Fatalf("user id header = %q", got)
 	}
 	if got := request.Header.Get("X-Forwarded-For"); got != "198.51.100.45" {
@@ -92,8 +92,8 @@ func TestGatewayProxyRequestRebuildsCookieHeader(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "https://codespace.gateway.example.test/", nil)
 	request.RemoteAddr = "198.51.100.44:3000"
-	request.Header.Add("Cookie", "app=ok; "+SessionCookieName+"=plain-session; "+SecureSessionCookieName+"=secure-session")
-	request.Header.Add("Cookie", ReturnToCookieName+"=%2Fdeep; "+SecureReturnToCookieName+"=%2Fsecure; theme=dark; broken")
+	request.Header.Add("Cookie", "app=ok; "+sessionCookieName+"=plain-session; "+secureSessionCookieName+"=secure-session")
+	request.Header.Add("Cookie", returnToCookieName+"=%2Fdeep; "+secureReturnToCookieName+"=%2Fsecure; theme=dark; broken")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
 		codespaceUUID:  "codespace-uuid",
@@ -112,8 +112,8 @@ func TestGatewayProxyRequestDeletesCookieHeaderWhenOnlyReservedOrInvalid(t *test
 
 	request := httptest.NewRequest(http.MethodGet, "https://codespace.gateway.example.test/", nil)
 	request.RemoteAddr = "198.51.100.44:3000"
-	request.Header.Add("Cookie", SessionCookieName+"=plain-session; broken")
-	request.Header.Add("Cookie", SecureReturnToCookieName+"=%2F")
+	request.Header.Add("Cookie", sessionCookieName+"=plain-session; broken")
+	request.Header.Add("Cookie", secureReturnToCookieName+"=%2F")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
 		codespaceUUID:  "codespace-uuid",
@@ -218,7 +218,7 @@ func TestGatewayProxyResponseRebuildsSetCookieForHTTPS(t *testing.T) {
 	t.Parallel()
 
 	header := http.Header{}
-	header.Add("Set-Cookie", SessionCookieName+"=reserved")
+	header.Add("Set-Cookie", sessionCookieName+"=reserved")
 	header.Add("Set-Cookie", "app=ok; Domain=example.test; Path=app; SameSite=Bogus")
 	header.Add("Set-Cookie", "theme=dark; Domain=.example.test; Path=/ui; Max-Age=60; HttpOnly; SameSite=Strict")
 	header.Add("Set-Cookie", "__Host-app=ok; Domain=example.test; Path=/wrong")
@@ -228,7 +228,7 @@ func TestGatewayProxyResponseRebuildsSetCookieForHTTPS(t *testing.T) {
 	normalizeGatewayProxyResponse(header, gatewayProxyResponseContext{externalScheme: "https"})
 
 	cookies := parseSetCookiesByName(t, header.Values("Set-Cookie"))
-	if _, ok := cookies[SessionCookieName]; ok {
+	if _, ok := cookies[sessionCookieName]; ok {
 		t.Fatalf("reserved session cookie was returned")
 	}
 	app := cookies["app"]

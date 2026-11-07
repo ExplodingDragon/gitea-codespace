@@ -16,6 +16,7 @@ import (
 	"uuid"
 
 	configpkg "gitea.dev/codespace/internal/config"
+	"gitea.dev/codespace/internal/healthcheck"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 	"gitea.dev/codespace/internal/transport"
@@ -23,14 +24,19 @@ import (
 	"google.golang.org/protobuf/proto"
 )
 
-const gatewayInitialControlResponseTimeout = 30 * time.Second
+const (
+	gatewayInitialControlResponseTimeout = 30 * time.Second
+	gatewayHTTPMaxHeaderBytes            = 64 * 1024
+	gatewayHTTPReadHeaderTime            = 10 * time.Second
+)
 
 // Run serves the external HTTP and SSH protocols while Manager supplies
 // configuration, authorization and current Runtime targets.
-func Run(ctx context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates) error {
-	if client == nil || output == nil || certificates == nil {
+func Run(ctx context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, health *healthcheck.State) error {
+	if client == nil || output == nil || certificates == nil || health == nil {
 		return fmt.Errorf("gateway dependencies are incomplete")
 	}
+	defer health.NotReady()
 	var runtime *runningGateway
 	var config *componentv1.GatewayConfigurationSnapshot
 	sessionID := uuid.NewV4().String()
@@ -51,7 +57,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 		stream, err := client.GatewayControl(streamCtx)
 		if err != nil {
 			cancelStream()
-			if !waitGatewayReconnect(ctx, runtime) {
+			if !waitGatewayReconnect(ctx) {
 				break
 			}
 			continue
@@ -64,7 +70,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 			cancelStream()
 			_ = stream.CloseSend()
 			_ = stream.Close()
-			if !waitGatewayReconnect(ctx, runtime) {
+			if !waitGatewayReconnect(ctx) {
 				break
 			}
 			continue
@@ -120,13 +126,12 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 						connected = false
 						break
 					}
-					runtime.health.Recover()
 					continue
 				}
 				if runtime != nil {
 					runtime.stop()
 				}
-				started, err := startGateway(ctx, output, client, certificates, response)
+				started, err := startGateway(ctx, output, client, certificates, health, response)
 				if err != nil {
 					terminalErr = err
 					connected = false
@@ -150,6 +155,11 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 				connected = false
 			case <-errors:
 				connected = false
+			case <-gatewayRuntimeDone(runtime):
+				if ctx.Err() == nil {
+					terminalErr = fmt.Errorf("gateway listener stopped unexpectedly")
+				}
+				connected = false
 			case <-ctx.Done():
 				connected = false
 			}
@@ -170,7 +180,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 		if terminalErr != nil {
 			return terminalErr
 		}
-		if !waitGatewayReconnect(ctx, runtime) {
+		if !waitGatewayReconnect(ctx) {
 			break
 		}
 	}
@@ -202,10 +212,7 @@ func gatewayActivity(runtime *runningGateway) map[string]int64 {
 	return counts
 }
 
-func waitGatewayReconnect(ctx context.Context, runtime *runningGateway) bool {
-	if runtime != nil {
-		runtime.health.Warn()
-	}
+func waitGatewayReconnect(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
 		return false
@@ -214,19 +221,26 @@ func waitGatewayReconnect(ctx context.Context, runtime *runningGateway) bool {
 	}
 }
 
+func gatewayRuntimeDone(runtime *runningGateway) <-chan struct{} {
+	if runtime == nil {
+		return nil
+	}
+	return runtime.done
+}
+
 type runningGateway struct {
 	cancel   context.CancelFunc
 	http     *http.Server
 	httpLn   net.Listener
 	sshLn    net.Listener
-	routes   *RouteStore
-	sessions *SessionRegistry
-	health   *ProcessHealth
+	routes   *routeStore
+	sessions *sessionRegistry
+	health   *healthcheck.State
 	done     chan struct{}
 	stopOnce sync.Once
 }
 
-func startGateway(parent context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, snapshot *componentv1.GatewayControlResponse) (*runningGateway, error) {
+func startGateway(parent context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, health *healthcheck.State, snapshot *componentv1.GatewayControlResponse) (*runningGateway, error) {
 	if snapshot == nil || snapshot.Config == nil || snapshot.Cursor == "" {
 		return nil, fmt.Errorf("gateway snapshot is incomplete")
 	}
@@ -256,9 +270,9 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		return nil, err
 	}
 	ctx, cancel := context.WithCancel(parent)
-	backend := &AgentBackend{Manager: client, Certificates: certificates}
-	routes := NewRouteStore(backend)
-	sessions, err := NewSessionRegistryFromConfig(config, sessionKey)
+	backend := &agentBackend{Manager: client, Certificates: certificates}
+	routes := newRouteStore(backend)
+	sessions, err := newSessionRegistryFromConfig(config, sessionKey)
 	if err != nil {
 		cancel()
 		routes.Close()
@@ -267,9 +281,9 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		return nil, fmt.Errorf("initialize Gateway sessions: %w", err)
 	}
 	routes.SetSessionRegistry(sessions)
-	access := NewAccessControllerFromConfig(config)
-	control := &ComponentControlPlane{Client: client}
-	origin, err := NewOriginPolicy(config.HTTP.PublicURL)
+	access := newAccessControllerFromConfig(config)
+	control := &componentControlPlane{Client: client}
+	origin, err := newOriginPolicy(config.HTTP.PublicURL)
 	if err != nil {
 		cancel()
 		_ = httpLn.Close()
@@ -282,13 +296,12 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		_ = sshLn.Close()
 		return nil, err
 	}
-	health := NewProcessHealth()
 	httpServer := &http.Server{
-		Handler:           gatewayClientIPMiddleware(NewHandler(health, sessions, access, control, origin, NewBrowserAuth(routes), routes), config.HTTP.TrustedProxyCIDRs),
-		ReadHeaderTimeout: HTTPReadHeaderTime,
-		MaxHeaderBytes:    HTTPMaxHeaderBytes,
+		Handler:           gatewayClientIPMiddleware(newHandler(sessions, access, control, origin, newBrowserAuth(routes), routes), config.HTTP.TrustedProxyCIDRs),
+		ReadHeaderTimeout: gatewayHTTPReadHeaderTime,
+		MaxHeaderBytes:    gatewayHTTPMaxHeaderBytes,
 	}
-	sshServer, err := NewSSHServer(signer, routes, routes, control, sessions, access, config)
+	sshServer, err := newSSHServer(signer, routes, routes, control, sessions, access, config)
 	if err != nil {
 		cancel()
 		routes.Close()
@@ -305,7 +318,7 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 				errorsCh <- err
 			}
 		}()
-		go ServeSSH(ctx, errorsCh, sshLn, sshServer)
+		go serveSSH(ctx, errorsCh, sshLn, sshServer)
 		select {
 		case <-ctx.Done():
 		case <-errorsCh:
@@ -313,6 +326,7 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 			cancel()
 		}
 	}()
+	health.Ready()
 	_, _ = fmt.Fprintf(output, "codespace gateway HTTP listening on %s\ncodespace gateway SSH listening on %s\n", httpLn.Addr(), sshLn.Addr())
 	return runtime, nil
 }
@@ -322,6 +336,7 @@ func (r *runningGateway) stop() {
 		return
 	}
 	r.stopOnce.Do(func() {
+		r.health.NotReady()
 		r.cancel()
 		r.routes.Close()
 		_ = r.httpLn.Close()
@@ -376,20 +391,20 @@ func gatewayConfig(value *componentv1.GatewayConfigurationSnapshot) (configpkg.G
 	return config, nil
 }
 
-func gatewayRuntimes(routes []*componentv1.GatewayRuntimeRoute) []RuntimeSnapshot {
-	result := make([]RuntimeSnapshot, 0, len(routes))
+func gatewayRuntimes(routes []*componentv1.GatewayRuntimeRoute) []runtimeSnapshot {
+	result := make([]runtimeSnapshot, 0, len(routes))
 	for _, route := range routes {
 		if route == nil || !validAgentAddress(route.AgentAddress) {
 			continue
 		}
-		item := RuntimeSnapshot{
+		item := runtimeSnapshot{
 			SiteUID: route.SiteUid, ResourceUID: route.ResourceUid, RuntimeUUID: route.RuntimeUuid,
 			GiteaWebURL: route.GiteaWebUrl, PodUID: route.PodUid, AgentAddress: route.AgentAddress,
 			TargetVersion: route.TargetVersion,
 		}
 		for _, endpoint := range route.Endpoints {
 			if endpoint != nil {
-				item.Endpoints = append(item.Endpoints, EndpointSnapshot{EndpointID: endpoint.EndpointId, Label: endpoint.Label, Public: endpoint.Public})
+				item.Endpoints = append(item.Endpoints, endpointSnapshot{EndpointID: endpoint.EndpointId, Label: endpoint.Label, Public: endpoint.Public})
 			}
 		}
 		result = append(result, item)

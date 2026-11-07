@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect/v2"
+	"gitea.dev/codespace/internal/healthcheck"
 	"gitea.dev/codespace/internal/transport"
 )
 
@@ -45,10 +46,14 @@ type RunOptions struct {
 }
 
 // Run keeps one cache component synchronized with its Manager configuration.
-func Run(ctx context.Context, output io.Writer, control Control, options RunOptions) error {
+func Run(ctx context.Context, output io.Writer, control Control, options RunOptions, health *healthcheck.State) error {
 	if options.ID == "" || options.CertificateDirectory == "" {
 		return fmt.Errorf("cache ID and Registry certificate directory are required")
 	}
+	if health == nil {
+		return fmt.Errorf("cache health state is required")
+	}
+	defer health.NotReady()
 	tlsConfig, err := transport.ServerCertificate(options.CertificateDirectory)
 	if err != nil {
 		return err
@@ -76,7 +81,7 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 		}
 		instanceCtx, cancel := context.WithCancel(ctx)
 		done := make(chan error, 1)
-		go func() { done <- runCacheInstance(instanceCtx, output, control, controlConfig, tlsConfig) }()
+		go func() { done <- runCacheInstance(instanceCtx, output, control, controlConfig, tlsConfig, health) }()
 		ticker := time.NewTicker(2 * time.Second)
 		watching := true
 		var terminalErr error
@@ -129,9 +134,10 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 	return nil
 }
 
-func runCacheInstance(ctx context.Context, output io.Writer, control Control, controlConfig ControlConfig, tlsConfig *tls.Config) (resultErr error) {
+func runCacheInstance(ctx context.Context, output io.Writer, control Control, controlConfig ControlConfig, tlsConfig *tls.Config, health *healthcheck.State) (resultErr error) {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
+	defer health.NotReady()
 	config := controlConfig.Config
 	owner, err := control.ClaimCache(ctx, config.ID)
 	if err != nil {
@@ -172,6 +178,7 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	go func() { serveDone <- server.ServeTLS(listener, "", "") }()
 	maintenanceDone := make(chan struct{})
 	go func() { defer close(maintenanceDone); cache.maintain(ctx, control) }()
+	health.Ready()
 	_, _ = fmt.Fprintf(output, "codespace cache registry listening on %s\n", listener.Addr())
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
@@ -228,6 +235,7 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 		case <-ticker.C:
 		}
 	}
+	health.NotReady()
 	cancel()
 	shutdown, stop := context.WithTimeout(context.Background(), 30*time.Second)
 	defer stop()

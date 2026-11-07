@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package controlplane defines the public Gitea-to-Manager client boundary.
 package controlplane
 
 import (

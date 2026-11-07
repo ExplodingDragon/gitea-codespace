@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package serve defines the Codespace Manager command.
 package serve
 
 import (
@@ -11,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"gitea.dev/codespace/internal/cluster"
+	"gitea.dev/codespace/internal/healthcheck"
 	"k8s.io/client-go/tools/clientcmd"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
@@ -45,7 +47,7 @@ func NewCommand() *cobra.Command {
 	flags.StringVar(&options.PlatformImage, "platform-image", "", "Explicitly tagged or digest-pinned image used by all managed Codespace workloads")
 	flags.StringSliceVar(&options.ImagePullSecrets, "image-pull-secret", nil, "Management-namespace image pull Secret copied to managed site namespaces")
 	flags.StringVar(&options.IdentitySecretName, "identity-secret", "gitea-codespace-internal-ca", "Kubernetes Secret that persists the Manager internal certificate authority")
-	flags.StringVar(&options.HealthAddress, "health-address", ":8081", "Health and readiness listen address")
+	flags.StringVar(&options.HealthAddress, "health-address", healthcheck.Address(), "Health and readiness listen address")
 	flags.StringVar(&options.AdminAddress, "admin-address", ":18080", "Administration HTTP listen address")
 	flags.StringVar(&options.AdminTokenFile, "admin-token-file", "/var/run/codespace/admin/token", "Projected administrator token file")
 	flags.StringVar(&options.AgentAddress, "agent-address", ":8443", "Agent mTLS listen address")

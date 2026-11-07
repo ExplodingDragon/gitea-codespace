@@ -18,14 +18,13 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-func NewHandler(
-	health *ProcessHealth,
-	sessions *SessionRegistry,
-	access *AccessController,
+func newHandler(
+	sessions *sessionRegistry,
+	access *accessController,
 	controlPlane gatewayControlPlaneClient,
-	originPolicy OriginPolicy,
-	browserAuth *BrowserAuth,
-	routeStore *RouteStore,
+	originPolicy originPolicy,
+	browserAuth *browserAuth,
+	routeStore *routeStore,
 ) http.Handler {
 	if routeStore == nil {
 		panic("gateway route store is required")
@@ -43,12 +42,6 @@ func NewHandler(
 			}
 		}
 		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
-	})
-	mux.HandleFunc("/api/healthz", func(writer http.ResponseWriter, _ *http.Request) {
-		health.writeHealthz(writer)
-	})
-	mux.HandleFunc("/api/readyz", func(writer http.ResponseWriter, _ *http.Request) {
-		health.writeReadyz(writer)
 	})
 	mux.HandleFunc("/open", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayOpen(writer, request, sessions, routeStore, access, controlPlane, originPolicy)
@@ -68,11 +61,11 @@ func NewHandler(
 func handleGatewayOpen(
 	writer http.ResponseWriter,
 	request *http.Request,
-	sessions *SessionRegistry,
-	routes *RouteStore,
-	access *AccessController,
+	sessions *sessionRegistry,
+	routes *routeStore,
+	access *accessController,
 	controlPlane gatewayControlPlaneClient,
-	originPolicy OriginPolicy,
+	originPolicy originPolicy,
 ) {
 	setGatewayOpenResponseHeaders(writer)
 	if rejectGatewayServiceWorkerRequest(writer, request) {
@@ -175,12 +168,12 @@ func gatewayOpenCode(request *http.Request) (string, bool) {
 func handleGatewayWorkspace(
 	writer http.ResponseWriter,
 	request *http.Request,
-	sessions *SessionRegistry,
-	routes *RouteStore,
-	access *AccessController,
+	sessions *sessionRegistry,
+	routes *routeStore,
+	access *accessController,
 	controlPlane gatewayControlPlaneClient,
-	originPolicy OriginPolicy,
-	browserAuth *BrowserAuth,
+	originPolicy originPolicy,
+	browserAuth *browserAuth,
 ) {
 	if sessions == nil || access == nil || controlPlane == nil {
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
@@ -316,10 +309,10 @@ func handleGatewayWorkspace(
 func handleGatewayPublicEndpoint(
 	writer http.ResponseWriter,
 	request *http.Request,
-	routes *RouteStore,
-	access *AccessController,
+	routes *routeStore,
+	access *accessController,
 	controlPlane gatewayControlPlaneClient,
-	originPolicy OriginPolicy,
+	originPolicy originPolicy,
 ) {
 	if access == nil || controlPlane == nil {
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
@@ -432,7 +425,7 @@ func parseGatewayWorkspacePath(path string) (string, string, string, bool) {
 	return parts[0], runtimeendpoint.WorkspaceEndpointID, gatewayProxyPathFromParts(parts[1:]), true
 }
 
-func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy OriginPolicy) (string, string, string, bool) {
+func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy originPolicy) (string, string, string, bool) {
 	if originPolicy.Domain == "" {
 		return parseGatewayWorkspacePath(request.URL.Path)
 	}
@@ -469,7 +462,7 @@ func parseGatewayPublicEndpointPath(path string) (string, string, string, bool) 
 	return parts[0], parts[1], gatewayProxyPathFromParts(parts[2:]), true
 }
 
-func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy OriginPolicy) (string, string, string, bool) {
+func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy originPolicy) (string, string, string, bool) {
 	if originPolicy.Domain == "" {
 		return parseGatewayPublicEndpointPath(request.URL.Path)
 	}
@@ -528,7 +521,7 @@ func withGatewayProxyRevalidation(
 	return request.WithContext(ctx), cancel
 }
 
-func gatewayExternalScheme(request *http.Request, originPolicy OriginPolicy) string {
+func gatewayExternalScheme(request *http.Request, originPolicy originPolicy) string {
 	if originPolicy.Scheme != "" {
 		return originPolicy.Scheme
 	}
@@ -589,7 +582,7 @@ func gatewayWorkspacePath(codespaceUUID, endpointID string) string {
 	return "/w/" + codespaceUUID + "/e/" + endpointID + "/"
 }
 
-func gatewayOpenRedirectPath(codespaceUUID, endpointID string, originPolicy OriginPolicy, returnTo string) string {
+func gatewayOpenRedirectPath(codespaceUUID, endpointID string, originPolicy originPolicy, returnTo string) string {
 	if returnTo != "" {
 		return returnTo
 	}
@@ -599,25 +592,25 @@ func gatewayOpenRedirectPath(codespaceUUID, endpointID string, originPolicy Orig
 	return gatewayWorkspacePath(codespaceUUID, endpointID)
 }
 
-func setGatewaySessionCookie(writer http.ResponseWriter, sessionID string, originPolicy OriginPolicy) {
+func setGatewaySessionCookie(writer http.ResponseWriter, sessionID string, originPolicy originPolicy) {
 	cookie := &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     sessionCookieName,
 		Value:    sessionID,
 		Path:     "/",
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	}
 	if strings.EqualFold(originPolicy.Scheme, "https") {
-		cookie.Name = SecureSessionCookieName
+		cookie.Name = secureSessionCookieName
 		cookie.Secure = true
 	}
 	http.SetCookie(writer, cookie)
 }
 
-func gatewaySessionIDsFromRequest(request *http.Request, originPolicy OriginPolicy) []string {
-	name := SessionCookieName
+func gatewaySessionIDsFromRequest(request *http.Request, originPolicy originPolicy) []string {
+	name := sessionCookieName
 	if strings.EqualFold(originPolicy.Scheme, "https") {
-		name = SecureSessionCookieName
+		name = secureSessionCookieName
 	}
 	values := make(map[string]struct{})
 	for _, cookie := range parseGatewayProxyRequestCookies(request.Header.Values("Cookie")) {
@@ -634,7 +627,7 @@ func gatewaySessionIDsFromRequest(request *http.Request, originPolicy OriginPoli
 
 func clearGatewayReservedCookies(writer http.ResponseWriter) {
 	http.SetCookie(writer, &http.Cookie{
-		Name:     SessionCookieName,
+		Name:     sessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,
@@ -642,7 +635,7 @@ func clearGatewayReservedCookies(writer http.ResponseWriter) {
 		SameSite: http.SameSiteLaxMode,
 	})
 	http.SetCookie(writer, &http.Cookie{
-		Name:     SecureSessionCookieName,
+		Name:     secureSessionCookieName,
 		Value:    "",
 		Path:     "/",
 		MaxAge:   -1,

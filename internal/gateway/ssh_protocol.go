@@ -125,7 +125,7 @@ func gatewaySSHExitStatus(err error) int {
 	if err == nil {
 		return 0
 	}
-	var exitErr *WorkspaceCommandExitError
+	var exitErr *workspaceCommandExitError
 	if errors.As(err, &exitErr) && exitErr.Status >= 0 && exitErr.Status <= 255 {
 		return exitErr.Status
 	}
@@ -157,7 +157,7 @@ func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	if err := ValidateRuntimeUUID(codespaceUUID); err != nil {
+	if err := validateRuntimeUUID(codespaceUUID); err != nil {
 		return "", false
 	}
 	return codespaceUUID, true

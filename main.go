@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Command gitea-codespace runs the Codespace control plane and managed workloads.
 package main
 
 import (

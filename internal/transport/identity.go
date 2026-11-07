@@ -19,6 +19,7 @@ import (
 
 const certificateRefreshInterval = time.Minute
 
+// IdentityCheck validates the application URI in a peer certificate.
 type IdentityCheck func(*url.URL) error
 
 // CertificateSource supplies the current leaf certificate and trust roots.
@@ -183,6 +184,7 @@ func serverCertificate(directory string, now func() time.Time) (*tls.Config, err
 	}}, nil
 }
 
+// Load returns the current valid leaf certificate and trust roots.
 func (c *FileCertificates) Load() (tls.Certificate, *x509.CertPool, error) {
 	if c == nil || c.cache == nil {
 		return tls.Certificate{}, nil, fmt.Errorf("component certificate source is not initialized")
@@ -194,10 +196,12 @@ func (c *FileCertificates) Load() (tls.Certificate, *x509.CertPool, error) {
 	return current.certificate, current.roots, nil
 }
 
+// Server builds a mutually authenticated server configuration from projected files.
 func (c *FileCertificates) Server(check IdentityCheck) (*tls.Config, error) {
 	return Server(c, check)
 }
 
+// Server builds a mutually authenticated server configuration from a certificate source.
 func Server(source CertificateSource, check IdentityCheck) (*tls.Config, error) {
 	if check == nil {
 		return nil, fmt.Errorf("peer identity check is required")
@@ -216,10 +220,12 @@ func Server(source CertificateSource, check IdentityCheck) (*tls.Config, error) 
 	}}, nil
 }
 
+// Client builds a mutually authenticated client configuration from projected files.
 func (c *FileCertificates) Client(check IdentityCheck) (*tls.Config, error) {
 	return Client(c, check)
 }
 
+// Client builds a mutually authenticated client configuration from a certificate source.
 func Client(source CertificateSource, check IdentityCheck) (*tls.Config, error) {
 	if check == nil {
 		return nil, fmt.Errorf("peer identity check is required")

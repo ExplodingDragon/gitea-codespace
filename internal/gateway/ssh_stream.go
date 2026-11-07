@@ -12,7 +12,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func (s *SSHServer) serveWorkspaceSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, session WorkspaceCommandSession, pty gatewaySSHPty, activity chan<- struct{}) {
+func (s *sshServer) serveWorkspaceSession(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, session workspaceCommandSession, pty gatewaySSHPty, activity chan<- struct{}) {
 	defer func() { _ = session.Close() }()
 	if pty.enabled {
 		_ = session.Resize(pty.cols, pty.rows)
@@ -56,7 +56,7 @@ func (s *SSHServer) serveWorkspaceSession(ctx context.Context, channel ssh.Chann
 	waitGatewaySSHChannels(ctx, stdinDone, stdoutDone, stderrDone)
 }
 
-func (s *SSHServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
+func (s *sshServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
 	requestsDone := make(chan struct{})
 	go func() {
 		defer close(requestsDone)
@@ -91,7 +91,7 @@ func (s *SSHServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channe
 	waitGatewaySSHChannels(ctx, clientToBackendDone, backendToClientDone)
 }
 
-func (s *SSHServer) handleWorkspaceSessionRequests(session WorkspaceCommandSession, requests <-chan *ssh.Request, ptyEnabled bool, activity chan<- struct{}) {
+func (s *sshServer) handleWorkspaceSessionRequests(session workspaceCommandSession, requests <-chan *ssh.Request, ptyEnabled bool, activity chan<- struct{}) {
 	for request := range requests {
 		notifyGatewaySSHActivity(activity)
 		switch request.Type {
@@ -116,7 +116,7 @@ func (s *SSHServer) handleWorkspaceSessionRequests(session WorkspaceCommandSessi
 	}
 }
 
-func (s *SSHServer) rejectWorkspaceSessionRequests(requests <-chan *ssh.Request, activity chan<- struct{}) {
+func (s *sshServer) rejectWorkspaceSessionRequests(requests <-chan *ssh.Request, activity chan<- struct{}) {
 	for request := range requests {
 		notifyGatewaySSHActivity(activity)
 		if request.WantReply {

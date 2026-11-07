@@ -18,6 +18,7 @@ import (
 	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
+	"gitea.dev/codespace/internal/healthcheck"
 )
 
 func TestCacheAuthenticationExpiry(t *testing.T) {
@@ -55,7 +56,9 @@ func TestCacheServiceStopsMaintenanceWhenManagerLeaseIsLost(t *testing.T) {
 	defer cancel()
 	done := make(chan error, 1)
 	tlsConfig := testCacheTLSConfig(t)
-	go func() { done <- runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig) }()
+	go func() {
+		done <- runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig, &healthcheck.State{})
+	}()
 	select {
 	case err := <-done:
 		if err == nil || err.Error() != "cache service ownership lost" {
@@ -76,7 +79,7 @@ func TestCacheServiceExpiresWhileHeartbeatIsBlocked(t *testing.T) {
 	released := make(chan struct{})
 	tlsConfig := testCacheTLSConfig(t)
 	go func() {
-		_ = runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig)
+		_ = runCacheInstance(ctx, io.Discard, control, control.config, tlsConfig, &healthcheck.State{})
 		close(released)
 	}()
 	select {

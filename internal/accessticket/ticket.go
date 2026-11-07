@@ -18,10 +18,13 @@ import (
 )
 
 const (
+	// ProtocolVersion identifies the signed claims format interpreted by Agents.
 	ProtocolVersion = 1
-	MaxLifetime     = 2 * time.Minute
+	// MaxLifetime bounds how long a target-bound access ticket can be replayed.
+	MaxLifetime = 2 * time.Minute
 )
 
+// Sign validates the target-bound claims and returns a short-lived signed token.
 func Sign(privateKey ed25519.PrivateKey, claims *agentv1.AccessTicketClaims, now time.Time) (string, error) {
 	if len(privateKey) != ed25519.PrivateKeySize {
 		return "", fmt.Errorf("access signing key is invalid")
@@ -47,6 +50,7 @@ func Sign(privateKey ed25519.PrivateKey, claims *agentv1.AccessTicketClaims, now
 	return base64.RawURLEncoding.EncodeToString(payload) + "." + base64.RawURLEncoding.EncodeToString(ed25519.Sign(privateKey, payload)), nil
 }
 
+// Verify authenticates a token and returns claims that are valid at now.
 func Verify(publicKey ed25519.PublicKey, token string, now time.Time) (*agentv1.AccessTicketClaims, error) {
 	if len(publicKey) != ed25519.PublicKeySize || len(token) > 4096 {
 		return nil, fmt.Errorf("access ticket or verification key is invalid")

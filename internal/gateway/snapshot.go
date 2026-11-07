@@ -8,26 +8,26 @@ import (
 	"strings"
 )
 
-// RuntimeSnapshot contains only the backend coordinates needed to reach one runtime.
-type RuntimeSnapshot struct {
-	SiteUID       string             `json:"site_uid"`
-	ResourceUID   string             `json:"resource_uid"`
-	RuntimeUUID   string             `json:"runtime_uuid"`
-	GiteaWebURL   string             `json:"gitea_web_url"`
-	PodUID        string             `json:"pod_uid"`
-	AgentAddress  string             `json:"agent_address"`
-	TargetVersion int64              `json:"target_version"`
-	Endpoints     []EndpointSnapshot `json:"endpoints"`
+// A Runtime snapshot contains only the backend coordinates needed by Gateway.
+type runtimeSnapshot struct {
+	SiteUID       string
+	ResourceUID   string
+	RuntimeUUID   string
+	GiteaWebURL   string
+	PodUID        string
+	AgentAddress  string
+	TargetVersion int64
+	Endpoints     []endpointSnapshot
 }
 
-// EndpointSnapshot contains one HTTP endpoint route without authorization data.
-type EndpointSnapshot struct {
-	EndpointID string `json:"endpoint_id"`
-	Label      string `json:"label"`
-	Public     bool   `json:"public"`
+// An endpoint snapshot carries one HTTP route without authorization data.
+type endpointSnapshot struct {
+	EndpointID string
+	Label      string
+	Public     bool
 }
 
-func validateRuntimeSnapshot(snapshot RuntimeSnapshot) error {
+func validateRuntimeSnapshot(snapshot runtimeSnapshot) error {
 	if strings.TrimSpace(snapshot.SiteUID) == "" || strings.TrimSpace(snapshot.ResourceUID) == "" ||
 		strings.TrimSpace(snapshot.RuntimeUUID) == "" || strings.TrimSpace(snapshot.GiteaWebURL) == "" ||
 		strings.TrimSpace(snapshot.PodUID) == "" || !validAgentAddress(snapshot.AgentAddress) || snapshot.TargetVersion <= 0 {

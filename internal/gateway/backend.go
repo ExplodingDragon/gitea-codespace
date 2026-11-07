@@ -10,16 +10,16 @@ import (
 	"strconv"
 )
 
-// WorkspaceShellRequest describes one login shell opened by SSH.
-type WorkspaceShellRequest struct {
+// A shell request carries the terminal settings for one SSH login shell.
+type workspaceShellRequest struct {
 	RuntimeUUID string
 	Interactive bool
 	Cols        int
 	Rows        int
 }
 
-// WorkspaceCommandRequest describes one exec command opened by SSH.
-type WorkspaceCommandRequest struct {
+// A command request carries one SSH exec command and its terminal settings.
+type workspaceCommandRequest struct {
 	RuntimeUUID string
 	Command     string
 	Interactive bool
@@ -27,13 +27,13 @@ type WorkspaceCommandRequest struct {
 	Rows        int
 }
 
-// WorkspaceSFTPRequest describes one SFTP stream opened by SSH.
-type WorkspaceSFTPRequest struct {
+// An SFTP request identifies the Runtime that receives the stream.
+type workspaceSFTPRequest struct {
 	RuntimeUUID string
 }
 
-// WorkspaceCommandSession is the bidirectional command stream presented to SSH.
-type WorkspaceCommandSession interface {
+// A command session presents a bidirectional Runtime process to SSH.
+type workspaceCommandSession interface {
 	Stdin() io.WriteCloser
 	Stdout() io.Reader
 	Stderr() io.Reader
@@ -43,20 +43,20 @@ type WorkspaceCommandSession interface {
 	Close() error
 }
 
-// WorkspaceCommandExitError carries a process exit status through the SSH adapter.
-type WorkspaceCommandExitError struct {
+// The command exit error carries a process status through the SSH adapter.
+type workspaceCommandExitError struct {
 	Status int
 }
 
-func (e *WorkspaceCommandExitError) Error() string {
+func (e *workspaceCommandExitError) Error() string {
 	return "workspace command exited with status " + strconv.Itoa(e.Status)
 }
 
-// WorkspaceBackend opens all supported streams to one Runtime Agent.
-type WorkspaceBackend interface {
-	OpenWorkspaceShell(context.Context, WorkspaceShellRequest) (WorkspaceCommandSession, error)
-	OpenWorkspaceCommand(context.Context, WorkspaceCommandRequest) (WorkspaceCommandSession, error)
-	OpenWorkspaceSFTP(context.Context, WorkspaceSFTPRequest) (io.ReadWriteCloser, error)
+// The workspace backend opens each supported stream to a Runtime Agent.
+type workspaceBackend interface {
+	OpenWorkspaceShell(context.Context, workspaceShellRequest) (workspaceCommandSession, error)
+	OpenWorkspaceCommand(context.Context, workspaceCommandRequest) (workspaceCommandSession, error)
+	OpenWorkspaceSFTP(context.Context, workspaceSFTPRequest) (io.ReadWriteCloser, error)
 	OpenWorkspaceEndpoint(context.Context, string, string) (net.Conn, error)
 	OpenWorkspaceTCP(context.Context, string, uint32) (net.Conn, error)
 }

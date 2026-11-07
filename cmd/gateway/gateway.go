@@ -1,6 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package gateway defines the managed HTTP and SSH gateway command.
 package gateway
 
 import (
@@ -13,6 +14,7 @@ import (
 
 	componentpkg "gitea.dev/codespace/internal/component"
 	gatewaypkg "gitea.dev/codespace/internal/gateway"
+	"gitea.dev/codespace/internal/healthcheck"
 )
 
 // NewCommand creates the network-only gateway command.
@@ -29,7 +31,10 @@ func NewCommand() *cobra.Command {
 				return err
 			}
 			defer connection.Close()
-			err = gatewaypkg.Run(ctx, command.OutOrStdout(), connection.Service, connection.Certificates)
+			health := &healthcheck.State{}
+			err = healthcheck.Run(ctx, healthcheck.Address(), health, func(runCtx context.Context) error {
+				return gatewaypkg.Run(runCtx, command.OutOrStdout(), connection.Service, connection.Certificates, health)
+			})
 			if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 				return nil
 			}

@@ -16,31 +16,32 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-// EndpointRoute binds an authorized public address to one site's runtime port.
-type EndpointRoute struct {
-	SiteUID       string `json:"-"`
-	GiteaWebURL   string `json:"-"`
-	PodUID        string `json:"-"`
-	AgentAddress  string `json:"-"`
-	TargetVersion int64  `json:"-"`
-	CodespaceUUID string `json:"-"`
-	EndpointID    string `json:"-"`
-	Label         string `json:"-"`
-	Public        bool   `json:"-"`
+// An endpoint route binds an authorized public address to one site's Runtime.
+type endpointRoute struct {
+	SiteUID       string
+	GiteaWebURL   string
+	PodUID        string
+	AgentAddress  string
+	TargetVersion int64
+	CodespaceUUID string
+	EndpointID    string
+	Label         string
+	Public        bool
 }
 
-// RouteStore owns routes and their live connections, closing them on replacement.
-type RouteStore struct {
+// The route store owns routes and their live connections, closing them when a
+// newer Manager snapshot replaces the Runtime target.
+type routeStore struct {
 	mu          sync.RWMutex
 	routes      map[gatewayRouteKey]*gatewayRouteEntry
 	nextLeaseID int64
-	sessions    *SessionRegistry
-	backend     WorkspaceBackend
-	runtimes    map[string]RuntimeSnapshot
+	sessions    *sessionRegistry
+	backend     workspaceBackend
+	runtimes    map[string]runtimeSnapshot
 }
 
 type gatewayRouteEntry struct {
-	route     EndpointRoute
+	route     endpointRoute
 	leases    map[int64]context.CancelFunc
 	transport *http.Transport
 }
@@ -50,29 +51,29 @@ type gatewayRouteKey struct {
 	endpointID    string
 }
 
-func NewRouteStore(backend WorkspaceBackend) *RouteStore {
-	return &RouteStore{
+func newRouteStore(backend workspaceBackend) *routeStore {
+	return &routeStore{
 		routes:   make(map[gatewayRouteKey]*gatewayRouteEntry),
 		backend:  backend,
-		runtimes: make(map[string]RuntimeSnapshot),
+		runtimes: make(map[string]runtimeSnapshot),
 	}
 }
 
-func (s *RouteStore) Get(codespaceUUID, endpointID string) (EndpointRoute, bool) {
+func (s *routeStore) Get(codespaceUUID, endpointID string) (endpointRoute, bool) {
 	if s == nil {
-		return EndpointRoute{}, false
+		return endpointRoute{}, false
 	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	entry, ok := s.routes[gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID}]
 	if !ok {
-		return EndpointRoute{}, false
+		return endpointRoute{}, false
 	}
 	return entry.route, true
 }
 
-func (s *RouteStore) SetSessionRegistry(sessions *SessionRegistry) {
+func (s *routeStore) SetSessionRegistry(sessions *sessionRegistry) {
 	if s == nil {
 		return
 	}
@@ -82,7 +83,7 @@ func (s *RouteStore) SetSessionRegistry(sessions *SessionRegistry) {
 	s.sessions = sessions
 }
 
-func (s *RouteStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool) {
+func (s *routeStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	runtime, ok := s.runtimes[codespaceUUID]
@@ -97,19 +98,19 @@ func (s *RouteStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool
 	return "", false
 }
 
-func (s *RouteStore) RuntimeSiteUID(runtimeUUID string) (string, bool) {
+func (s *routeStore) RuntimeSiteUID(runtimeUUID string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	runtime, found := s.runtimes[runtimeUUID]
 	return runtime.SiteUID, found
 }
 
-func (s *RouteStore) ReplaceSharedGatewayRuntimes(snapshots []RuntimeSnapshot) error {
+func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) error {
 	if s == nil {
 		return fmt.Errorf("gateway route store is nil")
 	}
-	routes := make(map[gatewayRouteKey]EndpointRoute)
-	runtimes := make(map[string]RuntimeSnapshot, len(snapshots))
+	routes := make(map[gatewayRouteKey]endpointRoute)
+	runtimes := make(map[string]runtimeSnapshot, len(snapshots))
 	for _, snapshot := range snapshots {
 		if err := validateRuntimeSnapshot(snapshot); err != nil {
 			return err
@@ -119,7 +120,7 @@ func (s *RouteStore) ReplaceSharedGatewayRuntimes(snapshots []RuntimeSnapshot) e
 		}
 		runtimes[snapshot.RuntimeUUID] = snapshot
 		for _, endpoint := range snapshot.Endpoints {
-			route := EndpointRoute{
+			route := endpointRoute{
 				SiteUID: snapshot.SiteUID, GiteaWebURL: snapshot.GiteaWebURL, PodUID: snapshot.PodUID, AgentAddress: snapshot.AgentAddress,
 				TargetVersion: snapshot.TargetVersion, CodespaceUUID: snapshot.RuntimeUUID,
 				EndpointID: endpoint.EndpointID, Label: endpoint.Label, Public: endpoint.Public,
@@ -187,29 +188,29 @@ func (s *RouteStore) ReplaceSharedGatewayRuntimes(snapshots []RuntimeSnapshot) e
 	return nil
 }
 
-func (s *RouteStore) OpenWorkspaceCommand(ctx context.Context, request WorkspaceCommandRequest) (WorkspaceCommandSession, error) {
+func (s *routeStore) OpenWorkspaceCommand(ctx context.Context, request workspaceCommandRequest) (workspaceCommandSession, error) {
 	return s.backend.OpenWorkspaceCommand(ctx, request)
 }
 
-func (s *RouteStore) OpenWorkspaceShell(ctx context.Context, request WorkspaceShellRequest) (WorkspaceCommandSession, error) {
+func (s *routeStore) OpenWorkspaceShell(ctx context.Context, request workspaceShellRequest) (workspaceCommandSession, error) {
 	return s.backend.OpenWorkspaceShell(ctx, request)
 }
 
-func (s *RouteStore) OpenWorkspaceSFTP(ctx context.Context, request WorkspaceSFTPRequest) (io.ReadWriteCloser, error) {
+func (s *routeStore) OpenWorkspaceSFTP(ctx context.Context, request workspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	return s.backend.OpenWorkspaceSFTP(ctx, request)
 }
 
-func (s *RouteStore) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, port uint32) (net.Conn, error) {
+func (s *routeStore) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, port uint32) (net.Conn, error) {
 	return s.backend.OpenWorkspaceTCP(ctx, runtimeUUID, port)
 }
 
-func (s *RouteStore) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {
+func (s *routeStore) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {
 	return s.backend.OpenWorkspaceEndpoint(ctx, runtimeUUID, endpointID)
 }
 
-func (s *RouteStore) BeginProxy(request *http.Request, codespaceUUID, endpointID string) (EndpointRoute, *http.Request, func(), bool) {
+func (s *routeStore) BeginProxy(request *http.Request, codespaceUUID, endpointID string) (endpointRoute, *http.Request, func(), bool) {
 	if s == nil || request == nil {
-		return EndpointRoute{}, request, func() {}, false
+		return endpointRoute{}, request, func() {}, false
 	}
 	ctx, cancel := context.WithCancel(request.Context())
 	key := gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID}
@@ -219,7 +220,7 @@ func (s *RouteStore) BeginProxy(request *http.Request, codespaceUUID, endpointID
 	if !ok {
 		s.mu.Unlock()
 		cancel()
-		return EndpointRoute{}, request, func() {}, false
+		return endpointRoute{}, request, func() {}, false
 	}
 	s.nextLeaseID++
 	leaseID := s.nextLeaseID
@@ -243,7 +244,7 @@ func (s *RouteStore) BeginProxy(request *http.Request, codespaceUUID, endpointID
 	return route, request.WithContext(ctx), release, true
 }
 
-func (s *RouteStore) Put(route EndpointRoute) error {
+func (s *routeStore) Put(route endpointRoute) error {
 	if s == nil {
 		return fmt.Errorf("gateway route store is nil")
 	}
@@ -272,7 +273,7 @@ func (s *RouteStore) Put(route EndpointRoute) error {
 	return nil
 }
 
-func (s *RouteStore) Delete(codespaceUUID, endpointID string) {
+func (s *routeStore) Delete(codespaceUUID, endpointID string) {
 	if s == nil {
 		return
 	}
@@ -311,7 +312,7 @@ func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
 	}
 }
 
-func sameGatewayEndpointRouting(left, right EndpointRoute) bool {
+func sameGatewayEndpointRouting(left, right endpointRoute) bool {
 	return left.SiteUID == right.SiteUID &&
 		left.GiteaWebURL == right.GiteaWebURL &&
 		left.PodUID == right.PodUID &&
@@ -321,38 +322,38 @@ func sameGatewayEndpointRouting(left, right EndpointRoute) bool {
 		left.Public == right.Public
 }
 
-func sameGatewayRuntimeRouting(left, right RuntimeSnapshot) bool {
+func sameGatewayRuntimeRouting(left, right runtimeSnapshot) bool {
 	return left.SiteUID == right.SiteUID && left.ResourceUID == right.ResourceUID &&
 		left.RuntimeUUID == right.RuntimeUUID && left.GiteaWebURL == right.GiteaWebURL &&
 		left.PodUID == right.PodUID && left.AgentAddress == right.AgentAddress
 }
 
-func normalizeEndpointRoute(route EndpointRoute) (EndpointRoute, error) {
+func normalizeEndpointRoute(route endpointRoute) (endpointRoute, error) {
 	route.SiteUID = strings.TrimSpace(route.SiteUID)
 	route.CodespaceUUID = strings.TrimSpace(route.CodespaceUUID)
 	route.EndpointID = strings.TrimSpace(route.EndpointID)
 	route.Label = strings.TrimSpace(route.Label)
 	route.GiteaWebURL = strings.TrimRight(strings.TrimSpace(route.GiteaWebURL), "/")
 	if route.SiteUID == "" {
-		return EndpointRoute{}, fmt.Errorf("site uid is required")
+		return endpointRoute{}, fmt.Errorf("site uid is required")
 	}
 	if route.CodespaceUUID == "" {
-		return EndpointRoute{}, fmt.Errorf("codespace uuid is required")
+		return endpointRoute{}, fmt.Errorf("codespace uuid is required")
 	}
 	if route.GiteaWebURL == "" {
-		return EndpointRoute{}, fmt.Errorf("gitea web URL is required")
+		return endpointRoute{}, fmt.Errorf("gitea web URL is required")
 	}
 	if route.EndpointID != runtimeendpoint.WorkspaceEndpointID && !isGatewayEndpointID(route.EndpointID) {
-		return EndpointRoute{}, fmt.Errorf("endpoint_id is invalid")
+		return endpointRoute{}, fmt.Errorf("endpoint_id is invalid")
 	}
 	if route.EndpointID == runtimeendpoint.WorkspaceEndpointID &&
 		(route.Label != runtimeendpoint.WorkspaceEndpointLabel || route.Public) {
-		return EndpointRoute{}, fmt.Errorf("workspace endpoint route is invalid")
+		return endpointRoute{}, fmt.Errorf("workspace endpoint route is invalid")
 	}
 	return route, nil
 }
 
-func (s *RouteStore) Transport(route EndpointRoute) (*http.Transport, error) {
+func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := s.routes[gatewayRouteKey{codespaceUUID: route.CodespaceUUID, endpointID: route.EndpointID}]
@@ -374,14 +375,14 @@ func (s *RouteStore) Transport(route EndpointRoute) (*http.Transport, error) {
 	return entry.transport, nil
 }
 
-func (s *RouteStore) Close() {
+func (s *routeStore) Close() {
 	s.mu.Lock()
 	var cancels []context.CancelFunc
 	for _, entry := range s.routes {
 		cancels = append(cancels, entry.takeCancels()...)
 	}
 	s.routes = make(map[gatewayRouteKey]*gatewayRouteEntry)
-	s.runtimes = make(map[string]RuntimeSnapshot)
+	s.runtimes = make(map[string]runtimeSnapshot)
 	backend := s.backend
 	s.mu.Unlock()
 	cancelGatewayRouteLeases(cancels)

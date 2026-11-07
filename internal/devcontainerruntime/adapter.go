@@ -1,6 +1,8 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
+// Package devcontainerruntime translates Manager Runtime configuration into
+// Dev Container engine operations and Agent endpoint state.
 package devcontainerruntime
 
 import (

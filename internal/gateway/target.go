@@ -8,8 +8,9 @@ import (
 	"uuid"
 )
 
-// ValidateRuntimeUUID checks the canonical identity used in routes and state keys.
-func ValidateRuntimeUUID(codespaceUUID string) error {
+// Runtime UUIDs must be canonical because routes and state keys use them as
+// stable identities rather than display values.
+func validateRuntimeUUID(codespaceUUID string) error {
 	parsed, err := uuid.Parse(codespaceUUID)
 	if err != nil {
 		return err

@@ -33,21 +33,22 @@ type gatewayProxyRequestContext struct {
 }
 
 const (
-	ProxyHeaderCodespaceUUID = "X-Gitea-Codespace-UUID"
-	ProxyHeaderEndpointID    = "X-Gitea-Codespace-Endpoint-ID"
-	ProxyHeaderAccess        = "X-Gitea-Codespace-Access"
-	ProxyHeaderUserID        = "X-Gitea-Codespace-User-ID"
+	proxyHeaderCodespaceUUID = "X-Gitea-Codespace-UUID"
+	proxyHeaderEndpointID    = "X-Gitea-Codespace-Endpoint-ID"
+	proxyHeaderAccess        = "X-Gitea-Codespace-Access"
+	proxyHeaderUserID        = "X-Gitea-Codespace-User-ID"
 
-	SecureSessionCookieName  = "__Host-gitea_codespace_session"
-	ReturnToCookieName       = "gitea_codespace_return_to"
-	SecureReturnToCookieName = "__Host-gitea_codespace_return_to"
+	sessionCookieName        = "gitea_codespace_session"
+	secureSessionCookieName  = "__Host-gitea_codespace_session"
+	returnToCookieName       = "gitea_codespace_return_to"
+	secureReturnToCookieName = "__Host-gitea_codespace_return_to"
 )
 
 func proxyGatewayEndpoint(
 	writer http.ResponseWriter,
 	request *http.Request,
-	routes *RouteStore,
-	route EndpointRoute,
+	routes *routeStore,
+	route endpointRoute,
 	upstreamPath string,
 	proxyContext gatewayProxyRequestContext,
 ) {
@@ -91,21 +92,21 @@ func proxyGatewayEndpoint(
 
 func prepareGatewayProxyRequest(request *http.Request, proxyContext gatewayProxyRequestContext) {
 	header := request.Header
-	header.Del(ProxyHeaderCodespaceUUID)
-	header.Del(ProxyHeaderEndpointID)
-	header.Del(ProxyHeaderAccess)
-	header.Del(ProxyHeaderUserID)
+	header.Del(proxyHeaderCodespaceUUID)
+	header.Del(proxyHeaderEndpointID)
+	header.Del(proxyHeaderAccess)
+	header.Del(proxyHeaderUserID)
 	header.Del("Forwarded")
 	header.Del("X-Forwarded-For")
 	header.Del("X-Forwarded-Proto")
 	header.Del("X-Forwarded-Host")
 	rebuildGatewayProxyCookieHeader(request)
 
-	header.Set(ProxyHeaderCodespaceUUID, proxyContext.codespaceUUID)
-	header.Set(ProxyHeaderEndpointID, proxyContext.endpointID)
-	header.Set(ProxyHeaderAccess, proxyContext.access)
+	header.Set(proxyHeaderCodespaceUUID, proxyContext.codespaceUUID)
+	header.Set(proxyHeaderEndpointID, proxyContext.endpointID)
+	header.Set(proxyHeaderAccess, proxyContext.access)
 	if proxyContext.userID > 0 {
-		header.Set(ProxyHeaderUserID, formatInt64(proxyContext.userID))
+		header.Set(proxyHeaderUserID, formatInt64(proxyContext.userID))
 	}
 	header.Set("X-Forwarded-For", gatewayPeerIP(request))
 	header.Set("X-Forwarded-Proto", proxyContext.externalScheme)
@@ -151,10 +152,10 @@ func parseGatewayProxyRequestCookies(headers []string) []*http.Cookie {
 
 func isGatewayReservedCookieName(name string) bool {
 	switch name {
-	case SessionCookieName,
-		SecureSessionCookieName,
-		ReturnToCookieName,
-		SecureReturnToCookieName:
+	case sessionCookieName,
+		secureSessionCookieName,
+		returnToCookieName,
+		secureReturnToCookieName:
 		return true
 	default:
 		return false
@@ -317,7 +318,7 @@ func canonicalGatewayProxyAuthority(hostValue, scheme string) (string, bool) {
 		return "", false
 	}
 	if port == "" {
-		port = DefaultProxyPort(scheme)
+		port = defaultProxyPort(scheme)
 	}
 	if port == "" {
 		return host, true
@@ -325,7 +326,7 @@ func canonicalGatewayProxyAuthority(hostValue, scheme string) (string, bool) {
 	return net.JoinHostPort(host, port), true
 }
 
-func DefaultProxyPort(scheme string) string {
+func defaultProxyPort(scheme string) string {
 	switch strings.ToLower(strings.TrimSpace(scheme)) {
 	case "http":
 		return "80"

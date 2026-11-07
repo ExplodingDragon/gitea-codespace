@@ -21,18 +21,18 @@ const (
 	defaultGatewayAccessCacheMaxKeys        = 65536
 )
 
-type AccessConfig struct {
-	AllowedTTL                      time.Duration `json:"-"`
-	StreamRevalidateInterval        time.Duration `json:"-"`
-	MaxInflightTotal                int           `json:"-"`
-	MaxInflightPerSession           int           `json:"-"`
-	PublicMaxConnectionsPerEndpoint int           `json:"-"`
-	PublicMaxConnectionsPerIP       int           `json:"-"`
-	ValidationMaxInflight           int           `json:"-"`
+type accessConfig struct {
+	AllowedTTL                      time.Duration
+	StreamRevalidateInterval        time.Duration
+	MaxInflightTotal                int
+	MaxInflightPerSession           int
+	PublicMaxConnectionsPerEndpoint int
+	PublicMaxConnectionsPerIP       int
+	ValidationMaxInflight           int
 }
 
-type AccessController struct {
-	Config AccessConfig `json:"-"`
+type accessController struct {
+	Config accessConfig
 	cache  *gatewayAccessCache
 
 	mu                 sync.Mutex
@@ -51,14 +51,14 @@ type gatewayValidationCall struct {
 }
 
 type gatewayPublicReservation struct {
-	controller *AccessController
+	controller *accessController
 	key        gatewayPublicEndpointKey
 	ip         string
 	once       sync.Once
 }
 
 type gatewayRequestReservation struct {
-	controller *AccessController
+	controller *accessController
 	sessionID  string
 	once       sync.Once
 }
@@ -91,14 +91,14 @@ type gatewayPublicEndpointKey struct {
 	endpointID    string
 }
 
-func NewAccessController(config AccessConfig) *AccessController {
+func newAccessController(config accessConfig) *accessController {
 	if config.AllowedTTL <= 0 {
 		config.AllowedTTL = time.Second
 	}
 	if config.StreamRevalidateInterval <= 0 {
 		config.StreamRevalidateInterval = defaultGatewaySessionRevalidateInterval
 	}
-	return &AccessController{
+	return &accessController{
 		Config:          config,
 		cache:           newGatewayAccessCache(config.AllowedTTL),
 		sessionInflight: make(map[string]int),
@@ -108,8 +108,8 @@ func NewAccessController(config AccessConfig) *AccessController {
 	}
 }
 
-func NewAccessControllerFromConfig(config configpkg.GatewayConfig) *AccessController {
-	return NewAccessController(AccessConfig{
+func newAccessControllerFromConfig(config configpkg.GatewayConfig) *accessController {
+	return newAccessController(accessConfig{
 		AllowedTTL:                      time.Second,
 		StreamRevalidateInterval:        config.Sessions.RevalidateInterval.ToStdlib(),
 		MaxInflightTotal:                config.Limits.MaxInflightTotal,
@@ -120,7 +120,7 @@ func NewAccessControllerFromConfig(config configpkg.GatewayConfig) *AccessContro
 	})
 }
 
-func (c *AccessController) reservePublic(siteUID, codespaceUUID, endpointID, ip string) (*gatewayPublicReservation, int) {
+func (c *accessController) reservePublic(siteUID, codespaceUUID, endpointID, ip string) (*gatewayPublicReservation, int) {
 	if c == nil {
 		return nil, http.StatusServiceUnavailable
 	}
@@ -143,7 +143,7 @@ func (c *AccessController) reservePublic(siteUID, codespaceUUID, endpointID, ip 
 	return &gatewayPublicReservation{controller: c, key: key, ip: ip}, 0
 }
 
-func (c *AccessController) ReserveRequest() (*gatewayRequestReservation, int) {
+func (c *accessController) ReserveRequest() (*gatewayRequestReservation, int) {
 	if c == nil {
 		return nil, http.StatusServiceUnavailable
 	}
@@ -157,7 +157,7 @@ func (c *AccessController) ReserveRequest() (*gatewayRequestReservation, int) {
 	return &gatewayRequestReservation{controller: c}, 0
 }
 
-func (c *AccessController) reserveSessionRequest(sessionID string) (*gatewayRequestReservation, int) {
+func (c *accessController) reserveSessionRequest(sessionID string) (*gatewayRequestReservation, int) {
 	if c == nil {
 		return nil, http.StatusServiceUnavailable
 	}
@@ -206,7 +206,7 @@ func (r *gatewayRequestReservation) Release() {
 	})
 }
 
-func (c *AccessController) ValidatePublicEndpoint(
+func (c *accessController) ValidatePublicEndpoint(
 	ctx context.Context,
 	siteUID string,
 	codespaceUUID string,
@@ -223,7 +223,7 @@ func (c *AccessController) ValidatePublicEndpoint(
 	return c.validateAccess(ctx, key, now, validate)
 }
 
-func (c *AccessController) validateEndpointSession(
+func (c *accessController) validateEndpointSession(
 	ctx context.Context,
 	siteUID string,
 	userID int64,
@@ -242,7 +242,7 @@ func (c *AccessController) validateEndpointSession(
 	return c.validateAccess(ctx, key, now, validate)
 }
 
-func (c *AccessController) revalidatePublicEndpoint(
+func (c *accessController) revalidatePublicEndpoint(
 	ctx context.Context,
 	siteUID string,
 	codespaceUUID string,
@@ -258,7 +258,7 @@ func (c *AccessController) revalidatePublicEndpoint(
 	return c.validateAccessUncached(ctx, key, validate)
 }
 
-func (c *AccessController) RevalidateEndpointSession(
+func (c *accessController) RevalidateEndpointSession(
 	ctx context.Context,
 	siteUID string,
 	userID int64,
@@ -276,7 +276,7 @@ func (c *AccessController) RevalidateEndpointSession(
 	return c.validateAccessUncached(ctx, key, validate)
 }
 
-func (c *AccessController) validateAccess(
+func (c *accessController) validateAccess(
 	ctx context.Context,
 	key gatewayAuthorizationKey,
 	now time.Time,
@@ -306,7 +306,7 @@ func (c *AccessController) validateAccess(
 	return decision, false, err
 }
 
-func (c *AccessController) validateAccessUncached(
+func (c *accessController) validateAccessUncached(
 	ctx context.Context,
 	key gatewayAuthorizationKey,
 	validate func(context.Context) (gatewayAccessDecision, error),
@@ -329,7 +329,7 @@ func (c *AccessController) validateAccessUncached(
 	return decision, false, err
 }
 
-func (c *AccessController) beginValidation(key gatewayAuthorizationKey) (*gatewayValidationCall, bool, bool) {
+func (c *accessController) beginValidation(key gatewayAuthorizationKey) (*gatewayValidationCall, bool, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -345,7 +345,7 @@ func (c *AccessController) beginValidation(key gatewayAuthorizationKey) (*gatewa
 	return call, true, true
 }
 
-func (c *AccessController) finishValidation(
+func (c *accessController) finishValidation(
 	key gatewayAuthorizationKey,
 	call *gatewayValidationCall,
 	decision gatewayAccessDecision,

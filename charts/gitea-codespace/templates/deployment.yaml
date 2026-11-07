@@ -66,6 +66,8 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.name
+            - name: GITEA_CODESPACE_HEALTH_ADDRESS
+              value: ":8081"
           ports:
             - {name: admin, containerPort: 18080}
             - {name: agent, containerPort: 8443}
@@ -74,8 +76,13 @@ spec:
           readinessProbe:
             httpGet: {path: /readyz, port: health}
             periodSeconds: 2
+            timeoutSeconds: 1
+            failureThreshold: 3
           livenessProbe:
             httpGet: {path: /healthz, port: health}
+            periodSeconds: 10
+            timeoutSeconds: 1
+            failureThreshold: 3
           resources:
             {{- toYaml .Values.resources | nindent 12 }}
           securityContext:
