@@ -5,6 +5,7 @@ RUN apk add --no-cache \
     ca-certificates \
     e2fsprogs \
     git \
+    git-lfs \
     openssh-client \
     shadow \
     util-linux
