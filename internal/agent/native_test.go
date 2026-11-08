@@ -37,18 +37,23 @@ func TestNativeCDISpecUsesStableAliases(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, source.WriteSpec(&cditypes.Spec{
 		Version: cditypes.CurrentVersion, Kind: "example.com/device",
+		ContainerEdits: cditypes.ContainerEdits{Env: []string{"COMMON=spec", "OVERRIDE=spec"}},
 		Devices: []cditypes.Device{
-			{Name: "first", ContainerEdits: cditypes.ContainerEdits{Env: []string{"PHYSICAL=first"}}},
-			{Name: "second", ContainerEdits: cditypes.ContainerEdits{Env: []string{"PHYSICAL=second"}}},
+			{Name: "first", ContainerEdits: cditypes.ContainerEdits{Env: []string{"PHYSICAL=first", "OVERRIDE=device-first"}}},
+			{Name: "second", ContainerEdits: cditypes.ContainerEdits{Env: []string{"PHYSICAL=second", "OVERRIDE=device-second"}}},
 			{Name: "other", ContainerEdits: cditypes.ContainerEdits{Env: []string{"OTHER=1"}}},
 		},
 	}, "devices.json"))
 	require.NoError(t, os.WriteFile(sourceDirectory+"/unrelated.json", []byte(`{"cdiVersion":"invalid"}`), 0o600))
 	alias := "example.com/device=codespace-0-0"
-	require.NoError(t, writeNativeCDISpecs(
+	resolvedEnvironment, err := writeNativeCDISpecs(
 		[]allocatedCDIDevice{{physical: "example.com/device=first", alias: alias}},
-		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "first"}, []string{sourceDirectory}, outputDirectory,
-	))
+		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "first", "OVERRIDE": "forwarded-first"}, []string{sourceDirectory}, outputDirectory,
+	)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"COMMON": "spec", "PHYSICAL": "first", "EXAMPLE_VISIBLE_DEVICES": "first", "OVERRIDE": "forwarded-first",
+	}, resolvedEnvironment)
 
 	filtered, err := cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
 	require.NoError(t, err)
@@ -58,12 +63,16 @@ func TestNativeCDISpecUsesStableAliases(t *testing.T) {
 	unresolved, err := filtered.InjectDevices(containerSpec, alias, "codespace.gitea.dev/environment=current")
 	require.NoError(t, err)
 	require.Empty(t, unresolved)
-	require.ElementsMatch(t, []string{"PHYSICAL=first", "EXAMPLE_VISIBLE_DEVICES=first"}, containerSpec.Process.Env)
+	require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=first", "OVERRIDE=forwarded-first", "EXAMPLE_VISIBLE_DEVICES=first"}, containerSpec.Process.Env)
 
-	require.NoError(t, writeNativeCDISpecs(
+	resolvedEnvironment, err = writeNativeCDISpecs(
 		[]allocatedCDIDevice{{physical: "example.com/device=second", alias: alias}},
-		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "second"}, []string{sourceDirectory}, outputDirectory,
-	))
+		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "second", "OVERRIDE": "forwarded-second"}, []string{sourceDirectory}, outputDirectory,
+	)
+	require.NoError(t, err)
+	require.Equal(t, map[string]string{
+		"COMMON": "spec", "PHYSICAL": "second", "EXAMPLE_VISIBLE_DEVICES": "second", "OVERRIDE": "forwarded-second",
+	}, resolvedEnvironment)
 	filtered, err = cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
 	require.NoError(t, err)
 	require.ElementsMatch(t, []string{alias, "codespace.gitea.dev/environment=current"}, filtered.ListDevices())
@@ -72,5 +81,5 @@ func TestNativeCDISpecUsesStableAliases(t *testing.T) {
 	unresolved, err = filtered.InjectDevices(containerSpec, alias, "codespace.gitea.dev/environment=current")
 	require.NoError(t, err)
 	require.Empty(t, unresolved)
-	require.ElementsMatch(t, []string{"PHYSICAL=second", "EXAMPLE_VISIBLE_DEVICES=second"}, containerSpec.Process.Env)
+	require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=second", "OVERRIDE=forwarded-second", "EXAMPLE_VISIBLE_DEVICES=second"}, containerSpec.Process.Env)
 }

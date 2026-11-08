@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"strings"
 	"time"
 
@@ -41,6 +42,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		}
 		options.CustomizeImage = imageCustomization(request.DevContainer, platformGiteaCLIPath, stdout)
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
 			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
 				return err
 			}
@@ -59,6 +61,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 	case "resume":
 		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
 			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
 				startFailed = true
 				return err

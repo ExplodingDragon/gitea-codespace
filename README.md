@@ -1,25 +1,26 @@
 # Gitea Codespace
 
 Gitea Codespace provides remote development workspaces for Gitea repositories.
-It uses the repository's Dev Container configuration and supports browser IDEs,
-desktop editors, SSH, and SFTP.
+Each workspace is built from the repository's Dev Container configuration and
+can be opened in a browser IDE, a desktop editor, or over SSH and SFTP.
 
-## Get started
+## Use a codespace
 
 After an administrator connects Gitea to Codespace:
 
-1. Open a repository, commit, or pull request.
-2. Select **Create Codespace** and choose an environment.
+1. Open a repository, commit, or pull request in Gitea.
+2. Select **Create Codespace**, then choose a Dev Container configuration and
+   an environment.
 3. Open the workspace after the build completes.
 
-Stopping a codespace preserves its workspace files for the next session.
-Services published from the workspace appear on its details page with their
-configured access policy.
+Workspace files remain available after a codespace is stopped. Published
+services and their access addresses appear on the codespace details page.
 
-## Install and operate
+## Deploy
 
-The [Helm guide](charts/gitea-codespace/README.md) covers cluster requirements,
-installation, Gitea registration, workspace access, and upgrades.
+Cluster administrators can follow the [Helm guide](charts/gitea-codespace/README.md)
+to prepare Kubernetes, install Codespace, connect Gitea, and publish workspace
+access.
 
 ## Contribute
 

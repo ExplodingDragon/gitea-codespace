@@ -29,18 +29,9 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 			environment.RemoteUser = "root"
 		}
 	}
-	remoteEnv, err := e.probeRemoteEnvironment(ctx, environment)
-	if err != nil {
+	if err := e.refreshRemoteEnvironment(ctx, environment); err != nil {
 		return err
 	}
-	for name, value := range environment.Configuration.RemoteEnv {
-		if value == nil {
-			delete(remoteEnv, name)
-		} else {
-			remoteEnv[name] = *value
-		}
-	}
-	environment.RemoteEnvironment = remoteEnv
 	if prepareLifecycle != nil {
 		if err := prepareLifecycle(ctx, e, environment); err != nil {
 			return fmt.Errorf("prepare Dev Container lifecycle: %w", err)
@@ -74,6 +65,22 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 	return nil
 }
 
+func (e *Engine) refreshRemoteEnvironment(ctx context.Context, environment *devcontainer.State) error {
+	remoteEnv, err := e.probeRemoteEnvironment(ctx, environment)
+	if err != nil {
+		return err
+	}
+	for name, value := range environment.Configuration.RemoteEnv {
+		if value == nil {
+			delete(remoteEnv, name)
+		} else {
+			remoteEnv[name] = *value
+		}
+	}
+	environment.RemoteEnvironment = remoteEnv
+	return nil
+}
+
 // Start resumes an existing environment and runs postStartCommand.
 func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hostUser devcontainer.HostUser, localEnvironment, secrets map[string]string, prepare PrepareLifecycleFunc, runLifecycle RunLifecycleFunc) (*devcontainer.State, error) {
 	if err := environment.Validate(); err != nil {
@@ -101,6 +108,9 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hos
 				}
 			}
 		}
+	}
+	if err := e.refreshRemoteEnvironment(ctx, environment); err != nil {
+		return nil, err
 	}
 	if prepare != nil {
 		if err := prepare(ctx, e, environment); err != nil {

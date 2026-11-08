@@ -6,6 +6,7 @@ package agent
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"sort"
 	"strings"
@@ -94,17 +95,19 @@ func PrepareNativeDevices(configuration *runtimeplatform.NativeConfiguration) (*
 	if len(forwardedEnvironment) > 0 {
 		prepared.DevContainer.CDIDeviceIDs = append(prepared.DevContainer.CDIDeviceIDs, parser.QualifiedName("codespace.gitea.dev", "environment", nativeEnvironmentCDIDevice))
 	}
-	if err := writeNativeCDISpecs(allocatedDevices, forwardedEnvironment, cdi.DefaultSpecDirs, nativeCDISpecDirectory); err != nil {
+	resolvedEnvironment, err := writeNativeCDISpecs(allocatedDevices, forwardedEnvironment, cdi.DefaultSpecDirs, nativeCDISpecDirectory)
+	if err != nil {
 		return nil, err
 	}
+	prepared.DevContainer.Environment = resolvedEnvironment
 	prepared.CDISpecDirectory = nativeCDISpecDirectory
 	return prepared, nil
 }
 
-func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]string, sourceDirectories []string, outputDirectory string) error {
+func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]string, sourceDirectories []string, outputDirectory string) (map[string]string, error) {
 	source, err := cdi.NewCache(cdi.WithSpecDirs(sourceDirectories...), cdi.WithAutoRefresh(false))
 	if err != nil {
-		return fmt.Errorf("open node CDI specifications: %w", err)
+		return nil, fmt.Errorf("open node CDI specifications: %w", err)
 	}
 	// A malformed unrelated node spec must not hide a valid allocated device;
 	// each requested device is checked explicitly below.
@@ -115,21 +118,28 @@ func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]st
 	}
 	selected := map[string]*selectedSpec{}
 	aliases := make(map[string]string, len(devices))
+	resolvedEnvironment := map[string]string{}
+	appliedSpecEnvironment := map[string]struct{}{}
 	for _, allocated := range devices {
 		device := source.GetDevice(allocated.physical)
 		if device == nil {
-			return fmt.Errorf("allocated CDI device %s is not present in the node specifications", allocated.physical)
+			return nil, fmt.Errorf("allocated CDI device %s is not present in the node specifications", allocated.physical)
 		}
 		spec := device.GetSpec()
+		if _, applied := appliedSpecEnvironment[spec.GetPath()]; !applied {
+			mergeCDIEnvironment(resolvedEnvironment, spec.ContainerEdits.Env)
+			appliedSpecEnvironment[spec.GetPath()] = struct{}{}
+		}
+		mergeCDIEnvironment(resolvedEnvironment, device.ContainerEdits.Env)
 		entry := selected[spec.GetPath()]
 		if entry == nil {
 			encoded, err := json.Marshal(spec.Spec)
 			if err != nil {
-				return fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
+				return nil, fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
 			}
 			var raw cditypes.Spec
 			if err := json.Unmarshal(encoded, &raw); err != nil {
-				return fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
+				return nil, fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
 			}
 			entry = &selectedSpec{raw: &raw, devices: map[string]struct{}{}}
 			selected[spec.GetPath()] = entry
@@ -137,19 +147,20 @@ func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]st
 		entry.devices[device.Name] = struct{}{}
 		_, _, aliasName, err := parser.ParseQualifiedName(allocated.alias)
 		if err != nil {
-			return fmt.Errorf("parse internal CDI device alias %s: %w", allocated.alias, err)
+			return nil, fmt.Errorf("parse internal CDI device alias %s: %w", allocated.alias, err)
 		}
 		aliases[allocated.physical] = aliasName
 	}
+	maps.Copy(resolvedEnvironment, environment)
 	if err := os.RemoveAll(outputDirectory); err != nil {
-		return fmt.Errorf("reset filtered CDI directory: %w", err)
+		return nil, fmt.Errorf("reset filtered CDI directory: %w", err)
 	}
 	if err := os.MkdirAll(outputDirectory, 0o700); err != nil {
-		return fmt.Errorf("create filtered CDI directory: %w", err)
+		return nil, fmt.Errorf("create filtered CDI directory: %w", err)
 	}
 	destination, err := cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
 	if err != nil {
-		return fmt.Errorf("open filtered CDI directory: %w", err)
+		return nil, fmt.Errorf("open filtered CDI directory: %w", err)
 	}
 	paths := make([]string, 0, len(selected))
 	for path := range selected {
@@ -169,7 +180,7 @@ func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]st
 		}
 		entry.raw.Devices = devices
 		if err := destination.WriteSpec(entry.raw, fmt.Sprintf("codespace-%d.json", index)); err != nil {
-			return fmt.Errorf("write filtered CDI specification: %w", err)
+			return nil, fmt.Errorf("write filtered CDI specification: %w", err)
 		}
 	}
 	if len(environment) > 0 {
@@ -187,8 +198,15 @@ func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]st
 			Kind:    nativeEnvironmentCDIKind,
 			Devices: []cditypes.Device{{Name: nativeEnvironmentCDIDevice, ContainerEdits: cditypes.ContainerEdits{Env: values}}},
 		}, "codespace-environment.json"); err != nil {
-			return fmt.Errorf("write forwarded device environment CDI specification: %w", err)
+			return nil, fmt.Errorf("write forwarded device environment CDI specification: %w", err)
 		}
 	}
-	return nil
+	return resolvedEnvironment, nil
+}
+
+func mergeCDIEnvironment(environment map[string]string, assignments []string) {
+	for _, assignment := range assignments {
+		name, value, _ := strings.Cut(assignment, "=")
+		environment[name] = value
+	}
 }

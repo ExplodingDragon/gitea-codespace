@@ -725,7 +725,12 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 	}
 	deviceCheck := ""
 	if verifyNativeDevice {
-		deviceCheck = `test -c /dev/fuse && case "$CODESPACE_E2E_CDI" in fuse0|fuse1) ;; *) exit 1 ;; esac && `
+		deviceCheck = `test -c /dev/fuse || { printf 'Native CDI device /dev/fuse is missing\n' >&2; exit 1; }; case "$CODESPACE_E2E_CDI" in fuse0|fuse1) ;; *) printf 'Native CDI environment is invalid: %s\n' "$CODESPACE_E2E_CDI" >&2; exit 1 ;; esac; `
+		if initialize {
+			deviceCheck += `printf '%s' "$CODESPACE_E2E_CDI" > .codespace-native-device; `
+		} else {
+			deviceCheck += `previous_device=$(cat .codespace-native-device); test "$previous_device" != "$CODESPACE_E2E_CDI" || { printf 'Native CDI device did not change after resume: %s\n' "$CODESPACE_E2E_CDI" >&2; exit 1; }; `
+		}
 	}
 	if initialize {
 		output, err := run(deviceCheck + `test "$E2E_SECRET" = "e2e-secret-value" && test "$(git branch --show-current)" = "main" && test "$0" = "$(getent passwd "$(id -u)" | cut -d: -f7)" && printf lifecycle-persisted > .codespace-lifecycle && printf command-ok`)

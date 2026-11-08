@@ -1,15 +1,15 @@
 # Developing Gitea Codespace
 
-This guide covers the contributor workflow. Use the
-[Helm guide](charts/gitea-codespace/README.md) for cluster operations and the
+This guide covers the contributor workflow. Cluster operations belong in the
+[Helm guide](charts/gitea-codespace/README.md), while the
 [architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
-for design rationale.
+explain system design and component boundaries.
 
 ## Set up
 
-Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Kubernetes
-work also needs Helm and kubectl; image builds need a Docker-compatible tool,
-curl, xz, and sha256sum.
+Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Changes to
+Kubernetes resources also need Helm and kubectl. Image builds need a
+Docker-compatible container tool, curl, xz, and sha256sum.
 
 ```sh
 make install-tools
@@ -53,8 +53,8 @@ Run focused package tests while editing. Before submitting a change, run
 
 ## Generated sources
 
-Generated Kubernetes and RPC sources are committed so normal builds remain
-independent of the generator toolchain.
+Generated Kubernetes and RPC sources are committed so a normal build does not
+need the generator toolchain.
 
 | Source changed                    | Command                                        |
 | --------------------------------- | ---------------------------------------------- |
@@ -65,11 +65,12 @@ The public Gitea-to-Manager protocol lives in `gitea.dev/codespace-proto-go`.
 Publish that module before updating this repository so consumers resolve a
 reproducible dependency.
 
-## Run development services
+## Run the administration interface
 
 `make admin-dev` starts the administration frontend and proxies `/api` to
 `http://127.0.0.1:18080`. Run Manager locally or port-forward its administration
-Service. Add user-visible text to every JSON catalog under `web/locales`.
+Service before opening the frontend. Add user-visible text to every JSON catalog
+under `web/locales`.
 
 `make images` builds the platform image and packages the verified Gitea CLI.
 `CODESPACE_IMAGE` selects the image name and `CONTAINER_TOOL` selects the
@@ -79,8 +80,8 @@ builder.
 
 The E2E suite needs a test cluster, matching runtime and storage support, a
 Gitea endpoint reachable from the cluster, and an immutable platform image.
-Kata and Sysbox use labeled RuntimeClasses; Native uses the node's default CRI
-runtime and exercises Device Plugin/CDI propagation.
+Use a labeled RuntimeClass for Kata or Sysbox. Native tests use the node's
+default CRI runtime and require the test Device Plugin.
 
 ```sh
 export KUBECONFIG=/path/to/test-kubeconfig
@@ -94,5 +95,5 @@ make test-e2e \
   KUBERNETES_STORAGE_CLASS=<storage-class>
 ```
 
-The harness records diagnostics on failure and removes its temporary cluster
-resources on exit. CI runs the Kata, Sysbox, and Native variants.
+The harness records failure diagnostics and removes its temporary resources on
+exit. CI runs the Kata, Sysbox, and Native variants.

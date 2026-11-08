@@ -41,8 +41,9 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 		GiteaCustomCA: true,
 		Native: NativeContainerConfiguration{
 			CDIDeviceIDs: []string{"nvidia.com/gpu=GPU-1"}, Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
-			Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
-			Mounts:  []runtimeplatform.MountMapping{{Source: "/opt/example", Target: "/opt/example", ReadOnly: true}},
+			Devices:     []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
+			Mounts:      []runtimeplatform.MountMapping{{Source: "/opt/example", Target: "/opt/example", ReadOnly: true}},
+			Environment: map[string]string{"EXAMPLE_VISIBLE_DEVICES": "GPU-1"},
 		},
 	}
 	options, err := buildCreateOptions(request)

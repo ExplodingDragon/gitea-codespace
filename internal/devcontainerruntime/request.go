@@ -24,6 +24,7 @@ type NativeContainerConfiguration struct {
 	Devices      []runtimeplatform.DeviceMapping
 	Mounts       []runtimeplatform.MountMapping
 	Capabilities []string
+	Environment  map[string]string
 	ProvidesGPU  bool
 }
 
