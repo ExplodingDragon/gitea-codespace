@@ -46,7 +46,8 @@ func TestApplyPlatformDevicesToComposeService(t *testing.T) {
 	t.Parallel()
 
 	service := composetypes.ServiceConfig{
-		Gpus: []composetypes.DeviceRequest{{Count: -1}},
+		CapAdd: []string{"SYS_PTRACE"},
+		Gpus:   []composetypes.DeviceRequest{{Count: -1}},
 		Deploy: &composetypes.DeployConfig{Resources: composetypes.Resources{Reservations: &composetypes.Resource{Devices: []composetypes.DeviceRequest{
 			{Count: -1, Driver: "nvidia", Capabilities: []string{"gpu"}},
 			{Count: 1, Driver: "example", Capabilities: []string{"accelerator"}},
@@ -55,7 +56,7 @@ func TestApplyPlatformDevicesToComposeService(t *testing.T) {
 	devices := PlatformDevices{
 		CDI:          []string{"example.com/device=codespace-0-0"},
 		Mappings:     []DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
-		Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
+		Capabilities: []string{"SYS_PTRACE", "SYS_RAWIO"}, ProvidesGPU: true,
 	}
 	if err := applyPlatformDevicesToComposeService(&service, devices); err != nil {
 		t.Fatal(err)

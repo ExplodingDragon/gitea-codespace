@@ -116,6 +116,7 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.Equal(t, []adminRuntimeClass{{Name: "sysbox-runc", Handler: "sysbox-runc", Isolation: api.IsolationSysbox}}, options.RuntimeClasses)
 	require.Equal(t, []adminStorageClass{{Name: "local-path", Provisioner: "rancher.io/local-path", Default: true}}, options.StorageClasses)
 	require.Equal(t, []adminDeviceResource{{Name: "example.com/fpga", Nodes: 1, MaxPerNode: 1}, {Name: "nvidia.com/gpu", Nodes: 2, MaxPerNode: 4}}, options.DeviceResources)
+	require.Equal(t, requiredNativeRuntimeCapabilities, options.RequiredRuntimeCapabilities)
 	require.Equal(t, []adminIngressClass{{Name: "nginx", Controller: "k8s.io/ingress-nginx", Default: true}}, options.IngressClasses)
 	require.Equal(t, []string{"wildcard-tls"}, options.TLSSecrets)
 	require.Equal(t, []adminIssuer{{Kind: "Issuer", Name: "letsencrypt"}}, options.Issuers)

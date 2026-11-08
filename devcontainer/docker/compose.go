@@ -293,7 +293,7 @@ func applyPlatformDevicesToComposeService(service *composetypes.ServiceConfig, d
 	for _, mapping := range devices.Mappings {
 		service.Devices = append(service.Devices, composetypes.DeviceMapping{Source: mapping.Source, Target: mapping.Target, Permissions: mapping.Permissions})
 	}
-	service.CapAdd = append(service.CapAdd, devices.Capabilities...)
+	service.CapAdd = appendUniqueCapabilities(service.CapAdd, devices.Capabilities)
 	return nil
 }
 

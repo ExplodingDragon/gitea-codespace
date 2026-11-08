@@ -23,6 +23,7 @@ const cluster = ref<ClusterOptions>({
   runtimeClasses: [],
   storageClasses: [],
   deviceResources: [],
+  requiredRuntimeCapabilities: [],
   ingressClasses: [],
   tlsSecrets: [],
   issuers: [],

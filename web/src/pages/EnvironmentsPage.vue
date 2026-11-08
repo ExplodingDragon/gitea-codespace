@@ -18,6 +18,7 @@ const cluster = ref<ClusterOptions>({
   runtimeClasses: [],
   storageClasses: [],
   deviceResources: [],
+  requiredRuntimeCapabilities: [],
   ingressClasses: [],
   tlsSecrets: [],
   issuers: [],
@@ -93,22 +94,38 @@ const deviceResourceOptions = computed(() =>
     value: name,
   })),
 );
-const capabilityOptions = [
+const capabilityNames = [
   'AUDIT_CONTROL',
   'AUDIT_READ',
+  'AUDIT_WRITE',
   'BLOCK_SUSPEND',
   'BPF',
   'CHECKPOINT_RESTORE',
+  'CHOWN',
+  'DAC_OVERRIDE',
   'DAC_READ_SEARCH',
+  'FOWNER',
+  'FSETID',
   'IPC_LOCK',
   'IPC_OWNER',
+  'KILL',
   'LEASE',
   'LINUX_IMMUTABLE',
   'MAC_ADMIN',
   'MAC_OVERRIDE',
+  'MKNOD',
+  'NET_ADMIN',
+  'NET_BIND_SERVICE',
   'NET_BROADCAST',
+  'NET_RAW',
   'PERFMON',
+  'SETFCAP',
+  'SETGID',
+  'SETPCAP',
+  'SETUID',
+  'SYS_ADMIN',
   'SYS_BOOT',
+  'SYS_CHROOT',
   'SYS_MODULE',
   'SYS_NICE',
   'SYS_PACCT',
@@ -119,7 +136,35 @@ const capabilityOptions = [
   'SYS_TIME',
   'SYS_TTY_CONFIG',
   'WAKE_ALARM',
-].map((value) => ({label: value, value}));
+];
+const capabilityOptions = capabilityNames.map((value) => ({label: value, value}));
+const requiredRuntimeCapabilitySet = computed(() => new Set(cluster.value.requiredRuntimeCapabilities));
+const runtimeCapabilityOptions = computed(() => {
+  const values = new Set([...capabilityNames, ...cluster.value.requiredRuntimeCapabilities]);
+  return [...values].sort().map((value) => ({
+    label: requiredRuntimeCapabilitySet.value.has(value) ? t('environment.requiredCapability', {name: value}) : value,
+    value,
+    disabled: requiredRuntimeCapabilitySet.value.has(value),
+  }));
+});
+
+function normalizeCapabilities(values: string[], excluded = new Set<string>()) {
+  return [
+    ...new Set(values.map((value) => value.trim().toUpperCase()).filter((value) => value && !excluded.has(value))),
+  ];
+}
+
+const runtimeCapabilities = computed<string[]>({
+  get() {
+    const additional = form.value?.runtime.native?.runtimeCapAdd ?? [];
+    return [...new Set([...cluster.value.requiredRuntimeCapabilities, ...additional])];
+  },
+  set(values) {
+    const native = form.value?.runtime.native;
+    if (!native) return;
+    native.runtimeCapAdd = normalizeCapabilities(values, requiredRuntimeCapabilitySet.value);
+  },
+});
 
 async function load() {
   loading.value = true;
@@ -297,6 +342,11 @@ async function save() {
     if (spec.runtime.isolation === 'native') {
       delete spec.runtime.runtimeClassName;
       if (!spec.runtime.native) throw new Error(t('environment.invalidNativeConfiguration'));
+      spec.runtime.native.runtimeCapAdd = normalizeCapabilities(
+        spec.runtime.native.runtimeCapAdd,
+        requiredRuntimeCapabilitySet.value,
+      );
+      spec.runtime.native.devContainerCapAdd = normalizeCapabilities(spec.runtime.native.devContainerCapAdd);
       const selectedResources = new Set<string>();
       spec.runtime.native.devicePlugins.forEach((device, index) => {
         if (
@@ -450,12 +500,13 @@ function remove(item: Resource<Environment>) {
           :feedback="t('environment.runtimeCapabilitiesHelp')"
         >
           <NSelect
-            v-model:value="form.runtime.native.runtimeCapAdd"
+            v-model:value="runtimeCapabilities"
             multiple
             filterable
             clearable
             tag
-            :options="capabilityOptions"
+            max-tag-count="responsive"
+            :options="runtimeCapabilityOptions"
           />
         </NFormItem>
         <NFormItem
@@ -468,6 +519,7 @@ function remove(item: Resource<Environment>) {
             filterable
             clearable
             tag
+            max-tag-count="responsive"
             :options="capabilityOptions"
           />
         </NFormItem>

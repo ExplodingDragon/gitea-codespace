@@ -20,12 +20,13 @@ import (
 )
 
 type adminClusterOptions struct {
-	RuntimeClasses  []adminRuntimeClass   `json:"runtimeClasses"`
-	StorageClasses  []adminStorageClass   `json:"storageClasses"`
-	DeviceResources []adminDeviceResource `json:"deviceResources"`
-	IngressClasses  []adminIngressClass   `json:"ingressClasses"`
-	TLSSecrets      []string              `json:"tlsSecrets"`
-	Issuers         []adminIssuer         `json:"issuers"`
+	RuntimeClasses              []adminRuntimeClass   `json:"runtimeClasses"`
+	StorageClasses              []adminStorageClass   `json:"storageClasses"`
+	DeviceResources             []adminDeviceResource `json:"deviceResources"`
+	RequiredRuntimeCapabilities []corev1.Capability   `json:"requiredRuntimeCapabilities"`
+	IngressClasses              []adminIngressClass   `json:"ingressClasses"`
+	TLSSecrets                  []string              `json:"tlsSecrets"`
+	Issuers                     []adminIssuer         `json:"issuers"`
 }
 
 type adminRuntimeClass struct {
@@ -60,7 +61,8 @@ type adminIssuer struct {
 func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, error) {
 	options := adminClusterOptions{
 		RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}, DeviceResources: []adminDeviceResource{},
-		IngressClasses: []adminIngressClass{}, TLSSecrets: []string{}, Issuers: []adminIssuer{},
+		RequiredRuntimeCapabilities: append([]corev1.Capability(nil), requiredNativeRuntimeCapabilities...),
+		IngressClasses:              []adminIngressClass{}, TLSSecrets: []string{}, Issuers: []adminIssuer{},
 	}
 	var runtimes nodev1.RuntimeClassList
 	if err := s.Client.List(ctx, &runtimes); err != nil {

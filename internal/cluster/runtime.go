@@ -33,6 +33,11 @@ const (
 	WriterFinalizer  = "codespace.gitea.dev/writer-stopped"
 )
 
+var requiredNativeRuntimeCapabilities = []corev1.Capability{
+	"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE",
+	"NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN", "SYS_CHROOT", "SYS_RESOURCE",
+}
+
 type RuntimeReconciler struct {
 	Client              client.Client
 	Authority           *ExecutionAuthority
@@ -372,10 +377,7 @@ func configureNativeRuntimePod(pod *corev1.Pod, configuration *runtimeplatform.N
 	if container.Resources.Limits == nil {
 		container.Resources.Limits = corev1.ResourceList{}
 	}
-	capabilities := []corev1.Capability{
-		"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE",
-		"NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN", "SYS_CHROOT", "SYS_RESOURCE",
-	}
+	capabilities := append([]corev1.Capability(nil), requiredNativeRuntimeCapabilities...)
 	seenCapabilities := make(map[corev1.Capability]struct{}, len(capabilities)+len(configuration.RuntimeCapAdd))
 	for _, capability := range capabilities {
 		seenCapabilities[capability] = struct{}{}

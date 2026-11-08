@@ -108,6 +108,24 @@ type PlatformDevices struct {
 	ProvidesGPU  bool
 }
 
+func appendUniqueCapabilities(base []string, additions ...[]string) []string {
+	result := slices.Clone(base)
+	seen := make(map[string]struct{}, len(base))
+	for _, capability := range base {
+		seen[capability] = struct{}{}
+	}
+	for _, values := range additions {
+		for _, capability := range values {
+			if _, exists := seen[capability]; exists {
+				continue
+			}
+			result = append(result, capability)
+			seen[capability] = struct{}{}
+		}
+	}
+	return result
+}
+
 type DeviceMapping struct {
 	Source      string
 	Target      string
@@ -422,12 +440,11 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	hostConfig := &container.HostConfig{
 		Mounts:       mounts,
 		Privileged:   resolved.Privileged,
-		CapAdd:       slices.Clone(resolved.CapAdd),
+		CapAdd:       appendUniqueCapabilities(resolved.CapAdd, platformDevices.Capabilities),
 		SecurityOpt:  slices.Clone(resolved.SecurityOpt),
 		Init:         &resolved.Init,
 		PortBindings: portBindings,
 	}
-	hostConfig.CapAdd = append(hostConfig.CapAdd, platformDevices.Capabilities...)
 	for _, mapping := range platformDevices.Mappings {
 		hostConfig.Devices = append(hostConfig.Devices, container.DeviceMapping{PathOnHost: mapping.Source, PathInContainer: mapping.Target, CgroupPermissions: mapping.Permissions})
 	}

@@ -93,6 +93,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
     deviceResources: [],
+    requiredRuntimeCapabilities: ['SYS_ADMIN', 'SYS_RESOURCE'],
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
@@ -215,6 +216,20 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(selectField('Isolation')).toBeVisible();
   await expect(selectField('RuntimeClass')).toBeVisible();
   await expect(selectField('StorageClass')).toBeVisible();
+  await selectField('Isolation').click();
+  await page.getByText('Native', {exact: true}).last().click();
+  await expect(selectField('RuntimeClass')).not.toBeVisible();
+  const runtimeCapabilities = selectField('Runtime Pod capabilities');
+  await expect(runtimeCapabilities.getByText('SYS_ADMIN (required)', {exact: true})).toBeVisible();
+  await runtimeCapabilities.click();
+  await page.keyboard.type('SYS_MODULE');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
+  const devContainerCapabilities = selectField('Dev Container capabilities');
+  await devContainerCapabilities.click();
+  await page.keyboard.type('SYS_PTRACE');
+  await page.keyboard.press('Enter');
+  await page.keyboard.press('Escape');
   await field('Tag').fill('standard');
   await field('code-server Feature options').fill('{"extensions":"golang.go","locale":"en"}');
   await page.getByRole('checkbox', {name: 'Install the Gitea CLI'}).check();
@@ -234,6 +249,10 @@ test('administration workflows preserve resource identity and validate cluster-b
   expect(environments[0].spec.runtime.devContainer.giteaCLI).toBe(true);
   expect(environments[0].spec.runtime.resources).toEqual({
     requests: {cpu: '100m', memory: '256Mi'},
+  });
+  expect(environments[0].spec.runtime.native).toMatchObject({
+    runtimeCapAdd: ['SYS_MODULE'],
+    devContainerCapAdd: ['SYS_PTRACE'],
   });
   expect(environments[0].spec.runtime.proxy).toEqual({
     httpProxy: 'http://proxy-user:proxy-password@proxy.example:3128',

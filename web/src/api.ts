@@ -152,6 +152,7 @@ export type ClusterOptions = {
   runtimeClasses: {name: string; handler: string; isolation: 'kata' | 'sysbox'}[];
   storageClasses: {name: string; provisioner: string; default: boolean}[];
   deviceResources: {name: string; nodes: number; maxPerNode: number}[];
+  requiredRuntimeCapabilities: string[];
   ingressClasses: {name: string; controller: string; default: boolean}[];
   tlsSecrets: string[];
   issuers: {kind: 'Issuer' | 'ClusterIssuer'; name: string}[];
