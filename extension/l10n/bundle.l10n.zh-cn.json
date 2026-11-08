@@ -1,0 +1,14 @@
+{
+  "Authenticated": "需要身份认证",
+  "Public": "公开访问",
+  "Port number": "端口号",
+  "Enter a number between 1 and 65535": "请输入 1 到 65535 之间的数字",
+  "Port label": "端口名称",
+  "Publish port": "发布端口",
+  "Rename port": "重命名端口",
+  "Change visibility": "更改可见性",
+  "Remove port": "移除端口",
+  "Remove port {0}? This removes its Codespace publication and does not stop the application.": "移除端口 {0}？这只会撤销 Codespace 发布，不会停止应用进程。",
+  "Codespace port operation failed": "Codespace 端口操作失败",
+  "Enter a label between 1 and 128 bytes": "请输入 1 到 128 字节的端口名称"
+}

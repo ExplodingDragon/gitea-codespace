@@ -51,7 +51,7 @@ func TestNativeEnvironmentValidation(t *testing.T) {
 			corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi"),
 		}},
 		AccessMode: corev1.ReadWriteOncePod, GitSSHKeyType: "ed25519",
-		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
+		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
 		Native: &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "nvidia.com/gpu", Count: 1,
 			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},

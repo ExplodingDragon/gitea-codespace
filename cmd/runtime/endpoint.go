@@ -5,6 +5,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"text/tabwriter"
@@ -25,6 +26,7 @@ func newEndpointCommand() *cobra.Command {
 
 func newEndpointCommandWithRun(listEndpoints listEndpointsFunc, setEndpoint setEndpointFunc, deleteEndpoint deleteEndpointFunc) *cobra.Command {
 	command := &cobra.Command{Use: "endpoint", Args: cobra.NoArgs}
+	var outputFormat string
 	listCommand := &cobra.Command{
 		Use:  "list",
 		Args: cobra.NoArgs,
@@ -32,6 +34,25 @@ func newEndpointCommandWithRun(listEndpoints listEndpointsFunc, setEndpoint setE
 			endpoints, err := listEndpoints(command.Context())
 			if err != nil {
 				return err
+			}
+			if outputFormat == "json" {
+				type endpointJSON struct {
+					Port       uint32 `json:"port"`
+					Label      string `json:"label"`
+					Visibility string `json:"visibility"`
+				}
+				result := struct {
+					Version   int            `json:"version"`
+					Endpoints []endpointJSON `json:"endpoints"`
+				}{Version: 1, Endpoints: make([]endpointJSON, 0, len(endpoints))}
+				for _, endpoint := range endpoints {
+					visibility := "authenticated"
+					if endpoint.Public {
+						visibility = "public"
+					}
+					result.Endpoints = append(result.Endpoints, endpointJSON{Port: endpoint.Port, Label: endpoint.Label, Visibility: visibility})
+				}
+				return json.NewEncoder(command.OutOrStdout()).Encode(result)
 			}
 			writer := tabwriter.NewWriter(command.OutOrStdout(), 0, 4, 2, ' ', 0)
 			if _, err := fmt.Fprintln(writer, "PORT\tVISIBILITY\tLABEL"); err != nil {
@@ -48,6 +69,14 @@ func newEndpointCommandWithRun(listEndpoints listEndpointsFunc, setEndpoint setE
 			}
 			return writer.Flush()
 		},
+	}
+	listCommand.Flags().StringVar(&outputFormat, "format", "table", "Output format: table or json")
+	_ = listCommand.RegisterFlagCompletionFunc("format", cobra.FixedCompletions([]string{"table", "json"}, cobra.ShellCompDirectiveNoFileComp))
+	listCommand.PreRunE = func(*cobra.Command, []string) error {
+		if outputFormat != "table" && outputFormat != "json" {
+			return fmt.Errorf("output format must be table or json")
+		}
+		return nil
 	}
 	var label string
 	var public bool

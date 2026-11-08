@@ -1,0 +1,14 @@
+{
+  "Authenticated": "인증 필요",
+  "Public": "공개",
+  "Port number": "포트 번호",
+  "Enter a number between 1 and 65535": "1에서 65535 사이의 숫자를 입력하세요",
+  "Port label": "포트 이름",
+  "Publish port": "포트 게시",
+  "Rename port": "포트 이름 변경",
+  "Change visibility": "공개 범위 변경",
+  "Remove port": "포트 제거",
+  "Remove port {0}? This removes its Codespace publication and does not stop the application.": "포트 {0}을(를) 제거하시겠습니까? Codespace 게시만 제거하며 애플리케이션은 중지하지 않습니다.",
+  "Codespace port operation failed": "Codespace 포트 작업에 실패했습니다",
+  "Enter a label between 1 and 128 bytes": "1~128바이트의 포트 이름을 입력하세요"
+}

@@ -4,6 +4,7 @@
 package runtime
 
 import (
+	"io"
 	"os"
 	"os/signal"
 	"syscall"
@@ -21,6 +22,13 @@ func newWebIDECommand() *cobra.Command {
 			Args: cobra.NoArgs,
 			RunE: func(command *cobra.Command, _ []string) error {
 				return runtimecmd.PrepareWebIDE(command.InOrStdin())
+			},
+		},
+		&cobra.Command{
+			Use:  "ensure-extension",
+			Args: cobra.NoArgs,
+			RunE: func(command *cobra.Command, _ []string) error {
+				return runtimecmd.EnsurePlatformExtension(command.Context(), io.MultiWriter(command.OutOrStdout(), command.ErrOrStderr()))
 			},
 		},
 		&cobra.Command{

@@ -115,7 +115,12 @@ export type Runtime = {
   resources: {requests: Record<string, string>; limits?: Record<string, string>};
   gitSSHKeyType: string;
   devContainer: {
-    webIDE: {enabled: boolean; options: Record<string, unknown>};
+    webIDE: {
+      enabled: boolean;
+      archiveURL?: string;
+      settings: Record<string, unknown>;
+      extensions?: string[];
+    };
     giteaCLI: boolean;
     features?: {reference: string; options?: Record<string, unknown>}[];
     lifecycleScript?: string;

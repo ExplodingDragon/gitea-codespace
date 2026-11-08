@@ -7,6 +7,8 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"slices"
 	"strings"
 
 	"github.com/distribution/reference"
@@ -15,9 +17,10 @@ import (
 
 const (
 	maxInjectedFeatures     = 32
-	maxFeatureOptionsBytes  = 16 * 1024
+	maxJSONObjectBytes      = 16 * 1024
 	maxLifecycleScriptBytes = 64 * 1024
-	webIDEFeatureReference  = "ghcr.io/coder/devcontainer-features/code-server:2"
+	maxWebIDEArchiveURL     = 4096
+	maxWebIDEExtensions     = 256
 )
 
 // Configuration defines administrator-owned additions to a repository's Dev
@@ -31,12 +34,17 @@ type Configuration struct {
 	LifecycleScript string `json:"lifecycleScript,omitempty"`
 }
 
-// WebIDEConfiguration defines the platform-managed code-server installation.
+// WebIDEConfiguration defines the platform-managed Web IDE runtime and initial
+// user configuration.
 type WebIDEConfiguration struct {
 	Enabled bool `json:"enabled"`
-	// Options are passed to the code-server Feature. Codespace overwrites the
-	// options that control its internal listener, authentication, and lifecycle.
-	Options apiextensionsv1.JSON `json:"options"`
+	// ArchiveURL optionally replaces the platform Web IDE program. The Runtime
+	// substitutes {arch} with the architecture shared by its Pod and Dev Container.
+	// +kubebuilder:validation:MaxLength=4096
+	ArchiveURL string               `json:"archiveURL,omitempty"`
+	Settings   apiextensionsv1.JSON `json:"settings"`
+	// +kubebuilder:validation:MaxItems=256
+	Extensions []string `json:"extensions,omitempty"`
 }
 
 // InjectedFeature adds one standard Dev Container Feature to an environment.
@@ -50,19 +58,41 @@ func (c Configuration) Validate() error {
 	if len(c.LifecycleScript) > maxLifecycleScriptBytes || strings.ContainsRune(c.LifecycleScript, '\x00') {
 		return fmt.Errorf("lifecycle script must be no larger than 64 KiB and cannot contain NUL characters")
 	}
-	seen := make(map[string]string, len(c.Features)+1)
-	if len(bytes.TrimSpace(c.WebIDE.Options.Raw)) == 0 {
-		return fmt.Errorf("options for Web IDE are required")
+	seen := make(map[string]string, len(c.Features))
+	if len(bytes.TrimSpace(c.WebIDE.Settings.Raw)) == 0 {
+		return fmt.Errorf("settings for Web IDE are required")
 	}
-	if err := validateFeatureOptions("Web IDE", c.WebIDE.Options.Raw); err != nil {
+	if err := validateJSONObject("Web IDE settings", c.WebIDE.Settings.Raw); err != nil {
 		return err
 	}
-	if c.WebIDE.Enabled {
-		id, err := validateFeatureReference(webIDEFeatureReference)
-		if err != nil {
-			return fmt.Errorf("platform Web IDE Feature: %w", err)
+	archiveURL := strings.TrimSpace(c.WebIDE.ArchiveURL)
+	if len(archiveURL) > maxWebIDEArchiveURL {
+		return fmt.Errorf("web IDE archive URL must be at most %d characters", maxWebIDEArchiveURL)
+	}
+	if archiveURL != "" {
+		resolved := strings.ReplaceAll(archiveURL, "{arch}", "amd64")
+		if strings.ContainsAny(resolved, "{}") {
+			return fmt.Errorf("web IDE archive URL contains an unknown placeholder")
 		}
-		seen[id] = webIDEFeatureReference
+		endpoint, err := url.Parse(resolved)
+		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.Fragment != "" {
+			return fmt.Errorf("web IDE archive URL must be an absolute HTTP(S) URL without a fragment")
+		}
+	}
+	if len(c.WebIDE.Extensions) > maxWebIDEExtensions {
+		return fmt.Errorf("web IDE supports at most %d default extensions", maxWebIDEExtensions)
+	}
+	extensionIDs := make(map[string]struct{}, len(c.WebIDE.Extensions))
+	for _, extension := range c.WebIDE.Extensions {
+		extension = strings.TrimSpace(extension)
+		if extension == "" || len(extension) > 255 || strings.ContainsAny(extension, " \t\r\n") {
+			return fmt.Errorf("web IDE extension %q is empty, too long, or contains whitespace", extension)
+		}
+		identity := strings.ToLower(strings.SplitN(extension, "@", 2)[0])
+		if _, exists := extensionIDs[identity]; exists {
+			return fmt.Errorf("web IDE extension %q is declared more than once", identity)
+		}
+		extensionIDs[identity] = struct{}{}
 	}
 	if len(c.Features) > maxInjectedFeatures {
 		return fmt.Errorf("environment supports at most %d injected Features", maxInjectedFeatures)
@@ -76,20 +106,20 @@ func (c Configuration) Validate() error {
 			return fmt.Errorf("features %q and %q have the same identity", existing, feature.Reference)
 		}
 		seen[id] = feature.Reference
-		if err := validateFeatureOptions(fmt.Sprintf("feature %q", feature.Reference), feature.Options.Raw); err != nil {
+		if err := validateJSONObject(fmt.Sprintf("feature %q options", feature.Reference), feature.Options.Raw); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func validateFeatureOptions(name string, raw []byte) error {
+func validateJSONObject(name string, raw []byte) error {
 	raw = bytes.TrimSpace(raw)
 	if len(raw) == 0 {
 		return nil
 	}
-	if len(raw) > maxFeatureOptionsBytes || !json.Valid(raw) || raw[0] != '{' {
-		return fmt.Errorf("options for %s must be a JSON object no larger than 16 KiB", name)
+	if len(raw) > maxJSONObjectBytes || !json.Valid(raw) || raw[0] != '{' {
+		return fmt.Errorf("%s must be a JSON object no larger than 16 KiB", name)
 	}
 	return nil
 }
@@ -114,7 +144,8 @@ func validateFeatureReference(value string) (string, error) {
 // DeepCopyInto supports use of Configuration in Kubernetes API objects.
 func (c *Configuration) DeepCopyInto(out *Configuration) {
 	*out = *c
-	c.WebIDE.Options.DeepCopyInto(&out.WebIDE.Options)
+	c.WebIDE.Settings.DeepCopyInto(&out.WebIDE.Settings)
+	out.WebIDE.Extensions = slices.Clone(c.WebIDE.Extensions)
 	if c.Features != nil {
 		out.Features = make([]InjectedFeature, len(c.Features))
 		for i := range c.Features {

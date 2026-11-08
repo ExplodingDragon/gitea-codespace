@@ -1,0 +1,11 @@
+{
+  "displayName": "Gitea Codespace",
+  "description": "現在の Codespace から公開するサービスを管理します。",
+  "portsView": "Codespace ポート",
+  "portsWelcome": "公開中のポートはありません。ポートの公開は既存のアプリを公開するだけで、プロセスは起動しません。",
+  "command.add": "Codespace: ポートを公開",
+  "command.refresh": "Codespace: ポートを更新",
+  "command.rename": "Codespace: ポート名を変更",
+  "command.visibility": "Codespace: ポートの公開範囲を変更",
+  "command.remove": "Codespace: ポートを削除"
+}

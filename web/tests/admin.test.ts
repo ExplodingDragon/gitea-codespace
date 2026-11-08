@@ -231,7 +231,8 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.keyboard.press('Enter');
   await page.keyboard.press('Escape');
   await field('Tag').fill('standard');
-  await field('code-server Feature options').fill('{"extensions":"golang.go","locale":"en"}');
+  await page.getByRole('textbox', {name: 'Initial Web IDE settings JSON'}).fill('{"editor.tabSize":2}');
+  await field('Default extensions').fill('golang.go\nredhat.vscode-yaml');
   await page.getByRole('checkbox', {name: 'Install the Gitea CLI'}).check();
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
   await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
@@ -244,7 +245,8 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
     enabled: true,
-    options: {extensions: 'golang.go', locale: 'en'},
+    settings: {'editor.tabSize': 2},
+    extensions: ['golang.go', 'redhat.vscode-yaml'],
   });
   expect(environments[0].spec.runtime.devContainer.giteaCLI).toBe(true);
   expect(environments[0].spec.runtime.resources).toEqual({

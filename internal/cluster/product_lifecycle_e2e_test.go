@@ -414,8 +414,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	runtimeConfiguration := runtime.environmentConfiguration()
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
-			Enabled: true,
-			Options: apiextensionsv1.JSON{Raw: []byte(`{}`)},
+			Enabled:  true,
+			Settings: apiextensionsv1.JSON{Raw: []byte(`{"editor.tabSize":2}`)},
 		},
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
@@ -438,7 +438,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	cacheSpec.Cache.Storage.VolumeSize = "5Gi"
 	cacheSpec.Cache.Upstreams = map[string]api.CacheUpstream{
 		"docker.io": {Allow: []string{"library/debian*"}},
-		"ghcr.io":   {Allow: []string{"coder/devcontainer-features/code-server*", "devcontainers/features/common-utils*"}},
+		"ghcr.io":   {Allow: []string{"devcontainers/features/common-utils*"}},
 	}
 	require.NoError(t, admin.saveComponent(ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cacheName}, Spec: cacheSpec}, true))
 
@@ -514,7 +514,6 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	createLog := strings.Join(remote.logs[1], "\n")
 	remote.mu.Unlock()
 	require.Contains(t, createLog, "Dev Container Feature ghcr.io/devcontainers/features/common-utils:2 fetched through mirror")
-	require.Contains(t, createLog, "Dev Container Feature ghcr.io/coder/devcontainer-features/code-server:2 fetched through mirror")
 	if !strings.Contains(createLog, "Dev Container features image cache published") {
 		t.Fatalf("Dev Container feature image cache was not published; create log:\n%s", createLog)
 	}

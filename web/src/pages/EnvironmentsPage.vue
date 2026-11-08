@@ -27,7 +27,9 @@ const editing = ref(false);
 const selected = ref<Resource<Environment>>();
 const form = ref<Environment>();
 const name = ref('');
-const webIDEOptionsJSON = ref('{}');
+const webIDESettingsJSON = ref('{}');
+const webIDEExtensions = ref('');
+const customWebIDEArchive = ref(false);
 const featuresJSON = ref('{}');
 const nativeHostAccessJSON = ref<string[]>([]);
 const error = ref('');
@@ -39,7 +41,9 @@ const dialog = useDialog();
 const dirty = useDirtyForm(() => ({
   name: name.value,
   form: form.value,
-  webIDEOptions: webIDEOptionsJSON.value,
+  webIDESettings: webIDESettingsJSON.value,
+  webIDEExtensions: webIDEExtensions.value,
+  customWebIDEArchive: customWebIDEArchive.value,
   features: featuresJSON.value,
   nativeHostAccess: nativeHostAccessJSON.value,
   limitsEnabled: limitsEnabled.value,
@@ -242,7 +246,7 @@ function edit(item?: Resource<Environment>) {
           resources: {requests: {cpu: '100m', memory: '256Mi'}},
           gitSSHKeyType: 'ed25519',
           devContainer: {
-            webIDE: {enabled: true, options: {}},
+            webIDE: {enabled: true, settings: {}, extensions: []},
             giteaCLI: false,
             features: [],
             lifecycleScript: '',
@@ -265,7 +269,9 @@ function edit(item?: Resource<Environment>) {
     limitsEnabled.value = false;
     limitsDraft.value = {cpu: '1', memory: '1Gi'};
   }
-  webIDEOptionsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.options ?? {}, null, 2);
+  webIDESettingsJSON.value = JSON.stringify(form.value.runtime.devContainer.webIDE.settings ?? {}, null, 2);
+  webIDEExtensions.value = (form.value.runtime.devContainer.webIDE.extensions ?? []).join('\n');
+  customWebIDEArchive.value = Boolean(form.value.runtime.devContainer.webIDE.archiveURL);
   featuresJSON.value = JSON.stringify(
     Object.fromEntries(
       (form.value.runtime.devContainer.features ?? []).map(({reference, options}) => [reference, options ?? {}]),
@@ -292,11 +298,16 @@ function parseDevContainerAdditions() {
       throw new Error(t('environment.invalidFeatures'));
     return {reference: reference.trim(), options: options as Record<string, unknown>};
   });
-  const webIDEOptions: unknown = JSON.parse(webIDEOptionsJSON.value);
-  if (!webIDEOptions || Array.isArray(webIDEOptions) || typeof webIDEOptions !== 'object')
-    throw new Error(t('environment.invalidWebIDEOptions'));
+  const webIDESettings: unknown = JSON.parse(webIDESettingsJSON.value);
+  if (!webIDESettings || Array.isArray(webIDESettings) || typeof webIDESettings !== 'object')
+    throw new Error(t('environment.invalidWebIDESettings'));
+  const webIDEExtensionList = webIDEExtensions.value
+    .split(/\r?\n/)
+    .map((value) => value.trim())
+    .filter(Boolean);
   return {
-    webIDEOptions: webIDEOptions as Record<string, unknown>,
+    webIDESettings: webIDESettings as Record<string, unknown>,
+    webIDEExtensions: webIDEExtensionList,
     features,
   };
 }
@@ -336,9 +347,17 @@ async function save() {
     else delete spec.runtime.resources.limits;
     if ((measurementBaseValue(spec.runtime.storage.storage, 'storage') ?? 0) <= 0)
       throw new Error(t('environment.invalidStorageSize'));
-    const {webIDEOptions, features} = parseDevContainerAdditions();
+    const {webIDESettings, webIDEExtensions: extensionList, features} = parseDevContainerAdditions();
     spec.runtime.devContainer.features = features;
-    spec.runtime.devContainer.webIDE.options = webIDEOptions;
+    spec.runtime.devContainer.webIDE.settings = webIDESettings;
+    spec.runtime.devContainer.webIDE.extensions = extensionList;
+    if (customWebIDEArchive.value) {
+      if (!spec.runtime.devContainer.webIDE.archiveURL?.trim())
+        throw new Error(t('environment.invalidWebIDEArchiveURL'));
+      spec.runtime.devContainer.webIDE.archiveURL = spec.runtime.devContainer.webIDE.archiveURL.trim();
+    } else {
+      delete spec.runtime.devContainer.webIDE.archiveURL;
+    }
     if (spec.runtime.isolation === 'native') {
       delete spec.runtime.runtimeClassName;
       if (!spec.runtime.native) throw new Error(t('environment.invalidNativeConfiguration'));
@@ -707,16 +726,7 @@ function remove(item: Resource<Environment>) {
     </div>
 
     <h2>{{ t('environment.webIDESection') }}</h2>
-    <p class="section-help">
-      {{ t('environment.webIDEHelp') }}
-      <a
-        href="https://github.com/coder/devcontainer-features/tree/main/src/code-server"
-        target="_blank"
-        rel="noreferrer"
-      >
-        {{ t('environment.featureOptionsDocs') }}
-      </a>
-    </p>
+    <p class="section-help">{{ t('environment.webIDEHelp') }}</p>
     <div class="form-grid">
       <NFormItem class="field-wide">
         <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
@@ -724,14 +734,42 @@ function remove(item: Resource<Environment>) {
         </NCheckbox>
       </NFormItem>
       <template v-if="form.runtime.devContainer.webIDE.enabled">
+        <NFormItem class="field-wide">
+          <NCheckbox v-model:checked="customWebIDEArchive">
+            {{ t('environment.webIDECustomArchive') }}
+          </NCheckbox>
+        </NFormItem>
+        <NFormItem
+          v-if="customWebIDEArchive"
+          class="field-wide"
+          :label="t('environment.webIDEArchiveURL')"
+        >
+          <NInput
+            v-model:value="form.runtime.devContainer.webIDE.archiveURL"
+            :placeholder="t('environment.webIDEArchiveURLPlaceholder')"
+          />
+          <template #feedback>{{ t('environment.webIDEArchiveURLHelp') }}</template>
+        </NFormItem>
         <NFormItem
           class="field-wide"
-          :label="t('environment.webIDEOptions')"
+          :label="t('environment.webIDESettings')"
         >
           <JsonEditor
-            v-model="webIDEOptionsJSON"
-            :label="t('environment.jsonWebIDEOptionsLabel')"
+            v-model="webIDESettingsJSON"
+            :label="t('environment.jsonWebIDESettingsLabel')"
           />
+        </NFormItem>
+        <NFormItem
+          class="field-wide"
+          :label="t('environment.webIDEExtensions')"
+        >
+          <NInput
+            v-model:value="webIDEExtensions"
+            type="textarea"
+            :autosize="{minRows: 3, maxRows: 10}"
+            :placeholder="t('environment.webIDEExtensionsPlaceholder')"
+          />
+          <template #feedback>{{ t('environment.webIDEExtensionsHelp') }}</template>
         </NFormItem>
       </template>
     </div>

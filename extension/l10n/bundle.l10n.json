@@ -1,0 +1,14 @@
+{
+  "Authenticated": "Authenticated",
+  "Public": "Public",
+  "Port number": "Port number",
+  "Enter a number between 1 and 65535": "Enter a number between 1 and 65535",
+  "Port label": "Port label",
+  "Publish port": "Publish port",
+  "Rename port": "Rename port",
+  "Change visibility": "Change visibility",
+  "Remove port": "Remove port",
+  "Remove port {0}? This removes its Codespace publication and does not stop the application.": "Remove port {0}? This removes its Codespace publication and does not stop the application.",
+  "Codespace port operation failed": "Codespace port operation failed",
+  "Enter a label between 1 and 128 bytes": "Enter a label between 1 and 128 bytes"
+}

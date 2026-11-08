@@ -1,0 +1,14 @@
+{
+  "Authenticated": "認証が必要",
+  "Public": "一般公開",
+  "Port number": "ポート番号",
+  "Enter a number between 1 and 65535": "1 から 65535 の数値を入力してください",
+  "Port label": "ポート名",
+  "Publish port": "ポートを公開",
+  "Rename port": "ポート名を変更",
+  "Change visibility": "公開範囲を変更",
+  "Remove port": "ポートを削除",
+  "Remove port {0}? This removes its Codespace publication and does not stop the application.": "ポート {0} を削除しますか？Codespace の公開のみを削除し、アプリは停止しません。",
+  "Codespace port operation failed": "Codespace のポート操作に失敗しました",
+  "Enter a label between 1 and 128 bytes": "1 から 128 バイトのポート名を入力してください"
+}

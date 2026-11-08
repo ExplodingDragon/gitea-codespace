@@ -1,0 +1,11 @@
+{
+  "displayName": "Gitea Codespace",
+  "description": "Manage services published from the current Codespace.",
+  "portsView": "Codespace Ports",
+  "portsWelcome": "No ports are published. Publishing a port exposes an existing application without starting it.",
+  "command.add": "Codespace: Publish Port",
+  "command.refresh": "Codespace: Refresh Ports",
+  "command.rename": "Codespace: Rename Port",
+  "command.visibility": "Codespace: Change Port Visibility",
+  "command.remove": "Codespace: Remove Port"
+}

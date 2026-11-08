@@ -20,14 +20,14 @@ func TestConfigurationValidation(t *testing.T) {
 		{
 			name: "disabled",
 			configuration: Configuration{WebIDE: WebIDEConfiguration{
-				Options: apiextensionsv1.JSON{Raw: []byte(`{}`)},
+				Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)},
 			}},
 		},
-		{name: "options required", configuration: Configuration{}, wantError: "options for Web IDE are required"},
+		{name: "settings required", configuration: Configuration{}, wantError: "settings for Web IDE are required"},
 		{
 			name: "duplicate feature identity",
 			configuration: Configuration{
-				WebIDE: WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				WebIDE: WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
 				Features: []InjectedFeature{
 					{Reference: "ghcr.io/example/features/tool:1"},
 					{Reference: "ghcr.io/example/features/tool:2"},
@@ -36,24 +36,39 @@ func TestConfigurationValidation(t *testing.T) {
 			wantError: "same identity",
 		},
 		{
-			name: "Web IDE options are an object",
+			name: "Web IDE settings are an object",
 			configuration: Configuration{WebIDE: WebIDEConfiguration{
-				Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`[]`)},
+				Enabled: true, Settings: apiextensionsv1.JSON{Raw: []byte(`[]`)},
 			}},
-			wantError: "options for Web IDE must be a JSON object",
+			wantError: "Web IDE settings must be a JSON object",
 		},
 		{
-			name: "Web IDE accepts upstream options",
+			name: "Web IDE accepts custom archive and extensions",
 			configuration: Configuration{
 				WebIDE: WebIDEConfiguration{
-					Enabled: true, Options: apiextensionsv1.JSON{Raw: []byte(`{"version":"4.121.0","extensions":"example.tool"}`)},
+					Enabled: true, ArchiveURL: "https://editor.example/code-server-linux-{arch}.tar.gz",
+					Settings: apiextensionsv1.JSON{Raw: []byte(`{"editor.tabSize":2}`)}, Extensions: []string{"example.tool"},
 				},
 			},
 		},
 		{
+			name: "Web IDE rejects unknown archive placeholder",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}, ArchiveURL: "https://editor.example/{version}/{arch}.tar.gz",
+			}},
+			wantError: "unknown placeholder",
+		},
+		{
+			name: "Web IDE rejects duplicate extension identity",
+			configuration: Configuration{WebIDE: WebIDEConfiguration{
+				Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}, Extensions: []string{"example.tool@1", "EXAMPLE.TOOL@2"},
+			}},
+			wantError: "declared more than once",
+		},
+		{
 			name: "feature options are an object",
 			configuration: Configuration{
-				WebIDE: WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				WebIDE: WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
 				Features: []InjectedFeature{{
 					Reference: "ghcr.io/example/features/tool:1",
 					Options:   apiextensionsv1.JSON{Raw: []byte(`true`)},
@@ -64,7 +79,7 @@ func TestConfigurationValidation(t *testing.T) {
 		{
 			name: "lifecycle script is bounded",
 			configuration: Configuration{
-				WebIDE:          WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				WebIDE:          WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
 				LifecycleScript: strings.Repeat("x", maxLifecycleScriptBytes+1),
 			},
 			wantError: "lifecycle script",
@@ -72,7 +87,7 @@ func TestConfigurationValidation(t *testing.T) {
 		{
 			name: "lifecycle script rejects NUL",
 			configuration: Configuration{
-				WebIDE:          WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+				WebIDE:          WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
 				LifecycleScript: "echo before\x00after",
 			},
 			wantError: "lifecycle script",

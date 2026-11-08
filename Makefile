@@ -19,11 +19,13 @@ PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
 SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
 STATICCHECK_VERSION := v0.8.2
+CODE_SERVER_VERSION ?= 4.145.2
 BASH_SCRIPTS := \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
 	deploy/prepare-gitea-cli.sh \
+	deploy/prepare-web-ide.sh \
 	devcontainer/docker/builtin/resolve-user-shell.sh \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
@@ -55,7 +57,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux prepare-gitea-cli images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux prepare-gitea-cli prepare-web-ide extension extension-check images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -90,6 +92,7 @@ format:
 	$(SHFMT) -w -ln posix -i 2 $(POSIX_SCRIPTS)
 	$(MAKE) proto-format
 	$(PNPM) --dir web run format
+	$(PNPM) --dir extension run format
 
 lint: go-format-check proto-check scripts-check scripts-format-check workflow-check frontend-check helm-check kubernetes-check
 	$(GO) vet ./...
@@ -107,15 +110,29 @@ build-linux: frontend
 prepare-gitea-cli:
 	GITEA_CLI_VERSION="$(GITEA_CLI_VERSION)" ./deploy/prepare-gitea-cli.sh linux amd64 bin
 
-images: build-linux prepare-gitea-cli
-	@. bin/gitea-cli.env; \
+prepare-web-ide:
+	CODE_SERVER_VERSION="$(CODE_SERVER_VERSION)" ./deploy/prepare-web-ide.sh linux amd64 bin
+
+extension:
+	$(PNPM) --dir extension install --frozen-lockfile
+	$(PNPM) --dir extension run build
+	mkdir -p bin
+	cp extension/dist/gitea-codespace.vsix bin/gitea-codespace.vsix
+
+extension-check:
+	$(PNPM) --dir extension run check
+	$(PNPM) --dir extension run format:check
+
+images: build-linux prepare-gitea-cli prepare-web-ide extension
+	@. bin/gitea-cli.env; . bin/web-ide.env; \
 	$(CONTAINER_TOOL) build \
 		--build-arg GITEA_CLI_VERSION="$$GITEA_CLI_VERSION" \
 		--build-arg GITEA_CLI_SHA256="$$GITEA_CLI_SHA256" \
+		--build-arg CODE_SERVER_VERSION="$$CODE_SERVER_VERSION" \
 		-f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
 
 clean:
-	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report
+	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report extension/dist
 	mkdir -p web/dist
 	touch web/dist/.gitkeep
 
@@ -123,12 +140,13 @@ frontend:
 	$(PNPM) --dir web install --frozen-lockfile
 	$(PNPM) --dir web run build
 
-frontend-check:
+frontend-check: extension-check
 	$(PNPM) --dir web run check
 	$(PNPM) --dir web run format:check
 
 test-frontend:
 	$(PNPM) --dir web run test
+	$(PNPM) --dir extension run test
 
 helm-check:
 	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin

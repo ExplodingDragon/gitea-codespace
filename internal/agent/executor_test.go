@@ -34,7 +34,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	executor := &Executor{Journal: j, PodUID: "new-pod", Stdout: io.Discard, Stderr: io.Discard}
 	request := devcontainerruntime.Request{
 		Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", GiteaURL: "https://gitea.example.com",
-		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
+		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
 	}
 	recovered, err := executor.Apply(t.Context(), request)
 	require.NoError(t, err)

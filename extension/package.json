@@ -1,0 +1,114 @@
+{
+  "name": "codespace",
+  "displayName": "%displayName%",
+  "description": "%description%",
+  "version": "0.1.0",
+  "publisher": "gitea",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ExplodingDragon/gitea-codespace.git"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "main": "./dist/extension.js",
+  "scripts": {
+    "build:bundle": "node esbuild.mjs",
+    "build": "pnpm run check && pnpm run build:bundle && mkdir -p dist && vsce package --no-dependencies --out dist/gitea-codespace.vsix",
+    "check": "tsc --noEmit",
+    "format": "prettier --write \"src/**/*.ts\" \"tests/**/*.ts\" \"*.{json,mjs,md}\" \"l10n/*.json\"",
+    "format:check": "prettier --check \"src/**/*.ts\" \"tests/**/*.ts\" \"*.{json,mjs,md}\" \"l10n/*.json\"",
+    "test": "tsx --test tests/**/*.test.ts"
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "giteaCodespace.ports.add",
+        "title": "%command.add%",
+        "icon": "$(add)"
+      },
+      {
+        "command": "giteaCodespace.ports.refresh",
+        "title": "%command.refresh%",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "giteaCodespace.ports.rename",
+        "title": "%command.rename%",
+        "icon": "$(edit)"
+      },
+      {
+        "command": "giteaCodespace.ports.visibility",
+        "title": "%command.visibility%",
+        "icon": "$(lock)"
+      },
+      {
+        "command": "giteaCodespace.ports.remove",
+        "title": "%command.remove%",
+        "icon": "$(trash)"
+      }
+    ],
+    "views": {
+      "explorer": [
+        {
+          "id": "giteaCodespace.ports",
+          "name": "%portsView%",
+          "contextualTitle": "%displayName%"
+        }
+      ]
+    },
+    "viewsWelcome": [
+      {
+        "view": "giteaCodespace.ports",
+        "contents": "%portsWelcome%\n[%command.add%](command:giteaCodespace.ports.add)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "giteaCodespace.ports.add",
+          "when": "view == giteaCodespace.ports",
+          "group": "navigation@1"
+        },
+        {
+          "command": "giteaCodespace.ports.refresh",
+          "when": "view == giteaCodespace.ports",
+          "group": "navigation@2"
+        }
+      ],
+      "view/item/context": [
+        {
+          "command": "giteaCodespace.ports.rename",
+          "when": "view == giteaCodespace.ports && viewItem == codespacePort",
+          "group": "inline@1"
+        },
+        {
+          "command": "giteaCodespace.ports.visibility",
+          "when": "view == giteaCodespace.ports && viewItem == codespacePort",
+          "group": "inline@2"
+        },
+        {
+          "command": "giteaCodespace.ports.remove",
+          "when": "view == giteaCodespace.ports && viewItem == codespacePort",
+          "group": "inline@3"
+        }
+      ]
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.2",
+    "esbuild": "^0.27.0",
+    "prettier": "3.6.2",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  }
+}

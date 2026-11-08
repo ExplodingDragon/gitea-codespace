@@ -77,19 +77,28 @@ spec:
                         maxLength: 65536
                         type: string
                       webIDE:
-                        description: WebIDEConfiguration defines the platform-managed
-                          code-server installation.
+                        description: |-
+                          WebIDEConfiguration defines the platform-managed Web IDE runtime and initial
+                          user configuration.
                         properties:
+                          archiveURL:
+                            description: |-
+                              ArchiveURL optionally replaces the platform Web IDE program. The Runtime
+                              substitutes {arch} with the architecture shared by its Pod and Dev Container.
+                            maxLength: 4096
+                            type: string
                           enabled:
                             type: boolean
-                          options:
-                            description: |-
-                              Options are passed to the code-server Feature. Codespace overwrites the
-                              options that control its internal listener, authentication, and lifecycle.
+                          extensions:
+                            items:
+                              type: string
+                            maxItems: 256
+                            type: array
+                          settings:
                             x-kubernetes-preserve-unknown-fields: true
                         required:
                         - enabled
-                        - options
+                        - settings
                         type: object
                     required:
                     - giteaCLI

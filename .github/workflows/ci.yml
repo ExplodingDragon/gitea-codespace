@@ -52,6 +52,7 @@ jobs:
           go mod download
           make install-tools
           pnpm --dir web install --frozen-lockfile
+          pnpm --dir extension install --frozen-lockfile
           pnpm --dir web exec playwright install --with-deps chromium
       - name: Run static checks
         run: make lint
@@ -63,6 +64,8 @@ jobs:
         run: make build-linux
       - name: Prepare Gitea CLI
         run: make prepare-gitea-cli
+      - name: Prepare Web IDE
+        run: make prepare-web-ide extension
       - name: Upload platform assets
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
@@ -71,6 +74,9 @@ jobs:
             bin/gitea-codespace
             bin/gt
             bin/gitea-cli.env
+            bin/web-ide-platform.tar.gz
+            bin/web-ide.env
+            bin/gitea-codespace.vsix
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -92,13 +98,20 @@ jobs:
           name: gitea-codespace-linux-amd64
           path: bin
       - name: Set binary permissions
-        run: chmod 0555 bin/gitea-codespace bin/gt
+        run: |
+          chmod 0555 bin/gitea-codespace bin/gt
+          tar -xzf bin/web-ide-platform.tar.gz -C bin
       - name: Read Gitea CLI metadata
         id: cli
         run: |
           . bin/gitea-cli.env
           echo "version=$GITEA_CLI_VERSION" >>"$GITHUB_OUTPUT"
           echo "sha256=$GITEA_CLI_SHA256" >>"$GITHUB_OUTPUT"
+      - name: Read Web IDE metadata
+        id: web_ide
+        run: |
+          . bin/web-ide.env
+          echo "version=$CODE_SERVER_VERSION" >>"$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Build image
@@ -113,6 +126,7 @@ jobs:
           build-args: |
             GITEA_CLI_VERSION=${{ steps.cli.outputs.version }}
             GITEA_CLI_SHA256=${{ steps.cli.outputs.sha256 }}
+            CODE_SERVER_VERSION=${{ steps.web_ide.outputs.version }}
           cache-from: type=gha,scope=platform-image
           cache-to: type=gha,mode=max,scope=platform-image,ignore-error=true
       - name: Verify image contents
@@ -121,7 +135,7 @@ jobs:
         run: |
           docker run --rm "$TEST_IMAGE" --help >/dev/null
           docker run --rm --entrypoint /bin/sh "$TEST_IMAGE" -ec \
-            'command -v dockerd; command -v git; command -v ssh; command -v useradd; command -v groupadd'
+            'command -v dockerd; command -v git; command -v ssh; command -v useradd; command -v groupadd; test -x /usr/local/libexec/gitea-codespace/web-ide/bin/code-server; test -r /usr/local/share/gitea-codespace/web-ide/gitea-codespace.vsix'
           docker run --rm --entrypoint /usr/local/libexec/gitea-codespace/gt "$TEST_IMAGE" version | grep -F "$GITEA_CLI_VERSION"
       - name: Export image for E2E
         run: |
@@ -268,13 +282,20 @@ jobs:
           name: gitea-codespace-linux-amd64
           path: bin
       - name: Set binary permissions
-        run: chmod 0555 bin/gitea-codespace bin/gt
+        run: |
+          chmod 0555 bin/gitea-codespace bin/gt
+          tar -xzf bin/web-ide-platform.tar.gz -C bin
       - name: Read Gitea CLI metadata
         id: cli
         run: |
           . bin/gitea-cli.env
           echo "version=$GITEA_CLI_VERSION" >>"$GITHUB_OUTPUT"
           echo "sha256=$GITEA_CLI_SHA256" >>"$GITHUB_OUTPUT"
+      - name: Read Web IDE metadata
+        id: web_ide
+        run: |
+          . bin/web-ide.env
+          echo "version=$CODE_SERVER_VERSION" >>"$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
       - name: Set up Helm
@@ -304,6 +325,7 @@ jobs:
           build-args: |
             GITEA_CLI_VERSION=${{ steps.cli.outputs.version }}
             GITEA_CLI_SHA256=${{ steps.cli.outputs.sha256 }}
+            CODE_SERVER_VERSION=${{ steps.web_ide.outputs.version }}
           labels: |
             org.opencontainers.image.title=Gitea Codespace
             org.opencontainers.image.description=Kubernetes platform image for Gitea Codespace

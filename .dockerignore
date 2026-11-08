@@ -2,3 +2,6 @@
 !bin/
 !bin/gitea-codespace
 !bin/gt
+!bin/gitea-codespace.vsix
+!bin/web-ide/
+!bin/web-ide/**

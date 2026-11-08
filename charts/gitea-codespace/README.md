@@ -7,7 +7,8 @@ and Cache components.
 ## Requirements
 
 - Kubernetes 1.31 or later
-- Helm 4.3 or later
+- Helm with OCI registry support
+- kubectl and OpenSSL for the installation commands
 - Gitea with Codespace support
 - A compatible StorageClass
 - A verified Kata or Sysbox RuntimeClass when using that runtime
@@ -25,7 +26,8 @@ sufficient runtime check.
 | Native          | Node kernel     | Filesystem PVC   | Use the default CRI runtime and install the Device Plugins required by the environment                                       |
 
 Review the [Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
-before using devices or elevated privileges with that runtime.
+before selecting it for environments that need devices or additional Linux
+capabilities.
 
 Label Kata and Sysbox RuntimeClasses so Manager can match them to an isolation
 mode:
@@ -39,29 +41,19 @@ kubectl get runtimeclass -L codespace.gitea.dev/isolation
 kubectl get storageclass
 ```
 
-Native environments use the node's default CRI runtime. Install the vendor
-Device Plugin before creating the environment, then confirm that its extended
-resource appears in node allocatable capacity. For example:
+Native environments use the node's default CRI runtime. Install the required
+Device Plugin and enable CDI in the node runtime and plugin when the device uses
+CDI. Confirm that each extended resource appears in node allocatable capacity:
 
 ```sh
 kubectl get nodes \
-  -o custom-columns='NAME:.metadata.name,GPU:.status.allocatable.nvidia\.com/gpu'
+  -o custom-columns='NAME:.metadata.name,ALLOCATABLE:.status.allocatable'
 ```
 
-CDI devices require CDI support in the node runtime and Device Plugin. For
-NVIDIA, enable both the environment-variable and CDI allocation strategies:
-
-```yaml
-flags:
-  plugin:
-    deviceListStrategy: envvar,cdi-cri
-```
-
-Select the extended resource and CDI settings in the environment template. Site
-device quotas can limit how many extended resources concurrent workspaces
-reserve. Before publishing the template, verify nested Docker, a child
-container, device access, and device access after stop and resume. This validates
-the runtime, storage, Device Plugin, and CDI configuration together.
+Select the resource and CDI settings in the environment template. Before making
+the template available, verify nested Docker, device access from a child
+container, and device access after stop and resume. This checks the runtime,
+storage, Device Plugin, and CDI path together.
 
 ## Install
 
@@ -86,7 +78,7 @@ This installs the latest `main` prerelease. To install a release, replace
 `--devel` with `--version <chart-version>`. Published charts select the matching
 platform image by digest. Configure `image.pullSecrets` for a private registry.
 
-## Complete setup
+## Connect Gitea
 
 The administration Service is a ClusterIP by default. Access it from an
 operator workstation with:
@@ -104,8 +96,8 @@ Open <http://127.0.0.1:18080>, sign in with the administration token, and then:
 4. register Gitea and assign the template and components;
 5. enable the site after its readiness checks pass.
 
-For a stable administration endpoint, configure `admin.ingress` and allow the
-ingress controller networks through `networkPolicy.adminIngressCIDRs`.
+For a stable administration endpoint, configure `admin.ingress` and add the
+ingress controller networks to `networkPolicy.adminIngressCIDRs`.
 
 ## Publish workspace access
 
@@ -114,7 +106,7 @@ WebSocket traffic; port `22` carries SSH and SFTP. Manager can create an HTTP
 Ingress and an SSH LoadBalancer Service, or existing cluster infrastructure can
 publish the Service. Configure public DNS and TLS in the cluster infrastructure.
 
-## Operate securely
+## Operations
 
 Back up `Secret/<Helm fullname>-internal-ca` because existing workloads trust
 this internal identity. Enable Kubernetes Secret encryption at rest. Add a
@@ -122,9 +114,9 @@ private Gitea CA to the site configuration when Gitea does not use a publicly
 trusted certificate.
 
 Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
-Gateway. When a site uses an outbound proxy, allow that proxy's CIDRs and ports
-through the site NetworkPolicy. Cache has separate proxy settings because image
-registry traffic may use a different network path.
+Gateway. Allow configured outbound proxies through the site NetworkPolicy.
+Cache has separate proxy settings because registry traffic can use a different
+network path.
 
 Cache remains inside the cluster on port `443` and uses Manager's internal CA.
 Choose a persistent volume for the local backend or shared object storage for

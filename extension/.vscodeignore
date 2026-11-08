@@ -1,0 +1,9 @@
+.vscodeignore
+esbuild.mjs
+node_modules/**
+src/**
+tests/**
+tsconfig.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+dist/*.vsix

@@ -10,15 +10,17 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
-	"strconv"
 	"strings"
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/webide"
 )
 
 //go:embed builtin/configure-git.sh
@@ -50,7 +52,7 @@ var runtimeMounts = [...]struct {
 }
 
 func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) {
-	mounts := make([]devcontainer.Mount, 0, len(runtimeMounts))
+	mounts := make([]devcontainer.Mount, 0, len(runtimeMounts)+4)
 	for _, item := range runtimeMounts {
 		if _, err := os.Stat(item.source); err == nil {
 			mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.source, Target: item.target, ReadOnly: item.readOnly})
@@ -58,10 +60,27 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.source, err)
 		}
 	}
+	if request.DevContainer.WebIDE.Enabled {
+		programSource := webide.BuiltinProgramPath
+		if strings.TrimSpace(request.DevContainer.WebIDE.ArchiveURL) != "" {
+			programSource = webide.CustomProgramPath
+		}
+		for _, item := range []struct {
+			source, target string
+			readOnly       bool
+		}{
+			{programSource, webide.ContainerProgramPath, true},
+			{webide.UserDataSourcePath, webide.ContainerUserDataPath, false},
+			{webide.ExtensionsSourcePath, webide.ContainerExtensionsPath, false},
+			{webide.PlatformVSIXDirectory, webide.ContainerVSIXDirectory, true},
+		} {
+			mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.source, Target: item.target, ReadOnly: item.readOnly})
+		}
+	}
 	for _, item := range request.Native.Mounts {
 		mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.Source, Target: item.Target, ReadOnly: item.ReadOnly})
 	}
-	injected := make([]devcontainer.InjectedFeature, 0, len(request.DevContainer.Features)+1)
+	injected := make([]devcontainer.InjectedFeature, 0, len(request.DevContainer.Features))
 	for _, feature := range request.DevContainer.Features {
 		options := map[string]json.RawMessage{}
 		if len(feature.Options.Raw) != 0 {
@@ -70,33 +89,6 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			}
 		}
 		injected = append(injected, devcontainer.InjectedFeature{Reference: strings.TrimSpace(feature.Reference), Origin: "environment template", Options: options})
-	}
-	if webIDE := request.DevContainer.WebIDE; webIDE.Enabled {
-		options := map[string]json.RawMessage{}
-		if len(webIDE.Options.Raw) != 0 {
-			if err := json.Unmarshal(webIDE.Options.Raw, &options); err != nil {
-				return containerdocker.CreateOptions{}, fmt.Errorf("decode platform Web IDE Feature options: %w", err)
-			}
-		}
-		for name, value := range map[string]json.RawMessage{
-			"auth":               json.RawMessage(`"none"`),
-			"host":               json.RawMessage(`"0.0.0.0"`),
-			"port":               json.RawMessage(strconv.Quote(fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))),
-			"workspace":          json.RawMessage(`"."`),
-			"cert":               json.RawMessage(`""`),
-			"certHost":           json.RawMessage(`""`),
-			"certKey":            json.RawMessage(`""`),
-			"socket":             json.RawMessage(`""`),
-			"socketMode":         json.RawMessage(`""`),
-			"disableTelemetry":   json.RawMessage("true"),
-			"disableUpdateCheck": json.RawMessage("true"),
-		} {
-			options[name] = value
-		}
-		injected = append(injected, devcontainer.InjectedFeature{
-			Reference: webIDEFeatureReference, Origin: "platform Web IDE", InstallOnly: true,
-			Options: options,
-		})
 	}
 	containerEnvironment := map[string]string{
 		"CODESPACE_CA_BUNDLE": containerCABundlePath,
@@ -188,10 +180,13 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
 	var startErr error
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "ensure-extension"}, values, nil); err != nil {
+		startErr = fmt.Errorf("install required Codespace extension: %w", err)
+	}
 	if initialize {
-		customizations, err := resolveWebIDECustomizations(state.Configuration.Customizations["vscode"])
+		customizations, err := resolveWebIDECustomizations(configuration.WebIDE, state.Configuration.Customizations["vscode"])
 		if err != nil {
-			startErr = err
+			startErr = errors.Join(startErr, err)
 		}
 		if startErr == nil {
 			settings, err := json.Marshal(customizations.Settings)
@@ -205,8 +200,13 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 			if len(customizations.Extensions) > 0 {
 				_, _ = fmt.Fprintln(stdout, "Install VS Code extensions")
 			}
+			codeServer := webide.ContainerProgramPath + "/bin/code-server"
 			for _, extension := range customizations.Extensions {
-				if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"code-server", "--force", "--install-extension", extension}, values, nil); err != nil {
+				if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{codeServer,
+					"--user-data-dir", webide.ContainerUserDataPath,
+					"--extensions-dir", webide.ContainerExtensionsPath,
+					"--force", "--install-extension", extension,
+				}, values, nil); err != nil {
 					_, _ = fmt.Fprintf(stderr, "Warning: Install VS Code extension %s: %v\n", extension, err)
 				}
 			}
@@ -230,12 +230,20 @@ type webIDECustomizations struct {
 	Extensions []string                   `json:"extensions"`
 }
 
-func resolveWebIDECustomizations(repository json.RawMessage) (webIDECustomizations, error) {
-	result := webIDECustomizations{Settings: map[string]json.RawMessage{}}
+func resolveWebIDECustomizations(configuration WebIDEConfiguration, repository json.RawMessage) (webIDECustomizations, error) {
+	result := webIDECustomizations{Settings: map[string]json.RawMessage{}, Extensions: append([]string(nil), configuration.Extensions...)}
+	if len(configuration.Settings.Raw) != 0 {
+		if err := json.Unmarshal(configuration.Settings.Raw, &result.Settings); err != nil {
+			return webIDECustomizations{}, fmt.Errorf("decode environment-template Web IDE settings: %w", err)
+		}
+	}
 	if len(repository) != 0 {
-		if err := json.Unmarshal(repository, &result); err != nil {
+		var customizations webIDECustomizations
+		if err := json.Unmarshal(repository, &customizations); err != nil {
 			return webIDECustomizations{}, fmt.Errorf("decode VS Code customizations: %w", err)
 		}
+		maps.Copy(result.Settings, customizations.Settings)
+		result.Extensions = mergeWebIDEExtensions(result.Extensions, customizations.Extensions)
 	}
 	if result.Settings == nil {
 		result.Settings = map[string]json.RawMessage{}
@@ -247,4 +255,20 @@ func resolveWebIDECustomizations(repository json.RawMessage) (webIDECustomizatio
 		}
 	}
 	return result, nil
+}
+
+func mergeWebIDEExtensions(defaults, repository []string) []string {
+	result := make([]string, 0, len(defaults)+len(repository))
+	positions := make(map[string]int, len(defaults)+len(repository))
+	for _, extension := range append(append([]string(nil), defaults...), repository...) {
+		extension = strings.TrimSpace(extension)
+		identity := strings.ToLower(strings.SplitN(extension, "@", 2)[0])
+		if position, exists := positions[identity]; exists {
+			result[position] = extension
+			continue
+		}
+		positions[identity] = len(result)
+		result = append(result, extension)
+	}
+	return result
 }

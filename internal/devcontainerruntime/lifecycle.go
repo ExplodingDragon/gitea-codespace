@@ -16,6 +16,7 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
+	"gitea.dev/codespace/internal/webide"
 )
 
 // Apply executes one validated lifecycle request against the local Docker daemon.
@@ -28,6 +29,12 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 	}
 	if stderr == nil {
 		stderr = io.Discard
+	}
+	if request.DevContainer.WebIDE.Enabled && (request.Action == "create" || request.Action == "resume") {
+		if err := webide.Prepare(ctx, request.DevContainer.WebIDE.ArchiveURL, request.HostUser.UID, request.HostUser.GID); err != nil {
+			_, _ = fmt.Fprintf(stderr, "Warning: Web IDE is unavailable and will not affect Codespace access: prepare platform Web IDE: %v\n", err)
+			request.DevContainer.WebIDE.Enabled = false
+		}
 	}
 	engine, err := containerdocker.New(ctx, stdout, stderr)
 	if err != nil {

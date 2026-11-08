@@ -4,6 +4,8 @@
 package runtimecmd
 
 import (
+	"archive/zip"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -12,22 +14,38 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
+	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/webide"
 	"golang.org/x/sys/unix"
 )
 
 const (
-	webIDEEntrypoint     = "/usr/local/bin/code-server-entrypoint"
 	maxWebIDESettings    = 1024 * 1024
 	webIDEStableDuration = 30 * time.Second
+	platformExtensionID  = "gitea.codespace"
 )
+
+var codeServerArguments = []string{
+	"--bind-addr", "0.0.0.0:" + fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort),
+	"--auth", "none",
+	"--disable-telemetry",
+	"--disable-update-check",
+	"--user-data-dir", webide.ContainerUserDataPath,
+	"--extensions-dir", webide.ContainerExtensionsPath,
+}
 
 // PrepareWebIDE writes the initial repository settings before the supervised
 // Web IDE starts. Resume and process restarts do not call this operation, so
 // subsequent user changes remain intact.
 func PrepareWebIDE(settings io.Reader) error {
+	return prepareWebIDE(settings, webide.ContainerUserDataPath)
+}
+
+func prepareWebIDE(settings io.Reader, userDataPath string) error {
 	data, err := io.ReadAll(io.LimitReader(settings, maxWebIDESettings+1))
 	if err != nil {
 		return fmt.Errorf("read Web IDE settings: %w", err)
@@ -39,17 +57,15 @@ func PrepareWebIDE(settings io.Reader) error {
 	if err := json.Unmarshal(data, &value); err != nil || value == nil {
 		return fmt.Errorf("settings for Web IDE must be a JSON object")
 	}
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return fmt.Errorf("resolve Web IDE user home: %w", err)
-	}
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(home, ".local", "share")
-	}
-	directory := filepath.Join(dataHome, "code-server", "User")
+	directory := filepath.Join(userDataPath, "User")
 	if err := os.MkdirAll(directory, 0o700); err != nil {
 		return fmt.Errorf("create Web IDE settings directory: %w", err)
+	}
+	settingsPath := filepath.Join(directory, "settings.json")
+	if _, err := os.Stat(settingsPath); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("inspect Web IDE settings: %w", err)
 	}
 	temporary, err := os.CreateTemp(directory, ".settings-*.json")
 	if err != nil {
@@ -67,7 +83,7 @@ func PrepareWebIDE(settings io.Reader) error {
 	if err != nil {
 		return fmt.Errorf("write Web IDE settings: %w", err)
 	}
-	if err := os.Rename(temporaryPath, filepath.Join(directory, "settings.json")); err != nil {
+	if err := os.Rename(temporaryPath, settingsPath); err != nil {
 		return fmt.Errorf("replace Web IDE settings: %w", err)
 	}
 	return nil
@@ -75,6 +91,7 @@ func PrepareWebIDE(settings io.Reader) error {
 
 type webIDESupervisor struct {
 	entrypoint    string
+	arguments     []string
 	workdir       string
 	lockPath      string
 	output        io.Writer
@@ -86,8 +103,9 @@ type webIDESupervisor struct {
 // SuperviseWebIDE keeps the platform Web IDE available for the lifetime of the
 // Dev Container. It intentionally owns only this optional service.
 func SuperviseWebIDE(ctx context.Context) error {
-	if err := unix.Access(webIDEEntrypoint, unix.X_OK); err != nil {
-		return fmt.Errorf("inspect code-server Feature entrypoint: %w", err)
+	entrypoint := filepath.Join(webide.ContainerProgramPath, "bin", "code-server")
+	if err := unix.Access(entrypoint, unix.X_OK); err != nil {
+		return fmt.Errorf("inspect platform code-server: %w", err)
 	}
 	runtimeDirectory := os.Getenv("XDG_RUNTIME_DIR")
 	if runtimeDirectory == "" {
@@ -112,7 +130,7 @@ func SuperviseWebIDE(ctx context.Context) error {
 		return fmt.Errorf("resolve Web IDE workspace: %w", err)
 	}
 	return (webIDESupervisor{
-		entrypoint: webIDEEntrypoint, workdir: workdir,
+		entrypoint: entrypoint, arguments: codeServerArguments, workdir: workdir,
 		lockPath: filepath.Join(runtimeDirectory, "web-ide.lock"), output: logFile,
 		restartDelay: time.Second, maximumDelay: 10 * time.Second, stableRuntime: webIDEStableDuration,
 	}).run(ctx)
@@ -133,7 +151,9 @@ func (s webIDESupervisor) run(ctx context.Context) error {
 	delay := s.restartDelay
 	for ctx.Err() == nil {
 		started := time.Now()
-		command := exec.Command(s.entrypoint)
+		arguments := append([]string(nil), s.arguments...)
+		arguments = append(arguments, s.workdir)
+		command := exec.Command(s.entrypoint, arguments...)
 		command.Dir = s.workdir
 		command.Env = os.Environ()
 		command.Stdout, command.Stderr = s.output, s.output
@@ -177,4 +197,71 @@ func (s webIDESupervisor) run(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// EnsurePlatformExtension installs the required Codespace extension when its
+// bundled version is not present in the persistent extension directory.
+func EnsurePlatformExtension(ctx context.Context, output io.Writer) error {
+	codeServer := filepath.Join(webide.ContainerProgramPath, "bin", "code-server")
+	identity, err := platformExtensionIdentity(webide.ContainerVSIXPath)
+	if err != nil {
+		return err
+	}
+	arguments := []string{"--user-data-dir", webide.ContainerUserDataPath, "--extensions-dir", webide.ContainerExtensionsPath, "--list-extensions", "--show-versions"}
+	command := exec.CommandContext(ctx, codeServer, arguments...)
+	command.Stderr = output
+	installed, err := command.Output()
+	if err != nil {
+		return fmt.Errorf("list installed Web IDE extensions: %w", err)
+	}
+	for _, line := range bytes.Split(installed, []byte{'\n'}) {
+		if strings.EqualFold(strings.TrimSpace(string(line)), identity) {
+			return nil
+		}
+	}
+	install := exec.CommandContext(ctx, codeServer,
+		"--user-data-dir", webide.ContainerUserDataPath,
+		"--extensions-dir", webide.ContainerExtensionsPath,
+		"--force", "--install-extension", webide.ContainerVSIXPath,
+	)
+	install.Stdout, install.Stderr = output, output
+	if err := install.Run(); err != nil {
+		return fmt.Errorf("install required Codespace extension %s: %w", identity, err)
+	}
+	return nil
+}
+
+func platformExtensionIdentity(path string) (string, error) {
+	archive, err := zip.OpenReader(path)
+	if err != nil {
+		return "", fmt.Errorf("open Codespace extension: %w", err)
+	}
+	defer archive.Close()
+	for _, file := range archive.File {
+		if file.Name != "extension/package.json" {
+			continue
+		}
+		reader, err := file.Open()
+		if err != nil {
+			return "", err
+		}
+		data, readErr := io.ReadAll(io.LimitReader(reader, 1<<20))
+		closeErr := reader.Close()
+		if err := errors.Join(readErr, closeErr); err != nil {
+			return "", err
+		}
+		var manifest struct {
+			Publisher string `json:"publisher"`
+			Name      string `json:"name"`
+			Version   string `json:"version"`
+		}
+		if err := json.Unmarshal(data, &manifest); err != nil || manifest.Publisher == "" || manifest.Name == "" || manifest.Version == "" {
+			return "", fmt.Errorf("codespace extension manifest is invalid")
+		}
+		if !strings.EqualFold(manifest.Publisher+"."+manifest.Name, platformExtensionID) {
+			return "", fmt.Errorf("codespace extension identity is invalid")
+		}
+		return manifest.Publisher + "." + manifest.Name + "@" + manifest.Version, nil
+	}
+	return "", fmt.Errorf("codespace extension manifest is missing")
 }

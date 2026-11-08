@@ -4,6 +4,7 @@
 package runtimecmd
 
 import (
+	"archive/zip"
 	"context"
 	"io"
 	"os"
@@ -15,14 +16,34 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestPlatformExtensionIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "gitea-codespace.vsix")
+	file, err := os.Create(path)
+	require.NoError(t, err)
+	archive := zip.NewWriter(file)
+	manifest, err := archive.Create("extension/package.json")
+	require.NoError(t, err)
+	_, err = manifest.Write([]byte(`{"publisher":"gitea","name":"codespace","version":"1.2.3"}`))
+	require.NoError(t, err)
+	require.NoError(t, archive.Close())
+	require.NoError(t, file.Close())
+	identity, err := platformExtensionIdentity(path)
+	require.NoError(t, err)
+	require.Equal(t, "gitea.codespace@1.2.3", identity)
+}
+
 func TestPrepareWebIDEWritesInitialSettings(t *testing.T) {
 	dataHome := t.TempDir()
-	t.Setenv("XDG_DATA_HOME", dataHome)
-	require.NoError(t, PrepareWebIDE(strings.NewReader(`{"editor.tabSize":2}`)))
-	settings, err := os.ReadFile(filepath.Join(dataHome, "code-server", "User", "settings.json"))
+	require.NoError(t, prepareWebIDE(strings.NewReader(`{"editor.tabSize":2}`), dataHome))
+	settingsPath := filepath.Join(dataHome, "User", "settings.json")
+	settings, err := os.ReadFile(settingsPath)
 	require.NoError(t, err)
 	require.JSONEq(t, `{"editor.tabSize":2}`, string(settings))
-	require.Error(t, PrepareWebIDE(strings.NewReader(`[]`)))
+	require.NoError(t, prepareWebIDE(strings.NewReader(`{"editor.tabSize":8}`), dataHome))
+	settings, err = os.ReadFile(settingsPath)
+	require.NoError(t, err)
+	require.JSONEq(t, `{"editor.tabSize":2}`, string(settings))
+	require.Error(t, prepareWebIDE(strings.NewReader(`[]`), dataHome))
 }
 
 func TestWebIDESupervisorRestartsOneChild(t *testing.T) {
