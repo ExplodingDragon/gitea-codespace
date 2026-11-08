@@ -58,6 +58,9 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.source, err)
 		}
 	}
+	for _, item := range request.Native.Mounts {
+		mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.Source, Target: item.Target, ReadOnly: item.ReadOnly})
+	}
 	injected := make([]devcontainer.InjectedFeature, 0, len(request.DevContainer.Features)+1)
 	for _, feature := range request.DevContainer.Features {
 		options := map[string]json.RawMessage{}
@@ -112,6 +115,10 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 	if request.GiteaCustomCA {
 		containerEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
 	}
+	deviceMappings := make([]containerdocker.DeviceMapping, 0, len(request.Native.Devices))
+	for _, mapping := range request.Native.Devices {
+		deviceMappings = append(deviceMappings, containerdocker.DeviceMapping{Source: mapping.Source, Target: mapping.Target, Permissions: mapping.Permissions})
+	}
 	return containerdocker.CreateOptions{
 		OwnerID:             request.CodespaceUUID,
 		Workspace:           request.Workspace,
@@ -127,6 +134,9 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		AdditionalMounts:    mounts,
 		ContainerEnv:        containerEnvironment,
 		Labels:              map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
+		PlatformDevices: containerdocker.PlatformDevices{
+			CDI: request.Native.CDIDeviceIDs, Mappings: deviceMappings, Capabilities: request.Native.Capabilities, ProvidesGPU: request.Native.ProvidesGPU,
+		},
 	}, nil
 }
 

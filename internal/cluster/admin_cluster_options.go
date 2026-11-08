@@ -6,6 +6,7 @@ package cluster
 import (
 	"context"
 	"sort"
+	"strings"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
@@ -19,17 +20,24 @@ import (
 )
 
 type adminClusterOptions struct {
-	RuntimeClasses []adminRuntimeClass `json:"runtimeClasses"`
-	StorageClasses []adminStorageClass `json:"storageClasses"`
-	IngressClasses []adminIngressClass `json:"ingressClasses"`
-	TLSSecrets     []string            `json:"tlsSecrets"`
-	Issuers        []adminIssuer       `json:"issuers"`
+	RuntimeClasses  []adminRuntimeClass   `json:"runtimeClasses"`
+	StorageClasses  []adminStorageClass   `json:"storageClasses"`
+	DeviceResources []adminDeviceResource `json:"deviceResources"`
+	IngressClasses  []adminIngressClass   `json:"ingressClasses"`
+	TLSSecrets      []string              `json:"tlsSecrets"`
+	Issuers         []adminIssuer         `json:"issuers"`
 }
 
 type adminRuntimeClass struct {
 	Name      string `json:"name"`
 	Handler   string `json:"handler"`
 	Isolation string `json:"isolation"`
+}
+
+type adminDeviceResource struct {
+	Name       corev1.ResourceName `json:"name"`
+	Nodes      int                 `json:"nodes"`
+	MaxPerNode int64               `json:"maxPerNode"`
 }
 
 type adminStorageClass struct {
@@ -51,7 +59,7 @@ type adminIssuer struct {
 
 func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, error) {
 	options := adminClusterOptions{
-		RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{},
+		RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}, DeviceResources: []adminDeviceResource{},
 		IngressClasses: []adminIngressClass{}, TLSSecrets: []string{}, Issuers: []adminIssuer{},
 	}
 	var runtimes nodev1.RuntimeClassList
@@ -64,6 +72,25 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 			continue
 		}
 		options.RuntimeClasses = append(options.RuntimeClasses, adminRuntimeClass{Name: runtime.Name, Handler: runtime.Handler, Isolation: isolation})
+	}
+	var nodes corev1.NodeList
+	if err := s.Client.List(ctx, &nodes); err != nil {
+		return options, err
+	}
+	deviceResources := map[corev1.ResourceName]adminDeviceResource{}
+	for _, node := range nodes.Items {
+		for name, quantity := range node.Status.Allocatable {
+			if !strings.Contains(string(name), "/") || quantity.Sign() <= 0 {
+				continue
+			}
+			entry := deviceResources[name]
+			entry.Name, entry.Nodes = name, entry.Nodes+1
+			entry.MaxPerNode = max(entry.MaxPerNode, quantity.Value())
+			deviceResources[name] = entry
+		}
+	}
+	for _, deviceResource := range deviceResources {
+		options.DeviceResources = append(options.DeviceResources, deviceResource)
 	}
 	var storages storagev1.StorageClassList
 	if err := s.Client.List(ctx, &storages); err != nil {
@@ -116,6 +143,7 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 		}
 	}
 	sort.Slice(options.RuntimeClasses, func(i, j int) bool { return options.RuntimeClasses[i].Name < options.RuntimeClasses[j].Name })
+	sort.Slice(options.DeviceResources, func(i, j int) bool { return options.DeviceResources[i].Name < options.DeviceResources[j].Name })
 	sort.Slice(options.StorageClasses, func(i, j int) bool {
 		if options.StorageClasses[i].Default != options.StorageClasses[j].Default {
 			return options.StorageClasses[i].Default

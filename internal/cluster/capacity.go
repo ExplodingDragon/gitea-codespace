@@ -90,6 +90,11 @@ func (c *SiteCoordinator) capacity(ctx context.Context, site *api.GiteaSite, row
 					demand[corev1.ResourceName("limits."+string(name))] = quantity
 				}
 			}
+			if native := template.Spec.Runtime.Native; native != nil {
+				for _, device := range native.DevicePlugins {
+					demand[corev1.ResourceName("requests."+string(device.ResourceName))] = *resource.NewQuantity(device.Count, resource.DecimalSI)
+				}
+			}
 			fits := true
 			for _, quota := range quotas.Items {
 				// Scoped quotas are enforced by admission; their applicability is not

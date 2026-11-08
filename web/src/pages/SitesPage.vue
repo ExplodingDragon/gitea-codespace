@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import {computed, onMounted, ref} from 'vue';
+import {computed, onMounted, ref, watch} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, useDialog} from 'naive-ui';
 import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
@@ -40,13 +40,33 @@ const dirty = useDirtyForm(() => ({
   quota: quotaDraft.value,
 }));
 const siteUsesHTTPS = computed(() => form.value?.url.trim().toLowerCase().startsWith('https://') ?? false);
-const quotaFields = computed<{key: string; label: string; kind: MeasurementKind}[]>(() => [
-  {key: 'pods', label: t('site.pods'), kind: 'count'},
-  {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count'},
-  {key: 'requests.cpu', label: t('site.cpuRequests'), kind: 'cpu'},
-  {key: 'requests.memory', label: t('site.memoryRequests'), kind: 'memory'},
-  {key: 'requests.storage', label: t('site.storage'), kind: 'storage'},
-]);
+type QuotaField = {key: string; label: string; kind: MeasurementKind; initial: string};
+const quotaFields = computed<QuotaField[]>(() => {
+  const fields: QuotaField[] = [
+    {key: 'pods', label: t('site.pods'), kind: 'count', initial: '10'},
+    {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count', initial: '10'},
+    {key: 'requests.cpu', label: t('site.cpuRequests'), kind: 'cpu', initial: '10'},
+    {key: 'requests.memory', label: t('site.memoryRequests'), kind: 'memory', initial: '10Gi'},
+    {key: 'requests.storage', label: t('site.storage'), kind: 'storage', initial: '100Gi'},
+  ];
+  const selectedTemplates = new Set(form.value?.templates.map(({uid}) => uid) ?? []);
+  const devices = new Map<string, number>();
+  for (const environment of environments.value) {
+    if (!selectedTemplates.has(environment.uid)) continue;
+    for (const device of environment.spec.runtime.native?.devicePlugins ?? []) {
+      devices.set(device.resourceName, Math.max(devices.get(device.resourceName) ?? 0, device.count));
+    }
+  }
+  for (const [resource, count] of [...devices].sort(([left], [right]) => left.localeCompare(right))) {
+    fields.push({
+      key: `requests.${resource}`,
+      label: t('site.deviceQuota', {resource}),
+      kind: 'count',
+      initial: String(count),
+    });
+  }
+  return fields;
+});
 function defaultQuota() {
   return {
     pods: '10',
@@ -56,6 +76,9 @@ function defaultQuota() {
     'requests.storage': '100Gi',
   };
 }
+watch(quotaFields, (fields) => {
+  for (const field of fields) quotaDraft.value[field.key] ??= field.initial;
+});
 async function load() {
   loading.value = true;
   error.value = '';
@@ -118,7 +141,9 @@ async function save() {
     }
     const spec = cloneFormValue(form.value!);
     if (!siteUsesHTTPS.value) spec.caBundle = '';
-    spec.quota = quotaEnabled.value ? cloneFormValue(quotaDraft.value) : {};
+    spec.quota = quotaEnabled.value
+      ? Object.fromEntries(quotaFields.value.map(({key}) => [key, quotaDraft.value[key]]))
+      : {};
     const saved = await request<Resource<Site>>(
       `sites${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',

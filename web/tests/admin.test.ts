@@ -92,6 +92,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   const clusterOptions: ClusterOptions = {
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
+    deviceResources: [],
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],

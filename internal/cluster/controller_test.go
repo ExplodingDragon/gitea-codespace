@@ -18,6 +18,7 @@ import (
 	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
@@ -327,6 +328,39 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	require.Contains(t, container.Env, corev1.EnvVar{Name: "DOCKER_CONFIG", Value: "/run/codespace/docker-config"})
 	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "ephemeral", MountPath: "/run/codespace"})
 	require.Equal(t, corev1.PullIfNotPresent, container.ImagePullPolicy)
+}
+
+func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
+	runtime := testRuntime()
+	runtime.Isolation, runtime.RuntimeClassName = api.IsolationNative, ""
+	runtime.Native = &runtimeplatform.NativeConfiguration{
+		RuntimeCapAdd: []corev1.Capability{"SYS_MODULE"}, DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"},
+		DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+			ResourceName: "nvidia.com/gpu", Count: 2,
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
+		}},
+	}
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
+	}
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	require.NoError(t, err)
+	container := pod.Spec.Containers[0]
+	require.Nil(t, pod.Spec.RuntimeClassName)
+	require.Nil(t, container.SecurityContext.Privileged)
+	wantDevices := resource.MustParse("2")
+	gotDevices := container.Resources.Requests["nvidia.com/gpu"]
+	require.Zero(t, wantDevices.Cmp(gotDevices))
+	require.Equal(t, container.Resources.Requests["nvidia.com/gpu"], container.Resources.Limits["nvidia.com/gpu"])
+	require.Contains(t, container.SecurityContext.Capabilities.Add, corev1.Capability("SYS_MODULE"))
+	require.Contains(t, container.SecurityContext.Capabilities.Add, corev1.Capability("SYS_RESOURCE"))
+	require.Equal(t, corev1.SeccompProfileTypeUnconfined, container.SecurityContext.SeccompProfile.Type)
+	for _, mount := range container.VolumeMounts {
+		require.NotEqual(t, "/sys/fs/cgroup", mount.MountPath)
+	}
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "cdi-specs-0", MountPath: "/etc/cdi", ReadOnly: true})
 }
 
 func TestRuntimePodUsesProxySecret(t *testing.T) {

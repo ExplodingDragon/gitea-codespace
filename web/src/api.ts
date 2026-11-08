@@ -108,7 +108,7 @@ export function upsertResource<T, S>(resources: Resource<T, S>[], saved: Resourc
 
 export type Runtime = {
   isolation: string;
-  runtimeClassName: string;
+  runtimeClassName?: string;
   storageClassName: string;
   storage: {storage: string};
   accessMode: string;
@@ -121,6 +121,23 @@ export type Runtime = {
     lifecycleScript?: string;
   };
   proxy?: OutboundProxy;
+  native?: NativeRuntime;
+};
+
+export type NativeRuntime = {
+  runtimeCapAdd: string[];
+  devContainerCapAdd: string[];
+  devicePlugins: {
+    resourceName: string;
+    count: number;
+    providesGPU?: boolean;
+    cdi?: {kind: string; deviceIDEnvironment: string};
+    hostAccess?: {
+      devices?: {source: string; target: string; permissions: string}[];
+      mounts?: {source: string; target: string; readOnly?: boolean}[];
+      forwardEnvironment?: string[];
+    };
+  }[];
 };
 
 export type OutboundProxy = {
@@ -134,6 +151,7 @@ export type OutboundProxy = {
 export type ClusterOptions = {
   runtimeClasses: {name: string; handler: string; isolation: 'kata' | 'sysbox'}[];
   storageClasses: {name: string; provisioner: string; default: boolean}[];
+  deviceResources: {name: string; nodes: number; maxPerNode: number}[];
   ingressClasses: {name: string; controller: string; default: boolean}[];
   tlsSecrets: string[];
   issuers: {kind: 'Issuer' | 'ClusterIssuer'; name: string}[];

@@ -71,6 +71,18 @@ func TestPlatformProxyEnvironmentDoesNotMutateInputs(t *testing.T) {
 	}
 }
 
+func TestPlatformGPUArgs(t *testing.T) {
+	t.Parallel()
+
+	arguments, err := platformGPUArgs([]string{"--hostname", "workspace", "--gpus=all", "--gpus", "all"})
+	if err != nil || !slices.Equal(arguments, []string{"--hostname", "workspace"}) {
+		t.Fatalf("normalize platform GPU arguments = %#v, %v", arguments, err)
+	}
+	if _, err := platformGPUArgs([]string{"--gpus", "device=GPU-1"}); err == nil {
+		t.Fatal("specific Docker GPU selection must not override the Kubernetes allocation")
+	}
+}
+
 func TestDockerCreateArgumentsWithRunArgsPreserveFeatureStartup(t *testing.T) {
 	t.Parallel()
 
@@ -89,8 +101,10 @@ func TestDockerCreateArgumentsWithRunArgsPreserveFeatureStartup(t *testing.T) {
 		ExposedPorts: nil,
 	}
 	hostConfig := &container.HostConfig{
-		Mounts:     []mount.Mount{{Type: mount.TypeBind, Source: "/host/workspace", Target: "/workspace"}},
-		Privileged: true,
+		Mounts:         []mount.Mount{{Type: mount.TypeBind, Source: "/host/workspace", Target: "/workspace"}},
+		Privileged:     true,
+		Devices:        []container.DeviceMapping{{PathOnHost: "/dev/example", PathInContainer: "/dev/example", CgroupPermissions: "rwm"}},
+		DeviceRequests: []container.DeviceRequest{{Driver: "cdi", DeviceIDs: []string{"example.com/device=device-1"}}},
 	}
 	arguments, err := dockerCreateArguments(resolved, config, hostConfig, []string{"127.0.0.1:8000:8000"})
 	if err != nil {
@@ -100,6 +114,8 @@ func TestDockerCreateArgumentsWithRunArgsPreserveFeatureStartup(t *testing.T) {
 		{"--publish", "127.0.0.1:8000:8000"},
 		{"--hostname", "workspace"},
 		{"--entrypoint", "/bin/sh"},
+		{"--device", "/dev/example:/dev/example:rwm"},
+		{"--device", "example.com/device=device-1"},
 		{"example/image:latest", "-c"},
 	} {
 		if !containsAdjacent(arguments, required[0], required[1]) {

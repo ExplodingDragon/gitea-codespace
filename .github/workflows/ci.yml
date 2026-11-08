@@ -153,6 +153,9 @@ jobs:
           - runtime: kata
             runtime_class: kata-qemu-runtime-rs
             storage_class: rawfile-localpv
+          - runtime: native
+            runtime_class: ''
+            storage_class: local-path
     env:
       KUBECONFIG: /etc/rancher/k3s/k3s.yaml
       CODESPACE_E2E_HTTP_PROXY: ${{ vars.CODESPACE_E2E_HTTP_PROXY }}

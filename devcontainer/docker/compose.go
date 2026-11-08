@@ -30,7 +30,7 @@ func composeProjectName(ownerID string) string {
 	return fmt.Sprintf("devcontainer-%x", digest[:12])
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, customizeImage CustomizeImageFunc) (string, []string, map[string]string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc) (string, []string, map[string]string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -117,7 +117,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
-	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
+	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU, platformDevices.ProvidesGPU)
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
@@ -167,6 +167,9 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		service.Init = &init
 	}
 	service.CapAdd = append(service.CapAdd, resolved.CapAdd...)
+	if err := applyPlatformDevicesToComposeService(&service, platformDevices); err != nil {
+		return "", nil, nil, nil, err
+	}
 	service.SecurityOpt = append(service.SecurityOpt, resolved.SecurityOpt...)
 	overrideCommand := resolved.OverrideCommand != nil && *resolved.OverrideCommand
 	if overrideCommand || len(resolved.FeatureEntrypoints) > 0 {
@@ -268,6 +271,46 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	}
 	slices.Sort(related)
 	return primary, related, composeContainers, featureDigests, nil
+}
+
+func applyPlatformDevicesToComposeService(service *composetypes.ServiceConfig, devices PlatformDevices) error {
+	var err error
+	if devices.ProvidesGPU {
+		service.Gpus, err = platformComposeGPURequests(service.Gpus, true)
+		if err != nil {
+			return err
+		}
+		if service.Deploy != nil && service.Deploy.Resources.Reservations != nil {
+			service.Deploy.Resources.Reservations.Devices, err = platformComposeGPURequests(service.Deploy.Resources.Reservations.Devices, false)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	for _, id := range devices.CDI {
+		service.Devices = append(service.Devices, composetypes.DeviceMapping{Source: id, Target: id})
+	}
+	for _, mapping := range devices.Mappings {
+		service.Devices = append(service.Devices, composetypes.DeviceMapping{Source: mapping.Source, Target: mapping.Target, Permissions: mapping.Permissions})
+	}
+	service.CapAdd = append(service.CapAdd, devices.Capabilities...)
+	return nil
+}
+
+func platformComposeGPURequests(requests []composetypes.DeviceRequest, allGPU bool) ([]composetypes.DeviceRequest, error) {
+	kept := make([]composetypes.DeviceRequest, 0, len(requests))
+	for _, request := range requests {
+		gpu := allGPU || request.Driver == "nvidia" || slices.Contains(request.Capabilities, "gpu")
+		if !gpu {
+			kept = append(kept, request)
+			continue
+		}
+		if request.Count != -1 || len(request.IDs) != 0 || len(request.Options) != 0 || request.Driver != "" && request.Driver != "nvidia" ||
+			len(request.Capabilities) > 0 && (len(request.Capabilities) != 1 || request.Capabilities[0] != "gpu") {
+			return nil, fmt.Errorf("compose GPU selection must be all when the environment template allocates GPUs")
+		}
+	}
+	return kept, nil
 }
 
 func composeProxyEnvironment(services composetypes.Services, platform map[string]string) map[string]string {

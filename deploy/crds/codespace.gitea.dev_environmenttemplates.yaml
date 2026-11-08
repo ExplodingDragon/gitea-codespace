@@ -104,7 +104,100 @@ spec:
                     enum:
                     - kata
                     - sysbox
+                    - native
                     type: string
+                  native:
+                    description: |-
+                      NativeConfiguration configures the outer Runtime Pod and the primary Dev
+                      Container when Kubernetes runs them on the node kernel.
+                    properties:
+                      devContainerCapAdd:
+                        items:
+                          description: Capability represent POSIX capabilities type
+                          type: string
+                        type: array
+                      devicePlugins:
+                        items:
+                          description: |-
+                            DevicePluginRequest reserves one Kubernetes extended resource. CDI and
+                            HostAccess describe how the allocated devices reach the nested Dev Container.
+                          properties:
+                            cdi:
+                              description: |-
+                                CDIDevicePropagation converts Device Plugin allocation IDs into CDI device
+                                names understood by the nested Docker daemon.
+                              properties:
+                                deviceIDEnvironment:
+                                  type: string
+                                kind:
+                                  type: string
+                              required:
+                              - deviceIDEnvironment
+                              - kind
+                              type: object
+                            count:
+                              format: int64
+                              type: integer
+                            hostAccess:
+                              description: |-
+                                HostAccess grants the Runtime Pod explicit access to node paths and forwards
+                                Device Plugin environment variables to the primary Dev Container.
+                              properties:
+                                devices:
+                                  items:
+                                    description: DeviceMapping exposes a node device
+                                      to the primary Dev Container.
+                                    properties:
+                                      permissions:
+                                        type: string
+                                      source:
+                                        type: string
+                                      target:
+                                        type: string
+                                    required:
+                                    - permissions
+                                    - source
+                                    - target
+                                    type: object
+                                  type: array
+                                forwardEnvironment:
+                                  items:
+                                    type: string
+                                  type: array
+                                mounts:
+                                  items:
+                                    description: MountMapping exposes a node path
+                                      to the primary Dev Container.
+                                    properties:
+                                      readOnly:
+                                        type: boolean
+                                      source:
+                                        type: string
+                                      target:
+                                        type: string
+                                    required:
+                                    - source
+                                    - target
+                                    type: object
+                                  type: array
+                              type: object
+                            providesGPU:
+                              type: boolean
+                            resourceName:
+                              description: ResourceName is the name identifying various
+                                resources in a ResourceList.
+                              type: string
+                          required:
+                          - count
+                          - resourceName
+                          type: object
+                        type: array
+                      runtimeCapAdd:
+                        items:
+                          description: Capability represent POSIX capabilities type
+                          type: string
+                        type: array
+                    type: object
                   proxy:
                     description: |-
                       OutboundProxy configures one administrator-managed network proxy. Proxy URLs
@@ -211,7 +304,6 @@ spec:
                 - gitSSHKeyType
                 - isolation
                 - resources
-                - runtimeClassName
                 - storage
                 - storageClassName
                 type: object

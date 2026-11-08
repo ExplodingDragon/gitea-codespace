@@ -22,6 +22,7 @@ const items = ref<Resource<Component, ComponentStatus>[]>([]);
 const cluster = ref<ClusterOptions>({
   runtimeClasses: [],
   storageClasses: [],
+  deviceResources: [],
   ingressClasses: [],
   tlsSecrets: [],
   issuers: [],

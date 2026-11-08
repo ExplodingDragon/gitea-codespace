@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -17,6 +18,7 @@ var GroupVersion = schema.GroupVersion{Group: "codespace.gitea.dev", Version: "v
 const (
 	IsolationKata         = "kata"
 	IsolationSysbox       = "sysbox"
+	IsolationNative       = "native"
 	RuntimeIsolationLabel = "codespace.gitea.dev/isolation"
 )
 
@@ -131,18 +133,19 @@ type OutboundProxy struct {
 
 // EnvironmentConfiguration defines administrator-selected runtime behavior.
 type EnvironmentConfiguration struct {
-	// +kubebuilder:validation:Enum=kata;sysbox
+	// +kubebuilder:validation:Enum=kata;sysbox;native
 	Isolation        string                      `json:"isolation"`
-	RuntimeClassName string                      `json:"runtimeClassName"`
+	RuntimeClassName string                      `json:"runtimeClassName,omitempty"`
 	StorageClassName string                      `json:"storageClassName"`
 	Storage          corev1.ResourceList         `json:"storage"`
 	Resources        corev1.ResourceRequirements `json:"resources"`
 	// +kubebuilder:validation:Enum=ReadWriteOncePod;ReadWriteOnce
 	AccessMode corev1.PersistentVolumeAccessMode `json:"accessMode"`
 	// +kubebuilder:validation:Enum=ed25519;rsa-4096
-	GitSSHKeyType string                            `json:"gitSSHKeyType"`
-	DevContainer  devcontainerruntime.Configuration `json:"devContainer"`
-	Proxy         *OutboundProxy                    `json:"proxy,omitempty"`
+	GitSSHKeyType string                               `json:"gitSSHKeyType"`
+	DevContainer  devcontainerruntime.Configuration    `json:"devContainer"`
+	Proxy         *OutboundProxy                       `json:"proxy,omitempty"`
+	Native        *runtimeplatform.NativeConfiguration `json:"native,omitempty"`
 }
 
 // StorageVolumeMode returns the volume representation required by the selected

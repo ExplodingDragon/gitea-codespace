@@ -28,6 +28,7 @@ import (
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"gitea.dev/codespace/internal/transport"
 	"github.com/spf13/cobra"
 	"golang.org/x/sync/errgroup"
@@ -75,6 +76,14 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	}
 	if err := devContainer.Validate(); err != nil {
 		return fmt.Errorf("CODESPACE_DEVCONTAINER_CONFIGURATION: %w", err)
+	}
+	var nativeConfiguration *runtimeplatform.NativeConfiguration
+	if err := json.Unmarshal([]byte(os.Getenv("CODESPACE_NATIVE_CONFIGURATION")), &nativeConfiguration); err != nil {
+		return fmt.Errorf("decode CODESPACE_NATIVE_CONFIGURATION: %w", err)
+	}
+	nativeDevices, err := agentpkg.PrepareNativeDevices(nativeConfiguration)
+	if err != nil {
+		return fmt.Errorf("prepare native devices: %w", err)
 	}
 	if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
 		if err := transport.ExtendDefaultRootCAs(path); err != nil {
@@ -128,7 +137,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err := os.Setenv("DOCKER_HOST", agentpkg.DockerHost); err != nil {
 		return err
 	}
-	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer}
+	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
 	if err != nil {

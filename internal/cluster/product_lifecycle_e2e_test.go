@@ -530,8 +530,13 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	firstPodUID, volumeUID, runtimeUUID := codespace.Status.Pod.UID, codespace.Status.Volume.UID, codespace.Spec.RuntimeUUID
 	require.NotEmpty(t, firstPodUID)
 	require.NotEmpty(t, volumeUID)
+	if runtime.isolation == api.IsolationNative {
+		var pod corev1.Pod
+		require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}, &pod))
+		require.Nil(t, pod.Spec.RuntimeClassName)
+	}
 	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
-	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true))
+	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
@@ -551,7 +556,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, volumeUID, codespace.Status.Volume.UID)
 	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
-	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false))
+	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
 
 	remote.setRuntimeSettings(&codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 2, InteractionGeneration: 3})
@@ -685,7 +690,7 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 	return fmt.Errorf("gateway continued accepting opens after the Runtime stopped; last response was %s", lastResult)
 }
 
-func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID string, signer ssh.Signer, initialize bool) error {
+func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID string, signer ssh.Signer, initialize, verifyNativeDevice bool) error {
 	address := net.JoinHostPort(node, strconv.Itoa(int(port)))
 	var dialer net.Dialer
 	connection, err := dialer.DialContext(ctx, "tcp", address)
@@ -718,8 +723,12 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		defer func() { _ = session.Close() }()
 		return session.CombinedOutput(command)
 	}
+	deviceCheck := ""
+	if verifyNativeDevice {
+		deviceCheck = `test -c /dev/fuse && case "$CODESPACE_E2E_CDI" in fuse0|fuse1) ;; *) exit 1 ;; esac && `
+	}
 	if initialize {
-		output, err := run(`test "$E2E_SECRET" = "e2e-secret-value" && test "$(git branch --show-current)" = "main" && test "$0" = "$(getent passwd "$(id -u)" | cut -d: -f7)" && printf lifecycle-persisted > .codespace-lifecycle && printf command-ok`)
+		output, err := run(deviceCheck + `test "$E2E_SECRET" = "e2e-secret-value" && test "$(git branch --show-current)" = "main" && test "$0" = "$(getent passwd "$(id -u)" | cut -d: -f7)" && printf lifecycle-persisted > .codespace-lifecycle && printf command-ok`)
 		if err != nil {
 			return fmt.Errorf("run Gateway SSH command: output %q: %w", output, err)
 		}
@@ -855,7 +864,7 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		}
 		return nil
 	}
-	output, err := run(`test "$(cat .codespace-lifecycle)" = "lifecycle-persisted" && test "$(cat .codespace-sftp)" = "sftp-persisted" && printf resumed-ok`)
+	output, err := run(deviceCheck + `test "$(cat .codespace-lifecycle)" = "lifecycle-persisted" && test "$(cat .codespace-sftp)" = "sftp-persisted" && printf resumed-ok`)
 	if err != nil {
 		return fmt.Errorf("verify resumed Gateway SSH workspace: output %q: %w", output, err)
 	}

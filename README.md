@@ -1,33 +1,30 @@
 # Gitea Codespace
 
-Gitea Codespace provides isolated remote development workspaces for Gitea
-repositories. Each workspace follows the repository's Dev Container
-configuration and is available from a browser IDE, desktop editor, SSH, or
-SFTP.
+Gitea Codespace provides remote development workspaces for Gitea repositories.
+It uses the repository's Dev Container configuration and supports browser IDEs,
+desktop editors, SSH, and SFTP.
 
-## Use Codespaces
+## Get started
 
-After an administrator connects Gitea to a Codespace installation:
+After an administrator connects Gitea to Codespace:
 
-1. Open a repository, commit, or pull request in Gitea.
-2. Select **Create Codespace** and choose the development environment.
-3. Open the workspace when its build completes.
+1. Open a repository, commit, or pull request.
+2. Select **Create Codespace** and choose an environment.
+3. Open the workspace after the build completes.
 
-A stopped codespace keeps its workspace files and can be resumed later. Delete
-it when those files are no longer needed.
+Stopping a codespace preserves its workspace files for the next session.
+Services published from the workspace appear on its details page with their
+configured access policy.
 
-Applications exposed with `gitea-codespace-endpoint` appear on the Codespace
-details page. An endpoint can require Gitea authentication or allow public
-access.
+## Install and operate
 
-## Install
+The [Helm guide](charts/gitea-codespace/README.md) covers cluster requirements,
+installation, Gitea registration, workspace access, and upgrades.
 
-See the [Helm guide](charts/gitea-codespace/README.md) for cluster requirements,
-installation, upgrades, and Gitea registration.
+## Contribute
 
-## Development
-
-See [DEVELOPMENT.md](DEVELOPMENT.md) for repository setup and validation.
+[DEVELOPMENT.md](DEVELOPMENT.md) describes the repository layout and validation
+workflow.
 
 ## License
 

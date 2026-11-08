@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -35,7 +36,7 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "agent", Namespace: ns.Name},
 		Spec: corev1.PodSpec{
-			RuntimeClassName: ptr.To(runtime.runtimeClass), AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever,
+			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever,
 			Containers: []corev1.Container{{
 				Name: "runtime", Image: runtime.platformImage, ImagePullPolicy: corev1.PullNever,
 				Command:      []string{"sleep", "3600"},
@@ -45,11 +46,16 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 			Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: volume.Name}}}},
 		},
 	}
+	if runtime.runtimeClass != "" {
+		pod.Spec.RuntimeClassName = ptr.To(runtime.runtimeClass)
+	}
 	if runtime.isolation == "kata" {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
-	} else {
+	} else if runtime.isolation == "sysbox" {
 		pod.Spec.HostUsers = ptr.To(false)
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
+	} else {
+		configureNativeRuntimePod(pod, runtime.environmentConfiguration().Native)
 	}
 	require.NoError(t, cluster.Create(cluster.ctx, pod))
 	require.Eventually(t, func() bool {
@@ -61,9 +67,13 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 	command = exec.CommandContext(cluster.ctx, "kubectl", "cp", binary, ns.Name+"/agent:/agent.test")
 	output, err = command.CombinedOutput()
 	require.NoError(t, err, "%s", output)
+	dockerEnvironment := []string{"env", "CODESPACE_E2E=1"}
+	if runtime.isolation == api.IsolationNative {
+		dockerEnvironment = append(dockerEnvironment, "CODESPACE_E2E_NATIVE=1")
+	}
 	for _, args := range [][]string{
 		{"env", "CODESPACE_E2E=1", "unshare", "--pid", "--fork", "--mount-proc", "/agent.test", "-test.run=^TestAgentE2EPID1Supervision$", "-test.v"},
-		{"env", "CODESPACE_E2E=1", "/agent.test", "-test.run=^TestAgentE2EDockerSupervision$", "-test.v"},
+		append(dockerEnvironment, "/agent.test", "-test.run=^TestAgentE2EDockerSupervision$", "-test.v"),
 	} {
 		command := exec.CommandContext(cluster.ctx, "kubectl", append([]string{"exec", "-n", ns.Name, "agent", "--"}, args...)...)
 		output, err := command.CombinedOutput()

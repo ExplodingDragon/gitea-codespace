@@ -90,12 +90,28 @@ type CreateOptions struct {
 	AdditionalMounts    []devcontainer.Mount
 	ContainerEnv        map[string]string
 	Labels              map[string]string
+	PlatformDevices     PlatformDevices
 	FrozenLockfile      bool
 	Cache               devcontainer.CacheOptions
 	CustomizeImage      CustomizeImageFunc
 	PrepareLifecycle    PrepareLifecycleFunc
 	RunLifecycle        RunLifecycleFunc
 	Ready               ReadyFunc
+}
+
+// PlatformDevices contains the device access selected by the environment
+// template. It is applied only to the primary Dev Container.
+type PlatformDevices struct {
+	CDI          []string
+	Mappings     []DeviceMapping
+	Capabilities []string
+	ProvidesGPU  bool
+}
+
+type DeviceMapping struct {
+	Source      string
+	Target      string
+	Permissions string
 }
 
 // New connects an Engine to the Docker endpoint selected by the standard Docker client configuration.
@@ -209,9 +225,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var composeContainers map[string]string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.CustomizeImage)
+		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage)
 	} else {
-		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.CustomizeImage)
+		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage)
 	}
 	if err != nil {
 		return nil, err
@@ -342,7 +358,7 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 	return json.Marshal(merged)
 }
 
-func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, customizeImage CustomizeImageFunc) (string, map[string]string, error) {
+func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc) (string, map[string]string, error) {
 	imageName, featureDigests, err := e.resolveImage(ctx, resolved, platformEnvironment)
 	if err != nil {
 		return "", nil, err
@@ -367,9 +383,15 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 	if err != nil {
 		return "", nil, fmt.Errorf("appPort: %w", err)
 	}
-	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU)
+	useGPU, err := e.resolveGPURequest(ctx, resolved.HostRequirements.GPU, platformDevices.ProvidesGPU)
 	if err != nil {
 		return "", nil, err
+	}
+	if platformDevices.ProvidesGPU {
+		resolved.RunArgs, err = platformGPUArgs(resolved.RunArgs)
+		if err != nil {
+			return "", nil, err
+		}
 	}
 	override := resolved.OverrideCommand == nil || *resolved.OverrideCommand
 	config := &container.Config{
@@ -405,9 +427,16 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		Init:         &resolved.Init,
 		PortBindings: portBindings,
 	}
+	hostConfig.CapAdd = append(hostConfig.CapAdd, platformDevices.Capabilities...)
+	for _, mapping := range platformDevices.Mappings {
+		hostConfig.Devices = append(hostConfig.Devices, container.DeviceMapping{PathOnHost: mapping.Source, PathInContainer: mapping.Target, CgroupPermissions: mapping.Permissions})
+	}
+	if len(platformDevices.CDI) > 0 {
+		hostConfig.DeviceRequests = append(hostConfig.DeviceRequests, container.DeviceRequest{Driver: "cdi", DeviceIDs: slices.Clone(platformDevices.CDI)})
+	}
 	config.ExposedPorts = exposedPorts
 	if useGPU {
-		hostConfig.DeviceRequests = []container.DeviceRequest{{Count: -1, Capabilities: [][]string{{"gpu"}}}}
+		hostConfig.DeviceRequests = append(hostConfig.DeviceRequests, container.DeviceRequest{Count: -1, Capabilities: [][]string{{"gpu"}}})
 	}
 	if len(resolved.RunArgs) > 0 {
 		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig, publishSpecs)
@@ -422,6 +451,28 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		return "", nil, fmt.Errorf("start Dev Container: %w", err)
 	}
 	return response.ID, featureDigests, nil
+}
+
+func platformGPUArgs(arguments []string) ([]string, error) {
+	result := make([]string, 0, len(arguments))
+	for index := 0; index < len(arguments); index++ {
+		argument := arguments[index]
+		if argument == "--gpus" {
+			if index+1 >= len(arguments) || strings.TrimSpace(arguments[index+1]) != "all" {
+				return nil, fmt.Errorf("runArgs --gpus must be all when the environment template allocates GPUs")
+			}
+			index++
+			continue
+		}
+		if strings.HasPrefix(argument, "--gpus=") {
+			if strings.TrimSpace(strings.TrimPrefix(argument, "--gpus=")) != "all" {
+				return nil, fmt.Errorf("runArgs --gpus must be all when the environment template allocates GPUs")
+			}
+			continue
+		}
+		result = append(result, argument)
+	}
+	return result, nil
 }
 
 func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) (string, error) {
@@ -511,8 +562,17 @@ func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config 
 	for _, value := range hostConfig.SecurityOpt {
 		arguments = append(arguments, "--security-opt", value)
 	}
-	if len(hostConfig.DeviceRequests) > 0 {
-		arguments = append(arguments, "--gpus", "all")
+	for _, mapping := range hostConfig.Devices {
+		arguments = append(arguments, "--device", mapping.PathOnHost+":"+mapping.PathInContainer+":"+mapping.CgroupPermissions)
+	}
+	for _, request := range hostConfig.DeviceRequests {
+		if request.Driver == "cdi" {
+			for _, id := range request.DeviceIDs {
+				arguments = append(arguments, "--device", id)
+			}
+		} else {
+			arguments = append(arguments, "--gpus", "all")
+		}
 	}
 	for _, spec := range publishSpecs {
 		arguments = append(arguments, "--publish", spec)

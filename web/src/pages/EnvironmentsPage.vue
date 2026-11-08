@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed, onMounted, ref} from 'vue';
-import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, NTag, useDialog} from 'naive-ui';
-import {Pencil, RefreshCw, Trash2} from '@lucide/vue';
+import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
+import {Pencil, Plus, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {errorMessage, request, upsertResource, type ClusterOptions, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
@@ -17,6 +17,7 @@ const items = ref<Resource<Environment>[]>([]);
 const cluster = ref<ClusterOptions>({
   runtimeClasses: [],
   storageClasses: [],
+  deviceResources: [],
   ingressClasses: [],
   tlsSecrets: [],
   issuers: [],
@@ -27,6 +28,7 @@ const form = ref<Environment>();
 const name = ref('');
 const webIDEOptionsJSON = ref('{}');
 const featuresJSON = ref('{}');
+const nativeHostAccessJSON = ref<string[]>([]);
 const error = ref('');
 const loading = ref(false);
 const saving = ref(false);
@@ -38,6 +40,7 @@ const dirty = useDirtyForm(() => ({
   form: form.value,
   webIDEOptions: webIDEOptionsJSON.value,
   features: featuresJSON.value,
+  nativeHostAccess: nativeHostAccessJSON.value,
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
 }));
@@ -47,6 +50,7 @@ const isolationOptions = computed(() => {
     {label: 'Kata', value: 'kata', disabled: false},
     {label: 'Sysbox', value: 'sysbox', disabled: false},
   ].filter(({value}) => available.has(value as 'kata' | 'sysbox'));
+  options.push({label: 'Native', value: 'native', disabled: false});
   const current = form.value?.runtime.isolation;
   if (current && !options.some(({value}) => value === current))
     options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
@@ -83,6 +87,39 @@ const storageOptions = computed(() => {
     });
   return options;
 });
+const deviceResourceOptions = computed(() =>
+  cluster.value.deviceResources.map(({name, nodes, maxPerNode}) => ({
+    label: `${name} (${t('environment.deviceCapacity', {maxPerNode, nodes})})`,
+    value: name,
+  })),
+);
+const capabilityOptions = [
+  'AUDIT_CONTROL',
+  'AUDIT_READ',
+  'BLOCK_SUSPEND',
+  'BPF',
+  'CHECKPOINT_RESTORE',
+  'DAC_READ_SEARCH',
+  'IPC_LOCK',
+  'IPC_OWNER',
+  'LEASE',
+  'LINUX_IMMUTABLE',
+  'MAC_ADMIN',
+  'MAC_OVERRIDE',
+  'NET_BROADCAST',
+  'PERFMON',
+  'SYS_BOOT',
+  'SYS_MODULE',
+  'SYS_NICE',
+  'SYS_PACCT',
+  'SYS_PTRACE',
+  'SYS_RAWIO',
+  'SYS_RESOURCE',
+  'SYSLOG',
+  'SYS_TIME',
+  'SYS_TTY_CONFIG',
+  'WAKE_ALARM',
+].map((value) => ({label: value, value}));
 
 async function load() {
   loading.value = true;
@@ -103,8 +140,36 @@ onMounted(load);
 function setIsolation(value: string) {
   if (!form.value) return;
   form.value.runtime.isolation = value;
-  form.value.runtime.runtimeClassName =
-    cluster.value.runtimeClasses.find(({isolation}) => isolation === value)?.name ?? '';
+  if (value === 'native') {
+    delete form.value.runtime.runtimeClassName;
+    form.value.runtime.native ??= {runtimeCapAdd: [], devContainerCapAdd: [], devicePlugins: []};
+    nativeHostAccessJSON.value = form.value.runtime.native.devicePlugins.map(({hostAccess}) =>
+      JSON.stringify(hostAccess ?? {}, null, 2),
+    );
+  } else {
+    form.value.runtime.runtimeClassName =
+      cluster.value.runtimeClasses.find(({isolation}) => isolation === value)?.name ?? '';
+    delete form.value.runtime.native;
+    nativeHostAccessJSON.value = [];
+  }
+}
+
+function addDevicePlugin() {
+  const native = form.value?.runtime.native;
+  if (!native) return;
+  native.devicePlugins.push({resourceName: cluster.value.deviceResources[0]?.name ?? '', count: 1, hostAccess: {}});
+  nativeHostAccessJSON.value.push('{}');
+}
+
+function removeDevicePlugin(index: number) {
+  form.value?.runtime.native?.devicePlugins.splice(index, 1);
+  nativeHostAccessJSON.value.splice(index, 1);
+}
+
+function setCDI(index: number, enabled: boolean) {
+  const device = form.value?.runtime.native?.devicePlugins[index];
+  if (!device) return;
+  device.cdi = enabled ? {kind: '', deviceIDEnvironment: ''} : undefined;
 }
 
 function edit(item?: Resource<Environment>) {
@@ -140,6 +205,13 @@ function edit(item?: Resource<Environment>) {
         },
       };
   if (!item) setIsolation(form.value.runtime.isolation);
+  if (form.value.runtime.native) {
+    form.value.runtime.native.runtimeCapAdd ??= [];
+    form.value.runtime.native.devContainerCapAdd ??= [];
+    form.value.runtime.native.devicePlugins ??= [];
+  }
+  nativeHostAccessJSON.value =
+    form.value.runtime.native?.devicePlugins.map(({hostAccess}) => JSON.stringify(hostAccess ?? {}, null, 2)) ?? [];
   const currentLimits = form.value.runtime.resources.limits;
   if (currentLimits?.cpu && currentLimits.memory) {
     limitsEnabled.value = true;
@@ -190,6 +262,7 @@ async function save() {
   try {
     if (!/^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$/.test(name.value)) throw new Error(t('environment.invalidTag'));
     if (
+      form.value!.runtime.isolation !== 'native' &&
       !cluster.value.runtimeClasses.some(
         ({name: runtimeName, isolation}) =>
           runtimeName === form.value!.runtime.runtimeClassName && isolation === form.value!.runtime.isolation,
@@ -221,6 +294,27 @@ async function save() {
     const {webIDEOptions, features} = parseDevContainerAdditions();
     spec.runtime.devContainer.features = features;
     spec.runtime.devContainer.webIDE.options = webIDEOptions;
+    if (spec.runtime.isolation === 'native') {
+      delete spec.runtime.runtimeClassName;
+      if (!spec.runtime.native) throw new Error(t('environment.invalidNativeConfiguration'));
+      const selectedResources = new Set<string>();
+      spec.runtime.native.devicePlugins.forEach((device, index) => {
+        if (
+          !cluster.value.deviceResources.some(({name}) => name === device.resourceName) ||
+          selectedResources.has(device.resourceName) ||
+          !Number.isInteger(device.count) ||
+          device.count < 1
+        )
+          throw new Error(t('environment.invalidDeviceResource'));
+        selectedResources.add(device.resourceName);
+        const hostAccess: unknown = JSON.parse(nativeHostAccessJSON.value[index] ?? '{}');
+        if (!hostAccess || Array.isArray(hostAccess) || typeof hostAccess !== 'object')
+          throw new Error(t('environment.invalidDevicePropagation'));
+        device.hostAccess = hostAccess as NonNullable<typeof device.hostAccess>;
+      });
+    } else {
+      delete spec.runtime.native;
+    }
     const saved = await request<Resource<Environment>>(
       `environments${selected.value ? `/${name.value}` : ''}`,
       selected.value ? 'PUT' : 'POST',
@@ -281,7 +375,7 @@ function remove(item: Resource<Environment>) {
       </NButton>
       <NButton
         type="primary"
-        :disabled="!cluster.runtimeClasses.length || !cluster.storageClasses.length"
+        :disabled="!cluster.storageClasses.length"
         @click="edit()"
       >
         {{ t('environment.add') }}
@@ -294,13 +388,6 @@ function remove(item: Resource<Environment>) {
     class="notice"
   >
     {{ error }}
-  </NAlert>
-  <NAlert
-    v-else-if="!cluster.runtimeClasses.length"
-    type="warning"
-    class="notice"
-  >
-    {{ t('environment.noRuntimeClasses') }}
   </NAlert>
   <NAlert
     v-else-if="!cluster.storageClasses.length"
@@ -343,6 +430,7 @@ function remove(item: Resource<Environment>) {
         />
       </NFormItem>
       <NFormItem
+        v-if="form.runtime.isolation !== 'native'"
         :label="t('environment.runtimeClass')"
         :feedback="t('environment.runtimeClassHelp')"
       >
@@ -352,6 +440,137 @@ function remove(item: Resource<Environment>) {
         />
       </NFormItem>
     </div>
+
+    <template v-if="form.runtime.isolation === 'native' && form.runtime.native">
+      <h2>{{ t('environment.nativeSection') }}</h2>
+      <p class="section-help">{{ t('environment.nativeHelp') }}</p>
+      <div class="form-grid">
+        <NFormItem
+          :label="t('environment.runtimeCapabilities')"
+          :feedback="t('environment.runtimeCapabilitiesHelp')"
+        >
+          <NSelect
+            v-model:value="form.runtime.native.runtimeCapAdd"
+            multiple
+            filterable
+            clearable
+            tag
+            :options="capabilityOptions"
+          />
+        </NFormItem>
+        <NFormItem
+          :label="t('environment.devContainerCapabilities')"
+          :feedback="t('environment.devContainerCapabilitiesHelp')"
+        >
+          <NSelect
+            v-model:value="form.runtime.native.devContainerCapAdd"
+            multiple
+            filterable
+            clearable
+            tag
+            :options="capabilityOptions"
+          />
+        </NFormItem>
+      </div>
+      <div class="subsection-heading">
+        <div>
+          <h3>{{ t('environment.devicePlugins') }}</h3>
+          <p class="section-help">{{ t('environment.devicePluginsHelp') }}</p>
+        </div>
+        <NButton
+          size="small"
+          :disabled="!cluster.deviceResources.length"
+          @click="addDevicePlugin"
+        >
+          <template #icon><Plus :size="16" /></template>
+          {{ t('environment.addDevice') }}
+        </NButton>
+      </div>
+      <NAlert
+        v-if="!cluster.deviceResources.length"
+        type="warning"
+        class="notice"
+      >
+        {{ t('environment.noDeviceResources') }}
+      </NAlert>
+      <div
+        v-for="(device, index) in form.runtime.native.devicePlugins"
+        :key="`${device.resourceName}-${index}`"
+        class="device-entry"
+      >
+        <div class="subsection-heading">
+          <strong>{{ device.resourceName || t('environment.deviceResource') }}</strong>
+          <NButton
+            quaternary
+            type="error"
+            :aria-label="t('environment.removeDevice')"
+            :title="t('environment.removeDevice')"
+            @click="removeDevicePlugin(index)"
+          >
+            <template #icon><Trash2 :size="16" /></template>
+          </NButton>
+        </div>
+        <div class="form-grid">
+          <NFormItem
+            :label="t('environment.deviceResource')"
+            :feedback="t('environment.deviceResourceHelp')"
+          >
+            <NSelect
+              v-model:value="device.resourceName"
+              filterable
+              :options="deviceResourceOptions"
+            />
+          </NFormItem>
+          <NFormItem :label="t('environment.deviceCount')">
+            <NInputNumber
+              v-model:value="device.count"
+              :min="1"
+              :precision="0"
+            />
+          </NFormItem>
+          <NFormItem>
+            <NCheckbox v-model:checked="device.providesGPU">{{ t('environment.providesGPU') }}</NCheckbox>
+          </NFormItem>
+          <NFormItem>
+            <NCheckbox
+              :checked="Boolean(device.cdi)"
+              @update:checked="setCDI(index, $event)"
+            >
+              {{ t('environment.cdiEnabled') }}
+            </NCheckbox>
+          </NFormItem>
+          <template v-if="device.cdi">
+            <NFormItem
+              :label="t('environment.cdiKind')"
+              :feedback="t('environment.cdiKindHelp')"
+            >
+              <NInput
+                v-model:value="device.cdi.kind"
+                placeholder="nvidia.com/gpu"
+              />
+            </NFormItem>
+            <NFormItem
+              :label="t('environment.deviceIDEnvironment')"
+              :feedback="t('environment.deviceIDEnvironmentHelp')"
+            >
+              <NInput
+                v-model:value="device.cdi.deviceIDEnvironment"
+                placeholder="NVIDIA_VISIBLE_DEVICES"
+              />
+            </NFormItem>
+          </template>
+          <details class="field-wide advanced-fields">
+            <summary>{{ t('environment.hostAccess') }}</summary>
+            <NFormItem :feedback="t('environment.hostAccessHelp')">
+              <JsonEditor
+                v-model="nativeHostAccessJSON[index]"
+                :label="t('environment.hostAccess')"
+              />
+            </NFormItem>
+          </details>
+        </div>
+      </div>
+    </template>
 
     <h2>{{ t('environment.storageSection') }}</h2>
     <div class="form-grid">
@@ -551,7 +770,13 @@ function remove(item: Resource<Environment>) {
           </td>
           <td>
             {{ item.spec.runtime.isolation }}
-            <p class="muted">{{ item.spec.runtime.runtimeClassName }}</p>
+            <p class="muted">
+              {{
+                item.spec.runtime.isolation === 'native'
+                  ? t('environment.nativeDefaultRuntime')
+                  : item.spec.runtime.runtimeClassName
+              }}
+            </p>
           </td>
           <td>
             <template v-if="item.spec.runtime.resources.requests?.cpu && item.spec.runtime.resources.requests.memory">

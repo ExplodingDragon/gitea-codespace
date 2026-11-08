@@ -204,6 +204,29 @@ th {
   margin: -8px 0 16px;
   max-width: 720px;
 }
+.subsection-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 8px;
+}
+.subsection-heading h3 {
+  margin: 0 0 12px;
+  font-size: 15px;
+}
+.device-entry {
+  border-top: 1px solid #d8dee4;
+  padding: 8px 0 4px;
+}
+.advanced-fields {
+  margin-bottom: 18px;
+}
+.advanced-fields summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
 .url-preview code {
   overflow-wrap: anywhere;
 }

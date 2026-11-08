@@ -42,6 +42,36 @@ func TestComposeProjectNameSeparatesOwnerIDs(t *testing.T) {
 	}
 }
 
+func TestApplyPlatformDevicesToComposeService(t *testing.T) {
+	t.Parallel()
+
+	service := composetypes.ServiceConfig{
+		Gpus: []composetypes.DeviceRequest{{Count: -1}},
+		Deploy: &composetypes.DeployConfig{Resources: composetypes.Resources{Reservations: &composetypes.Resource{Devices: []composetypes.DeviceRequest{
+			{Count: -1, Driver: "nvidia", Capabilities: []string{"gpu"}},
+			{Count: 1, Driver: "example", Capabilities: []string{"accelerator"}},
+		}}}},
+	}
+	devices := PlatformDevices{
+		CDI:          []string{"example.com/device=codespace-0-0"},
+		Mappings:     []DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
+		Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
+	}
+	if err := applyPlatformDevicesToComposeService(&service, devices); err != nil {
+		t.Fatal(err)
+	}
+	if len(service.Gpus) != 0 || len(service.Deploy.Resources.Reservations.Devices) != 1 || service.Deploy.Resources.Reservations.Devices[0].Driver != "example" {
+		t.Fatalf("normalized Compose GPU requests = %#v / %#v", service.Gpus, service.Deploy.Resources.Reservations.Devices)
+	}
+	if len(service.Devices) != 2 || service.Devices[0].Source != devices.CDI[0] || service.Devices[0].Target != devices.CDI[0] || !slices.Equal(service.CapAdd, devices.Capabilities) {
+		t.Fatalf("Compose platform devices = %#v / %#v", service.Devices, service.CapAdd)
+	}
+	service.Gpus = []composetypes.DeviceRequest{{Count: 1, Driver: "nvidia", Capabilities: []string{"gpu"}}}
+	if err := applyPlatformDevicesToComposeService(&service, devices); err == nil {
+		t.Fatal("specific Compose GPU selection must not override the Kubernetes allocation")
+	}
+}
+
 func TestComposeProxyEnvironment(t *testing.T) {
 	t.Parallel()
 

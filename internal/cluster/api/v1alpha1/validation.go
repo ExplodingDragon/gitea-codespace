@@ -9,14 +9,17 @@ import (
 	"net"
 	"net/netip"
 	"net/url"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 	"uuid"
 
+	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
 	configpkg "gitea.dev/codespace/internal/config"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/distribution/reference"
 	dockerunits "github.com/docker/go-units"
 	corev1 "k8s.io/api/core/v1"
@@ -27,6 +30,38 @@ import (
 const MaxObjectBytes = 1024 * 1024
 
 var environmentNamePattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$`)
+
+var (
+	capabilityPattern  = regexp.MustCompile(`^[A-Z][A-Z0-9_]*$`)
+	cdiKindPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]*/[A-Za-z0-9_.-]+$`)
+	environmentPattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+)
+
+var platformEnvironmentNames = func() map[string]struct{} {
+	names := map[string]struct{}{
+		"CODESPACE_CA_BUNDLE": {}, "GITEA_CA_BUNDLE": {}, "GITEA_CLI_NO_UPDATE_NOTIFIER": {},
+		"GITEA_INSTANCE_URL": {}, "NODE_EXTRA_CA_CERTS": {},
+	}
+	for _, name := range devcontainer.ProxyVariableNames() {
+		names[name] = struct{}{}
+	}
+	return names
+}()
+
+var platformMountTargets = []string{
+	"/var/lib/gitea-codespace",
+	"/var/run/gitea-codespace",
+	"/usr/local/bin/gitea-codespace-endpoint",
+	"/usr/local/libexec/gitea-codespace-runtime",
+}
+
+var platformRuntimePaths = []string{
+	"/etc/cdi",
+	"/run/codespace",
+	"/run/identity",
+	"/var/lib/codespace",
+	"/var/run/cdi",
+}
 
 const (
 	maxNoProxyEntries = 128
@@ -91,9 +126,14 @@ func (s *GiteaSite) Validate(managementNamespace string) error {
 				return fmt.Errorf("site quota %s must be positive", name)
 			}
 		}
-		for name := range s.Spec.Quota {
-			if !quotaResources[name] {
-				return fmt.Errorf("site quota %s is not supported", name)
+		for name, quantity := range s.Spec.Quota {
+			if quotaResources[name] {
+				continue
+			}
+			resourceName := strings.TrimPrefix(string(name), "requests.")
+			value, exact := quantity.AsInt64()
+			if resourceName == string(name) || !strings.Contains(resourceName, "/") || len(validation.IsQualifiedName(resourceName)) != 0 || !exact || value <= 0 {
+				return fmt.Errorf("site device quota %s must be a positive integer extended resource request", name)
 			}
 		}
 	}
@@ -368,17 +408,31 @@ func validateGatewaySSHExposure(gateway *GatewayComponentSpec) error {
 }
 
 func (r EnvironmentConfiguration) Validate() error {
-	if r.Isolation != IsolationKata && r.Isolation != IsolationSysbox {
-		return fmt.Errorf("runtime isolation must be kata or sysbox")
+	if r.Isolation != IsolationKata && r.Isolation != IsolationSysbox && r.Isolation != IsolationNative {
+		return fmt.Errorf("runtime isolation must be kata, sysbox or native")
 	}
-	if len(validation.IsDNS1123Subdomain(r.RuntimeClassName)) != 0 || len(validation.IsDNS1123Subdomain(r.StorageClassName)) != 0 {
-		return fmt.Errorf("runtime and storage class names are required")
+	if len(validation.IsDNS1123Subdomain(r.StorageClassName)) != 0 {
+		return fmt.Errorf("storage class name is required")
+	}
+	if r.Isolation == IsolationNative {
+		if r.RuntimeClassName != "" {
+			return fmt.Errorf("native isolation uses the cluster default runtime")
+		}
+	} else if len(validation.IsDNS1123Subdomain(r.RuntimeClassName)) != 0 {
+		return fmt.Errorf("runtime class name is required for %s isolation", r.Isolation)
 	}
 	if r.AccessMode != corev1.ReadWriteOncePod && r.AccessMode != corev1.ReadWriteOnce {
 		return fmt.Errorf("storage access mode must be ReadWriteOncePod or a verified ReadWriteOnce combination")
 	}
 	if len(r.Resources.Claims) != 0 {
 		return fmt.Errorf("runtime dynamic resource claims are not supported")
+	}
+	for _, resources := range []corev1.ResourceList{r.Resources.Requests, r.Resources.Limits} {
+		for name := range resources {
+			if name != corev1.ResourceCPU && name != corev1.ResourceMemory {
+				return fmt.Errorf("runtime compute resources may contain only CPU and memory")
+			}
+		}
 	}
 	if size := r.Storage[corev1.ResourceStorage]; size.Sign() <= 0 || len(r.Storage) != 1 {
 		return fmt.Errorf("runtime storage must specify a positive storage quantity")
@@ -405,10 +459,139 @@ func (r EnvironmentConfiguration) Validate() error {
 	if r.GitSSHKeyType != "ed25519" && r.GitSSHKeyType != "rsa-4096" {
 		return fmt.Errorf("git SSH key type must be ed25519 or rsa-4096")
 	}
+	if r.Isolation == IsolationNative {
+		if r.Native == nil {
+			return fmt.Errorf("native isolation requires native runtime settings")
+		}
+		if err := validateNativeConfiguration(r.Native); err != nil {
+			return err
+		}
+	} else if r.Native != nil {
+		return fmt.Errorf("native runtime settings require native isolation")
+	}
 	if err := validateOutboundProxy(r.Proxy); err != nil {
 		return err
 	}
 	return r.DevContainer.Validate()
+}
+
+func validateNativeConfiguration(configuration *runtimeplatform.NativeConfiguration) error {
+	for label, capabilities := range map[string][]corev1.Capability{
+		"runtime":       configuration.RuntimeCapAdd,
+		"Dev Container": configuration.DevContainerCapAdd,
+	} {
+		seen := make(map[corev1.Capability]struct{}, len(capabilities))
+		for _, capability := range capabilities {
+			if !capabilityPattern.MatchString(string(capability)) {
+				return fmt.Errorf("native %s capability %q is invalid", label, capability)
+			}
+			if _, exists := seen[capability]; exists {
+				return fmt.Errorf("native %s capability %q is duplicated", label, capability)
+			}
+			seen[capability] = struct{}{}
+		}
+	}
+	resources := make(map[corev1.ResourceName]struct{}, len(configuration.DevicePlugins))
+	targets := map[string]struct{}{}
+	environments := map[string]corev1.ResourceName{}
+	for _, device := range configuration.DevicePlugins {
+		if len(validation.IsQualifiedName(string(device.ResourceName))) != 0 || !strings.Contains(string(device.ResourceName), "/") {
+			return fmt.Errorf("native device resource %q must be a Kubernetes extended resource name", device.ResourceName)
+		}
+		if device.Count < 1 {
+			return fmt.Errorf("native device resource %q count must be positive", device.ResourceName)
+		}
+		if _, exists := resources[device.ResourceName]; exists {
+			return fmt.Errorf("native device resource %q is duplicated", device.ResourceName)
+		}
+		resources[device.ResourceName] = struct{}{}
+		if device.CDI == nil && len(device.HostAccess.Devices) == 0 && len(device.HostAccess.Mounts) == 0 && len(device.HostAccess.ForwardEnvironment) == 0 {
+			return fmt.Errorf("native device resource %q requires a propagation method", device.ResourceName)
+		}
+		if device.CDI != nil {
+			if !cdiKindPattern.MatchString(device.CDI.Kind) || !environmentPattern.MatchString(device.CDI.DeviceIDEnvironment) {
+				return fmt.Errorf("native device resource %q has invalid CDI settings", device.ResourceName)
+			}
+			if strings.HasPrefix(device.CDI.DeviceIDEnvironment, "CODESPACE_") {
+				return fmt.Errorf("native device resource %q uses a platform-reserved CDI allocation environment %q", device.ResourceName, device.CDI.DeviceIDEnvironment)
+			}
+			if owner, exists := environments[device.CDI.DeviceIDEnvironment]; exists {
+				return fmt.Errorf("native device environment %q is shared by resources %q and %q", device.CDI.DeviceIDEnvironment, owner, device.ResourceName)
+			}
+			environments[device.CDI.DeviceIDEnvironment] = device.ResourceName
+		}
+		if err := validateHostAccess(device.ResourceName, device.HostAccess, targets, environments); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateHostAccess(resourceName corev1.ResourceName, hostAccess runtimeplatform.HostAccess, targets map[string]struct{}, environments map[string]corev1.ResourceName) error {
+	for _, device := range hostAccess.Devices {
+		if !canonicalAbsolutePath(device.Source) || !canonicalAbsolutePath(device.Target) || device.Permissions == "" || strings.Trim(device.Permissions, "rwm") != "" {
+			return fmt.Errorf("native device resource %q has an invalid device mapping", resourceName)
+		}
+		permissions := map[rune]struct{}{}
+		for _, permission := range device.Permissions {
+			permissions[permission] = struct{}{}
+		}
+		if len(device.Permissions) != len(permissions) {
+			return fmt.Errorf("native device resource %q has duplicated device permissions", resourceName)
+		}
+		if _, exists := targets[device.Target]; exists {
+			return fmt.Errorf("native device target %q is duplicated", device.Target)
+		}
+		if platformMountTarget(device.Target) {
+			return fmt.Errorf("native device target %q is reserved for the Codespace runtime", device.Target)
+		}
+		targets[device.Target] = struct{}{}
+	}
+	for _, mount := range hostAccess.Mounts {
+		if !canonicalAbsolutePath(mount.Source) || !canonicalAbsolutePath(mount.Target) {
+			return fmt.Errorf("native device resource %q has an invalid mount mapping", resourceName)
+		}
+		if pathWithin(mount.Source, platformRuntimePaths) {
+			return fmt.Errorf("native host mount source %q is reserved for the Codespace runtime", mount.Source)
+		}
+		if _, exists := targets[mount.Target]; exists {
+			return fmt.Errorf("native device target %q is duplicated", mount.Target)
+		}
+		if platformMountTarget(mount.Target) {
+			return fmt.Errorf("native device target %q is reserved for the Codespace runtime", mount.Target)
+		}
+		targets[mount.Target] = struct{}{}
+	}
+	for _, name := range hostAccess.ForwardEnvironment {
+		if !environmentPattern.MatchString(name) {
+			return fmt.Errorf("native device resource %q has invalid environment name %q", resourceName, name)
+		}
+		if _, reserved := platformEnvironmentNames[name]; reserved || strings.HasPrefix(name, "CODESPACE_") {
+			return fmt.Errorf("native device environment %q is reserved for the Codespace runtime", name)
+		}
+		if owner, exists := environments[name]; exists {
+			return fmt.Errorf("native device environment %q is shared by resources %q and %q", name, owner, resourceName)
+		}
+		environments[name] = resourceName
+	}
+	return nil
+}
+
+func platformMountTarget(target string) bool {
+	return pathWithin(target, platformMountTargets)
+}
+
+func pathWithin(path string, reservedPaths []string) bool {
+	for _, reserved := range reservedPaths {
+		if path == reserved || strings.HasPrefix(path, reserved+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func canonicalAbsolutePath(value string) bool {
+	return filepath.IsAbs(value) && filepath.Clean(value) == value && value != "/"
 }
 
 func (r RuntimeConfiguration) Validate() error {

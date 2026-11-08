@@ -96,7 +96,18 @@ type DockerDaemon struct {
 	err     error
 }
 
-func StartDocker(ctx context.Context, directory string, output io.Writer) (*DockerDaemon, error) {
+func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, nativeRuntime bool, output io.Writer) (*DockerDaemon, error) {
+	if nativeRuntime {
+		// Kubernetes gives the container private, read-only cgroup and sysctl
+		// mounts. Making those mounts writable keeps nested containers inside
+		// the Pod namespaces without exposing either node hierarchy.
+		if err := unix.Mount("", "/sys/fs/cgroup", "", unix.MS_REMOUNT, ""); err != nil {
+			return nil, fmt.Errorf("make private Runtime cgroup writable: %w", err)
+		}
+		if err := unix.Mount("", "/proc/sys", "", unix.MS_REMOUNT|unix.MS_BIND, ""); err != nil {
+			return nil, fmt.Errorf("make private Runtime sysctl mount writable: %w", err)
+		}
+	}
 	interfaces, err := net.Interfaces()
 	if err != nil {
 		return nil, fmt.Errorf("inspect Runtime network interfaces: %w", err)
@@ -108,6 +119,9 @@ func StartDocker(ctx context.Context, directory string, output io.Writer) (*Dock
 	arguments := []string{"--host=" + DockerHost, "--data-root=" + directory + "/docker",
 		"--exec-root=/run/codespace/docker", "--pidfile=/run/codespace/docker.pid",
 		"--feature=containerd-snapshotter=true", "--live-restore=false", "--shutdown-timeout=30", fmt.Sprintf("--mtu=%d", mtu)}
+	if cdiSpecDirectory != "" {
+		arguments = append(arguments, "--cdi-spec-dir="+cdiSpecDirectory)
+	}
 	command := exec.Command("dockerd", arguments...)
 	command.Stdout, command.Stderr = output, output
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

@@ -22,6 +22,7 @@ import (
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -30,6 +31,7 @@ import (
 	nodev1 "k8s.io/api/node/v1"
 	storagev1 "k8s.io/api/storage/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -96,6 +98,8 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	runtimeClass := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "sysbox-runc", Labels: map[string]string{api.RuntimeIsolationLabel: api.IsolationSysbox}}, Handler: "sysbox-runc"}
 	unmanagedRuntime := &nodev1.RuntimeClass{ObjectMeta: metav1.ObjectMeta{Name: "runc"}, Handler: "runc"}
 	storageClass := &storagev1.StorageClass{ObjectMeta: metav1.ObjectMeta{Name: "local-path", Annotations: map[string]string{"storageclass.kubernetes.io/is-default-class": defaultClass}}, Provisioner: "rancher.io/local-path"}
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("2"), "example.com/fpga": resource.MustParse("1")}}}
+	secondNode := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker-2"}, Status: corev1.NodeStatus{Allocatable: corev1.ResourceList{"nvidia.com/gpu": resource.MustParse("4")}}}
 	ingressClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: "nginx", Annotations: map[string]string{"ingressclass.kubernetes.io/is-default-class": "true"}}, Spec: networkingv1.IngressClassSpec{Controller: "k8s.io/ingress-nginx"}}
 	tlsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "wildcard-tls", Namespace: "codespace-system"}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{corev1.TLSCertKey: []byte("certificate"), corev1.TLSPrivateKeyKey: []byte("private-key")}}
 	issuer := &unstructured.Unstructured{}
@@ -103,13 +107,15 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	issuer.SetKind("Issuer")
 	issuer.SetName("letsencrypt")
 	issuer.SetNamespace("codespace-system")
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass, ingressClass, tlsSecret, issuer).Build()
+	unmanagedRuntime.Name = "unmanaged-runc"
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(runtimeClass, unmanagedRuntime, storageClass, node, secondNode, ingressClass, tlsSecret, issuer).Build()
 	server := &AdminServer{Client: c, Namespace: "codespace-system"}
 
 	options, err := server.clusterOptions(t.Context())
 	require.NoError(t, err)
 	require.Equal(t, []adminRuntimeClass{{Name: "sysbox-runc", Handler: "sysbox-runc", Isolation: api.IsolationSysbox}}, options.RuntimeClasses)
 	require.Equal(t, []adminStorageClass{{Name: "local-path", Provisioner: "rancher.io/local-path", Default: true}}, options.StorageClasses)
+	require.Equal(t, []adminDeviceResource{{Name: "example.com/fpga", Nodes: 1, MaxPerNode: 1}, {Name: "nvidia.com/gpu", Nodes: 2, MaxPerNode: 4}}, options.DeviceResources)
 	require.Equal(t, []adminIngressClass{{Name: "nginx", Controller: "k8s.io/ingress-nginx", Default: true}}, options.IngressClasses)
 	require.Equal(t, []string{"wildcard-tls"}, options.TLSSecrets)
 	require.Equal(t, []adminIssuer{{Kind: "Issuer", Name: "letsencrypt"}}, options.Issuers)
@@ -122,6 +128,21 @@ func TestAdminClusterOptionsAndTemplateDependencies(t *testing.T) {
 	require.NoError(t, server.saveEnvironment(t.Context(), template, adminEnvironmentWrite{adminWriteIdentity: adminWriteIdentity{Name: template.Name}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}, true))
 	template.Spec.Runtime.Isolation = api.IsolationKata
 	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "not labeled for kata isolation")
+	template.Spec.Runtime.Isolation, template.Spec.Runtime.RuntimeClassName = api.IsolationNative, ""
+	template.Spec.Runtime.Native = &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+		ResourceName: "nvidia.com/gpu", Count: 2, HostAccess: runtimeplatform.HostAccess{ForwardEnvironment: []string{"NVIDIA_VISIBLE_DEVICES"}},
+	}}}
+	require.NoError(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime))
+	template.Spec.Runtime.Native.DevicePlugins[0].Count = 5
+	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "no node has 5 allocatable units")
+	template.Spec.Runtime.Native.DevicePlugins[0].Count = 1
+	template.Spec.Runtime.Native.DevicePlugins[0].ResourceName = "example.com/missing"
+	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "no node has 1 allocatable unit")
+	template.Spec.Runtime.Native.DevicePlugins = []runtimeplatform.DevicePluginRequest{
+		{ResourceName: "nvidia.com/gpu", Count: 3, HostAccess: runtimeplatform.HostAccess{ForwardEnvironment: []string{"NVIDIA_VISIBLE_DEVICES"}}},
+		{ResourceName: "example.com/fpga", Count: 1, HostAccess: runtimeplatform.HostAccess{ForwardEnvironment: []string{"FPGA_VISIBLE_DEVICES"}}},
+	}
+	require.ErrorContains(t, validateEnvironmentDependencies(t.Context(), c, template.Spec.Runtime), "requests together")
 
 	cache := testCacheComponent("cache", "")
 	emptyServer := &AdminServer{Client: fake.NewClientBuilder().WithScheme(testScheme(t)).Build(), Namespace: "codespace-system"}

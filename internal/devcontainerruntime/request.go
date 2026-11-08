@@ -11,10 +11,21 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
+	"gitea.dev/codespace/internal/runtimeplatform"
 )
 
 // RunTemplateLifecycleFunc durably executes one environment-template lifecycle action.
 type RunTemplateLifecycleFunc func(context.Context, string, func(context.Context) error) error
+
+// NativeContainerConfiguration carries the devices already allocated to the
+// outer Runtime Pod into its primary Dev Container.
+type NativeContainerConfiguration struct {
+	CDIDeviceIDs []string
+	Devices      []runtimeplatform.DeviceMapping
+	Mounts       []runtimeplatform.MountMapping
+	Capabilities []string
+	ProvidesGPU  bool
+}
 
 // Request supplies one Agent lifecycle action to the Dev Container executor.
 type Request struct {
@@ -31,6 +42,7 @@ type Request struct {
 	LocalEnvironment     map[string]string
 	Secrets              map[string]string
 	DevContainer         Configuration
+	Native               NativeContainerConfiguration
 	Cache                devcontainer.CacheOptions
 	Environment          *devcontainer.State
 	RunLifecycle         containerdocker.RunLifecycleFunc

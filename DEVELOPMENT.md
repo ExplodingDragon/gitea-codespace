@@ -7,11 +7,9 @@ for design rationale.
 
 ## Set up
 
-Local development requires the Go version declared in [`go.mod`](go.mod),
-Node.js, and pnpm. Helm and kubectl are needed for Kubernetes work. Image builds
-also require a Docker-compatible tool, curl, xz, and sha256sum.
-
-Install the pinned Go development tools and frontend dependencies:
+Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Kubernetes
+work also needs Helm and kubectl; image builds need a Docker-compatible tool,
+curl, xz, and sha256sum.
 
 ```sh
 make install-tools
@@ -19,80 +17,70 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-The Makefile pins code-generation and validation tools so local results match
+The Makefile pins development tools so local checks use the same versions as
 CI.
 
 ## Repository layout
 
-| Path               | Responsibility                                                           |
-| ------------------ | ------------------------------------------------------------------------ |
-| `cmd`              | Process entry points and runtime tools                                   |
-| `devcontainer`     | Dev Container parsing, merging, execution, and specification tests       |
-| `internal`         | Manager, Agent, Gateway, Cache, controllers, and shared runtime packages |
-| `web`              | Vue administration interface and Playwright tests                        |
-| `charts`, `deploy` | Helm chart, CRDs, and platform image                                     |
-| `tests/e2e`        | Kubernetes lifecycle test harness                                        |
+| Path               | Responsibility                                                     |
+| ------------------ | ------------------------------------------------------------------ |
+| `cmd`              | Process entry points                                                |
+| `devcontainer`     | Dev Container specification parsing and execution                  |
+| `internal`         | Manager, Agent, Gateway, Cache, and shared platform implementation |
+| `web`              | Vue administration interface                                       |
+| `charts`, `deploy` | Helm resources, CRDs, and platform image                           |
+| `tests/e2e`        | Kubernetes lifecycle test harness                                  |
 
-The `devcontainer` package keeps specification-defined fields through parsing,
-merging, and resolution. Codespace-specific behavior belongs in `internal` so
-standard repository configurations remain portable.
+Dev Container specification fields remain in `devcontainer`; platform behavior
+belongs in `internal`. This boundary keeps repository configuration portable to
+other compliant Dev Container implementations.
 
-## Work locally
+## Validate changes
 
-Use the Makefile because CI invokes the same entry points.
+Use the public Make targets because CI runs the same commands.
 
 | Command              | Purpose                                                                   |
 | -------------------- | ------------------------------------------------------------------------- |
 | `make format`        | Format Go, shell, protobuf, and frontend sources                          |
 | `make lint`          | Check generated files, scripts, workflows, TypeScript, Helm, CRDs, and Go |
-| `make test`          | Run the standard Go test suite                                            |
-| `make test-frontend` | Run administration interface tests                                        |
+| `make test`          | Run standard Go tests                                                     |
+| `make test-frontend` | Run administration interface tests                                       |
 | `make build`         | Build the frontend and local binary                                       |
-| `make clean`         | Remove local build and test output                                        |
+| `make clean`         | Remove generated local output                                             |
 
-Run the affected package tests while iterating. Before submitting a change, run
+Run focused package tests while editing. Before submitting a change, run
 `make lint`, `make test`, and `make test-frontend`.
 
-## Generated files
+## Generated sources
 
-Generated Kubernetes and RPC sources are committed so normal builds do not need
-the generator toolchain. Regenerate the corresponding output whenever its
-source definition changes.
+Generated Kubernetes and RPC sources are committed so normal builds remain
+independent of the generator toolchain.
 
-| Source changed                    | Commands                                       | Output                  |
-| --------------------------------- | ---------------------------------------------- | ----------------------- |
-| Kubernetes API types              | `make generate-kubernetes kubernetes-check`    | Canonical and Helm CRDs |
-| Internal Agent or component Proto | `make proto-format proto-generate proto-check` | Internal Go bindings    |
+| Source changed                    | Command                                        |
+| --------------------------------- | ---------------------------------------------- |
+| Kubernetes API types              | `make generate-kubernetes kubernetes-check`    |
+| Internal Agent or component Proto | `make proto-format proto-generate proto-check` |
 
-The public Gitea-to-Manager protocol is maintained in
-`gitea.dev/codespace-proto-go`. Publish that module before updating this
-repository so builds use a reproducible remote dependency.
+The public Gitea-to-Manager protocol lives in `gitea.dev/codespace-proto-go`.
+Publish that module before updating this repository so consumers resolve a
+reproducible dependency.
 
-## Administration interface
+## Run development services
 
-```sh
-make admin-dev
-```
+`make admin-dev` starts the administration frontend and proxies `/api` to
+`http://127.0.0.1:18080`. Run Manager locally or port-forward its administration
+Service. Add user-visible text to every JSON catalog under `web/locales`.
 
-Vite proxies `/api` to `http://127.0.0.1:18080`. Run Manager locally or
-port-forward its administration Service. User-visible text belongs in the JSON
-catalogs under `web/locales` so the interface remains translatable.
+`make images` builds the platform image and packages the verified Gitea CLI.
+`CODESPACE_IMAGE` selects the image name and `CONTAINER_TOOL` selects the
+builder.
 
-## Platform image
+## Run Kubernetes E2E
 
-```sh
-make images
-```
-
-The build verifies and packages the platform binary and Gitea CLI. Use
-`GITEA_CLI_VERSION` to reproduce a specific CLI release, and use
-`CODESPACE_IMAGE` or `CONTAINER_TOOL` to select the output image or builder.
-
-## Kubernetes end-to-end tests
-
-The E2E suite verifies the complete lifecycle in an isolated cluster. It needs a
-Kata or Sysbox RuntimeClass, matching storage, a reachable Gitea test endpoint,
-and an immutable platform image.
+The E2E suite needs a test cluster, matching runtime and storage support, a
+Gitea endpoint reachable from the cluster, and an immutable platform image.
+Kata and Sysbox use labeled RuntimeClasses; Native uses the node's default CRI
+runtime and exercises Device Plugin/CDI propagation.
 
 ```sh
 export KUBECONFIG=/path/to/test-kubeconfig
@@ -106,6 +94,5 @@ make test-e2e \
   KUBERNETES_STORAGE_CLASS=<storage-class>
 ```
 
-The harness collects failure diagnostics and removes its resources on exit. CI
-runs both supported isolation modes; the standard test suite is sufficient for
-changes that do not require a real RuntimeClass or storage driver.
+The harness records diagnostics on failure and removes its temporary cluster
+resources on exit. CI runs the Kata, Sysbox, and Native variants.

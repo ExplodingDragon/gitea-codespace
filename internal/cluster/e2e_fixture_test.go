@@ -11,6 +11,7 @@ import (
 	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -75,11 +76,16 @@ func requireE2ERuntime(t *testing.T) e2eRuntime {
 	t.Helper()
 	runtime := e2eRuntime{
 		isolation:     requireE2EEnvironment(t, "CODESPACE_E2E_RUNTIME_ISOLATION"),
-		runtimeClass:  requireE2EEnvironment(t, "CODESPACE_E2E_RUNTIME_CLASS"),
+		runtimeClass:  os.Getenv("CODESPACE_E2E_RUNTIME_CLASS"),
 		storageClass:  requireE2EEnvironment(t, "CODESPACE_E2E_STORAGE_CLASS"),
 		platformImage: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE"),
 	}
-	require.Contains(t, []string{"kata", "sysbox"}, runtime.isolation)
+	require.Contains(t, []string{"kata", "sysbox", "native"}, runtime.isolation)
+	if runtime.isolation == api.IsolationNative {
+		require.Empty(t, runtime.runtimeClass)
+	} else {
+		require.NotEmpty(t, runtime.runtimeClass)
+	}
 	return runtime
 }
 
@@ -90,6 +96,11 @@ func (r e2eRuntime) environmentConfiguration() api.EnvironmentConfiguration {
 	configuration.StorageClassName = r.storageClass
 	if r.isolation == api.IsolationKata {
 		configuration.Storage[corev1.ResourceStorage] = resource.MustParse("6Gi")
+	} else if r.isolation == api.IsolationNative {
+		configuration.Native = &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+			ResourceName: "e2e.codespace.gitea.dev/fuse", Count: 1,
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "e2e.codespace.gitea.dev/fuse", DeviceIDEnvironment: "E2E_FUSE_DEVICE_IDS"},
+		}}}
 	}
 	return configuration
 }

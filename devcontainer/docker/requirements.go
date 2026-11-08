@@ -58,9 +58,12 @@ func checkHostRequirements(requirements devcontainer.HostRequirements, workspace
 	return nil
 }
 
-func (e *Engine) resolveGPURequest(ctx context.Context, requirement []byte) (bool, error) {
+func (e *Engine) resolveGPURequest(ctx context.Context, requirement []byte, platformProvidesGPU bool) (bool, error) {
 	value := strings.TrimSpace(string(requirement))
 	if value == "" || value == "null" || value == "false" {
+		return false, nil
+	}
+	if platformProvidesGPU {
 		return false, nil
 	}
 	info, err := e.client.Info(ctx)

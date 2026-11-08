@@ -8,11 +8,13 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 	"uuid"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	identitypkg "gitea.dev/codespace/internal/identity"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -290,6 +292,10 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 	if err != nil {
 		return nil, fmt.Errorf("encode Dev Container injection configuration: %w", err)
 	}
+	nativeConfiguration, err := json.Marshal(runtime.Native)
+	if err != nil {
+		return nil, fmt.Errorf("encode native runtime configuration: %w", err)
+	}
 	volumeMounts := []corev1.VolumeMount{{Name: "ephemeral", MountPath: "/run/codespace"}, {Name: "identity", MountPath: "/run/identity", ReadOnly: true}}
 	var volumeDevices []corev1.VolumeDevice
 	var dataDevice string
@@ -302,7 +308,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: cs.Namespace, Finalizers: []string{WriterFinalizer}, Labels: map[string]string{SiteUIDLabel: string(cs.Spec.Site.UID), RuntimeUIDLabel: string(cs.UID), ComponentLabel: "runtime"}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}},
 		Spec: corev1.PodSpec{
-			RuntimeClassName: &runtime.RuntimeClassName, ServiceAccountName: "codespace", AutomountServiceAccountToken: ptr.To(false),
+			ServiceAccountName: "codespace", AutomountServiceAccountToken: ptr.To(false),
 			ImagePullSecrets: localObjectReferences(pullSecrets),
 			RestartPolicy:    corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)), EnableServiceLinks: ptr.To(false),
 			Volumes: []corev1.Volume{
@@ -324,12 +330,16 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 					{Name: "CODESPACE_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},
 					{Name: "CODESPACE_DATA_DEVICE", Value: dataDevice},
 					{Name: "CODESPACE_DEVCONTAINER_CONFIGURATION", Value: string(devContainer)},
+					{Name: "CODESPACE_NATIVE_CONFIGURATION", Value: string(nativeConfiguration)},
 					{Name: "DOCKER_CONFIG", Value: "/run/codespace/docker-config"},
 				},
 				VolumeMounts:  volumeMounts,
 				VolumeDevices: volumeDevices,
 			}},
 		},
+	}
+	if runtime.Isolation != api.IsolationNative {
+		pod.Spec.RuntimeClassName = &runtime.RuntimeClassName
 	}
 	if runtime.Proxy != nil {
 		secretName := runtimeProxySecretName(cs.Name)
@@ -344,11 +354,75 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 	}
 	if runtime.Isolation == api.IsolationKata {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}
-	} else {
+	} else if runtime.Isolation == api.IsolationSysbox {
 		pod.Spec.HostUsers = ptr.To(false)
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
+	} else {
+		configureNativeRuntimePod(pod, runtime.Native)
 	}
 	return pod, nil
+}
+
+func configureNativeRuntimePod(pod *corev1.Pod, configuration *runtimeplatform.NativeConfiguration) {
+	container := &pod.Spec.Containers[0]
+	container.Resources = *container.Resources.DeepCopy()
+	if container.Resources.Requests == nil {
+		container.Resources.Requests = corev1.ResourceList{}
+	}
+	if container.Resources.Limits == nil {
+		container.Resources.Limits = corev1.ResourceList{}
+	}
+	capabilities := []corev1.Capability{
+		"AUDIT_WRITE", "CHOWN", "DAC_OVERRIDE", "FOWNER", "FSETID", "KILL", "MKNOD", "NET_ADMIN", "NET_BIND_SERVICE",
+		"NET_RAW", "SETFCAP", "SETGID", "SETPCAP", "SETUID", "SYS_ADMIN", "SYS_CHROOT", "SYS_RESOURCE",
+	}
+	seenCapabilities := make(map[corev1.Capability]struct{}, len(capabilities)+len(configuration.RuntimeCapAdd))
+	for _, capability := range capabilities {
+		seenCapabilities[capability] = struct{}{}
+	}
+	for _, capability := range configuration.RuntimeCapAdd {
+		if _, exists := seenCapabilities[capability]; !exists {
+			capabilities = append(capabilities, capability)
+			seenCapabilities[capability] = struct{}{}
+		}
+	}
+	container.SecurityContext = &corev1.SecurityContext{
+		RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0)), AllowPrivilegeEscalation: ptr.To(true),
+		Capabilities:    &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}, Add: capabilities},
+		SeccompProfile:  &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
+		AppArmorProfile: &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeUnconfined},
+	}
+	hostPaths := map[string]bool{}
+	usesCDI := false
+	for _, device := range configuration.DevicePlugins {
+		quantity := *resource.NewQuantity(device.Count, resource.DecimalSI)
+		container.Resources.Requests[device.ResourceName] = quantity
+		container.Resources.Limits[device.ResourceName] = quantity
+		usesCDI = usesCDI || device.CDI != nil
+		for _, mapping := range device.HostAccess.Mounts {
+			if current, exists := hostPaths[mapping.Source]; !exists || current && !mapping.ReadOnly {
+				hostPaths[mapping.Source] = mapping.ReadOnly
+			}
+		}
+	}
+	paths := make([]string, 0, len(hostPaths))
+	for path := range hostPaths {
+		paths = append(paths, path)
+	}
+	sort.Strings(paths)
+	for index, path := range paths {
+		name := fmt.Sprintf("native-path-%d", index)
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: path}}})
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: name, MountPath: path, ReadOnly: hostPaths[path]})
+	}
+	if usesCDI {
+		for index, path := range []string{"/etc/cdi", "/var/run/cdi"} {
+			name := fmt.Sprintf("cdi-specs-%d", index)
+			directory := corev1.HostPathDirectoryOrCreate
+			pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: path, Type: &directory}}})
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: name, MountPath: path, ReadOnly: true})
+		}
+	}
 }
 
 func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespace, pod *corev1.Pod) error {

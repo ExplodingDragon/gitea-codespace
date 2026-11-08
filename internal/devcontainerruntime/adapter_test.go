@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
@@ -38,6 +39,11 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 			BuildScope:    "scope",
 		},
 		GiteaCustomCA: true,
+		Native: NativeContainerConfiguration{
+			CDIDeviceIDs: []string{"nvidia.com/gpu=GPU-1"}, Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
+			Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
+			Mounts:  []runtimeplatform.MountMapping{{Source: "/opt/example", Target: "/opt/example", ReadOnly: true}},
+		},
 	}
 	options, err := buildCreateOptions(request)
 	if err != nil {
@@ -69,6 +75,11 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	if options.Cache.BuildRegistry != request.Cache.BuildRegistry || options.Cache.BuildScope != request.Cache.BuildScope {
 		t.Fatalf("Codespace cache = %#v", options.Cache)
 	}
+	require.Equal(t, request.Native.CDIDeviceIDs, options.PlatformDevices.CDI)
+	require.Equal(t, request.Native.Capabilities, options.PlatformDevices.Capabilities)
+	require.True(t, options.PlatformDevices.ProvidesGPU)
+	require.NotContains(t, options.ContainerEnv, "EXAMPLE_VISIBLE_DEVICES")
+	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: "/opt/example", Target: "/opt/example", ReadOnly: true})
 	if options.ContainerEnv["CODESPACE_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["NODE_EXTRA_CA_CERTS"] != containerCABundlePath || options.ContainerEnv["GITEA_CA_BUNDLE"] != containerCABundlePath || options.ContainerEnv["GITEA_INSTANCE_URL"] != request.GiteaURL || options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"] != "1" {
 		t.Fatalf("custom CA environment = %#v", options.ContainerEnv)
 	}

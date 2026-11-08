@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
@@ -48,10 +49,13 @@ func TestKubernetesE2EDockerPersistence(t *testing.T) {
 	startDocker := `mtu="$(ip -o link show up | awk '$2 !~ /^lo:/ {for (i = 1; i <= NF; i++) if ($i == "mtu") print $(i + 1)}' | sort -n | head -n 1)"
 [ -n "$mtu" ] || { echo "runtime has no usable network interface MTU" >&2; exit 1; }
 exec dockerd "$@" --mtu="$mtu"`
+	if runtime.isolation == api.IsolationNative {
+		startDocker = "mount -o remount,rw /sys/fs/cgroup\nmount -o remount,rw /proc/sys\n" + startDocker
+	}
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "docker", Namespace: ns.Name},
 		Spec: corev1.PodSpec{
-			RuntimeClassName: ptr.To(runtime.runtimeClass), AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)),
+			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), RestartPolicy: corev1.RestartPolicyNever, TerminationGracePeriodSeconds: ptr.To(int64(60)),
 			Containers: []corev1.Container{{
 				Name: "docker", Image: runtime.platformImage, ImagePullPolicy: corev1.PullNever,
 				Command:      []string{"sh", "-ec"},
@@ -61,6 +65,9 @@ exec dockerd "$@" --mtu="$mtu"`
 			}},
 			Volumes: []corev1.Volume{{Name: "data", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: volume.Name}}}},
 		},
+	}
+	if runtime.runtimeClass != "" {
+		pod.Spec.RuntimeClassName = ptr.To(runtime.runtimeClass)
 	}
 	if proxy := strings.TrimSpace(os.Getenv("CODESPACE_E2E_HTTP_PROXY")); proxy != "" {
 		pod.Spec.Containers[0].Env = []corev1.EnvVar{
@@ -79,9 +86,11 @@ mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 ` + startDocker, "dockerd", dockerArguments[0], dockerArguments[1], dockerArguments[2]}
 		pod.Spec.Containers[0].VolumeMounts = nil
 		pod.Spec.Containers[0].VolumeDevices = []corev1.VolumeDevice{{Name: "data", DevicePath: "/dev/codespace-data"}}
-	} else {
+	} else if runtime.isolation == "sysbox" {
 		pod.Spec.HostUsers = ptr.To(false)
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
+	} else {
+		configureNativeRuntimePod(pod, runtime.environmentConfiguration().Native)
 	}
 	prototype := pod.DeepCopy()
 	if runtime.isolation == "kata" {
@@ -138,6 +147,11 @@ mount -t ext4 -o noatime /dev/codespace-data /var/lib/codespace
 		require.GreaterOrEqual(t, len(fields), 3)
 		require.Equal(t, "0", fields[0])
 		require.NotEqual(t, "0", fields[1], "Sysbox RuntimeClass must isolate the container root user")
+	case "native":
+		require.Nil(t, pod.Spec.RuntimeClassName)
+		_, err = execPod(nil, "sh", "-ec", `test -c /dev/fuse
+case "$E2E_FUSE_DEVICE_IDS" in fuse0|fuse1) ;; *) exit 1 ;; esac`)
+		require.NoError(t, err)
 	}
 	output, err := execPod(nil, "docker", "info", "--format", "{{.Driver}} {{.DockerRootDir}} {{json .DriverStatus}}")
 	require.NoError(t, err)

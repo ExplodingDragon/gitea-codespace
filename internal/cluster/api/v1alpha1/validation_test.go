@@ -7,8 +7,11 @@ import (
 	"strings"
 	"testing"
 
+	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -37,7 +40,39 @@ func TestEnvironmentConfigurationRejectsUnsupportedResourceLimit(t *testing.T) {
 		GitSSHKeyType: "ed25519",
 	}
 
-	require.ErrorContains(t, configuration.Validate(), "only positive CPU and memory limits")
+	require.ErrorContains(t, configuration.Validate(), "only CPU and memory")
+}
+
+func TestNativeEnvironmentValidation(t *testing.T) {
+	configuration := EnvironmentConfiguration{
+		Isolation: IsolationNative, StorageClassName: "local-path",
+		Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("20Gi")},
+		Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+			corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi"),
+		}},
+		AccessMode: corev1.ReadWriteOncePod, GitSSHKeyType: "ed25519",
+		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Options: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
+		Native: &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+			ResourceName: "nvidia.com/gpu", Count: 1,
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
+		}}},
+	}
+	require.NoError(t, configuration.Validate())
+	configuration.Native.DevicePlugins[0].CDI = nil
+	require.ErrorContains(t, configuration.Validate(), "requires a propagation method")
+
+	configuration.Native.DevicePlugins[0].CDI = &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"}
+	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = []string{"NVIDIA_VISIBLE_DEVICES"}
+	require.ErrorContains(t, configuration.Validate(), "shared by resources")
+
+	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = []string{"GITEA_INSTANCE_URL"}
+	require.ErrorContains(t, configuration.Validate(), "reserved for the Codespace runtime")
+
+	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = nil
+	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{Source: "/opt/toolkit", Target: "/var/lib/gitea-codespace/toolkit"}}
+	require.ErrorContains(t, configuration.Validate(), "reserved for the Codespace runtime")
+	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{Source: "/run/codespace", Target: "/opt/toolkit"}}
+	require.ErrorContains(t, configuration.Validate(), "host mount source")
 }
 
 func TestOutboundProxyValidation(t *testing.T) {

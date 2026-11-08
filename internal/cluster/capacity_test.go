@@ -8,6 +8,7 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -21,6 +22,27 @@ func testQuota(site *api.GiteaSite, namespace string) *corev1.ResourceQuota {
 		used[name] = resource.MustParse("0")
 	}
 	return &corev1.ResourceQuota{ObjectMeta: metav1.ObjectMeta{Name: "codespace", Namespace: namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Spec: corev1.ResourceQuotaSpec{Hard: site.Spec.Quota.DeepCopy()}, Status: corev1.ResourceQuotaStatus{Hard: site.Spec.Quota.DeepCopy(), Used: used}}
+}
+
+func TestSiteCapacityIncludesNativeDevices(t *testing.T) {
+	site := testSite("example", "site-uid")
+	deviceQuota := corev1.ResourceName("requests.example.com/device")
+	site.Spec.Quota[deviceQuota] = resource.MustParse("1")
+	quota := testQuota(site, "codespace-example")
+	quota.Status.Used[deviceQuota] = resource.MustParse("1")
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "native", UID: "template-uid"}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}
+	template.Spec.Runtime.Isolation = api.IsolationNative
+	template.Spec.Runtime.RuntimeClassName = ""
+	template.Spec.Runtime.Native = &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+		ResourceName: "example.com/device", Count: 1,
+		HostAccess: runtimeplatform.HostAccess{Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}}},
+	}}}
+	site.Spec.Templates = []api.ResourceReference{{Name: template.Name, UID: template.UID}}
+	client := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(quota).WithObjects(quota, template).Build()
+	coordinator := SiteCoordinator{Operations: Operations{Client: client, ManagementNamespace: "codespace-system"}}
+	request := &codespacev1.FetchOperationsRequest{}
+	require.NoError(t, coordinator.capacity(t.Context(), site, nil, []string{template.Name}, request))
+	require.Empty(t, request.AcceptedCreateTags)
 }
 
 func TestSiteCapacity(t *testing.T) {

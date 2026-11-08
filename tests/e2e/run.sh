@@ -13,6 +13,9 @@ MANAGER_NAME=${CODESPACE_E2E_MANAGER_NAME:-"codespace-manager-${RUN_ID}"}
 ARTIFACTS=${CODESPACE_E2E_ARTIFACTS:-".tmp/e2e/${RUN_ID}"}
 RUN_LABEL=codespace.gitea.dev/e2e-run
 PORT_FORWARD_PID=
+DEVICE_PLUGIN_PID=
+DEVICE_PLUGIN_SOCKET=/var/lib/kubelet/device-plugins/codespace-e2e-fuse.sock
+DEVICE_PLUGIN_CDI_SPEC=/var/run/cdi/codespace-e2e-fuse.yaml
 
 if [[ $ARTIFACTS != /* ]]; then
 	ARTIFACTS="$PWD/$ARTIFACTS"
@@ -30,7 +33,6 @@ required_variables=(
 	KUBECONFIG
 	CODESPACE_E2E_PLATFORM_IMAGE
 	CODESPACE_E2E_RUNTIME_ISOLATION
-	CODESPACE_E2E_RUNTIME_CLASS
 	CODESPACE_E2E_STORAGE_CLASS
 	CODESPACE_E2E_GITEA_LISTEN
 	CODESPACE_E2E_NODE_ADDRESS
@@ -46,8 +48,17 @@ if [[ $CODESPACE_E2E_PLATFORM_IMAGE != *@sha256:* ]]; then
 	echo "CODESPACE_E2E_PLATFORM_IMAGE must be an immutable repository@sha256:digest reference" >&2
 	exit 1
 fi
-if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != sysbox && $CODESPACE_E2E_RUNTIME_ISOLATION != kata ]]; then
-	echo "CODESPACE_E2E_RUNTIME_ISOLATION must be sysbox or kata" >&2
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != sysbox && $CODESPACE_E2E_RUNTIME_ISOLATION != kata && $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
+	echo "CODESPACE_E2E_RUNTIME_ISOLATION must be sysbox, kata or native" >&2
+	exit 1
+fi
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == native ]]; then
+	if [[ -n ${CODESPACE_E2E_RUNTIME_CLASS:-} ]]; then
+		echo "Native E2E uses the cluster default runtime and must not set CODESPACE_E2E_RUNTIME_CLASS" >&2
+		exit 1
+	fi
+elif [[ -z ${CODESPACE_E2E_RUNTIME_CLASS:-} ]]; then
+	echo "CODESPACE_E2E_RUNTIME_CLASS is required for $CODESPACE_E2E_RUNTIME_ISOLATION" >&2
 	exit 1
 fi
 if ((${#MANAGER_NAME} > 63)); then
@@ -100,6 +111,11 @@ cleanup() {
 		kill "$PORT_FORWARD_PID" >/dev/null 2>&1
 		wait "$PORT_FORWARD_PID" >/dev/null 2>&1
 	fi
+	if [[ -n $DEVICE_PLUGIN_PID ]]; then
+		sudo kill "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
+		wait "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
+	fi
+	sudo rm -f "$DEVICE_PLUGIN_SOCKET" "$DEVICE_PLUGIN_CDI_SPEC"
 	if ! "$KUBECTL_BIN" delete codespacecomponents,giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --wait=false >/dev/null 2>&1; then
 		cleanup_failed=1
 	fi
@@ -138,17 +154,62 @@ trap 'exit 143' TERM
 
 echo "Checking Kubernetes prerequisites"
 "$KUBECTL_BIN" version >/dev/null
-for resource in \
-	"runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
-	"storageclass/$CODESPACE_E2E_STORAGE_CLASS"; do
-	"$KUBECTL_BIN" get "$resource" >/dev/null
-done
-"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
-	"codespace.gitea.dev/isolation=$CODESPACE_E2E_RUNTIME_ISOLATION" --overwrite >/dev/null
+"$KUBECTL_BIN" get "storageclass/$CODESPACE_E2E_STORAGE_CLASS" >/dev/null
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
+	"$KUBECTL_BIN" get "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" >/dev/null
+	"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
+		"codespace.gitea.dev/isolation=$CODESPACE_E2E_RUNTIME_ISOLATION" --overwrite >/dev/null
+fi
 
 echo "Building Runtime test binaries"
 "$GO_BIN" test -c -tags netgo,osusergo -o "$ARTIFACTS/bin/agent.test" ./internal/agent
 CGO_ENABLED=0 "$GO_BIN" test -c -o "$ARTIFACTS/bin/devcontainer.test" ./devcontainer/docker
+
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == native ]]; then
+	echo "Registering the E2E FUSE Device Plugin"
+	sudo modprobe fuse
+	test -c /dev/fuse
+	CGO_ENABLED=0 "$GO_BIN" build -o "$ARTIFACTS/bin/device-plugin" ./tests/e2e/device-plugin
+	sudo install -d -m 0755 /var/run/cdi
+	sudo tee "$DEVICE_PLUGIN_CDI_SPEC" >/dev/null <<'EOF'
+cdiVersion: 0.8.0
+kind: e2e.codespace.gitea.dev/fuse
+devices:
+  - name: fuse0
+    containerEdits:
+      env:
+        - CODESPACE_E2E_CDI=fuse0
+      deviceNodes:
+        - path: /dev/fuse
+          hostPath: /dev/fuse
+          permissions: rwm
+  - name: fuse1
+    containerEdits:
+      env:
+        - CODESPACE_E2E_CDI=fuse1
+      deviceNodes:
+        - path: /dev/fuse
+          hostPath: /dev/fuse
+          permissions: rwm
+EOF
+	sudo "$ARTIFACTS/bin/device-plugin" >"$ARTIFACTS/device-plugin.log" 2>&1 &
+	DEVICE_PLUGIN_PID=$!
+	for ((attempt = 0; attempt < 120; attempt++)); do
+		allocatable=$("$KUBECTL_BIN" get node -o jsonpath='{.items[0].status.allocatable.e2e\.codespace\.gitea\.dev/fuse}' 2>/dev/null || true)
+		if [[ $allocatable == 2 ]]; then
+			break
+		fi
+		if ! sudo kill -0 "$DEVICE_PLUGIN_PID" 2>/dev/null; then
+			cat "$ARTIFACTS/device-plugin.log" >&2
+			exit 1
+		fi
+		sleep 1
+	done
+	if [[ ${allocatable:-} != 2 ]]; then
+		echo "E2E FUSE Device Plugin did not publish its resource" >&2
+		exit 1
+	fi
+fi
 
 "$KUBECTL_BIN" create namespace "$MANAGEMENT_NAMESPACE"
 "$KUBECTL_BIN" label namespace "$MANAGEMENT_NAMESPACE" "$RUN_LABEL=$RUN_ID"

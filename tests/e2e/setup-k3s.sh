@@ -10,8 +10,8 @@ SYSBOX_VERSION=0.7.1
 SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
 
 runtime=${1:-}
-if [[ $runtime != kata && $runtime != sysbox ]]; then
-	echo "usage: $0 <kata|sysbox>" >&2
+if [[ $runtime != kata && $runtime != sysbox && $runtime != native ]]; then
+	echo "usage: $0 <kata|sysbox|native>" >&2
 	exit 2
 fi
 
@@ -33,7 +33,7 @@ if [[ $runtime == sysbox ]]; then
 	sudo apt-get update
 	sudo apt-get install -y "$package"
 	sudo systemctl is-active --quiet sysbox-mgr sysbox-fs
-else
+elif [[ $runtime == kata ]]; then
 	echo "Checking Kata hardware virtualization"
 	test -c /dev/kvm
 	sudo chmod 0666 /dev/kvm
@@ -76,6 +76,11 @@ metadata:
 handler: sysbox-runc
 EOF
 	kubectl get runtimeclass/sysbox-runc >/dev/null
+	kubectl wait --for=create storageclass/local-path --timeout=2m
+	exit 0
+fi
+
+if [[ $runtime == native ]]; then
 	kubectl wait --for=create storageclass/local-path --timeout=2m
 	exit 0
 fi

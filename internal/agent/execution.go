@@ -47,6 +47,7 @@ type Runtime struct {
 	DockerCertificateDirectory string
 	Diagnostics                io.Writer
 	DevContainer               devcontainerruntime.Configuration
+	NativeDevices              *NativeDevices
 	systemCABundlePath         string
 	dockerCABundlePath         string
 
@@ -139,7 +140,11 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache)
 	if directory == "" {
 		directory = runtimeVolume
 	}
-	daemon, err := StartDocker(ctx, directory, r.Diagnostics)
+	cdiSpecDirectory := ""
+	if r.NativeDevices != nil {
+		cdiSpecDirectory = r.NativeDevices.CDISpecDirectory
+	}
+	daemon, err := StartDocker(ctx, directory, cdiSpecDirectory, r.NativeDevices != nil, r.Diagnostics)
 	if err != nil {
 		return nil, err
 	}
@@ -324,7 +329,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
-		GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer,
+		GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(),
 	})
 	cleanupErr := cleanupCredentials()
 	if applyErr != nil || cleanupErr != nil {
@@ -371,7 +376,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	state, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
-		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer,
+		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(),
 	})
 	if err != nil {
 		return err
@@ -384,6 +389,13 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	r.setAccessState(target, secrets)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, target)
 	return nil
+}
+
+func (r *Runtime) nativeContainerConfiguration() devcontainerruntime.NativeContainerConfiguration {
+	if r.NativeDevices == nil {
+		return devcontainerruntime.NativeContainerConfiguration{}
+	}
+	return r.NativeDevices.DevContainer
 }
 
 func (r *Runtime) setAccessState(target *agentv1.AccessTarget, secrets map[string]string) {
