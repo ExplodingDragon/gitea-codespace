@@ -802,6 +802,7 @@ func (c *gatewayWebIDEClient) restart(ctx context.Context) error {
 	}
 	request.Host = c.host
 	request.AddCookie(c.session)
+	request.Header.Set("Origin", "http://"+c.host)
 	response, err := c.client.Do(request)
 	if err != nil {
 		return err
