@@ -9,6 +9,9 @@
   `make generate-kubernetes` so the canonical and Helm CRDs stay identical.
 - Define internal RPC messages in their `.proto` sources and run
   `make proto-generate` so generated Go bindings remain reproducible.
+- Keep `README.md` in a conventional GitHub project format with a concise
+  overview, features, requirements, quick start, and links to detailed user,
+  operator, and contributor documentation.
 - Write documentation for its audience: keep `README.md` focused on users, the
   Helm guide focused on cluster operators, and `DEVELOPMENT.md` focused on
   contributors. Explain the reason for an action where it affects correctness;
