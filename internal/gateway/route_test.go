@@ -4,8 +4,13 @@
 package gateway
 
 import (
+	"bytes"
+	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestGatewayRouteMetadataUpdateKeepsConnections(t *testing.T) {
@@ -51,4 +56,42 @@ func TestGatewayRouteMetadataUpdateKeepsConnections(t *testing.T) {
 	default:
 		t.Fatal("target route update did not cancel the proxy")
 	}
+}
+
+func TestGatewayRoutePreservesRuntimeIdentity(t *testing.T) {
+	routes := newRouteStore(gatewayTestBackend{})
+	t.Cleanup(routes.Close)
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{{
+		SiteUID: "site-1", ResourceUID: "resource-1", RuntimeUUID: "codespace-1",
+		GiteaWebURL: "https://gitea.example.test", PodUID: "pod-1", AgentAddress: "agent:8444", TargetVersion: 7,
+		Endpoints: []endpointSnapshot{{EndpointID: "app", Label: "Application", Public: true}},
+	}}))
+
+	route, found := routes.Get("codespace-1", "app")
+	require.True(t, found)
+	require.Equal(t, "resource-1", route.ResourceUID)
+	require.Equal(t, int64(7), route.TargetVersion)
+	runtime, found := routes.RuntimeTarget("codespace-1")
+	require.True(t, found)
+	require.Equal(t, "resource-1", runtime.ResourceUID)
+}
+
+func TestGatewayRouteSnapshotLogsOnlyChanges(t *testing.T) {
+	var output bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+	routes := newRouteStore(gatewayTestBackend{})
+	t.Cleanup(routes.Close)
+	snapshot := runtimeSnapshot{
+		SiteUID: "site-1", ResourceUID: "resource-1", RuntimeUUID: "codespace-1",
+		GiteaWebURL: "https://gitea.example.test", PodUID: "pod-1", AgentAddress: "agent:8444", TargetVersion: 1,
+		Endpoints: []endpointSnapshot{{EndpointID: "app", Label: "Application", Public: true}},
+	}
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
+	snapshot.TargetVersion++
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
+
+	require.Equal(t, 2, strings.Count(output.String(), `"event":"gateway_routes_updated"`))
 }

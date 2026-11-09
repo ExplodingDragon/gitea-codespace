@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -66,35 +67,41 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	}()
 	response, err := b.Manager.IssueAgentAccess(streamCtx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: runtimeUUID, Capability: capability, EndpointId: endpointID})
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayUpstreamError("ticket_issue", err)
 	}
 	route := response.Runtime
 	if route == nil || route.RuntimeUuid != runtimeUUID || route.SiteUid == "" || route.ResourceUid == "" || route.PodUid == "" || route.AgentAddress == "" || response.Ticket == "" {
-		return nil, fmt.Errorf("manager returned an incomplete Agent target")
+		return nil, wrapGatewayUpstreamError("ticket_issue", fmt.Errorf("manager returned an incomplete Agent target"))
+	}
+	target := runtimeSnapshot{
+		SiteUID: route.SiteUid, ResourceUID: route.ResourceUid, RuntimeUUID: route.RuntimeUuid,
+		PodUID: route.PodUid, AgentAddress: route.AgentAddress, TargetVersion: route.TargetVersion,
 	}
 	client, err := b.clientFor(route)
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayUpstreamTargetError("agent_connect", target, err)
 	}
 	stream, err := client.access.Access(streamCtx)
 	if err != nil {
-		return nil, err
+		return nil, wrapGatewayUpstreamTargetError("agent_connect", target, err)
 	}
 	open.Ticket = response.Ticket
 	if err := stream.Send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Open{Open: open}}); err != nil {
-		return nil, err
+		return nil, wrapGatewayUpstreamTargetError("agent_open", target, err)
 	}
 	accepted, err := stream.Receive()
 	if err != nil || !accepted.GetAccepted() {
 		if err == nil {
 			err = fmt.Errorf("agent rejected the access stream")
 		}
-		return nil, err
+		return nil, wrapGatewayUpstreamTargetError("agent_open", target, err)
 	}
 	if !setupTimer.Stop() {
-		return nil, context.DeadlineExceeded
+		return nil, wrapGatewayUpstreamTargetError("agent_open", target, context.DeadlineExceeded)
 	}
 	established = true
+	gatewayLog(streamCtx, slog.LevelDebug, "gateway_agent_access_opened",
+		append(gatewayRuntimeLogAttrs(target), slog.String("capability", capability.String()), slog.String("endpoint_id", endpointID))...)
 	return &agentAccessStream{cancel: cancel, stream: stream}, nil
 }
 

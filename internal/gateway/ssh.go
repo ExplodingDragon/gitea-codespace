@@ -7,7 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -30,7 +30,7 @@ type gatewaySSHPty struct {
 }
 
 type gatewayWorkspaceTargetStore interface {
-	RuntimeSiteUID(codespaceUUID string) (string, bool)
+	RuntimeTarget(codespaceUUID string) (runtimeSnapshot, bool)
 }
 
 type sshServer struct {
@@ -51,6 +51,7 @@ type gatewaySSHAuthContext struct {
 	codespaceUUID string
 	siteUID       string
 	userID        int64
+	clientIP      string
 }
 
 func newSSHServer(
@@ -96,20 +97,39 @@ func (s *sshServer) authenticatePublicKey(ctx context.Context, conn ssh.ConnMeta
 	codespaceUUID, ok := codespaceUUIDFromGatewaySSHUser(conn.User())
 	if !ok {
 		s.authLimiter.RecordFailure(sourceIP, "", publicKeyHash, "invalid_credentials", time.Now())
+		gatewayLog(ctx, slog.LevelDebug, "gateway_ssh_authentication_failed",
+			slog.String("client_ip", sourceIP), slog.String("protocol", "ssh"),
+			slog.String("public_key_fingerprint", publicKeyHash), slog.String("reason", "invalid_credentials"))
 		return nil, fmt.Errorf("invalid codespace ssh user")
 	}
 	if !s.authLimiter.Allow(sourceIP, codespaceUUID, publicKeyHash, time.Now()) {
+		gatewayLog(ctx, slog.LevelDebug, "gateway_ssh_authentication_failed",
+			slog.String("client_ip", sourceIP), slog.String("protocol", "ssh"),
+			slog.String("codespace_uuid", codespaceUUID), slog.String("public_key_fingerprint", publicKeyHash),
+			slog.String("reason", "rate_limit_reached"))
 		return nil, gatewaySSHAuthLimitError()
 	}
 	if s.controlPlane == nil {
+		gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed",
+			slog.String("client_ip", sourceIP), slog.String("protocol", "ssh"),
+			slog.String("codespace_uuid", codespaceUUID), slog.String("stage", "authorization"),
+			slog.String("reason", "control_plane_not_ready"))
 		return nil, fmt.Errorf("gateway control plane is not ready")
 	}
 	decision, err := s.controlPlane.VerifySSHPublicKey(ctx, codespaceUUID, key.Marshal())
 	if err != nil {
+		gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed",
+			slog.String("client_ip", sourceIP), slog.String("protocol", "ssh"),
+			slog.String("codespace_uuid", codespaceUUID), slog.String("stage", "authorization"),
+			slog.Any("error", err))
 		return nil, err
 	}
 	if !decision.Allowed {
 		s.authLimiter.RecordFailure(sourceIP, codespaceUUID, publicKeyHash, decision.deniedCategory, time.Now())
+		gatewayLog(ctx, slog.LevelDebug, "gateway_ssh_authentication_failed",
+			slog.String("client_ip", sourceIP), slog.String("protocol", "ssh"),
+			slog.String("codespace_uuid", codespaceUUID), slog.String("public_key_fingerprint", publicKeyHash),
+			slog.String("reason", decision.deniedCategory))
 		return nil, fmt.Errorf("ssh public key denied: %s", decision.deniedCategory)
 	}
 	if !s.runtimeAvailable(codespaceUUID, decision.SiteUID) {
@@ -125,9 +145,14 @@ func (s *sshServer) authenticatePublicKey(ctx context.Context, conn ssh.ConnMeta
 }
 
 func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
+	connectionStarted := time.Now()
+	clientIP := gatewaySSHSourceIP(conn.RemoteAddr())
 	defer func() { _ = conn.Close() }()
 	releaseTransport, ok := s.reserveTransport()
 	if !ok {
+		gatewayLog(ctx, slog.LevelWarn, "gateway_ssh_connection_rejected",
+			slog.String("client_ip", clientIP), slog.String("protocol", "ssh"),
+			slog.String("reason", "gateway_capacity_unavailable"))
 		return
 	}
 	defer releaseTransport()
@@ -152,7 +177,9 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	<-handshakeWatcherDone
 	cancelHandshake()
 	if err != nil {
-		log.Printf("gateway ssh handshake: %v", err)
+		gatewayLog(ctx, slog.LevelDebug, "gateway_ssh_handshake_failed",
+			slog.String("client_ip", clientIP), slog.String("protocol", "ssh"),
+			slog.Int64("duration_ms", time.Since(connectionStarted).Milliseconds()), slog.Any("error", err))
 		return
 	}
 	_ = conn.SetDeadline(time.Time{})
@@ -163,6 +190,7 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	if !ok {
 		return
 	}
+	auth.clientIP = clientIP
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	go closeGatewaySSHConnOnDone(sessionCtx, sshConn)
@@ -171,13 +199,26 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 		var ok bool
 		release, ok = s.sessions.BeginSSHSession(auth.siteUID, auth.codespaceUUID, auth.userID, cancel, time.Now())
 		if !ok {
+			gatewayLog(ctx, slog.LevelWarn, "gateway_ssh_session_rejected",
+				slog.String("client_ip", auth.clientIP), slog.String("protocol", "ssh"),
+				slog.String("site_uid", auth.siteUID), slog.String("codespace_uuid", auth.codespaceUUID),
+				slog.Int64("user_id", auth.userID), slog.String("reason", "session_limit_reached"))
 			return
 		}
 	}
 	defer release()
-	if !s.runtimeAvailable(auth.codespaceUUID, auth.siteUID) {
+	runtime, available := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+	if !available {
 		return
 	}
+	sessionStarted := time.Now()
+	sshLogAttrs := gatewaySSHLogAttrs(auth, runtime)
+	gatewayLog(sessionCtx, slog.LevelInfo, "gateway_ssh_session_started", sshLogAttrs...)
+	defer func() {
+		attrs := append([]slog.Attr{}, sshLogAttrs...)
+		attrs = append(attrs, slog.Int64("duration_ms", time.Since(sessionStarted).Milliseconds()))
+		gatewayLog(context.Background(), slog.LevelInfo, "gateway_ssh_session_ended", attrs...)
+	}()
 	activity := make(chan struct{}, 1)
 	go s.revalidateSession(sessionCtx, auth, cancel)
 	go s.cancelIdleSession(sessionCtx, cancel, activity)
@@ -277,6 +318,7 @@ func (s *sshServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 				Rows:        pty.rows,
 			})
 			if err != nil {
+				s.logSSHBackendFailure(ctx, auth, "shell", 0, err)
 				if request.WantReply {
 					_ = request.Reply(false, nil)
 				}
@@ -303,6 +345,7 @@ func (s *sshServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 				Rows:        pty.rows,
 			})
 			if err != nil {
+				s.logSSHBackendFailure(ctx, auth, "exec", 0, err)
 				if request.WantReply {
 					_ = request.Reply(false, nil)
 				}
@@ -325,6 +368,7 @@ func (s *sshServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 				RuntimeUUID: auth.codespaceUUID,
 			})
 			if err != nil {
+				s.logSSHBackendFailure(ctx, auth, "sftp", 0, err)
 				if request.WantReply {
 					_ = request.Reply(false, nil)
 				}
@@ -344,11 +388,16 @@ func (s *sshServer) handleChannel(ctx context.Context, auth gatewaySSHAuthContex
 }
 
 func (s *sshServer) runtimeAvailable(codespaceUUID, siteUID string) bool {
+	_, available := s.runtimeTarget(codespaceUUID, siteUID)
+	return available
+}
+
+func (s *sshServer) runtimeTarget(codespaceUUID, siteUID string) (runtimeSnapshot, bool) {
 	if s.state == nil || s.backend == nil {
-		return false
+		return runtimeSnapshot{}, false
 	}
-	runtimeSiteUID, found := s.state.RuntimeSiteUID(codespaceUUID)
-	return found && runtimeSiteUID == siteUID
+	runtime, found := s.state.RuntimeTarget(codespaceUUID)
+	return runtime, found && runtime.SiteUID == siteUID
 }
 
 func (s *sshServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthContext, channel ssh.NewChannel, activity chan<- struct{}) {
@@ -378,6 +427,7 @@ func (s *sshServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthCo
 	}
 	backendConn, err := s.backend.OpenWorkspaceTCP(ctx, auth.codespaceUUID, payload.Port)
 	if err != nil {
+		s.logSSHBackendFailure(ctx, auth, "direct_tcpip", payload.Port, err)
 		_ = channel.Reject(ssh.ConnectionFailed, "workspace tcp target unavailable")
 		return
 	}
@@ -391,6 +441,23 @@ func (s *sshServer) handleDirectTCPIP(ctx context.Context, auth gatewaySSHAuthCo
 	s.proxyWorkspaceStream(ctx, clientChannel, requests, backendConn, activity)
 }
 
+func (s *sshServer) logSSHBackendFailure(ctx context.Context, auth gatewaySSHAuthContext, operation string, port uint32, err error) {
+	runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+	attrs := gatewaySSHLogAttrs(auth, runtime)
+	attrs = append(attrs,
+		slog.String("operation", operation),
+		slog.String("stage", gatewayUpstreamStage(err, "agent_open")),
+		slog.Any("error", err),
+	)
+	if port > 0 {
+		attrs = append(attrs, slog.Uint64("target_port", uint64(port)))
+	}
+	if target, ok := gatewayUpstreamTarget(err); ok {
+		attrs = append(attrs, slog.GroupAttrs("issued_target", gatewayRuntimeLogAttrs(target)...))
+	}
+	gatewayLog(ctx, slog.LevelWarn, "gateway_ssh_backend_failed", attrs...)
+}
+
 func (s *sshServer) revalidateSession(ctx context.Context, auth gatewaySSHAuthContext, cancel context.CancelFunc) {
 	ticker := time.NewTicker(s.revalidateInterval)
 	defer ticker.Stop()
@@ -400,18 +467,27 @@ func (s *sshServer) revalidateSession(ctx context.Context, auth gatewaySSHAuthCo
 			return
 		case <-ticker.C:
 			if s.controlPlane == nil {
-				log.Printf("gateway ssh revalidate %s user %d: control plane is not ready", auth.codespaceUUID, auth.userID)
+				runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+				attrs := gatewaySSHLogAttrs(auth, runtime)
+				attrs = append(attrs, slog.String("stage", "authorization"), slog.String("reason", "control_plane_not_ready"))
+				gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed", attrs...)
 				cancel()
 				return
 			}
 			decision, err := s.controlPlane.RevalidateSSHSession(ctx, auth.siteUID, auth.userID, auth.codespaceUUID)
 			if err != nil {
-				log.Printf("gateway ssh revalidate %s user %d: %v", auth.codespaceUUID, auth.userID, err)
+				runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+				attrs := gatewaySSHLogAttrs(auth, runtime)
+				attrs = append(attrs, slog.String("stage", "authorization"), slog.Any("error", err))
+				gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed", attrs...)
 				cancel()
 				return
 			}
 			if !decision.Allowed {
-				log.Printf("gateway ssh revalidate denied %s user %d: %s", auth.codespaceUUID, auth.userID, decision.DeniedCategory)
+				runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+				attrs := gatewaySSHLogAttrs(auth, runtime)
+				attrs = append(attrs, slog.String("stage", "authorization"), slog.String("reason", decision.DeniedCategory))
+				gatewayLog(ctx, slog.LevelInfo, "gateway_authorization_revoked", attrs...)
 				cancel()
 				return
 			}

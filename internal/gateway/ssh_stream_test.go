@@ -49,8 +49,8 @@ type gatewaySiteTargetStore struct {
 	siteUID string
 }
 
-func (s gatewaySiteTargetStore) RuntimeSiteUID(string) (string, bool) {
-	return s.siteUID, true
+func (s gatewaySiteTargetStore) RuntimeTarget(runtimeUUID string) (runtimeSnapshot, bool) {
+	return runtimeSnapshot{SiteUID: s.siteUID, RuntimeUUID: runtimeUUID}, true
 }
 
 func (s streamTestSession) Stdin() io.WriteCloser { return s.WriteCloser }

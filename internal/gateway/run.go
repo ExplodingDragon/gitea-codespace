@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -326,6 +327,13 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		}
 	}()
 	health.Ready()
+	runtimeCount, routeCount := routes.Counts()
+	gatewayLog(ctx, slog.LevelInfo, "gateway_started",
+		slog.String("http_listen", httpLn.Addr().String()),
+		slog.String("ssh_listen", sshLn.Addr().String()),
+		slog.Int("runtime_count", runtimeCount),
+		slog.Int("route_count", routeCount),
+	)
 	_, _ = fmt.Fprintf(output, "codespace gateway HTTP listening on %s\ncodespace gateway SSH listening on %s\n", httpLn.Addr(), sshLn.Addr())
 	return runtime, nil
 }

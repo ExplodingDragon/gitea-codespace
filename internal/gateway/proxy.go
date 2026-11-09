@@ -6,7 +6,7 @@ package gateway
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -23,6 +23,8 @@ type gatewayProxyResponseContext struct {
 	externalScheme string
 	externalHost   string
 	upstreamHost   string
+	logContext     context.Context
+	logAttrs       []slog.Attr
 }
 
 type gatewayProxyRequestContext struct {
@@ -54,11 +56,15 @@ func proxyGatewayEndpoint(
 	upstreamPath string,
 	proxyContext gatewayProxyRequestContext,
 ) {
+	logAttrs := gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext)
 	upstreamHost := gatewayAgentEndpointHost
 	target := &url.URL{Scheme: "http", Host: upstreamHost}
 	proxy := &httputil.ReverseProxy{}
 	transport, err := routes.Transport(route)
 	if err != nil {
+		attrs := append([]slog.Attr{}, logAttrs...)
+		attrs = append(attrs, slog.String("stage", "route_lookup"), slog.Int("status_code", http.StatusBadGateway), slog.Any("error", err))
+		gatewayLog(request.Context(), slog.LevelError, "gateway_proxy_failed", attrs...)
 		writeGatewayError(writer, request, http.StatusBadGateway, "Endpoint is unavailable", "The runtime endpoint route is unavailable.", "gateway upstream unavailable")
 		return
 	}
@@ -76,6 +82,8 @@ func proxyGatewayEndpoint(
 			externalScheme: proxyContext.externalScheme,
 			externalHost:   proxyContext.externalHost,
 			upstreamHost:   upstreamHost,
+			logContext:     request.Context(),
+			logAttrs:       logAttrs,
 		})
 		return nil
 	}
@@ -83,7 +91,16 @@ func proxyGatewayEndpoint(
 		if request.Context().Err() != nil || errors.Is(err, context.Canceled) {
 			return
 		}
-		log.Printf("gateway proxy %s/%s: %v", route.CodespaceUUID, route.EndpointID, err)
+		attrs := append([]slog.Attr{}, logAttrs...)
+		attrs = append(attrs,
+			slog.String("stage", gatewayUpstreamStage(err, "proxy_stream")),
+			slog.Int("status_code", http.StatusBadGateway),
+			slog.Any("error", err),
+		)
+		if target, ok := gatewayUpstreamTarget(err); ok {
+			attrs = append(attrs, slog.GroupAttrs("issued_target", gatewayRuntimeLogAttrs(target)...))
+		}
+		gatewayLog(request.Context(), slog.LevelError, "gateway_proxy_failed", attrs...)
 		title := "Endpoint is unavailable"
 		message := "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting."
 		if route.EndpointID == runtimeendpoint.WorkspaceEndpointID {
@@ -193,7 +210,9 @@ func normalizeGatewayProxySetCookie(value string, proxyContext gatewayProxyRespo
 	hadInvalidSameSite := hasInvalidGatewayProxySameSite(value)
 	cookie, err := http.ParseSetCookie(value)
 	if err != nil {
-		log.Printf("drop upstream set-cookie: parse: %v", err)
+		attrs := append([]slog.Attr{}, proxyContext.logAttrs...)
+		attrs = append(attrs, slog.String("stage", "response_rewrite"), slog.String("reason", "set_cookie_parse_failed"))
+		gatewayLog(proxyContext.logContext, slog.LevelWarn, "gateway_response_header_dropped", attrs...)
 		return nil, false
 	}
 	if isGatewayReservedCookieName(cookie.Name) {
@@ -218,7 +237,13 @@ func normalizeGatewayProxySetCookie(value string, proxyContext gatewayProxyRespo
 		return nil, false
 	}
 	if err := cookie.Valid(); err != nil {
-		log.Printf("drop upstream set-cookie %q: %v", cookie.Name, err)
+		attrs := append([]slog.Attr{}, proxyContext.logAttrs...)
+		attrs = append(attrs,
+			slog.String("stage", "response_rewrite"),
+			slog.String("reason", "set_cookie_validation_failed"),
+			slog.String("cookie_name", boundedGatewayLogValue(cookie.Name, gatewayLogHeaderLimit)),
+		)
+		gatewayLog(proxyContext.logContext, slog.LevelWarn, "gateway_response_header_dropped", attrs...)
 		return nil, false
 	}
 	return cookie, true

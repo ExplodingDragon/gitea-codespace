@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -19,6 +20,7 @@ import (
 // An endpoint route binds an authorized public address to one site's Runtime.
 type endpointRoute struct {
 	SiteUID       string
+	ResourceUID   string
 	GiteaWebURL   string
 	PodUID        string
 	AgentAddress  string
@@ -87,11 +89,20 @@ func (s *routeStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool
 	return "", false
 }
 
-func (s *routeStore) RuntimeSiteUID(runtimeUUID string) (string, bool) {
+func (s *routeStore) RuntimeTarget(runtimeUUID string) (runtimeSnapshot, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	runtime, found := s.runtimes[runtimeUUID]
-	return runtime.SiteUID, found
+	return runtime, found
+}
+
+func (s *routeStore) Counts() (runtimes, routes int) {
+	if s == nil {
+		return 0, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.runtimes), len(s.routes)
 }
 
 func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) error {
@@ -110,7 +121,7 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 		runtimes[snapshot.RuntimeUUID] = snapshot
 		for _, endpoint := range snapshot.Endpoints {
 			route := endpointRoute{
-				SiteUID: snapshot.SiteUID, GiteaWebURL: snapshot.GiteaWebURL, PodUID: snapshot.PodUID, AgentAddress: snapshot.AgentAddress,
+				SiteUID: snapshot.SiteUID, ResourceUID: snapshot.ResourceUID, GiteaWebURL: snapshot.GiteaWebURL, PodUID: snapshot.PodUID, AgentAddress: snapshot.AgentAddress,
 				TargetVersion: snapshot.TargetVersion, CodespaceUUID: snapshot.RuntimeUUID,
 				EndpointID: endpoint.EndpointID, Label: endpoint.Label, Public: endpoint.Public,
 			}
@@ -119,25 +130,44 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 	}
 
 	s.mu.Lock()
-	unchanged := len(s.runtimes) == len(runtimes) && len(s.routes) == len(routes)
-	if unchanged {
-		for key, runtime := range runtimes {
-			previous, ok := s.runtimes[key]
-			if !ok || !sameGatewayRuntimeRouting(previous, runtime) {
-				unchanged = false
-				break
-			}
+	runtimesAdded, runtimesUpdated, runtimesRemoved := 0, 0, 0
+	for runtimeUUID, runtime := range runtimes {
+		previous, found := s.runtimes[runtimeUUID]
+		if !found {
+			runtimesAdded++
+		} else if !sameGatewayRuntimeRouting(previous, runtime) {
+			runtimesUpdated++
 		}
 	}
-	if unchanged {
-		for key, route := range routes {
-			if entry := s.routes[key]; entry == nil || entry.route != route {
-				unchanged = false
-				break
-			}
+	for runtimeUUID := range s.runtimes {
+		if _, found := runtimes[runtimeUUID]; !found {
+			runtimesRemoved++
 		}
 	}
-	if unchanged {
+	type routeChange struct {
+		event    string
+		current  endpointRoute
+		previous endpointRoute
+	}
+	routeChanges := make([]routeChange, 0)
+	routesAdded, routesUpdated, routesRemoved := 0, 0, 0
+	for key, route := range routes {
+		previous := s.routes[key]
+		if previous == nil {
+			routesAdded++
+			routeChanges = append(routeChanges, routeChange{event: "gateway_route_added", current: route})
+		} else if previous.route != route {
+			routesUpdated++
+			routeChanges = append(routeChanges, routeChange{event: "gateway_route_updated", current: route, previous: previous.route})
+		}
+	}
+	for key, previous := range s.routes {
+		if _, found := routes[key]; !found {
+			routesRemoved++
+			routeChanges = append(routeChanges, routeChange{event: "gateway_route_removed", previous: previous.route})
+		}
+	}
+	if runtimesAdded+runtimesUpdated+runtimesRemoved+routesAdded+routesUpdated+routesRemoved == 0 {
 		s.mu.Unlock()
 		return nil
 	}
@@ -159,6 +189,25 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 		cancels = append(cancels, entry.takeCancels()...)
 	}
 	s.mu.Unlock()
+	gatewayLog(context.Background(), slog.LevelInfo, "gateway_routes_updated",
+		slog.Int("runtime_count", len(runtimes)),
+		slog.Int("runtimes_added", runtimesAdded),
+		slog.Int("runtimes_updated", runtimesUpdated),
+		slog.Int("runtimes_removed", runtimesRemoved),
+		slog.Int("route_count", len(routes)),
+		slog.Int("routes_added", routesAdded),
+		slog.Int("routes_updated", routesUpdated),
+		slog.Int("routes_removed", routesRemoved),
+	)
+	for _, change := range routeChanges {
+		attrs := gatewayRouteLogAttrs(change.current)
+		if change.event == "gateway_route_removed" {
+			attrs = gatewayRouteLogAttrs(change.previous)
+		} else if change.event == "gateway_route_updated" {
+			attrs = append(attrs, slog.GroupAttrs("previous_target", gatewayRouteLogAttrs(change.previous)...))
+		}
+		gatewayLog(context.Background(), slog.LevelDebug, change.event, attrs...)
+	}
 	if closer, ok := s.backend.(interface{ ClosePod(string) }); ok {
 		for runtimeUUID, oldRuntime := range oldRuntimes {
 			newRuntime, found := runtimes[runtimeUUID]
@@ -240,8 +289,14 @@ func (s *routeStore) Put(route endpointRoute) error {
 	s.mu.Lock()
 	oldEntry := s.routes[key]
 	if oldEntry != nil && sameGatewayEndpointTarget(oldEntry.route, route) {
+		previous := oldEntry.route
 		oldEntry.route = route
 		s.mu.Unlock()
+		if previous != route {
+			attrs := gatewayRouteLogAttrs(route)
+			attrs = append(attrs, slog.GroupAttrs("previous_target", gatewayRouteLogAttrs(previous)...))
+			gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_updated", attrs...)
+		}
 		return nil
 	}
 	s.routes[key] = &gatewayRouteEntry{route: route}
@@ -249,6 +304,13 @@ func (s *routeStore) Put(route endpointRoute) error {
 	s.mu.Unlock()
 
 	cancelGatewayRouteLeases(cancels)
+	attrs := gatewayRouteLogAttrs(route)
+	if oldEntry == nil {
+		gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_added", attrs...)
+	} else {
+		attrs = append(attrs, slog.GroupAttrs("previous_target", gatewayRouteLogAttrs(oldEntry.route)...))
+		gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_updated", attrs...)
+	}
 	return nil
 }
 
@@ -263,6 +325,9 @@ func (s *routeStore) Delete(codespaceUUID, endpointID string) {
 	s.mu.Unlock()
 
 	cancelGatewayRouteLeases(cancels)
+	if entry != nil {
+		gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_removed", gatewayRouteLogAttrs(entry.route)...)
+	}
 }
 
 func (e *gatewayRouteEntry) takeCancels() []context.CancelFunc {
@@ -289,6 +354,7 @@ func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
 
 func sameGatewayEndpointTarget(left, right endpointRoute) bool {
 	return left.SiteUID == right.SiteUID &&
+		left.ResourceUID == right.ResourceUID &&
 		left.PodUID == right.PodUID &&
 		left.AgentAddress == right.AgentAddress &&
 		left.CodespaceUUID == right.CodespaceUUID &&
@@ -299,7 +365,8 @@ func sameGatewayEndpointTarget(left, right endpointRoute) bool {
 func sameGatewayRuntimeRouting(left, right runtimeSnapshot) bool {
 	return left.SiteUID == right.SiteUID && left.ResourceUID == right.ResourceUID &&
 		left.RuntimeUUID == right.RuntimeUUID && left.GiteaWebURL == right.GiteaWebURL &&
-		left.PodUID == right.PodUID && left.AgentAddress == right.AgentAddress
+		left.PodUID == right.PodUID && left.AgentAddress == right.AgentAddress &&
+		left.TargetVersion == right.TargetVersion
 }
 
 func normalizeEndpointRoute(route endpointRoute) (endpointRoute, error) {

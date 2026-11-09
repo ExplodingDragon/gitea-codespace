@@ -9,7 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"html/template"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -102,7 +102,15 @@ func handleGatewayOpen(
 
 	decision, err := controlPlane.ValidateOpenToken(request.Context(), code, hostBinding.codespaceUUID, hostBinding.endpointID)
 	if err != nil {
-		log.Printf("validate open token: %v", err)
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs,
+			slog.String("stage", "authorization"),
+			slog.Int("status_code", http.StatusServiceUnavailable),
+			slog.String("codespace_uuid", hostBinding.codespaceUUID),
+			slog.String("endpoint_id", hostBinding.endpointID),
+			slog.Any("error", err),
+		)
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_authorization_failed", attrs...)
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this open link with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
@@ -128,7 +136,21 @@ func handleGatewayOpen(
 	replaceSessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
 	sessionID, err := sessions.CreateReplacingAny(decision.Binding, replaceSessionIDs, time.Now())
 	if err != nil {
-		log.Printf("create gateway session: %v", err)
+		statusCode := http.StatusServiceUnavailable
+		if errors.Is(err, errGatewaySessionAmbiguous) {
+			statusCode = http.StatusUnauthorized
+		} else if errors.Is(err, errGatewaySessionLimitReached) {
+			statusCode = http.StatusTooManyRequests
+		}
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs, gatewayRouteLogAttrs(route)...)
+		attrs = append(attrs,
+			slog.String("stage", "session_create"),
+			slog.Int("status_code", statusCode),
+			slog.Int64("user_id", decision.Binding.UserID),
+			slog.Any("error", err),
+		)
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_session_create_failed", attrs...)
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		if errors.Is(err, errGatewaySessionAmbiguous) {
 			writeGatewayError(writer, request, http.StatusUnauthorized, "Session is ambiguous", "More than one gateway session matched this request. Open the codespace again from Gitea.", "gateway session is ambiguous")
@@ -178,6 +200,15 @@ func handleGatewayWorkspace(
 		return
 	}
 	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
+		attrs := gatewaySourceRejectionLogAttrs(request, originPolicy)
+		attrs = append(attrs,
+			slog.String("codespace_uuid", codespaceUUID),
+			slog.String("endpoint_id", endpointID),
+			slog.String("access", "authenticated"),
+			slog.String("reason", gatewaySourceRejectionReason(request, originPolicy)),
+			slog.Int("status_code", http.StatusForbidden),
+		)
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_source_rejected", attrs...)
 		writeGatewayError(writer, request, http.StatusForbidden, "Request source is not allowed", "This request did not come from an allowed codespace gateway origin.", "gateway source is not allowed")
 		return
 	}
@@ -237,7 +268,16 @@ func handleGatewayWorkspace(
 		return
 	}
 	if err != nil {
-		log.Printf("revalidate gateway session: %v", err)
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs, gatewayRouteLogAttrs(route)...)
+		attrs = append(attrs,
+			slog.String("stage", "authorization"),
+			slog.Int("status_code", http.StatusServiceUnavailable),
+			slog.String("access", "authenticated"),
+			slog.Int64("user_id", session.userID),
+			slog.Any("error", err),
+		)
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_authorization_failed", attrs...)
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this session with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
 	}
@@ -291,7 +331,8 @@ func handleGatewayWorkspace(
 		return
 	}
 	defer releaseRoute()
-	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.Config.StreamRevalidateInterval, "revalidate gateway endpoint session", revalidate)
+	revalidationAttrs := gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext)
+	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.Config.StreamRevalidateInterval, revalidationAttrs, revalidate)
 	defer cancelRevalidation()
 	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, proxyContext)
 }
@@ -346,7 +387,15 @@ func handleGatewayPublicEndpoint(
 		return
 	}
 	if err != nil {
-		log.Printf("validate public endpoint: %v", err)
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs, gatewayRouteLogAttrs(route)...)
+		attrs = append(attrs,
+			slog.String("stage", "authorization"),
+			slog.Int("status_code", http.StatusServiceUnavailable),
+			slog.String("access", "public"),
+			slog.Any("error", err),
+		)
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_authorization_failed", attrs...)
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Authorization is unavailable", "Codespace Gateway cannot confirm this public endpoint with Gitea right now. Try again shortly.", "gateway authorization unavailable")
 		return
 	}
@@ -363,10 +412,14 @@ func handleGatewayPublicEndpoint(
 		return
 	}
 	defer releaseRoute()
+	proxyContext := gatewayProxyRequestContext{
+		codespaceUUID: codespaceUUID, endpointID: endpointID, access: "public",
+		externalScheme: gatewayExternalScheme(request, originPolicy), externalHost: request.Host,
+	}
 	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
 		routeRequest,
 		access.Config.StreamRevalidateInterval,
-		"revalidate public gateway endpoint",
+		gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext),
 		func(ctx context.Context) (gatewayAccessDecision, error) {
 			decision, validationFull, err := access.revalidatePublicEndpoint(
 				ctx,
@@ -384,13 +437,7 @@ func handleGatewayPublicEndpoint(
 		},
 	)
 	defer cancelProxyRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, gatewayProxyRequestContext{
-		codespaceUUID:  codespaceUUID,
-		endpointID:     endpointID,
-		access:         "public",
-		externalScheme: gatewayExternalScheme(request, originPolicy),
-		externalHost:   request.Host,
-	})
+	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, proxyContext)
 }
 
 func parseGatewayWorkspacePath(path string) (string, string, string, bool) {
@@ -477,7 +524,7 @@ func gatewayProxyPathFromParts(parts []string) string {
 func withGatewayProxyRevalidation(
 	request *http.Request,
 	interval time.Duration,
-	logMessage string,
+	logAttrs []slog.Attr,
 	validate func(context.Context) (gatewayAccessDecision, error),
 ) (*http.Request, context.CancelFunc) {
 	if interval <= 0 {
@@ -497,10 +544,22 @@ func withGatewayProxyRevalidation(
 					if ctx.Err() != nil {
 						return
 					}
-					log.Printf("%s: %v", logMessage, err)
+					attrs := append([]slog.Attr{}, logAttrs...)
+					attrs = append(attrs,
+						slog.String("stage", "authorization"),
+						slog.Int("status_code", http.StatusServiceUnavailable),
+						slog.Any("error", err),
+					)
+					gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed", attrs...)
 					continue
 				}
 				if !decision.Allowed {
+					attrs := append([]slog.Attr{}, logAttrs...)
+					attrs = append(attrs,
+						slog.String("stage", "authorization"),
+						slog.String("reason", decision.DeniedCategory),
+					)
+					gatewayLog(ctx, slog.LevelInfo, "gateway_authorization_revoked", attrs...)
 					cancel()
 					return
 				}
@@ -608,24 +667,22 @@ func clearGatewayReservedCookies(writer http.ResponseWriter) {
 	clearGatewayReturnToCookies(writer)
 }
 
-func writeJSON(writer http.ResponseWriter, statusCode int, value any) {
-	writer.Header().Set("Content-Type", "application/json")
-	writer.WriteHeader(statusCode)
-	if err := json.NewEncoder(writer).Encode(value); err != nil {
-		log.Printf("encode json response: %v", err)
-	}
-}
-
 func writeGatewayNotFound(writer http.ResponseWriter, request *http.Request, context string) {
 	writeGatewayError(writer, request, http.StatusNotFound, "Page not found", context+" was not found on this gateway.", "not_found")
 }
 
 func writeGatewayError(writer http.ResponseWriter, request *http.Request, statusCode int, title, message, category string) {
 	if gatewayRequestAcceptsHTML(request) {
-		writeGatewayErrorHTML(writer, statusCode, title, message, category)
+		writeGatewayErrorHTML(writer, request, statusCode, title, message, category)
 		return
 	}
-	writeJSON(writer, statusCode, map[string]any{"error": category})
+	writer.Header().Set("Content-Type", "application/json")
+	writer.WriteHeader(statusCode)
+	if err := json.NewEncoder(writer).Encode(map[string]any{"error": category}); err != nil {
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs, slog.String("stage", "response_write"), slog.Int("status_code", statusCode), slog.Any("error", err))
+		gatewayLog(request.Context(), slog.LevelError, "gateway_response_write_failed", attrs...)
+	}
 }
 
 func gatewayRequestAcceptsHTML(request *http.Request) bool {
@@ -653,7 +710,7 @@ var gatewayErrorTemplateSource string
 
 var gatewayErrorTemplate = template.Must(template.New("gateway-error").Parse(gatewayErrorTemplateSource))
 
-func writeGatewayErrorHTML(writer http.ResponseWriter, statusCode int, title, message, category string) {
+func writeGatewayErrorHTML(writer http.ResponseWriter, request *http.Request, statusCode int, title, message, category string) {
 	writer.Header().Set("Content-Type", "text/html; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	writer.Header().Set("Referrer-Policy", "no-referrer")
@@ -663,6 +720,8 @@ func writeGatewayErrorHTML(writer http.ResponseWriter, statusCode int, title, me
 		Status                               int
 		StatusText, Title, Message, Category string
 	}{statusCode, http.StatusText(statusCode), title, message, category}); err != nil {
-		log.Printf("render gateway error page: %v", err)
+		attrs := gatewayRequestLogAttrs(request)
+		attrs = append(attrs, slog.String("stage", "response_write"), slog.Int("status_code", statusCode), slog.Any("error", err))
+		gatewayLog(request.Context(), slog.LevelError, "gateway_response_write_failed", attrs...)
 	}
 }

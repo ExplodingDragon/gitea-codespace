@@ -8,7 +8,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -95,7 +95,7 @@ func (c *certificateCache) snapshot() (*certificateSnapshot, error) {
 	}
 
 	c.lastError = fmt.Errorf("refresh certificate: %w", err)
-	log.Printf("TLS certificate refresh failed: %v", err)
+	slog.Warn("Refresh TLS certificate", "error", err)
 	if current.validAt(now) == nil {
 		return current, nil
 	}

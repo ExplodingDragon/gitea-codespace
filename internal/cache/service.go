@@ -9,7 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"time"
@@ -96,7 +96,7 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 					if isCacheAuthorizationError(err) {
 						terminalErr = fmt.Errorf("cache Manager authorization failed: %w", err)
 					} else {
-						log.Printf("cache service: %v", err)
+						slog.Error("Run cache service", "cache_id", options.ID, "error", err)
 					}
 				}
 			case <-ticker.C:
@@ -274,7 +274,7 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 		grant, err := control.BeginCacheGC(ctx, c.owner)
 		if err != nil {
 			if ctx.Err() == nil {
-				log.Printf("cache cleanup authorization: %v", err)
+				slog.Warn("Authorize cache cleanup", "cache_id", c.id, "error", err)
 			}
 			continue
 		}
@@ -299,7 +299,7 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 			err = errors.Join(err, completeErr)
 		}
 		if err != nil && ctx.Err() == nil {
-			log.Printf("cache cleanup: %v", err)
+			slog.Warn("Clean cache", "cache_id", c.id, "error", err)
 		}
 	}
 }

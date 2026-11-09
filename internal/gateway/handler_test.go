@@ -266,7 +266,7 @@ func TestGatewayProxyRevalidationRetriesTransientFailure(t *testing.T) {
 	results := make(chan result)
 	calls := make(chan struct{}, 2)
 	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/", nil)
-	proxyRequest, cancel := withGatewayProxyRevalidation(request, 10*time.Millisecond, "test revalidation", func(context.Context) (gatewayAccessDecision, error) {
+	proxyRequest, cancel := withGatewayProxyRevalidation(request, 10*time.Millisecond, nil, func(context.Context) (gatewayAccessDecision, error) {
 		calls <- struct{}{}
 		outcome := <-results
 		return outcome.decision, outcome.err
