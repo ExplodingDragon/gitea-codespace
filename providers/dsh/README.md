@@ -1,15 +1,42 @@
 # DeepSeek Harness Web IDE provider
 
-This project packages DeepSeek Harness as the official `dsh` provider. Its
-small trusted-proxy patch lets the process rely on Codespace Gateway browser
-authentication while remaining bound to the Dev Container loopback address.
-The patch and upstream build remain in this provider so the security boundary
-is reviewable, while Manager and Agent use the same Provider contract as every
-other Web IDE.
+This image provides DeepSeek Harness through the `dsh` provider. It runs inside
+the Dev Container, keeps its profile with the codespace, and relies on
+Codespace Gateway for browser authentication. The upstream build and the small
+trusted-proxy integration are released with this image rather than the
+Codespace platform.
 
-The provider accepts `plugins` and `patches` options. Values declared by the
-environment template are followed by repository `customizations.dsh` values and
-are written to the provider's persistent profile during initial preparation.
+## Configuration
+
+The provider accepts `plugins` and `settings` options. Settings are keyed by an
+existing top-level DSH profile entry ID and contain that entry's complete
+configuration. Repository `customizations.dsh.settings` replaces the template
+configuration for a matching entry ID, following DSH profile semantics. The
+adapter translates this structured input into the native profile layer so
+templates do not depend on Cordis composition syntax. Plugin packages continue
+to use the official DSH package command. Web startup and connection entries
+remain provider-owned so template settings cannot replace the loopback and
+trusted-proxy configuration required by Gateway.
+
+```json
+{
+  "plugins": ["@example/dsh-plugin"],
+  "settings": {
+    "ui-theme": {"preference": "dark", "fontSize": 14}
+  }
+}
+```
+
+The generated profile is validated before it becomes persistent. Later starts
+reuse that profile, which preserves changes made through the DSH settings and
+plugin interfaces instead of reapplying template defaults. A setting whose
+top-level entry is unavailable after plugin installation is skipped with a
+warning. This lets one template work across provider or plugin versions while
+keeping unsupported configuration out of the persistent profile. A setting
+that matches an entry but is invalid still stops Web IDE initialization so an
+incorrect active configuration is not published.
+
+## Development
 
 Run `make -C providers/dsh check` for adapter and script checks. Run
 `make -C providers/dsh image` on a host matching the requested architecture to

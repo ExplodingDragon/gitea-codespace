@@ -97,7 +97,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
-    webIDEImageSuggestions: ['ghcr.io/example/web-ide-vscode:main', 'ghcr.io/example/web-ide-dsh:main'],
+    webIDEImageSuggestions: ['ghcr.io/example/web-ide-vscode:main', 'ghcr.io/example/web-ide-example:main'],
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
@@ -127,12 +127,12 @@ test('administration workflows preserve resource identity and validate cluster-b
     }
     if (path === 'web-ide-images/resolve') {
       const input = request.postDataJSON() as {image: string};
-      const dsh = input.image.includes('dsh');
+      const example = input.image.includes('web-ide-example');
       await route.fulfill({
         json: {
-          image: `ghcr.io/example/web-ide-${dsh ? 'dsh' : 'vscode'}@sha256:${(dsh ? 'b' : 'a').repeat(64)}`,
-          provider: dsh ? 'dsh' : 'vscode',
-          providerName: dsh ? 'DeepSeek Harness' : 'VS Code',
+          image: `ghcr.io/example/web-ide-${example ? 'example' : 'vscode'}@sha256:${(example ? 'b' : 'a').repeat(64)}`,
+          provider: example ? 'example' : 'vscode',
+          providerName: example ? 'Example IDE' : 'VS Code',
           version: 'test',
           protocolVersion: 1,
           platforms: ['linux/amd64', 'linux/arm64'],
@@ -283,22 +283,19 @@ test('administration workflows preserve resource identity and validate cluster-b
     noProxy: ['registry.internal.example'],
   });
   await page.getByRole('button', {name: 'Add template'}).click();
-  await field('Tag').fill('deepseek');
-  await field('Provider image').fill('ghcr.io/example/web-ide-dsh:main');
+  await field('Tag').fill('example');
+  await field('Provider image').fill('ghcr.io/example/web-ide-example:main');
   await page.getByRole('button', {name: 'Resolve image'}).click();
-  await expect(page.getByText('DeepSeek Harness', {exact: true})).toBeVisible();
+  await expect(page.getByText('Example IDE', {exact: true})).toBeVisible();
   await page
     .getByRole('textbox', {name: 'Web IDE provider options JSON'})
-    .fill('{"plugins":["@example/dsh-plugin"],"patches":[{"id":"example","config":{"enabled":true}}]}');
+    .fill('{"theme":"dark","tools":["terminal"]}');
   await page.getByRole('button', {name: 'Save template'}).click();
-  await expect(page.getByText('deepseek', {exact: true})).toBeVisible();
+  await expect(page.getByRole('cell', {name: 'example example', exact: true})).toBeVisible();
   expect(environments[1].spec.runtime.devContainer.webIDE).toEqual({
-    image: `ghcr.io/example/web-ide-dsh@sha256:${'b'.repeat(64)}`,
-    provider: 'dsh',
-    options: {
-      plugins: ['@example/dsh-plugin'],
-      patches: [{id: 'example', config: {enabled: true}}],
-    },
+    image: `ghcr.io/example/web-ide-example@sha256:${'b'.repeat(64)}`,
+    provider: 'example',
+    options: {theme: 'dark', tools: ['terminal']},
   });
   await page.locator('.language-select .n-base-selection').click();
   await page.getByText('简体中文', {exact: true}).last().click();

@@ -1,98 +1,31 @@
 # Web IDE providers
 
-Web IDEs are distributed independently from the Codespace platform image. This
-keeps editor dependencies and release schedules isolated while giving every
-provider the same runtime contract.
+Web IDEs are distributed as separate OCI images so an administrator can update
+an editor without rebuilding the Codespace platform. Manager resolves the
+selected image to an immutable digest when an environment template is saved,
+which keeps existing templates on the reviewed provider release.
 
-## Official images
+## Official providers
 
-Gitea Codespace publishes:
+| Provider | Image | Configuration |
+| --- | --- | --- |
+| VS Code | `ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main` | [Settings and extensions](vscode/README.md) |
+| DeepSeek Harness | `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main` | [Settings and plugins](dsh/README.md) |
 
-- `ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main`
-- `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main`
+Select an image in an environment template and resolve it before saving. The
+resolved provider name, version, supported platforms, and configuration fields
+come from the image itself. A compatible third-party provider can be used in
+the same way.
 
-Manager suggests these images in environment templates and also accepts a
-compatible third-party image. It resolves the selected reference to an
-immutable digest so an existing template continues using the reviewed image.
-
-## Image metadata
-
-Manager discovers a provider from OCI image configuration labels. Every
-supported platform manifest declares these standard labels:
-
-- `org.opencontainers.image.version`
-- `org.opencontainers.image.source`
-- `org.opencontainers.image.revision`
-- `dev.gitea.codespace.web-ide.metadata`
-
-The Codespace label is a JSON object containing the provider identity and its
-environment-template options:
-
-```json
-{
-  "metadataVersion": 1,
-  "protocolVersion": 1,
-  "provider": { "id": "example", "name": "Example IDE" },
-  "optionsSchema": {
-    "$schema": "https://json-schema.org/draft/2020-12/schema",
-    "type": "object",
-    "properties": {},
-    "additionalProperties": false
-  }
-}
-```
-
-The provider ID is a lowercase identifier of at most 32 characters. The inline
-Draft 2020-12 Schema uses local references and describes all accepted options.
-The amd64 and arm64 manifests of a multi-platform image declare identical
-provider metadata and source information so a template has the same meaning on
-every supported node.
-
-## Runtime bundle
-
-Kubernetes runs the provider image as an init container. With no arguments, its
-entrypoint publishes a complete bundle at `/output/current`:
-
-```text
-manifest.json
-bin/prepare
-bin/serve
-... provider-owned programs and assets
-```
-
-`manifest.json` contains `schemaVersion`, `provider`, `architecture`, and
-`version`. The entrypoint checks `CODESPACE_WEB_IDE_EXPECTED_PROVIDER` and
-publishes the bundle with one final rename so Agent only observes complete
-content.
-
-Agent mounts the bundle read-only in the Dev Container. Both programs receive:
-
-- `CODESPACE_WEB_IDE_PROVIDER`
-- `CODESPACE_WEB_IDE_PROGRAM_DIR`
-- `CODESPACE_WEB_IDE_DATA_DIR`
-- `CODESPACE_WEB_IDE_WORKSPACE`
-- `CODESPACE_WEB_IDE_ADDRESS`
-
-`bin/prepare` reads a JSON object from standard input containing
-`protocolVersion`, `initialize`, `templateOptions`, and `repositoryOptions`. It
-validates and merges provider-specific settings and writes persistent state to
-`CODESPACE_WEB_IDE_DATA_DIR`.
-
-`bin/serve` starts the editor on the loopback address in
-`CODESPACE_WEB_IDE_ADDRESS`. Agent supervises the process and publishes browser
-access after the address accepts connections.
+Provider data is stored with the codespace and reused across normal starts.
+Changing the image or its configuration affects new runtime preparation; it
+does not couple the editor release to Manager, Agent, or Gateway.
 
 ## Develop a provider
 
-Follow the [provider development guide](DEVELOPMENT.md) to implement the image
-contract, publish a multi-platform image, and connect it to Manager. Use
-[vscode](vscode/README.md) and [dsh](dsh/README.md) as production examples. The
-deterministic implementation under `tests/e2e/web-ide` is a smaller reference
-that exercises the complete contract without downloading an editor release.
-
-Run the focused checks from the repository root:
-
-```sh
-make -C providers/vscode check
-make -C providers/dsh check
-```
+The [provider development guide](DEVELOPMENT.md) defines the image metadata,
+runtime bundle, adapter protocol, build process, and verification steps. The
+official [VS Code](vscode/README.md) and [DeepSeek Harness](dsh/README.md)
+providers are production examples. The deterministic provider under
+[`tests/e2e/web-ide`](../tests/e2e/web-ide) is the smallest complete reference
+for protocol and Kubernetes lifecycle tests.

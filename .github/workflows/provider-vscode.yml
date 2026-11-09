@@ -8,6 +8,8 @@ on:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-vscode.yml
       - providers/vscode/**
+      - '!providers/vscode/README.md'
+      - '!providers/vscode/extension/README.md'
   push:
     branches:
       - main
@@ -15,6 +17,8 @@ on:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-vscode.yml
       - providers/vscode/**
+      - '!providers/vscode/README.md'
+      - '!providers/vscode/extension/README.md'
   workflow_dispatch:
 
 permissions:

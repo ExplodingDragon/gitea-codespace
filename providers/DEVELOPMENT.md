@@ -293,6 +293,29 @@ only on nodes with that architecture. Private registries use the pull Secrets
 configured for the Codespace Helm installation; credentials are not stored in
 an environment template.
 
+## Validate and publish an official provider
+
+Each official provider has a focused `check` target that validates its scripts,
+adapter, and provider-owned client code without compiling the Codespace
+platform:
+
+```sh
+make -C providers/vscode check
+make -C providers/dsh check
+```
+
+Pull requests that change an official provider run its dedicated validation
+workflow. A push to `main` builds native amd64 and arm64 bundles and publishes a
+multi-platform `main` image. The platform workflow ignores `providers/**`
+because provider images have independent dependencies and release lifecycles;
+changes that also touch platform files still run the platform workflow. Pure
+documentation changes do not rebuild or publish an image.
+
+The reusable `.github/workflows/provider-build.yml` workflow contains the
+shared build and publication steps. Keeping provider-specific dependencies in
+each provider directory prevents an editor update from expanding the platform
+image or its build toolchain.
+
 ## Test the image locally
 
 Run the init-container entrypoint with an empty output directory before

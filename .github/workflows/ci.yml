@@ -5,12 +5,14 @@ on:
     branches:
       - main
     paths-ignore:
+      # Provider images are validated and published by their own workflows.
       - .github/workflows/provider-*.yml
       - providers/**
   push:
     branches:
       - main
     paths-ignore:
+      # Provider images are validated and published by their own workflows.
       - .github/workflows/provider-*.yml
       - providers/**
 

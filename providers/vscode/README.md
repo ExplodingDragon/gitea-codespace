@@ -1,14 +1,27 @@
 # VS Code Web IDE provider
 
-This project packages code-server and the Gitea Codespace extension as the
-official `vscode` provider. The extension is part of this provider because it
-uses VS Code APIs, so the editor and extension are released together while the
-Codespace services continue to use the stable Provider contract.
+This image provides code-server and the Gitea Codespace extension through the
+`vscode` provider. The extension is released with the editor because it uses VS
+Code APIs, while the Codespace platform only depends on the provider protocol.
+
+## Configuration
 
 The provider accepts `settings` and `extensions` options. Environment-template
 values are applied first and repository `customizations.vscode` values are
 applied afterwards. Repository settings override matching template keys, while
 an extension with the same identifier replaces the template version.
+
+```json
+{
+  "settings": {"editor.tabSize": 2},
+  "extensions": ["golang.go", "redhat.vscode-yaml"]
+}
+```
+
+The Gitea Codespace extension is always installed because it provides the port
+management integration expected by the platform.
+
+## Development
 
 Run `make -C providers/vscode check` for the adapter and extension checks. Run
 `make -C providers/vscode image` to download the pinned code-server release,
