@@ -373,6 +373,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 			Name: "web-ide", Image: runtime.DevContainer.WebIDE.Image, ImagePullPolicy: webIDEPullPolicy,
 			Env:          []corev1.EnvVar{{Name: "CODESPACE_WEB_IDE_EXPECTED_PROVIDER", Value: string(runtime.DevContainer.WebIDE.Provider)}},
 			VolumeMounts: []corev1.VolumeMount{{Name: "web-ide-program", MountPath: "/output"}},
+			Resources:    *runtime.Resources.DeepCopy(),
 			SecurityContext: &corev1.SecurityContext{
 				RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0)), AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true),
 				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},

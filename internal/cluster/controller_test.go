@@ -400,6 +400,7 @@ func TestRuntimePodDeliversSelectedWebIDEProvider(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, pod.Spec.InitContainers, 1)
 	require.Equal(t, runtimeConfiguration.DevContainer.WebIDE.Image, pod.Spec.InitContainers[0].Image)
+	require.Equal(t, runtimeConfiguration.Resources, pod.Spec.InitContainers[0].Resources)
 	require.Contains(t, pod.Spec.InitContainers[0].Env, corev1.EnvVar{Name: "CODESPACE_WEB_IDE_EXPECTED_PROVIDER", Value: "vscode"})
 	require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "current", ReadOnly: true})
 	require.Equal(t, resource.MustParse("4Gi"), *pod.Spec.Volumes[len(pod.Spec.Volumes)-1].EmptyDir.SizeLimit)
