@@ -7,5 +7,5 @@ web/dist/*
 !web/dist/.gitkeep
 web/test-results/
 web/playwright-report/
-extension/node_modules/
-extension/dist/
+providers/vscode/extension/node_modules/
+providers/vscode/extension/dist/

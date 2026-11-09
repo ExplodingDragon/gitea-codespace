@@ -1,0 +1,35 @@
+name: VS Code Web IDE provider
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - .github/workflows/provider-build.yml
+      - .github/workflows/provider-vscode.yml
+      - providers/vscode/**
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/provider-build.yml
+      - .github/workflows/provider-vscode.yml
+      - providers/vscode/**
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  provider:
+    uses: ./.github/workflows/provider-build.yml
+    with:
+      provider: vscode
+      image: ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode
+      pnpm-version: 12.16.1
+      publish: ${{ github.event_name != 'pull_request' }}
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write

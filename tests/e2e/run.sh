@@ -32,6 +32,8 @@ done
 required_variables=(
 	KUBECONFIG
 	CODESPACE_E2E_PLATFORM_IMAGE
+	CODESPACE_E2E_WEB_IDE_IMAGE
+	CODESPACE_E2E_WEB_IDE_LAYOUT
 	CODESPACE_E2E_RUNTIME_ISOLATION
 	CODESPACE_E2E_STORAGE_CLASS
 	CODESPACE_E2E_GITEA_LISTEN
@@ -46,6 +48,10 @@ done
 
 if [[ $CODESPACE_E2E_PLATFORM_IMAGE != *@sha256:* ]]; then
 	echo "CODESPACE_E2E_PLATFORM_IMAGE must be an immutable repository@sha256:digest reference" >&2
+	exit 1
+fi
+if [[ $CODESPACE_E2E_WEB_IDE_IMAGE != *:* || ! -r $CODESPACE_E2E_WEB_IDE_LAYOUT/index.json ]]; then
+	echo "fake Web IDE image tag and readable OCI layout are required" >&2
 	exit 1
 fi
 if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != sysbox && $CODESPACE_E2E_RUNTIME_ISOLATION != kata && $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
@@ -159,6 +165,21 @@ if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
 	"$KUBECTL_BIN" get "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" >/dev/null
 	"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
 		"codespace.gitea.dev/isolation=$CODESPACE_E2E_RUNTIME_ISOLATION" --overwrite >/dev/null
+fi
+
+if [[ -n ${CODESPACE_E2E_WEB_IDE_ARCHIVE:-} ]]; then
+	echo "Importing the fake Web IDE image"
+	sudo k3s ctr --namespace k8s.io images import "$CODESPACE_E2E_WEB_IDE_ARCHIVE"
+	web_ide_digest=$(sudo k3s ctr --namespace k8s.io images list | awk -v ref="$CODESPACE_E2E_WEB_IDE_IMAGE" '$1 == ref {print $3}')
+	case "$web_ide_digest" in
+	sha256:????????????????????????????????????????????????????????????????) ;;
+	*)
+		echo "imported fake Web IDE image has no sha256 digest" >&2
+		exit 1
+		;;
+	esac
+	web_ide_repository=${CODESPACE_E2E_WEB_IDE_IMAGE%:*}
+	sudo k3s ctr --namespace k8s.io images tag --local "$CODESPACE_E2E_WEB_IDE_IMAGE" "$web_ide_repository@$web_ide_digest"
 fi
 
 echo "Building Runtime test binaries"

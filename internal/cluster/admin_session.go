@@ -45,12 +45,13 @@ type AdminServer struct {
 	Namespace              string
 	TokenFile              string
 	RegistrationHTTPClient *http.Client
+	WebIDEResolver         webIDEImageResolver
 	loginLimit             *rate.Limiter
 }
 
-func NewAdminServer(reader client.Client, namespace, tokenFile string) (*AdminServer, error) {
+func NewAdminServer(reader client.Client, namespace, tokenFile string, resolver webIDEImageResolver) (*AdminServer, error) {
 	s := &AdminServer{
-		Client: reader, Namespace: namespace, TokenFile: tokenFile,
+		Client: reader, Namespace: namespace, TokenFile: tokenFile, WebIDEResolver: resolver,
 		RegistrationHTTPClient: &http.Client{
 			Timeout: 15 * time.Second,
 			CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

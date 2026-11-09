@@ -9,6 +9,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -29,6 +30,7 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"github.com/gorilla/websocket"
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -43,8 +45,38 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/util/retry"
+	"oras.land/oras-go/v2/content/oci"
+	"oras.land/oras-go/v2/registry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
+
+type e2eWebIDEImageResolver struct {
+	store *oci.Store
+}
+
+func (r e2eWebIDEImageResolver) Resolve(ctx context.Context, image string) (resolvedWebIDEImage, error) {
+	reference, err := registry.ParseReference(image)
+	if err != nil {
+		return resolvedWebIDEImage{}, err
+	}
+	layoutReference := reference.Reference
+	if _, err := r.store.Resolve(ctx, layoutReference); err != nil {
+		layoutReference = image
+	}
+	return resolveWebIDEImage(ctx, r.store, reference.Registry+"/"+reference.Repository, layoutReference)
+}
+
+type e2eWebIDEState struct {
+	PrepareCount    int `json:"prepareCount"`
+	InitializeCount int `json:"initializeCount"`
+	ServeCount      int `json:"serveCount"`
+	LastRequest     struct {
+		ProtocolVersion   int            `json:"protocolVersion"`
+		Initialize        bool           `json:"initialize"`
+		TemplateOptions   map[string]any `json:"templateOptions"`
+		RepositoryOptions map[string]any `json:"repositoryOptions"`
+	} `json:"lastRequest"`
+}
 
 type lifecycleRemote struct {
 	codespacev1connect.UnimplementedManagerServiceHandler
@@ -354,6 +386,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	runtime := requireE2ERuntime(t)
 	listenAddress := requireE2EEnvironment(t, "CODESPACE_E2E_GITEA_LISTEN")
 	nodeAddress := requireE2EEnvironment(t, "CODESPACE_E2E_NODE_ADDRESS")
+	webIDEImage := requireE2EEnvironment(t, "CODESPACE_E2E_WEB_IDE_IMAGE")
+	webIDELayout := requireE2EEnvironment(t, "CODESPACE_E2E_WEB_IDE_LAYOUT")
 	require.NotEmpty(t, net.ParseIP(nodeAddress), "CODESPACE_E2E_NODE_ADDRESS must be a Kubernetes node IP")
 
 	listener, err := net.Listen("tcp4", listenAddress)
@@ -401,7 +435,9 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	cluster := newE2ECluster(t, 100*time.Minute)
 	c, ctx := cluster.Client, cluster.ctx
 	managementNamespace := cluster.managementNamespace
-	admin := &AdminServer{Client: c, Namespace: managementNamespace}
+	providerStore, err := oci.New(webIDELayout)
+	require.NoError(t, err)
+	admin := &AdminServer{Client: c, Namespace: managementNamespace, WebIDEResolver: e2eWebIDEImageResolver{store: providerStore}}
 	suffix := cluster.runID
 	templateName, gatewayName, cacheName, siteName := "e2e-env-"+suffix, "e2e-gateway-"+suffix, "e2e-cache-"+suffix, "e2e-site-"+suffix
 	remote.environmentName = templateName
@@ -414,8 +450,11 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	runtimeConfiguration := runtime.environmentConfiguration()
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
-			Enabled:  true,
-			Settings: apiextensionsv1.JSON{Raw: []byte(`{"editor.tabSize":2}`)},
+			Image: webIDEImage,
+			Options: apiextensionsv1.JSON{Raw: []byte(`{
+				"text":"template","enabled":true,"count":3,"ratio":2.5,"mode":"fast",
+				"items":["alpha","beta"],"nested":{"value":"template-nested"}
+			}`)},
 		},
 		Features: []devcontainerruntime.InjectedFeature{{Reference: "ghcr.io/devcontainers/features/common-utils:2"}},
 	}
@@ -502,10 +541,13 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	remote.setOperation(&codespacev1.OperationPayload{
 		CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000,
 		Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{
-			EnvironmentTag:  template.Name,
-			Repository:      &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
-			GitIdentity:     &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
-			DevContainer:    &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: `{"image":"docker.io/library/debian:bookworm-slim","remoteUser":"root"}`}},
+			EnvironmentTag: template.Name,
+			Repository:     &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
+			GitIdentity:    &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
+			DevContainer: &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: `{
+				"image":"docker.io/library/debian:bookworm-slim","remoteUser":"root",
+				"customizations":{"e2e":{"text":"repository","enabled":false,"count":4,"ratio":3.5,"mode":"safe","items":["repository"],"nested":{"value":"repository-nested"}}}
+			}`}},
 			RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 1},
 		}},
 	})
@@ -535,6 +577,22 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		require.Nil(t, pod.Spec.RuntimeClassName)
 	}
 	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
+	webIDEClient, err := newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID)
+	require.NoError(t, err)
+	initialWebIDEState, err := webIDEClient.state(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 1, initialWebIDEState.PrepareCount)
+	require.Equal(t, 1, initialWebIDEState.InitializeCount)
+	require.True(t, initialWebIDEState.LastRequest.Initialize)
+	require.Equal(t, "template", initialWebIDEState.LastRequest.TemplateOptions["text"])
+	require.Equal(t, "repository", initialWebIDEState.LastRequest.RepositoryOptions["text"])
+	require.NoError(t, webIDEClient.verifyWebSocket(ctx))
+	serveCount := initialWebIDEState.ServeCount
+	require.NoError(t, webIDEClient.restart(ctx))
+	require.Eventually(t, func() bool {
+		state, stateErr := webIDEClient.state(ctx)
+		return stateErr == nil && state.ServeCount > serveCount
+	}, 30*time.Second, time.Second, "Web IDE supervisor did not restart the provider")
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 
@@ -554,6 +612,14 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NotEqual(t, firstPodUID, codespace.Status.Pod.UID)
 	require.Equal(t, volumeUID, codespace.Status.Volume.UID)
 	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
+	webIDEClient, err = newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID)
+	require.NoError(t, err)
+	resumedWebIDEState, err := webIDEClient.state(ctx)
+	require.NoError(t, err)
+	require.Equal(t, 2, resumedWebIDEState.PrepareCount)
+	require.Equal(t, 1, resumedWebIDEState.InitializeCount)
+	require.False(t, resumedWebIDEState.LastRequest.Initialize)
+	require.GreaterOrEqual(t, resumedWebIDEState.ServeCount, serveCount+2)
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
@@ -642,6 +708,106 @@ func verifyGatewayWorkspace(ctx context.Context, node string, port int32, domain
 		}
 	}
 	return fmt.Errorf("gateway workspace did not become available: %w", lastError)
+}
+
+type gatewayWebIDEClient struct {
+	address string
+	host    string
+	session *http.Cookie
+	client  *http.Client
+}
+
+func newGatewayWebIDEClient(ctx context.Context, node string, port int32, domain, runtimeUUID string) (*gatewayWebIDEClient, error) {
+	client := &gatewayWebIDEClient{
+		address: net.JoinHostPort(node, strconv.Itoa(int(port))),
+		host:    strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port)),
+		client:  &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+client.address+"/.gitea-codespace/open?code=lifecycle-e2e", nil)
+	if err != nil {
+		return nil, err
+	}
+	request.Host = client.host
+	response, err := client.client.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusSeeOther || len(response.Cookies()) == 0 {
+		body, _ := io.ReadAll(io.LimitReader(response.Body, 1024))
+		return nil, fmt.Errorf("open Web IDE session: %s: %s", response.Status, strings.TrimSpace(string(body)))
+	}
+	client.session = response.Cookies()[0]
+	return client, nil
+}
+
+func (c *gatewayWebIDEClient) state(ctx context.Context) (e2eWebIDEState, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+c.address+"/__e2e/state", nil)
+	if err != nil {
+		return e2eWebIDEState{}, err
+	}
+	request.Host = c.host
+	request.AddCookie(c.session)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return e2eWebIDEState{}, err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusOK {
+		return e2eWebIDEState{}, fmt.Errorf("read Web IDE state: %s", response.Status)
+	}
+	var state e2eWebIDEState
+	if err := json.NewDecoder(io.LimitReader(response.Body, 64*1024)).Decode(&state); err != nil {
+		return e2eWebIDEState{}, err
+	}
+	return state, nil
+}
+
+func (c *gatewayWebIDEClient) verifyWebSocket(ctx context.Context) error {
+	dialer := websocket.Dialer{
+		HandshakeTimeout: 20 * time.Second,
+		NetDialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return (&net.Dialer{}).DialContext(ctx, "tcp", c.address)
+		},
+	}
+	header := http.Header{"Cookie": {c.session.String()}}
+	connection, response, err := dialer.DialContext(ctx, "ws://"+c.host+"/__e2e/ws", header)
+	if response != nil {
+		defer func() { _ = response.Body.Close() }()
+	}
+	if err != nil {
+		return fmt.Errorf("open Web IDE WebSocket: %w", err)
+	}
+	defer func() { _ = connection.Close() }()
+	if err := connection.WriteMessage(websocket.TextMessage, []byte("codespace-e2e")); err != nil {
+		return err
+	}
+	_, message, err := connection.ReadMessage()
+	if err != nil {
+		return err
+	}
+	if string(message) != "codespace-e2e" {
+		return fmt.Errorf("Web IDE WebSocket returned %q", message)
+	}
+	return nil
+}
+
+func (c *gatewayWebIDEClient) restart(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.address+"/__e2e/exit", nil)
+	if err != nil {
+		return err
+	}
+	request.Host = c.host
+	request.AddCookie(c.session)
+	response, err := c.client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = response.Body.Close() }()
+	if response.StatusCode != http.StatusNoContent {
+		return fmt.Errorf("restart Web IDE provider: %s", response.Status)
+	}
+	return nil
 }
 
 func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, domain, runtimeUUID string) error {

@@ -27,6 +27,7 @@ type adminClusterOptions struct {
 	IngressClasses              []adminIngressClass   `json:"ingressClasses"`
 	TLSSecrets                  []string              `json:"tlsSecrets"`
 	Issuers                     []adminIssuer         `json:"issuers"`
+	WebIDEImageSuggestions      []string              `json:"webIDEImageSuggestions"`
 }
 
 type adminRuntimeClass struct {
@@ -63,6 +64,7 @@ func (s *AdminServer) clusterOptions(ctx context.Context) (adminClusterOptions, 
 		RuntimeClasses: []adminRuntimeClass{}, StorageClasses: []adminStorageClass{}, DeviceResources: []adminDeviceResource{},
 		RequiredRuntimeCapabilities: append([]corev1.Capability(nil), requiredNativeRuntimeCapabilities...),
 		IngressClasses:              []adminIngressClass{}, TLSSecrets: []string{}, Issuers: []adminIssuer{},
+		WebIDEImageSuggestions: append([]string(nil), webIDEImageSuggestions...),
 	}
 	var runtimes nodev1.RuntimeClassList
 	if err := s.Client.List(ctx, &runtimes); err != nil {

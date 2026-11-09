@@ -29,6 +29,7 @@ const cluster = ref<ClusterOptions>({
   ingressClasses: [],
   tlsSecrets: [],
   issuers: [],
+  webIDEImageSuggestions: [],
 });
 const {t} = useI18n();
 const selected = ref<Resource<Component, ComponentStatus>>();

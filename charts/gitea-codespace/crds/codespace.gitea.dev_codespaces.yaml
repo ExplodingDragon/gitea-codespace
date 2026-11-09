@@ -117,24 +117,19 @@ spec:
                           WebIDEConfiguration defines the platform-managed Web IDE runtime and initial
                           user configuration.
                         properties:
-                          archiveURL:
-                            description: |-
-                              ArchiveURL optionally replaces the platform Web IDE program. The Runtime
-                              substitutes {arch} with the architecture shared by its Pod and Dev Container.
+                          image:
+                            description: Image is resolved by the Manager before this
+                              configuration is persisted.
                             maxLength: 4096
                             type: string
-                          enabled:
-                            type: boolean
-                          extensions:
-                            items:
-                              type: string
-                            maxItems: 256
-                            type: array
-                          settings:
+                          options:
+                            description: Options are interpreted by the selected provider
+                              adapter.
                             x-kubernetes-preserve-unknown-fields: true
-                        required:
-                        - enabled
-                        - settings
+                          provider:
+                            description: Provider is derived from the image metadata
+                              rather than selected separately.
+                            type: string
                         type: object
                     required:
                     - giteaCLI

@@ -104,6 +104,25 @@ func (s *AdminServer) handleAdminAction(w http.ResponseWriter, r *http.Request, 
 		writeAdminJSON(w, http.StatusOK, options)
 		return true
 	}
+	if len(parts) == 2 && parts[0] == "web-ide-images" && parts[1] == "resolve" && r.Method == http.MethodPost {
+		var body struct {
+			Image string `json:"image"`
+		}
+		if !decodeAdminJSON(w, r, &body) {
+			return true
+		}
+		if s.WebIDEResolver == nil {
+			writeAdminProblem(w, r, http.StatusServiceUnavailable, "web_ide_resolver_unavailable", "")
+			return true
+		}
+		resolved, err := s.WebIDEResolver.Resolve(r.Context(), body.Image)
+		if err != nil {
+			writeAdminProblem(w, r, http.StatusBadRequest, "invalid_web_ide_image", err.Error())
+			return true
+		}
+		writeAdminJSON(w, http.StatusOK, resolved)
+		return true
+	}
 	if len(parts) == 3 && parts[0] == "runtimes" && r.Method == http.MethodDelete {
 		s.deleteRuntime(w, r, parts[1], parts[2])
 		return true

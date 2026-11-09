@@ -8,6 +8,8 @@ SHFMT ?= $(GO_BIN)/shfmt
 ACTIONLINT ?= $(GO_BIN)/actionlint
 STATICCHECK ?= $(GO_BIN)/staticcheck
 CODESPACE_IMAGE ?= gitea-codespace:local
+WEB_IDE_E2E_IMAGE ?= localhost/gitea-codespace-web-ide-e2e:local
+WEB_IDE_E2E_ARCH ?= amd64
 CODESPACE_VERSION ?= development
 KUBERNETES_RUNTIME_ISOLATION ?= sysbox
 KUBERNETES_RUNTIME_CLASS ?= sysbox-runc
@@ -19,13 +21,14 @@ PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
 SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
 STATICCHECK_VERSION := v0.8.2
-CODE_SERVER_VERSION ?= 4.145.2
 BASH_SCRIPTS := \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
 	deploy/prepare-gitea-cli.sh \
-	deploy/prepare-web-ide.sh \
+	tests/e2e/web-ide/export.sh \
+	tests/e2e/web-ide/prepare \
+	tests/e2e/web-ide/serve \
 	devcontainer/docker/builtin/resolve-user-shell.sh \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
@@ -57,7 +60,7 @@ kubernetes-check:
 	diff -ru "$$work" deploy/crds; \
 	diff -ru "$$work" charts/gitea-codespace/crds
 
-.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux prepare-gitea-cli prepare-web-ide extension extension-check images clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
+.PHONY: install-tools proto-format proto-generate proto-check format lint go-format-check build build-linux prepare-gitea-cli images e2e-web-ide-image clean frontend frontend-check test test-frontend test-e2e admin-dev helm-check scripts-check scripts-format-check workflow-check
 install-tools:
 	$(GO) install github.com/bufbuild/buf/cmd/buf@$(BUF_VERSION)
 	$(GO) install google.golang.org/protobuf/cmd/protoc-gen-go@$(PROTOC_GEN_GO_VERSION)
@@ -92,7 +95,6 @@ format:
 	$(SHFMT) -w -ln posix -i 2 $(POSIX_SCRIPTS)
 	$(MAKE) proto-format
 	$(PNPM) --dir web run format
-	$(PNPM) --dir extension run format
 
 lint: go-format-check proto-check scripts-check scripts-format-check workflow-check frontend-check helm-check kubernetes-check
 	$(GO) vet ./...
@@ -110,29 +112,28 @@ build-linux: frontend
 prepare-gitea-cli:
 	GITEA_CLI_VERSION="$(GITEA_CLI_VERSION)" ./deploy/prepare-gitea-cli.sh linux amd64 bin
 
-prepare-web-ide:
-	CODE_SERVER_VERSION="$(CODE_SERVER_VERSION)" ./deploy/prepare-web-ide.sh linux amd64 bin
-
-extension:
-	$(PNPM) --dir extension install --frozen-lockfile
-	$(PNPM) --dir extension run build
-	mkdir -p bin
-	cp extension/dist/gitea-codespace.vsix bin/gitea-codespace.vsix
-
-extension-check:
-	$(PNPM) --dir extension run check
-	$(PNPM) --dir extension run format:check
-
-images: build-linux prepare-gitea-cli prepare-web-ide extension
-	@. bin/gitea-cli.env; . bin/web-ide.env; \
+images: build-linux prepare-gitea-cli
+	@. bin/gitea-cli.env; \
 	$(CONTAINER_TOOL) build \
 		--build-arg GITEA_CLI_VERSION="$$GITEA_CLI_VERSION" \
 		--build-arg GITEA_CLI_SHA256="$$GITEA_CLI_SHA256" \
-		--build-arg CODE_SERVER_VERSION="$$CODE_SERVER_VERSION" \
 		-f deploy/Dockerfile -t $(CODESPACE_IMAGE) .
 
+e2e-web-ide-image:
+	$(RM) -r .tmp/e2e-web-ide
+	mkdir -p .tmp/e2e-web-ide/layout
+	CGO_ENABLED=0 GOOS=linux GOARCH=$(WEB_IDE_E2E_ARCH) $(GO) build -trimpath -ldflags='-s -w' -o .tmp/e2e-web-ide/web-ide-e2e ./tests/e2e/web-ide
+	@if $(CONTAINER_TOOL) --version | grep -qi podman; then \
+		$(CONTAINER_TOOL) build --platform linux/$(WEB_IDE_E2E_ARCH) --build-arg TARGETARCH=$(WEB_IDE_E2E_ARCH) --tag $(WEB_IDE_E2E_IMAGE) -f tests/e2e/web-ide/Dockerfile .; \
+		$(CONTAINER_TOOL) save --format oci-archive --output .tmp/e2e-web-ide/image.tar $(WEB_IDE_E2E_IMAGE); \
+	else \
+		$(CONTAINER_TOOL) buildx build --platform linux/$(WEB_IDE_E2E_ARCH) --tag $(WEB_IDE_E2E_IMAGE) --output type=oci,dest=.tmp/e2e-web-ide/image.tar -f tests/e2e/web-ide/Dockerfile .; \
+	fi
+	tar -xf .tmp/e2e-web-ide/image.tar -C .tmp/e2e-web-ide/layout
+	printf '%s\n' '$(WEB_IDE_E2E_IMAGE)' >.tmp/e2e-web-ide/tag
+
 clean:
-	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report extension/dist
+	$(RM) -r bin .tmp web/dist web/test-results web/playwright-report
 	mkdir -p web/dist
 	touch web/dist/.gitkeep
 
@@ -140,19 +141,19 @@ frontend:
 	$(PNPM) --dir web install --frozen-lockfile
 	$(PNPM) --dir web run build
 
-frontend-check: extension-check
+frontend-check:
 	$(PNPM) --dir web run check
 	$(PNPM) --dir web run format:check
 
 test-frontend:
 	$(PNPM) --dir web run test
-	$(PNPM) --dir extension run test
 
 helm-check:
 	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin
 	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'; \
+	printf '%s\n' "$$rendered" | grep -Fq -- '--web-ide-program-volume-size=4Gi'; \
 	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'
 	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
 	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
@@ -179,6 +180,9 @@ workflow-check:
 test-e2e:
 	GO="$(GO)" \
 	CODESPACE_E2E_PLATFORM_IMAGE="$(CODESPACE_IMAGE)" \
+	CODESPACE_E2E_WEB_IDE_IMAGE="$(WEB_IDE_E2E_IMAGE)" \
+	CODESPACE_E2E_WEB_IDE_LAYOUT="$(CURDIR)/.tmp/e2e-web-ide/layout" \
+	CODESPACE_E2E_WEB_IDE_ARCHIVE="$(CURDIR)/.tmp/e2e-web-ide/image.tar" \
 	CODESPACE_E2E_RUNTIME_ISOLATION="$(KUBERNETES_RUNTIME_ISOLATION)" \
 	CODESPACE_E2E_RUNTIME_CLASS="$(KUBERNETES_RUNTIME_CLASS)" \
 	CODESPACE_E2E_STORAGE_CLASS="$(KUBERNETES_STORAGE_CLASS)" \

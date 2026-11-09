@@ -97,6 +97,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
+    webIDEImageSuggestions: ['ghcr.io/example/web-ide-vscode:main', 'ghcr.io/example/web-ide-dsh:main'],
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
@@ -122,6 +123,23 @@ test('administration workflows preserve resource identity and validate cluster-b
         signedIn = false;
         await route.fulfill({status: 204});
       } else await route.fulfill({json: {csrf: 'test-csrf'}});
+      return;
+    }
+    if (path === 'web-ide-images/resolve') {
+      const input = request.postDataJSON() as {image: string};
+      const dsh = input.image.includes('dsh');
+      await route.fulfill({
+        json: {
+          image: `ghcr.io/example/web-ide-${dsh ? 'dsh' : 'vscode'}@sha256:${(dsh ? 'b' : 'a').repeat(64)}`,
+          provider: dsh ? 'dsh' : 'vscode',
+          providerName: dsh ? 'DeepSeek Harness' : 'VS Code',
+          version: 'test',
+          protocolVersion: 1,
+          platforms: ['linux/amd64', 'linux/arm64'],
+          optionsSchema: {type: 'object'},
+          optionDefaults: {},
+        },
+      });
       return;
     }
     const [kind, name, action] = path.split('/');
@@ -231,8 +249,12 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.keyboard.press('Enter');
   await page.keyboard.press('Escape');
   await field('Tag').fill('standard');
-  await page.getByRole('textbox', {name: 'Initial Web IDE settings JSON'}).fill('{"editor.tabSize":2}');
-  await field('Default extensions').fill('golang.go\nredhat.vscode-yaml');
+  await field('Provider image').fill('ghcr.io/example/web-ide-vscode:main');
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect(page.getByText('VS Code', {exact: true})).toBeVisible();
+  await page
+    .getByRole('textbox', {name: 'Web IDE provider options JSON'})
+    .fill('{"settings":{"editor.tabSize":2},"extensions":["golang.go","redhat.vscode-yaml"]}');
   await page.getByRole('checkbox', {name: 'Install the Gitea CLI'}).check();
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
   await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
@@ -244,9 +266,9 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
-    enabled: true,
-    settings: {'editor.tabSize': 2},
-    extensions: ['golang.go', 'redhat.vscode-yaml'],
+    image: `ghcr.io/example/web-ide-vscode@sha256:${'a'.repeat(64)}`,
+    provider: 'vscode',
+    options: {settings: {'editor.tabSize': 2}, extensions: ['golang.go', 'redhat.vscode-yaml']},
   });
   expect(environments[0].spec.runtime.devContainer.giteaCLI).toBe(true);
   expect(environments[0].spec.runtime.resources).toEqual({
@@ -259,6 +281,24 @@ test('administration workflows preserve resource identity and validate cluster-b
   expect(environments[0].spec.runtime.proxy).toEqual({
     httpProxy: 'http://proxy-user:proxy-password@proxy.example:3128',
     noProxy: ['registry.internal.example'],
+  });
+  await page.getByRole('button', {name: 'Add template'}).click();
+  await field('Tag').fill('deepseek');
+  await field('Provider image').fill('ghcr.io/example/web-ide-dsh:main');
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect(page.getByText('DeepSeek Harness', {exact: true})).toBeVisible();
+  await page
+    .getByRole('textbox', {name: 'Web IDE provider options JSON'})
+    .fill('{"plugins":["@example/dsh-plugin"],"patches":[{"id":"example","config":{"enabled":true}}]}');
+  await page.getByRole('button', {name: 'Save template'}).click();
+  await expect(page.getByText('deepseek', {exact: true})).toBeVisible();
+  expect(environments[1].spec.runtime.devContainer.webIDE).toEqual({
+    image: `ghcr.io/example/web-ide-dsh@sha256:${'b'.repeat(64)}`,
+    provider: 'dsh',
+    options: {
+      plugins: ['@example/dsh-plugin'],
+      patches: [{id: 'example', config: {enabled: true}}],
+    },
   });
   await page.locator('.language-select .n-base-selection').click();
   await page.getByText('简体中文', {exact: true}).last().click();

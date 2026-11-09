@@ -11,7 +11,6 @@ import (
 	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
@@ -51,7 +50,7 @@ func TestNativeEnvironmentValidation(t *testing.T) {
 			corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi"),
 		}},
 		AccessMode: corev1.ReadWriteOncePod, GitSSHKeyType: "ed25519",
-		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
+		DevContainer: devcontainerruntime.Configuration{},
 		Native: &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "nvidia.com/gpu", Count: 1,
 			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},

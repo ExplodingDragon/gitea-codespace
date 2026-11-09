@@ -13,7 +13,6 @@ import (
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/stretchr/testify/require"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
 func TestExecutorReusesCompletedCreate(t *testing.T) {
@@ -37,7 +36,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	executor := &Executor{Journal: j, PodUID: "new-pod", Stdout: io.Discard, Stderr: io.Discard}
 	request := devcontainerruntime.Request{
 		Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", GiteaURL: "https://gitea.example.com",
-		DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}}},
+		DevContainer: devcontainerruntime.Configuration{},
 	}
 	recovered, err := executor.Apply(t.Context(), request)
 	require.NoError(t, err)

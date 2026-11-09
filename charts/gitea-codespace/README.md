@@ -18,11 +18,11 @@ a successful Pod start does not verify nested containers or persistent storage.
 
 ## Choose a workspace runtime
 
-| Runtime         | Isolation       | Workspace volume | Preparation                                                                                      |
-| --------------- | --------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
+| Runtime         | Isolation       | Workspace volume | Preparation                                                                                       |
+| --------------- | --------------- | ---------------- | ------------------------------------------------------------------------------------------------- |
 | Kata Containers | Virtual machine | Raw block PVC    | [Install Kata](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md) |
-| Sysbox          | User namespace  | Filesystem PVC   | [Install Sysbox](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md)  |
-| Native          | Node kernel     | Filesystem PVC   | Install the Device Plugins required by the environment                                           |
+| Sysbox          | User namespace  | Filesystem PVC   | [Install Sysbox](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md)   |
+| Native          | Node kernel     | Filesystem PVC   | Install the Device Plugins required by the environment                                            |
 
 Review the [Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
 before selecting it for environments that need devices or additional Linux
@@ -74,7 +74,24 @@ helm upgrade --install codespace \
 
 This installs the latest `main` prerelease. For a release, replace `--devel`
 with `--version <chart-version>`. Published charts select the matching platform
-image by digest. Configure `image.pullSecrets` for a private registry.
+image by digest.
+
+Configure `image.pullSecrets` when the platform or Web IDE images are stored in
+a private registry. The same credentials are made available to workspace Pods.
+
+## Configure Web IDE access
+
+Environment templates contain one Web IDE image field. Leaving it empty
+disables browser access. The administration page suggests the official VS Code
+and DeepSeek Harness images and also accepts compatible third-party images.
+Manager validates the image options and stores its immutable digest when the
+environment is saved. Existing environments therefore keep the selected editor
+version when a mutable tag is updated.
+
+`webIDE.programVolumeSize` reserves temporary Pod storage for the selected
+editor program. Increase it when a provider image needs more unpacked space.
+See the [Web IDE provider guide](../../providers/README.md) when using a custom
+provider.
 
 ## Connect Gitea
 
@@ -115,9 +132,8 @@ publicly trusted certificate.
 Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
 Gateway. Allow configured outbound proxies through the site NetworkPolicy.
 
-Cache remains inside the cluster on port `443` and uses Manager's internal CA.
-Use a persistent volume for the local backend or shared object storage for the
-S3 backend.
+Cache is cluster-internal and uses Manager's internal CA. Use a persistent
+volume for the local backend or shared object storage for the S3 backend.
 
 ## Upgrade
 

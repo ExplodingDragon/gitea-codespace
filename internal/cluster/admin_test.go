@@ -47,7 +47,7 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	tokenFile := filepath.Join(t.TempDir(), "token")
 	token := strings.Repeat("a", 64)
 	require.NoError(t, os.WriteFile(tokenFile, []byte(token), 0o600))
-	admin, err := NewAdminServer(c, "codespace-system", tokenFile)
+	admin, err := NewAdminServer(c, "codespace-system", tokenFile, nil)
 	require.NoError(t, err)
 	request := func(server *AdminServer, method, path, origin, csrf string, cookie *http.Cookie, body string) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(method, path, strings.NewReader(body))
@@ -76,7 +76,7 @@ func TestAdminSessionLifecycle(t *testing.T) {
 	require.NoError(t, err)
 	require.NotContains(t, string(stored), cookies[0].Value)
 
-	other, err := NewAdminServer(c, admin.Namespace, tokenFile)
+	other, err := NewAdminServer(c, admin.Namespace, tokenFile, nil)
 	require.NoError(t, err)
 	require.Equal(t, http.StatusOK, request(other, "GET", "/api/admin/session", "", "", cookies[0], "").Code)
 	require.Equal(t, http.StatusForbidden, request(other, "DELETE", "/api/admin/session", "http://127.0.0.1:18080", "incorrect", cookies[0], "").Code)

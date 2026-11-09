@@ -1,0 +1,6 @@
+#!/bin/sh
+# Copyright 2026 The Gitea Authors. All rights reserved.
+# SPDX-License-Identifier: MIT
+
+set -eu
+exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/bin/web-ide-e2e" serve

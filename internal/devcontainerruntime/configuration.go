@@ -7,11 +7,11 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"net/url"
-	"slices"
+	"regexp"
 	"strings"
 
 	"github.com/distribution/reference"
+	"github.com/opencontainers/go-digest"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
@@ -19,9 +19,10 @@ const (
 	maxInjectedFeatures     = 32
 	maxJSONObjectBytes      = 16 * 1024
 	maxLifecycleScriptBytes = 64 * 1024
-	maxWebIDEArchiveURL     = 4096
-	maxWebIDEExtensions     = 256
+	maxWebIDEImageLength    = 4096
 )
+
+var webIDEProviderPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,30}[a-z0-9])?$`)
 
 // Configuration defines administrator-owned additions to a repository's Dev
 // Container configuration. It is copied into the Codespace runtime snapshot.
@@ -37,14 +38,20 @@ type Configuration struct {
 // WebIDEConfiguration defines the platform-managed Web IDE runtime and initial
 // user configuration.
 type WebIDEConfiguration struct {
-	Enabled bool `json:"enabled"`
-	// ArchiveURL optionally replaces the platform Web IDE program. The Runtime
-	// substitutes {arch} with the architecture shared by its Pod and Dev Container.
+	// Image is resolved by the Manager before this configuration is persisted.
 	// +kubebuilder:validation:MaxLength=4096
-	ArchiveURL string               `json:"archiveURL,omitempty"`
-	Settings   apiextensionsv1.JSON `json:"settings"`
-	// +kubebuilder:validation:MaxItems=256
-	Extensions []string `json:"extensions,omitempty"`
+	Image string `json:"image,omitempty"`
+	// Provider is derived from the image metadata rather than selected separately.
+	Provider WebIDEProvider `json:"provider,omitempty"`
+	// Options are interpreted by the selected provider adapter.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	Options apiextensionsv1.JSON `json:"options,omitempty"`
+}
+
+type WebIDEProvider string
+
+func (c WebIDEConfiguration) Enabled() bool {
+	return strings.TrimSpace(c.Image) != ""
 }
 
 // InjectedFeature adds one standard Dev Container Feature to an environment.
@@ -59,40 +66,8 @@ func (c Configuration) Validate() error {
 		return fmt.Errorf("lifecycle script must be no larger than 64 KiB and cannot contain NUL characters")
 	}
 	seen := make(map[string]string, len(c.Features))
-	if len(bytes.TrimSpace(c.WebIDE.Settings.Raw)) == 0 {
-		return fmt.Errorf("settings for Web IDE are required")
-	}
-	if err := validateJSONObject("Web IDE settings", c.WebIDE.Settings.Raw); err != nil {
+	if err := c.WebIDE.validate(); err != nil {
 		return err
-	}
-	archiveURL := strings.TrimSpace(c.WebIDE.ArchiveURL)
-	if len(archiveURL) > maxWebIDEArchiveURL {
-		return fmt.Errorf("web IDE archive URL must be at most %d characters", maxWebIDEArchiveURL)
-	}
-	if archiveURL != "" {
-		resolved := strings.ReplaceAll(archiveURL, "{arch}", "amd64")
-		if strings.ContainsAny(resolved, "{}") {
-			return fmt.Errorf("web IDE archive URL contains an unknown placeholder")
-		}
-		endpoint, err := url.Parse(resolved)
-		if err != nil || (endpoint.Scheme != "http" && endpoint.Scheme != "https") || endpoint.Host == "" || endpoint.Fragment != "" {
-			return fmt.Errorf("web IDE archive URL must be an absolute HTTP(S) URL without a fragment")
-		}
-	}
-	if len(c.WebIDE.Extensions) > maxWebIDEExtensions {
-		return fmt.Errorf("web IDE supports at most %d default extensions", maxWebIDEExtensions)
-	}
-	extensionIDs := make(map[string]struct{}, len(c.WebIDE.Extensions))
-	for _, extension := range c.WebIDE.Extensions {
-		extension = strings.TrimSpace(extension)
-		if extension == "" || len(extension) > 255 || strings.ContainsAny(extension, " \t\r\n") {
-			return fmt.Errorf("web IDE extension %q is empty, too long, or contains whitespace", extension)
-		}
-		identity := strings.ToLower(strings.SplitN(extension, "@", 2)[0])
-		if _, exists := extensionIDs[identity]; exists {
-			return fmt.Errorf("web IDE extension %q is declared more than once", identity)
-		}
-		extensionIDs[identity] = struct{}{}
 	}
 	if len(c.Features) > maxInjectedFeatures {
 		return fmt.Errorf("environment supports at most %d injected Features", maxInjectedFeatures)
@@ -109,6 +84,41 @@ func (c Configuration) Validate() error {
 		if err := validateJSONObject(fmt.Sprintf("feature %q options", feature.Reference), feature.Options.Raw); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (c WebIDEConfiguration) validate() error {
+	image := strings.TrimSpace(c.Image)
+	provider := strings.TrimSpace(string(c.Provider))
+	if image == "" {
+		if provider != "" || len(bytes.TrimSpace(c.Options.Raw)) != 0 {
+			return fmt.Errorf("disabled Web IDE configuration must be empty")
+		}
+		return nil
+	}
+	if err := ValidateWebIDEProvider(provider); err != nil {
+		return err
+	}
+	if len(image) > maxWebIDEImageLength {
+		return fmt.Errorf("web IDE image must be at most %d characters", maxWebIDEImageLength)
+	}
+	named, err := reference.ParseNormalizedNamed(image)
+	if err != nil {
+		return fmt.Errorf("invalid Web IDE image: %w", err)
+	}
+	digested, ok := named.(reference.Digested)
+	if !ok || digested.Digest().Algorithm() != digest.SHA256 {
+		return fmt.Errorf("web IDE image must be pinned by sha256 digest")
+	}
+	return validateJSONObject("Web IDE options", c.Options.Raw)
+}
+
+// ValidateWebIDEProvider checks the stable provider identity shared by Manager
+// configuration, Runtime snapshots, and provider bundle manifests.
+func ValidateWebIDEProvider(provider string) error {
+	if !webIDEProviderPattern.MatchString(provider) {
+		return fmt.Errorf("web IDE provider must be a lowercase identifier of at most 32 characters")
 	}
 	return nil
 }
@@ -144,8 +154,7 @@ func validateFeatureReference(value string) (string, error) {
 // DeepCopyInto supports use of Configuration in Kubernetes API objects.
 func (c *Configuration) DeepCopyInto(out *Configuration) {
 	*out = *c
-	c.WebIDE.Settings.DeepCopyInto(&out.WebIDE.Settings)
-	out.WebIDE.Extensions = slices.Clone(c.WebIDE.Extensions)
+	c.WebIDE.Options.DeepCopyInto(&out.WebIDE.Options)
 	if c.Features != nil {
 		out.Features = make([]InjectedFeature, len(c.Features))
 		for i := range c.Features {

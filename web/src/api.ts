@@ -116,10 +116,9 @@ export type Runtime = {
   gitSSHKeyType: string;
   devContainer: {
     webIDE: {
-      enabled: boolean;
-      archiveURL?: string;
-      settings: Record<string, unknown>;
-      extensions?: string[];
+      provider?: string;
+      image?: string;
+      options?: Record<string, unknown>;
     };
     giteaCLI: boolean;
     features?: {reference: string; options?: Record<string, unknown>}[];
@@ -161,6 +160,18 @@ export type ClusterOptions = {
   ingressClasses: {name: string; controller: string; default: boolean}[];
   tlsSecrets: string[];
   issuers: {kind: 'Issuer' | 'ClusterIssuer'; name: string}[];
+  webIDEImageSuggestions: string[];
+};
+
+export type ResolvedWebIDEImage = {
+  image: string;
+  provider: string;
+  providerName: string;
+  version: string;
+  protocolVersion: number;
+  platforms: string[];
+  optionsSchema: Record<string, unknown>;
+  optionDefaults: Record<string, unknown>;
 };
 
 export type Environment = {

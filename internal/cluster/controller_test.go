@@ -22,7 +22,6 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
-	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -50,7 +49,7 @@ func testEnvironment() api.EnvironmentConfiguration {
 		StorageClassName: "local-path", Storage: corev1.ResourceList{corev1.ResourceStorage: resource.MustParse("1Gi")}, AccessMode: corev1.ReadWriteOnce,
 		Resources:     corev1.ResourceRequirements{Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("100m"), corev1.ResourceMemory: resource.MustParse("256Mi")}, Limits: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("1"), corev1.ResourceMemory: resource.MustParse("1Gi")}},
 		GitSSHKeyType: "ed25519", DevContainer: devcontainerruntime.Configuration{
-			WebIDE: devcontainerruntime.WebIDEConfiguration{Settings: apiextensionsv1.JSON{Raw: []byte(`{}`)}},
+			WebIDE: devcontainerruntime.WebIDEConfiguration{},
 		},
 	}
 }
@@ -318,7 +317,7 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.True(t, *container.SecurityContext.Privileged)
@@ -345,7 +344,7 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.Nil(t, pod.Spec.RuntimeClassName)
@@ -371,7 +370,7 @@ func TestRuntimePodUsesProxySecret(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.Contains(t, container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/proxy-ca.crt"})
@@ -384,6 +383,26 @@ func TestRuntimePodUsesProxySecret(t *testing.T) {
 			LocalObjectReference: corev1.LocalObjectReference{Name: "runtime-proxy"}, Key: name, Optional: ptr.To(true),
 		}}})
 	}
+}
+
+func TestRuntimePodDeliversSelectedWebIDEProvider(t *testing.T) {
+	runtimeConfiguration := testRuntime()
+	runtimeConfiguration.DevContainer.WebIDE = devcontainerruntime.WebIDEConfiguration{
+		Provider: "vscode",
+		Image:    "ghcr.io/example/web-ide-vscode@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+	}
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtimeConfiguration},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
+	}
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+	require.NoError(t, err)
+	require.Len(t, pod.Spec.InitContainers, 1)
+	require.Equal(t, runtimeConfiguration.DevContainer.WebIDE.Image, pod.Spec.InitContainers[0].Image)
+	require.Contains(t, pod.Spec.InitContainers[0].Env, corev1.EnvVar{Name: "CODESPACE_WEB_IDE_EXPECTED_PROVIDER", Value: "vscode"})
+	require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "current", ReadOnly: true})
+	require.Equal(t, resource.MustParse("4Gi"), *pod.Spec.Volumes[len(pod.Spec.Volumes)-1].EmptyDir.SizeLimit)
 }
 
 func TestExitedRuntimePreservesVolume(t *testing.T) {
@@ -400,7 +419,7 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			if settled {
 				cs.Status.SettledOperationVersion = 3
 			}
-			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 			require.NoError(t, err)
 			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodFailed
 			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}}}}
@@ -469,7 +488,7 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "ready"},
 		},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
 	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodRunning
 	pod.Finalizers = nil

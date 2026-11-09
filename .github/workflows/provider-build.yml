@@ -1,0 +1,185 @@
+name: Web IDE provider build
+
+on:
+  workflow_call:
+    inputs:
+      provider:
+        required: true
+        type: string
+      image:
+        required: true
+        type: string
+      pnpm-version:
+        required: true
+        type: string
+      publish:
+        required: true
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: provider-${{ inputs.provider }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    name: Validate provider
+    if: ${{ !inputs.publish }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: providers/${{ inputs.provider }}/.node-version
+      - name: Validate adapter and scripts
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm-version }}
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          corepack enable
+          corepack prepare "pnpm@$PNPM_VERSION" --activate
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
+          make -C "providers/$PROVIDER" check
+
+  build:
+    name: Build linux/${{ matrix.arch }}
+    if: inputs.publish
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out source
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Set up Node.js
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version-file: providers/${{ inputs.provider }}/.node-version
+      - name: Build provider bundle
+        env:
+          PNPM_VERSION: ${{ inputs.pnpm-version }}
+          PROVIDER: ${{ inputs.provider }}
+          PROVIDER_ARCH: ${{ matrix.arch }}
+        run: |
+          corepack enable
+          corepack prepare "pnpm@$PNPM_VERSION" --activate
+          go install mvdan.cc/sh/v3/cmd/shfmt@v3.14.1
+          make -C "providers/$PROVIDER" bundle ARCH="$PROVIDER_ARCH"
+      - name: Read provider version
+        id: metadata
+        env:
+          PROVIDER: ${{ inputs.provider }}
+        run: |
+          version="$(make -s -C "providers/$PROVIDER" version)"
+          echo "version=$version" >>"$GITHUB_OUTPUT"
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push platform manifest by digest
+        id: image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7
+        with:
+          context: providers/${{ inputs.provider }}
+          file: providers/${{ inputs.provider }}/Dockerfile
+          platforms: linux/${{ matrix.arch }}
+          outputs: type=image,name=${{ inputs.image }},push-by-digest=true,name-canonical=true,push=true
+          build-args: |
+            PROVIDER_VERSION=${{ steps.metadata.outputs.version }}
+            PROVIDER_SOURCE=${{ github.server_url }}/${{ github.repository }}
+            PROVIDER_REVISION=${{ github.sha }}
+          provenance: false
+          sbom: false
+          cache-from: type=gha,scope=provider-${{ inputs.provider }}-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=provider-${{ inputs.provider }}-${{ matrix.arch }},ignore-error=true
+      - name: Record platform digest
+        env:
+          IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+        run: |
+          mkdir -p .tmp/provider-digests
+          touch ".tmp/provider-digests/${IMAGE_DIGEST#sha256:}"
+      - name: Upload platform digest
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: provider-${{ inputs.provider }}-${{ matrix.arch }}
+          path: .tmp/provider-digests
+          if-no-files-found: error
+          retention-days: 1
+          include-hidden-files: true
+
+  publish:
+    name: Publish main manifest
+    if: inputs.publish
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+      packages: write
+    steps:
+      - name: Download platform digests
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          pattern: provider-${{ inputs.provider }}-*
+          path: .tmp/provider-digests
+          merge-multiple: true
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
+      - name: Log in to GHCR
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish and verify multi-platform image
+        id: manifest
+        env:
+          IMAGE_NAME: ${{ inputs.image }}
+        run: |
+          references=""
+          for digest in .tmp/provider-digests/*; do
+            references="$references $IMAGE_NAME@sha256:${digest##*/}"
+          done
+          docker buildx imagetools create --tag "$IMAGE_NAME:main" $references
+          docker buildx imagetools inspect --raw "$IMAGE_NAME:main" >.tmp/manifest.json
+          test "$(jq '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))] | length' .tmp/manifest.json)" -eq 2
+          digest="$(docker buildx imagetools inspect "$IMAGE_NAME:main" --format '{{json .Manifest}}' | jq -r .digest)"
+          printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          echo "digest=$digest" >>"$GITHUB_OUTPUT"
+      - name: Attest image provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4
+        with:
+          subject-name: ${{ inputs.image }}
+          subject-digest: ${{ steps.manifest.outputs.digest }}
+          push-to-registry: true

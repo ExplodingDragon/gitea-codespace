@@ -2,6 +2,12 @@
 !bin/
 !bin/gitea-codespace
 !bin/gt
-!bin/gitea-codespace.vsix
-!bin/web-ide/
-!bin/web-ide/**
+!deploy/
+!deploy/Dockerfile
+!.tmp/
+!.tmp/e2e-web-ide/
+!.tmp/e2e-web-ide/web-ide-e2e
+!tests/
+!tests/e2e/
+!tests/e2e/web-ide/
+!tests/e2e/web-ide/**

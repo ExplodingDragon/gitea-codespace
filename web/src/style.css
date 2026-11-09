@@ -114,11 +114,33 @@ h2 {
 .field-wide {
   grid-column: 1 / -1;
 }
+.web-ide-image-field {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  width: 100%;
+}
+.web-ide-resolution {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 18px;
+}
+.web-ide-resolution code {
+  overflow-wrap: anywhere;
+}
 .table-action-buttons {
   display: flex;
   justify-content: flex-end;
   gap: 4px;
   align-items: center;
+}
+.table-primary {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 .form-actions {
   display: flex;
@@ -293,6 +315,9 @@ th {
     padding: 20px 16px;
   }
   .form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .web-ide-image-field {
     grid-template-columns: minmax(0, 1fr);
   }
   .page-heading {

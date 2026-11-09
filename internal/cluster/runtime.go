@@ -15,6 +15,7 @@ import (
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	identitypkg "gitea.dev/codespace/internal/identity"
 	"gitea.dev/codespace/internal/runtimeplatform"
+	"gitea.dev/codespace/internal/webide"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
@@ -46,6 +47,7 @@ type RuntimeReconciler struct {
 	ManagerURL          string
 	ManagerIdentity     string
 	ImagePullSecrets    []string
+	WebIDEProgramSize   resource.Quantity
 }
 
 func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -150,7 +152,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 			}
 			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
-		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets)
+		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets, r.WebIDEProgramSize)
 		if err != nil {
 			return r.condition(ctx, &cs, "InvalidRuntimeConfiguration", err)
 		}
@@ -287,7 +289,7 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 	})
 }
 
-func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecrets []string) (*corev1.Pod, error) {
+func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecrets []string, webIDEProgramSize resource.Quantity) (*corev1.Pod, error) {
 	runtime := cs.Spec.Runtime
 	pullPolicy, err := platformImagePullPolicy(runtime.Image)
 	if err != nil {
@@ -356,6 +358,26 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 			pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
 			pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/" + proxyCAKey})
 		}
+	}
+	if runtime.DevContainer.WebIDE.Enabled() {
+		if webIDEProgramSize.Sign() <= 0 {
+			return nil, fmt.Errorf("web IDE program volume size must be positive")
+		}
+		webIDEPullPolicy, err := imagePullPolicy("Web IDE", runtime.DevContainer.WebIDE.Image)
+		if err != nil {
+			return nil, err
+		}
+		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "web-ide-program", VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{SizeLimit: ptr.To(webIDEProgramSize)}}})
+		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: webide.ProgramRootPath, SubPath: "current", ReadOnly: true})
+		pod.Spec.InitContainers = append(pod.Spec.InitContainers, corev1.Container{
+			Name: "web-ide", Image: runtime.DevContainer.WebIDE.Image, ImagePullPolicy: webIDEPullPolicy,
+			Env:          []corev1.EnvVar{{Name: "CODESPACE_WEB_IDE_EXPECTED_PROVIDER", Value: string(runtime.DevContainer.WebIDE.Provider)}},
+			VolumeMounts: []corev1.VolumeMount{{Name: "web-ide-program", MountPath: "/output"}},
+			SecurityContext: &corev1.SecurityContext{
+				RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0)), AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true),
+				Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}},
+			},
+		})
 	}
 	if runtime.Isolation == api.IsolationKata {
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{Privileged: ptr.To(true)}

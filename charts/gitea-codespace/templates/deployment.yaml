@@ -55,6 +55,7 @@ spec:
             - --manager-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8443
             - --component-url=https://{{ $fullname }}.{{ .Release.Namespace }}.svc:8445
             - --platform-image={{ include "gitea-codespace.image" . }}
+            - --web-ide-program-volume-size={{ .Values.webIDE.programVolumeSize }}
             - --identity-secret={{ $fullname }}-internal-ca
             - --admin-address=:18080
             - --admin-token-file=/var/run/codespace/admin/token

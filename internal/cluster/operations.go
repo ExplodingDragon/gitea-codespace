@@ -129,7 +129,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}, Finalizers: []string{RuntimeFinalizer}},
 			Spec: api.CodespaceSpec{
 				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Name,
-				Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: selected.Spec.Runtime, Image: o.PlatformImage},
+				Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: *selected.Spec.Runtime.DeepCopy(), Image: o.PlatformImage},
 			},
 		}
 		if cs.Spec.RuntimeUUID == "" {

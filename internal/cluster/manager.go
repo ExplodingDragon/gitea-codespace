@@ -17,6 +17,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
@@ -37,6 +38,7 @@ type ManagerOptions struct {
 	ManagerURL         string
 	ComponentURL       string
 	PlatformImage      string
+	WebIDEProgramSize  string
 	ImagePullSecrets   []string
 	IdentitySecretName string
 	HealthAddress      string
@@ -45,10 +47,11 @@ type ManagerOptions struct {
 
 type Manager struct {
 	manager.Manager
-	Leadership   *Leadership
-	AgentControl *AgentControlServer
-	Components   *ComponentServer
-	Identity     *IdentityAuthority
+	Leadership     *Leadership
+	AgentControl   *AgentControlServer
+	Components     *ComponentServer
+	Identity       *IdentityAuthority
+	WebIDEResolver webIDEImageResolver
 }
 
 // Leadership ties request cancellation to the elected term, including open streams.
@@ -164,6 +167,10 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}
 	if _, err := platformImagePullPolicy(options.PlatformImage); err != nil {
 		return nil, err
+	}
+	programSize, err := resource.ParseQuantity(options.WebIDEProgramSize)
+	if err != nil || programSize.Sign() <= 0 {
+		return nil, fmt.Errorf("web IDE program volume size must be a positive Kubernetes quantity")
 	}
 	seenPullSecrets := make(map[string]struct{}, len(options.ImagePullSecrets))
 	for _, name := range options.ImagePullSecrets {
@@ -316,7 +323,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.EnvironmentTemplate{}).Complete(&TemplateReconciler{Client: liveClient}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets, WebIDEProgramSize: programSize}); err != nil {
 		return nil, err
 	}
 	componentController := ctrl.NewControllerManagedBy(mgr).For(&api.CodespaceComponent{}).
@@ -332,5 +339,8 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}); err != nil {
 		return nil, err
 	}
-	return &Manager{Manager: mgr, Leadership: leadership, AgentControl: control, Components: components, Identity: identityAuthority}, nil
+	return &Manager{
+		Manager: mgr, Leadership: leadership, AgentControl: control, Components: components, Identity: identityAuthority,
+		WebIDEResolver: newRegistryWebIDEImageResolver(liveClient, options.Namespace, options.ImagePullSecrets),
+	}, nil
 }

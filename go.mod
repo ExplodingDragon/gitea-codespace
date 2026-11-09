@@ -16,10 +16,12 @@ require (
 	github.com/docker/go-connections v0.8.1
 	github.com/docker/go-units v0.5.0
 	github.com/go-logr/logr v1.4.4
+	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
 	github.com/opencontainers/runtime-spec v1.3.0
 	github.com/pkg/sftp v1.13.10
+	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1
 	github.com/spf13/cobra v1.10.2
 	github.com/stretchr/testify v1.11.1
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
@@ -123,7 +125,6 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/handlers v1.5.2 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
-	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-cleanhttp v0.5.2 // indirect
@@ -176,7 +177,6 @@ require (
 	github.com/redis/go-redis/extra/rediscmd/v9 v9.0.5 // indirect
 	github.com/redis/go-redis/extra/redisotel/v9 v9.0.5 // indirect
 	github.com/redis/go-redis/v9 v9.7.3 // indirect
-	github.com/santhosh-tekuri/jsonschema/v6 v6.0.1 // indirect
 	github.com/secure-systems-lab/go-securesystemslib v0.11.0 // indirect
 	github.com/serialx/hashring v0.0.0-20200727003509-22c0c7ab6b1b // indirect
 	github.com/shibumi/go-pathspec v1.3.0 // indirect

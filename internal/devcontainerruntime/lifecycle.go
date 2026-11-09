@@ -37,10 +37,11 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	if stderr == nil {
 		stderr = io.Discard
 	}
-	if request.DevContainer.WebIDE.Enabled && (request.Action == "create" || request.Action == "resume") {
-		if err := webide.Prepare(ctx, request.DevContainer.WebIDE.ArchiveURL, request.HostUser.UID, request.HostUser.GID); err != nil {
+	if request.DevContainer.WebIDE.Enabled() && (request.Action == "create" || request.Action == "resume") {
+		err := webide.Prepare(string(request.DevContainer.WebIDE.Provider), request.HostUser.UID, request.HostUser.GID)
+		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "Warning: Web IDE is unavailable and will not affect Codespace access: prepare platform Web IDE: %v\n", err)
-			request.DevContainer.WebIDE.Enabled = false
+			request.DevContainer.WebIDE = WebIDEConfiguration{}
 		}
 	}
 	engine, err := containerdocker.New(ctx, stdout, stderr)
@@ -70,7 +71,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		if err != nil {
 			return nil, err
 		}
-		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
+		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stderr)
 		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
 	case "resume":
 		startFailed := false
@@ -104,7 +105,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			}
 			return nil, err
 		}
-		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
+		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
 		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
 	case "stop":
 		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")

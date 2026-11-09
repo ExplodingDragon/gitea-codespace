@@ -10,10 +10,10 @@ import (
 	corev1 "k8s.io/api/core/v1"
 )
 
-func platformImagePullPolicy(image string) (corev1.PullPolicy, error) {
+func imagePullPolicy(kind, image string) (corev1.PullPolicy, error) {
 	named, err := reference.ParseNormalizedNamed(image)
 	if err != nil {
-		return "", fmt.Errorf("invalid platform image: %w", err)
+		return "", fmt.Errorf("invalid %s image: %w", kind, err)
 	}
 	if _, ok := named.(reference.Digested); ok {
 		return corev1.PullIfNotPresent, nil
@@ -21,5 +21,9 @@ func platformImagePullPolicy(image string) (corev1.PullPolicy, error) {
 	if _, ok := named.(reference.Tagged); ok {
 		return corev1.PullAlways, nil
 	}
-	return "", fmt.Errorf("platform image must include an explicit tag or digest")
+	return "", fmt.Errorf("%s image must include an explicit tag or digest", kind)
+}
+
+func platformImagePullPolicy(image string) (corev1.PullPolicy, error) {
+	return imagePullPolicy("platform", image)
 }

@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"net/netip"
 	"net/url"
+	"reflect"
 	"strconv"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -20,7 +22,28 @@ type adminEnvironmentWrite struct {
 }
 
 func (s *AdminServer) saveEnvironment(ctx context.Context, template *api.EnvironmentTemplate, body adminEnvironmentWrite, creating bool) error {
-	template.Spec = body.Spec
+	previousWebIDE := template.Spec.Runtime.DevContainer.WebIDE
+	spec := body.Spec.DeepCopy()
+	requestedWebIDE := spec.Runtime.DevContainer.WebIDE
+	switch {
+	case !requestedWebIDE.Enabled():
+		spec.Runtime.DevContainer.WebIDE = devcontainerruntime.WebIDEConfiguration{}
+	case !creating && reflect.DeepEqual(requestedWebIDE, previousWebIDE):
+		// Unrelated template edits retain the already verified immutable snapshot.
+	case s.WebIDEResolver == nil:
+		return apierrors.NewServiceUnavailable("Web IDE image resolution is unavailable")
+	default:
+		resolved, err := s.WebIDEResolver.Resolve(ctx, requestedWebIDE.Image)
+		if err != nil {
+			return apierrors.NewBadRequest(fmt.Sprintf("resolve Web IDE image: %v", err))
+		}
+		configuration, err := resolved.configuration(requestedWebIDE.Options)
+		if err != nil {
+			return apierrors.NewBadRequest(err.Error())
+		}
+		spec.Runtime.DevContainer.WebIDE = configuration
+	}
+	template.Spec = *spec
 	if err := template.Validate(); err != nil {
 		return apierrors.NewBadRequest(err.Error())
 	}
