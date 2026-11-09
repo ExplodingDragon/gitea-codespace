@@ -6,7 +6,13 @@ set -eu
 root=${CODESPACE_WEB_IDE_PROGRAM_DIR:?}
 data=${CODESPACE_WEB_IDE_DATA_DIR:?}
 address=${CODESPACE_WEB_IDE_ADDRESS:?}
+workspace=${CODESPACE_WEB_IDE_WORKSPACE:?}
 host=${address%:*}
 port=${address##*:}
+[ -d "$workspace" ] || {
+  printf 'DeepSeek Harness workspace is not a directory: %s\n' "$workspace" >&2
+  exit 1
+}
+cd "$workspace"
 export DSH_HOME=$data
-exec "$root/program/bin/dsh" web --trusted-proxy --no-open --host "$host" --port "$port"
+exec "$root/program/bin/dsh" web --workspace "$workspace" --trusted-proxy --no-open --host "$host" --port "$port"

@@ -2,9 +2,27 @@
 
 This image provides DeepSeek Harness through the `dsh` provider. It runs inside
 the Dev Container, keeps its profile with the codespace, and relies on
-Codespace Gateway for browser authentication. The upstream build and the small
-trusted-proxy integration are released with this image rather than the
+Codespace Gateway for browser authentication. The upstream build and its
+Codespace startup integration are released with this image rather than the
 Codespace platform.
+
+## Workspace startup
+
+The provider enters the current repository and registers its absolute path in
+the native DSH Workspace Registry before publishing the browser surface.
+Entering the directory gives project-relative tools the correct process
+context, while registry registration makes the same project visible in the DSH
+workspace list. Registration is idempotent, so restarting the provider
+preserves one workspace record and leaves any other user-created workspaces
+unchanged.
+
+### Implementation acceptance criteria
+
+- Opening DSH for the first time shows the current repository as a workspace.
+- Restarting DSH retains one registration for the repository and starts from
+  the repository root.
+- A missing repository directory stops provider startup with a direct error
+  while the rest of the codespace remains available.
 
 ## Configuration
 

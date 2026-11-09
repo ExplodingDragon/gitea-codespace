@@ -43,13 +43,13 @@ dsh_ref="dsh-v$dsh_version"
 dsh_commit=66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
 git clone --branch "$dsh_ref" --depth 1 https://github.com/deepseek-ai/DeepSeek-Harness.git "$work/source" || fail "cannot clone DeepSeek Harness $dsh_ref"
 [ "$(git -C "$work/source" rev-parse HEAD)" = "$dsh_commit" ] || fail "DeepSeek Harness tag does not match the pinned commit"
-git -C "$work/source" apply --check "$source_root/trusted-proxy.patch" || fail "DeepSeek Harness trusted-proxy patch no longer applies"
-git -C "$work/source" apply "$source_root/trusted-proxy.patch"
+git -C "$work/source" apply --check "$source_root/codespace-integration.patch" || fail "DeepSeek Harness Codespace integration patch no longer applies"
+git -C "$work/source" apply "$source_root/codespace-integration.patch"
 (
   cd "$work/source"
   CI=1 pnpm install --frozen-lockfile
   [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$pnpm_version" ] || fail "DeepSeek Harness requires a different pnpm version"
-  pnpm exec vitest run packages/bundle/web-app/tests/startup.spec.ts packages/client/connection/tests/browser-auth.host.spec.ts
+  pnpm exec vitest run packages/bundle/web-app/tests/startup.spec.ts packages/bundle/web-app/tests/web-app.spec.ts packages/client/connection/tests/browser-auth.host.spec.ts
   pnpm exec tsx scripts/build.ts --profile official --serial
   pnpm exec tsx scripts/release/pack.ts --family dsh --out "$work/pack" --concurrency 8
   pnpm exec tsx scripts/release/pack.ts --family vendor --out "$work/vendor" --concurrency 8
@@ -86,5 +86,7 @@ cp "$source_root/runtime/prepare" "$output/bin/prepare"
 cp "$source_root/runtime/serve" "$output/bin/serve"
 cp "$source_root/runtime/prepare.mjs" "$output/lib/prepare.mjs"
 chmod 0555 "$output/program/bin/dsh" "$output/program/bin/pnpm" "$output/bin/prepare" "$output/bin/serve"
-DSH_HOME="$work/home" "$output/program/bin/dsh" web --trusted-proxy --help | grep -F -- '--trusted-proxy' >/dev/null || fail "trusted-proxy option is unavailable"
+help=$(DSH_HOME="$work/home" "$output/program/bin/dsh" web --help)
+printf '%s\n' "$help" | grep -F -- '--trusted-proxy' >/dev/null || fail "trusted-proxy option is unavailable"
+printf '%s\n' "$help" | grep -F -- '--workspace' >/dev/null || fail "workspace option is unavailable"
 printf '{"schemaVersion":1,"provider":"dsh","architecture":"%s","version":"%s"}\n' "$arch" "$dsh_version" >"$output/manifest.json"

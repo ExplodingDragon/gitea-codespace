@@ -95,6 +95,37 @@ test('DeepSeek Harness adapter skips a setting without a profile entry', async (
   assert.equal(await readFile(path.join(data, '.codespace-initialized'), 'utf8'), '1\n');
 });
 
+test('DeepSeek Harness starts in and registers the current workspace', async (t) => {
+  const {root, data, log} = await createFixture(t, '');
+  const workspace = path.join(path.dirname(root), 'workspace');
+  await mkdir(workspace);
+
+  await new Promise((resolve, reject) => {
+    const child = spawn(path.join(import.meta.dirname, 'runtime/serve'), {
+      env: {
+        ...process.env,
+        CODESPACE_WEB_IDE_PROGRAM_DIR: root,
+        CODESPACE_WEB_IDE_DATA_DIR: data,
+        CODESPACE_WEB_IDE_ADDRESS: '127.0.0.1:3080',
+        CODESPACE_WEB_IDE_WORKSPACE: workspace,
+        CODESPACE_TEST_LOG: log,
+      },
+      stdio: ['ignore', 'ignore', 'pipe'],
+    });
+    const stderr = [];
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
+    child.once('error', reject);
+    child.once('exit', (code, signal) => code === 0
+      ? resolve()
+      : reject(new Error(Buffer.concat(stderr).toString('utf8') || `serve exited with ${signal ?? code}`)));
+  });
+
+  assert.equal(
+    await readFile(log, 'utf8'),
+    `cwd=${workspace} args=web --workspace ${workspace} --trusted-proxy --no-open --host 127.0.0.1 --port 3080\n`,
+  );
+});
+
 async function createFixture(t, schema) {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'codespace-dsh-adapter-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
@@ -104,7 +135,7 @@ async function createFixture(t, schema) {
   await mkdir(path.join(root, 'program/bin'), {recursive: true});
   await writeFile(
     path.join(root, 'program/bin/dsh'),
-    '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\nmkdir -p "$DSH_HOME/profiles/web"\ncase "$*" in *--dump-config-schema*) printf \'%s\\n\' "$CODESPACE_TEST_SCHEMA";; esac\n',
+    '#!/bin/sh\nprintf \'cwd=%s args=%s\\n\' "$PWD" "$*" >>"$CODESPACE_TEST_LOG"\nmkdir -p "$DSH_HOME/profiles/web"\ncase "$*" in *--dump-config-schema*) printf \'%s\\n\' "$CODESPACE_TEST_SCHEMA";; esac\n',
     {mode: 0o755},
   );
   return {root, data, log};
