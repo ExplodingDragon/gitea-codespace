@@ -19,8 +19,15 @@ import (
 	"gitea.dev/codespace/internal/webide"
 )
 
+// Outcome records the Dev Container and the optional platform services that
+// were actually started for this lifecycle action.
+type Outcome struct {
+	Environment     *devcontainer.State
+	WebIDEAvailable bool
+}
+
 // Apply executes one validated lifecycle request against the local Docker daemon.
-func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *devcontainer.State, returnErr error) {
+func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *Outcome, returnErr error) {
 	if err := request.Validate(); err != nil {
 		return nil, err
 	}
@@ -63,8 +70,8 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 		if err != nil {
 			return nil, err
 		}
-		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
-		return state, nil
+		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
+		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
 	case "resume":
 		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
@@ -97,18 +104,20 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *d
 			}
 			return nil, err
 		}
-		startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
-		return state, nil
+		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
+		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
 	case "stop":
 		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
 		stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
 		state, stopErr := engine.Stop(stopContext, request.Environment)
-		return state, errors.Join(lifecycleErr, stopErr)
+		return &Outcome{Environment: state}, errors.Join(lifecycleErr, stopErr)
 	case "delete":
-		return engine.Stop(ctx, request.Environment)
+		state, err := engine.Stop(ctx, request.Environment)
+		return &Outcome{Environment: state}, err
 	default:
-		return engine.Inspect(ctx, request.Environment)
+		state, err := engine.Inspect(ctx, request.Environment)
+		return &Outcome{Environment: state}, err
 	}
 }
 

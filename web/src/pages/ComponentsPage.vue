@@ -1,7 +1,7 @@
 <script setup lang="ts">
-import {computed, onMounted, ref} from 'vue';
-import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
-import {KeyRound, Pencil, Plus, RefreshCw, Trash2, X} from '@lucide/vue';
+import {onMounted, ref} from 'vue';
+import {NAlert, NButton, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
+import {KeyRound, Pencil, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {
   errorMessage,
@@ -13,9 +13,11 @@ import {
   type Resource,
 } from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
+import CacheFields from '../components/CacheFields.vue';
+import GatewayFields from '../components/GatewayFields.vue';
 import MeasurementInput from '../components/MeasurementInput.vue';
-import ProxySettings from '../components/ProxySettings.vue';
 import {cloneFormValue} from '../utils/form';
+import {ingressEndpointURL, loadBalancerSSHAddress} from '../utils/gateway';
 import {measurementBaseValue} from '../utils/measurement';
 
 const items = ref<Resource<Component, ComponentStatus>[]>([]);
@@ -48,48 +50,6 @@ const dirty = useDirtyForm(() => ({
   upstreams: upstreams.value,
   trustedProxyCIDRs: trustedProxyCIDRs.value,
 }));
-const ingressClassOptions = computed(() =>
-  cluster.value.ingressClasses.map(({name: className, controller, default: isDefault}) => ({
-    label: `${className} (${isDefault ? t('component.defaultIngressClass') : controller})`,
-    value: className,
-  })),
-);
-const tlsSecretOptions = computed(() =>
-  cluster.value.tlsSecrets.map((secretName) => ({label: secretName, value: secretName})),
-);
-const issuerOptions = computed(() =>
-  cluster.value.issuers.map(({kind, name: issuerName}) => ({
-    label: `${kind}/${issuerName}`,
-    value: `${kind}/${issuerName}`,
-  })),
-);
-const storageOptions = computed(() => {
-  const hasDefaultStorage = cluster.value.storageClasses.some(({default: isDefault}) => isDefault);
-  const options = [
-    {
-      label: hasDefaultStorage
-        ? t('component.clusterDefaultStorage')
-        : t('common.unavailableOption', {name: t('component.clusterDefaultStorage')}),
-      value: '__default__',
-      disabled: !hasDefaultStorage,
-    },
-    ...cluster.value.storageClasses.map(({name: storageName, default: isDefault}) => ({
-      label: isDefault ? `${storageName} (${t('environment.defaultStorage')})` : storageName,
-      value: storageName,
-      disabled: false,
-    })),
-  ];
-  const current = form.value?.cache?.storage.storageClassName;
-  if (current && !options.some(({value}) => value === current))
-    options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
-  return options;
-});
-const endpointPlaceholder = computed(() =>
-  form.value?.gateway?.httpExposure.ingress?.tls.source === 'none'
-    ? 'http://codespace.example.com'
-    : 'https://codespace.example.com',
-);
-
 async function load() {
   loading.value = true;
   error.value = '';
@@ -190,71 +150,6 @@ function setRole(role: 'gateway' | 'cache') {
   if (resources) form.value.resources = resources;
   upstreams.value = [];
   trustedProxyCIDRs.value = '';
-}
-function setHTTPExposure(value: 'external' | 'ingress') {
-  if (!form.value?.gateway) return;
-  const source = /^https:\/\//i.test(form.value.gateway.endpointBaseURL) ? 'secret' : 'none';
-  form.value.gateway.httpExposure =
-    value === 'external'
-      ? {mode: 'external'}
-      : {
-          mode: 'ingress',
-          ingress: {
-            className: cluster.value.ingressClasses.find(({default: isDefault}) => isDefault)?.name ?? '',
-            tls: {source},
-          },
-        };
-  if (value === 'ingress')
-    form.value.gateway.endpointBaseURL = ingressEndpointURL(form.value.gateway.endpointBaseURL, source);
-}
-function ingressEndpointURL(endpoint: string, source: 'none' | 'secret' | 'certManager') {
-  const normalized = endpoint.replace(/^https?:\/\//i, `${source === 'none' ? 'http' : 'https'}://`);
-  if (normalized !== normalized.trim()) return normalized;
-  try {
-    const parsed = new URL(normalized);
-    if (
-      (parsed.protocol === 'http:' || parsed.protocol === 'https:') &&
-      !parsed.username &&
-      !parsed.password &&
-      (parsed.pathname === '' || parsed.pathname === '/') &&
-      !parsed.search &&
-      !parsed.hash
-    )
-      return parsed.origin;
-  } catch {
-    return normalized;
-  }
-  return normalized;
-}
-function setTLS(source: 'none' | 'secret' | 'certManager') {
-  const gateway = form.value?.gateway;
-  if (!gateway?.httpExposure.ingress) return;
-  gateway.httpExposure.ingress.tls = {source};
-  gateway.endpointBaseURL = ingressEndpointURL(gateway.endpointBaseURL, source);
-}
-function setIssuer(value: string) {
-  const tls = form.value?.gateway?.httpExposure.ingress?.tls;
-  if (!tls) return;
-  const [kind, ...nameParts] = value.split('/');
-  tls.issuer = {kind: kind as 'Issuer' | 'ClusterIssuer', name: nameParts.join('/')};
-}
-function setSSHExposure(value: 'external' | 'loadBalancer') {
-  if (!form.value?.gateway) return;
-  form.value.gateway.sshExposure = {mode: value};
-  if (value === 'loadBalancer')
-    form.value.gateway.sshExternalAddress = loadBalancerSSHAddress(form.value.gateway.sshExternalAddress);
-}
-function loadBalancerSSHAddress(address: string) {
-  if (address !== address.trim() || !address) return address;
-  try {
-    const parsed = new URL(`ssh://${address}`);
-    if (!parsed.hostname || parsed.username || parsed.password || parsed.pathname || parsed.search || parsed.hash)
-      return address;
-    const host = parsed.hostname.includes(':') ? `[${parsed.hostname}]` : parsed.hostname;
-    return `${host}:22`;
-  } catch {
-    return address;
-  }
 }
 function close() {
   if (!dirty.confirmDiscard()) return;
@@ -506,313 +401,19 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       </NFormItem>
     </div>
     <template v-if="form.gateway">
-      <h2>{{ t('component.gatewayAddresses') }}</h2>
-      <div class="form-grid">
-        <NFormItem :label="t('component.publicHTTPS')">
-          <NInput
-            v-model:value="form.gateway.endpointBaseURL"
-            :placeholder="endpointPlaceholder"
-            required
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.publicSSH')">
-          <NInput
-            v-model:value="form.gateway.sshExternalAddress"
-            placeholder="codespace.example.com:22"
-            required
-          />
-        </NFormItem>
-      </div>
-      <h2>{{ t('component.publicExposure') }}</h2>
-      <p class="section-help">{{ t('component.publicExposureHelp') }}</p>
-      <div class="form-grid">
-        <NFormItem :label="t('component.httpExposure')">
-          <NSelect
-            :value="form.gateway.httpExposure.mode"
-            :options="[
-              {label: t('component.externalExposure'), value: 'external'},
-              {label: t('component.ingressExposure'), value: 'ingress'},
-            ]"
-            @update:value="setHTTPExposure"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.sshExposure')">
-          <NSelect
-            :value="form.gateway.sshExposure.mode"
-            :options="[
-              {label: t('component.externalExposure'), value: 'external'},
-              {label: t('component.loadBalancerExposure'), value: 'loadBalancer'},
-            ]"
-            @update:value="setSSHExposure"
-          />
-        </NFormItem>
-      </div>
-      <div
-        v-if="form.gateway.httpExposure.ingress"
-        class="form-grid"
-      >
-        <NFormItem :label="t('component.ingressClass')">
-          <NSelect
-            v-model:value="form.gateway.httpExposure.ingress.className"
-            :options="ingressClassOptions"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.tlsSource')">
-          <NSelect
-            :value="form.gateway.httpExposure.ingress.tls.source"
-            :options="[
-              {label: t('component.noTLS'), value: 'none'},
-              {label: t('component.existingTLSSecret'), value: 'secret'},
-              {label: t('component.certManagerIssuer'), value: 'certManager'},
-            ]"
-            @update:value="setTLS"
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="form.gateway.httpExposure.ingress.tls.source === 'secret'"
-          :label="t('component.tlsSecret')"
-        >
-          <NSelect
-            v-model:value="form.gateway.httpExposure.ingress.tls.secretName"
-            :options="tlsSecretOptions"
-          />
-        </NFormItem>
-        <NFormItem
-          v-if="form.gateway.httpExposure.ingress.tls.source === 'certManager'"
-          :label="t('component.issuer')"
-        >
-          <NSelect
-            :value="
-              form.gateway.httpExposure.ingress.tls.issuer
-                ? `${form.gateway.httpExposure.ingress.tls.issuer.kind}/${form.gateway.httpExposure.ingress.tls.issuer.name}`
-                : ''
-            "
-            :options="issuerOptions"
-            @update:value="setIssuer"
-          />
-        </NFormItem>
-      </div>
-      <div class="form-grid">
-        <NFormItem
-          class="field-wide"
-          :label="t('component.trustedProxies')"
-          :feedback="t('component.trustedProxiesHelp')"
-        >
-          <NInput
-            v-model:value="trustedProxyCIDRs"
-            type="textarea"
-            :autosize="{minRows: 2, maxRows: 5}"
-            placeholder="10.0.0.0/8"
-          />
-        </NFormItem>
-      </div>
-      <h2>{{ t('component.sessions') }}</h2>
-      <div class="form-grid">
-        <NFormItem :label="t('component.sessionLifetime')">
-          <MeasurementInput
-            v-model="form.gateway.sessions.ttl"
-            kind="duration"
-            :aria-label="t('component.sessionLifetime')"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.idleTimeout')">
-          <MeasurementInput
-            v-model="form.gateway.sessions.idleTimeout"
-            kind="duration"
-            :aria-label="t('component.idleTimeout')"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.authRefresh')">
-          <MeasurementInput
-            v-model="form.gateway.sessions.revalidateInterval"
-            kind="duration"
-            :aria-label="t('component.authRefresh')"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.sessionsPerCodespace')">
-          <NInputNumber
-            v-model:value="form.gateway.sessions.maxPerCodespace"
-            :min="1"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.sessionsPerUser')">
-          <NInputNumber
-            v-model:value="form.gateway.sessions.maxPerUser"
-            :min="1"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.inflightTotal')">
-          <NInputNumber
-            v-model:value="form.gateway.limits.maxInflightTotal"
-            :min="1"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.inflightSession')">
-          <NInputNumber
-            v-model:value="form.gateway.limits.maxInflightPerSession"
-            :min="1"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.sshChannels')">
-          <NInputNumber
-            v-model:value="form.gateway.ssh.maxChannelsPerConnection"
-            :min="1"
-          />
-        </NFormItem>
-      </div>
+      <GatewayFields
+        :gateway="form.gateway"
+        :cluster="cluster"
+        v-model:trusted-proxies="trustedProxyCIDRs"
+      />
     </template>
     <template v-if="form.cache">
-      <h2>{{ t('component.cacheSection') }}</h2>
-      <div class="form-grid">
-        <NFormItem class="field-wide">
-          <NCheckbox v-model:checked="form.cache.enabled">{{ t('component.acceptCache') }}</NCheckbox>
-        </NFormItem>
-        <NFormItem :label="t('component.storageDriver')">
-          <NSelect
-            v-model:value="form.cache.storage.driver"
-            :options="[
-              {label: t('component.persistentVolume'), value: 'filesystem'},
-              {label: t('component.s3Storage'), value: 's3'},
-            ]"
-          />
-        </NFormItem>
-        <NFormItem
-          :label="t('component.maxCacheSize')"
-          :feedback="t('component.maxCacheSizeHelp')"
-        >
-          <MeasurementInput
-            v-model="form.cache.maxSize"
-            kind="bytes"
-            :aria-label="t('component.maxCacheSize')"
-            :allow-empty="form.cache.storage.driver === 's3'"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.maxAge')">
-          <MeasurementInput
-            v-model="form.cache.maxAge"
-            kind="duration"
-            :aria-label="t('component.maxAge')"
-          />
-        </NFormItem>
-        <NFormItem :label="t('component.cleanupInterval')">
-          <MeasurementInput
-            v-model="form.cache.gcInterval"
-            kind="duration"
-            :aria-label="t('component.cleanupInterval')"
-          />
-        </NFormItem>
-      </div>
-      <template v-if="form.cache.storage.driver === 'filesystem'">
-        <div class="form-grid">
-          <NFormItem
-            :label="t('component.volumeSize')"
-            :feedback="t('component.volumeSizeHelp')"
-          >
-            <MeasurementInput
-              v-model="form.cache.storage.volumeSize"
-              kind="storage"
-              :aria-label="t('component.volumeSize')"
-            />
-          </NFormItem>
-          <NFormItem
-            :label="t('component.storageClass')"
-            :feedback="t('component.storageClassHelp')"
-          >
-            <NSelect
-              :value="form.cache.storage.storageClassName || '__default__'"
-              :options="storageOptions"
-              @update:value="
-                (value: string) => {
-                  form!.cache!.storage.storageClassName = value === '__default__' ? '' : value;
-                }
-              "
-            />
-          </NFormItem>
-          <NFormItem :label="t('component.minFreeSpace')">
-            <MeasurementInput
-              v-model="form.cache.storage.minFreeSpace"
-              kind="bytes"
-              :aria-label="t('component.minFreeSpace')"
-            />
-          </NFormItem>
-        </div>
-      </template>
-      <template v-else>
-        <div class="form-grid">
-          <NFormItem :label="t('component.s3Endpoint')">
-            <NInput v-model:value="form.cache.storage.s3.endpoint" />
-          </NFormItem>
-          <NFormItem :label="t('component.region')">
-            <NInput
-              v-model:value="form.cache.storage.s3.region"
-              required
-            />
-          </NFormItem>
-          <NFormItem :label="t('component.bucket')">
-            <NInput
-              v-model:value="form.cache.storage.s3.bucket"
-              required
-            />
-          </NFormItem>
-          <NFormItem :label="t('component.prefix')"><NInput v-model:value="form.cache.storage.s3.prefix" /></NFormItem>
-          <NFormItem :label="t('component.replaceAccessKey')">
-            <NInput
-              v-model:value="s3AccessKey"
-              autocomplete="off"
-            />
-          </NFormItem>
-          <NFormItem :label="t('component.replaceSecretKey')">
-            <NInput
-              v-model:value="s3SecretKey"
-              type="password"
-              autocomplete="new-password"
-            />
-          </NFormItem>
-          <NFormItem>
-            <NCheckbox v-model:checked="form.cache.storage.s3.forcePathStyle">{{ t('component.pathStyle') }}</NCheckbox>
-          </NFormItem>
-        </div>
-      </template>
-      <h2>{{ t('component.mirrors') }}</h2>
-      <p class="section-help">{{ t('component.mirrorHelp') }}</p>
-      <div
-        v-for="(upstream, index) in upstreams"
-        :key="index"
-        class="upstream-row"
-      >
-        <NInput
-          v-model:value="upstream.host"
-          placeholder="ghcr.io"
-          :aria-label="t('component.registryHost')"
-        />
-        <NInput
-          v-model:value="upstream.allow"
-          type="textarea"
-          :autosize="{minRows: 1, maxRows: 4}"
-          placeholder="devcontainers/*"
-          :aria-label="t('component.allowedRepositories')"
-        />
-        <NButton
-          quaternary
-          type="error"
-          :aria-label="t('component.removeMirror')"
-          :title="t('component.removeMirror')"
-          @click="upstreams.splice(index, 1)"
-        >
-          <template #icon><X :size="16" /></template>
-        </NButton>
-      </div>
-      <NButton
-        class="add-row"
-        @click="upstreams.push({host: '', allow: ''})"
-      >
-        <template #icon><Plus :size="16" /></template>
-        {{ t('component.addMirror') }}
-      </NButton>
-      <h2>{{ t('proxy.section') }}</h2>
-      <ProxySettings
-        v-model="form.cache.proxy"
-        :help="t('proxy.cacheHelp')"
+      <CacheFields
+        :cache="form.cache"
+        :cluster="cluster"
+        v-model:s3-access-key="s3AccessKey"
+        v-model:s3-secret-key="s3SecretKey"
+        v-model:upstreams="upstreams"
       />
     </template>
     <div class="form-actions">

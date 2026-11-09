@@ -1,8 +1,8 @@
 # Gitea Codespace Helm chart
 
-This chart installs Codespace Manager. After installation, use the
-administration page to connect Gitea and manage workspace environments, Gateway,
-and Cache components.
+This chart installs Codespace Manager and its administration service. Use the
+administration page to connect Gitea and configure workspace environments,
+Gateway, and Cache components.
 
 ## Requirements
 
@@ -13,17 +13,16 @@ and Cache components.
 - A compatible StorageClass
 - A verified Kata or Sysbox RuntimeClass when using that runtime
 
-Test the runtime and StorageClass together on every workspace node pool. Each
-workspace runs Docker inside its Pod, so ordinary Pod startup alone is not a
-sufficient runtime check.
+Test the runtime and StorageClass together on every workspace node pool because
+a successful Pod start does not verify nested containers or persistent storage.
 
 ## Choose a workspace runtime
 
-| Runtime         | Isolation       | Workspace volume | Preparation                                                                                                                   |
-| --------------- | --------------- | ---------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Kata Containers | Virtual machine | Raw block PVC    | [Install Kata](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md)                              |
-| Sysbox          | User namespace  | Filesystem PVC   | [Install Sysbox](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md)                               |
-| Native          | Node kernel     | Filesystem PVC   | Use the default CRI runtime and install the Device Plugins required by the environment                                       |
+| Runtime         | Isolation       | Workspace volume | Preparation                                                                                      |
+| --------------- | --------------- | ---------------- | ------------------------------------------------------------------------------------------------ |
+| Kata Containers | Virtual machine | Raw block PVC    | [Install Kata](https://github.com/kata-containers/kata-containers/blob/main/docs/installation.md) |
+| Sysbox          | User namespace  | Filesystem PVC   | [Install Sysbox](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/install-k8s.md)  |
+| Native          | Node kernel     | Filesystem PVC   | Install the Device Plugins required by the environment                                           |
 
 Review the [Sysbox limitations](https://github.com/nestybox/sysbox/blob/master/docs/user-guide/limitations.md)
 before selecting it for environments that need devices or additional Linux
@@ -42,18 +41,17 @@ kubectl get storageclass
 ```
 
 Native environments use the node's default CRI runtime. Install the required
-Device Plugin and enable CDI in the node runtime and plugin when the device uses
-CDI. Confirm that each extended resource appears in node allocatable capacity:
+Device Plugin and enable CDI when the device integration requires it. Confirm
+that each extended resource appears in node allocatable capacity:
 
 ```sh
 kubectl get nodes \
   -o custom-columns='NAME:.metadata.name,ALLOCATABLE:.status.allocatable'
 ```
 
-Select the resource and CDI settings in the environment template. Before making
-the template available, verify nested Docker, device access from a child
-container, and device access after stop and resume. This checks the runtime,
-storage, Device Plugin, and CDI path together.
+Select the resource and CDI settings in the environment template. Validate
+nested containers, persistent storage, and device access before making the
+template available to users.
 
 ## Install
 
@@ -74,9 +72,9 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-This installs the latest `main` prerelease. To install a release, replace
-`--devel` with `--version <chart-version>`. Published charts select the matching
-platform image by digest. Configure `image.pullSecrets` for a private registry.
+This installs the latest `main` prerelease. For a release, replace `--devel`
+with `--version <chart-version>`. Published charts select the matching platform
+image by digest. Configure `image.pullSecrets` for a private registry.
 
 ## Connect Gitea
 
@@ -96,37 +94,36 @@ Open <http://127.0.0.1:18080>, sign in with the administration token, and then:
 4. register Gitea and assign the template and components;
 5. enable the site after its readiness checks pass.
 
-For a stable administration endpoint, configure `admin.ingress` and add the
-ingress controller networks to `networkPolicy.adminIngressCIDRs`.
+For a stable administration endpoint, configure `admin.ingress`. When Network
+Policy is enabled, add the ingress controller networks to
+`networkPolicy.adminIngressCIDRs`.
 
 ## Publish workspace access
 
 Each Gateway has a same-name ClusterIP Service. Port `80` carries HTTP and
-WebSocket traffic; port `22` carries SSH and SFTP. Manager can create an HTTP
-Ingress and an SSH LoadBalancer Service, or existing cluster infrastructure can
-publish the Service. Configure public DNS and TLS in the cluster infrastructure.
+WebSocket traffic; port `22` carries SSH and SFTP. Publish HTTP with an Ingress
+and SSH with a LoadBalancer Service, or route the ClusterIP Service through
+existing cluster infrastructure. Configure public DNS and TLS at that boundary.
 
 ## Operations
 
-Back up `Secret/<Helm fullname>-internal-ca` because existing workloads trust
-this internal identity. Enable Kubernetes Secret encryption at rest. Add a
-private Gitea CA to the site configuration when Gitea does not use a publicly
-trusted certificate.
+Back up `Secret/<Helm fullname>-internal-ca` because running workspaces and
+components trust this identity. Enable Kubernetes Secret encryption at rest.
+Add a private Gitea CA to the site configuration when Gitea does not use a
+publicly trusted certificate.
 
 Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
 Gateway. Allow configured outbound proxies through the site NetworkPolicy.
-Cache has separate proxy settings because registry traffic can use a different
-network path.
 
 Cache remains inside the cluster on port `443` and uses Manager's internal CA.
-Choose a persistent volume for the local backend or shared object storage for
-the S3 backend.
+Use a persistent volume for the local backend or shared object storage for the
+S3 backend.
 
 ## Upgrade
 
-Helm installs CRDs from a chart but does not upgrade them. Apply the CRDs from
-the exact chart version before upgrading Manager so the API server accepts the
-new resource shape:
+Helm does not upgrade CRDs placed in the chart's `crds` directory. Apply the
+CRDs from the target chart version before upgrading Manager so the API server
+accepts the new resource shape:
 
 ```sh
 CHART=oci://ghcr.io/explodingdragon/charts/gitea-codespace

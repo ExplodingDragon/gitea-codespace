@@ -174,9 +174,9 @@ func configureCA(ctx context.Context, engine *containerdocker.Engine, state *dev
 	return nil
 }
 
-func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stdout, stderr io.Writer) {
+func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stdout, stderr io.Writer) bool {
 	if !configuration.WebIDE.Enabled {
-		return
+		return false
 	}
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
 	var startErr error
@@ -223,6 +223,7 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
 		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE postAttachCommand failed without affecting Codespace access: %v\n", err)
 	}
+	return startErr == nil
 }
 
 type webIDECustomizations struct {

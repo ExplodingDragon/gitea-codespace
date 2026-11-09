@@ -325,7 +325,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 			}
 		}
 	}
-	state, applyErr := executor.Apply(ctx, devcontainerruntime.Request{
+	outcome, applyErr := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
@@ -335,6 +335,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if applyErr != nil || cleanupErr != nil {
 		return errors.Join(applyErr, cleanupErr)
 	}
+	state := outcome.Environment
 	endpoints, _, err := devcontainerruntime.ConfiguredEndpoints(state)
 	if err == nil {
 		err = r.replaceConfiguredEndpoints(endpoints)
@@ -342,7 +343,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(operation.OperationRversion, state)
+	target, err := r.accessTarget(operation.OperationRversion, state, outcome.WebIDEAvailable)
 	if err != nil {
 		return err
 	}
@@ -374,14 +375,14 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM, nil)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
-	state, err := executor.Apply(ctx, devcontainerruntime.Request{
+	outcome, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
 		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, GiteaCustomCA: trust.customCA, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(),
 	})
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(response.Operation.OperationRversion, state)
+	target, err := r.accessTarget(response.Operation.OperationRversion, outcome.Environment, outcome.WebIDEAvailable)
 	if err != nil {
 		return err
 	}
@@ -405,7 +406,7 @@ func (r *Runtime) setAccessState(target *agentv1.AccessTarget, secrets map[strin
 	r.secrets = maps.Clone(secrets)
 }
 
-func (r *Runtime) accessTarget(version int64, state *devcontainer.State) (*agentv1.AccessTarget, error) {
+func (r *Runtime) accessTarget(version int64, state *devcontainer.State, webIDEAvailable bool) (*agentv1.AccessTarget, error) {
 	if err := state.Validate(); err != nil {
 		return nil, err
 	}
@@ -418,12 +419,12 @@ func (r *Runtime) accessTarget(version int64, state *devcontainer.State) (*agent
 	if err != nil {
 		return nil, err
 	}
-	return accessTargetForContainer(version, state.PrimaryContainerID, state.WorkspaceFolder, r.DevContainer.WebIDE.Enabled, r.endpoints, containers), nil
+	return accessTargetForContainer(version, state.PrimaryContainerID, state.WorkspaceFolder, webIDEAvailable, r.endpoints, containers), nil
 }
 
-func accessTargetForContainer(version int64, primaryContainerID, workspaceFolder string, webIDEEnabled bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
+func accessTargetForContainer(version int64, primaryContainerID, workspaceFolder string, webIDEAvailable bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
 	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, WorkspaceFolder: workspaceFolder, Ready: true}
-	if webIDEEnabled {
+	if webIDEAvailable {
 		target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
 			Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},
 			ContainerId: primaryContainerID, Port: runtimeendpoint.WorkspaceEndpointPort,

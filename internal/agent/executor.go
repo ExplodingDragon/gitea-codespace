@@ -13,7 +13,8 @@ import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
 )
 
-// Executor persists the completed environment before acknowledging a side effect.
+// Executor persists the completed runtime outcome before acknowledging a
+// lifecycle operation.
 type Executor struct {
 	Journal *Journal
 	PodUID  string
@@ -21,7 +22,18 @@ type Executor struct {
 	Stderr  io.Writer
 }
 
-func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Request) (*devcontainer.State, error) {
+type savedPlatformOutcome struct {
+	WebIDEAvailable bool `json:"web_ide_available"`
+}
+
+const (
+	environmentStatePath     = "state/environment.json"
+	platformOutcomePath      = "state/platform.json"
+	maxEnvironmentStateBytes = 4 * 1024 * 1024
+	maxPlatformOutcomeBytes  = 1024
+)
+
+func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Request) (*devcontainerruntime.Outcome, error) {
 	if e.Journal == nil || e.PodUID == "" || request.CodespaceUUID != e.Journal.record.Identity.RuntimeUUID {
 		return nil, fmt.Errorf("runtime execution identity does not match the volume")
 	}
@@ -49,10 +61,11 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		request.RunTemplateLifecycle = func(ctx context.Context, action string, run func(context.Context) error) error {
 			return e.Journal.runActiveStep(ctx, request.OperationVersion, "template-lifecycle/"+action, run)
 		}
-		state, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
+		outcome, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
 		if err != nil {
 			return err
 		}
+		state := outcome.Environment
 		if err := state.Validate(); err != nil {
 			return err
 		}
@@ -60,20 +73,27 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		if err != nil {
 			return err
 		}
-		if len(data) > 4*1024*1024 {
+		if len(data) > maxEnvironmentStateBytes {
 			return fmt.Errorf("dev container recovery state exceeds the size limit")
 		}
 		// Request.Secrets and cache credentials remain outside recovery State.
-		return e.Journal.write("state/environment.json", data)
+		if err := e.Journal.write(environmentStatePath, data); err != nil {
+			return err
+		}
+		data, err = json.Marshal(savedPlatformOutcome{WebIDEAvailable: outcome.WebIDEAvailable})
+		if err != nil {
+			return err
+		}
+		return e.Journal.write(platformOutcomePath, data)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return e.Environment()
+	return e.readSavedOutcome()
 }
 
 func (e *Executor) Environment() (*devcontainer.State, error) {
-	data, err := e.Journal.read("state/environment.json", 4*1024*1024)
+	data, err := e.Journal.read(environmentStatePath, maxEnvironmentStateBytes)
 	if err != nil {
 		return nil, fmt.Errorf("read saved Dev Container: %w", err)
 	}
@@ -88,4 +108,20 @@ func (e *Executor) Environment() (*devcontainer.State, error) {
 		return nil, fmt.Errorf("saved Dev Container belongs to another Codespace")
 	}
 	return state, nil
+}
+
+func (e *Executor) readSavedOutcome() (*devcontainerruntime.Outcome, error) {
+	environment, err := e.Environment()
+	if err != nil {
+		return nil, err
+	}
+	data, err := e.Journal.read(platformOutcomePath, maxPlatformOutcomeBytes)
+	if err != nil {
+		return nil, fmt.Errorf("read saved platform outcome: %w", err)
+	}
+	platform := savedPlatformOutcome{}
+	if err := json.Unmarshal(data, &platform); err != nil {
+		return nil, fmt.Errorf("decode saved platform outcome: %w", err)
+	}
+	return &devcontainerruntime.Outcome{Environment: environment, WebIDEAvailable: platform.WebIDEAvailable}, nil
 }

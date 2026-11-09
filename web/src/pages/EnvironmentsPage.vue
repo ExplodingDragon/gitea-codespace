@@ -1,14 +1,16 @@
 <script setup lang="ts">
 import {computed, onMounted, ref} from 'vue';
-import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, NTag, useDialog} from 'naive-ui';
-import {Pencil, Plus, RefreshCw, Trash2} from '@lucide/vue';
+import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NSelect, NTag, useDialog} from 'naive-ui';
+import {Pencil, RefreshCw, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {errorMessage, request, upsertResource, type ClusterOptions, type Environment, type Resource} from '../api';
 import {useDirtyForm} from '../composables/useDirtyForm';
-import JsonEditor from '../components/JsonEditor.vue';
+import DevContainerFields from '../components/DevContainerFields.vue';
 import MeasurementInput from '../components/MeasurementInput.vue';
+import NativeRuntimeFields from '../components/NativeRuntimeFields.vue';
 import ProxySettings from '../components/ProxySettings.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import {normalizeCapabilities} from '../utils/capability';
 import {cloneFormValue} from '../utils/form';
 import {measurementBaseValue} from '../utils/measurement';
 
@@ -92,83 +94,7 @@ const storageOptions = computed(() => {
     });
   return options;
 });
-const deviceResourceOptions = computed(() =>
-  cluster.value.deviceResources.map(({name, nodes, maxPerNode}) => ({
-    label: `${name} (${t('environment.deviceCapacity', {maxPerNode, nodes})})`,
-    value: name,
-  })),
-);
-const capabilityNames = [
-  'AUDIT_CONTROL',
-  'AUDIT_READ',
-  'AUDIT_WRITE',
-  'BLOCK_SUSPEND',
-  'BPF',
-  'CHECKPOINT_RESTORE',
-  'CHOWN',
-  'DAC_OVERRIDE',
-  'DAC_READ_SEARCH',
-  'FOWNER',
-  'FSETID',
-  'IPC_LOCK',
-  'IPC_OWNER',
-  'KILL',
-  'LEASE',
-  'LINUX_IMMUTABLE',
-  'MAC_ADMIN',
-  'MAC_OVERRIDE',
-  'MKNOD',
-  'NET_ADMIN',
-  'NET_BIND_SERVICE',
-  'NET_BROADCAST',
-  'NET_RAW',
-  'PERFMON',
-  'SETFCAP',
-  'SETGID',
-  'SETPCAP',
-  'SETUID',
-  'SYS_ADMIN',
-  'SYS_BOOT',
-  'SYS_CHROOT',
-  'SYS_MODULE',
-  'SYS_NICE',
-  'SYS_PACCT',
-  'SYS_PTRACE',
-  'SYS_RAWIO',
-  'SYS_RESOURCE',
-  'SYSLOG',
-  'SYS_TIME',
-  'SYS_TTY_CONFIG',
-  'WAKE_ALARM',
-];
-const capabilityOptions = capabilityNames.map((value) => ({label: value, value}));
 const requiredRuntimeCapabilitySet = computed(() => new Set(cluster.value.requiredRuntimeCapabilities));
-const runtimeCapabilityOptions = computed(() => {
-  const values = new Set([...capabilityNames, ...cluster.value.requiredRuntimeCapabilities]);
-  return [...values].sort().map((value) => ({
-    label: requiredRuntimeCapabilitySet.value.has(value) ? t('environment.requiredCapability', {name: value}) : value,
-    value,
-    disabled: requiredRuntimeCapabilitySet.value.has(value),
-  }));
-});
-
-function normalizeCapabilities(values: string[], excluded = new Set<string>()) {
-  return [
-    ...new Set(values.map((value) => value.trim().toUpperCase()).filter((value) => value && !excluded.has(value))),
-  ];
-}
-
-const runtimeCapabilities = computed<string[]>({
-  get() {
-    const additional = form.value?.runtime.native?.runtimeCapAdd ?? [];
-    return [...new Set([...cluster.value.requiredRuntimeCapabilities, ...additional])];
-  },
-  set(values) {
-    const native = form.value?.runtime.native;
-    if (!native) return;
-    native.runtimeCapAdd = normalizeCapabilities(values, requiredRuntimeCapabilitySet.value);
-  },
-});
 
 async function load() {
   loading.value = true;
@@ -201,24 +127,6 @@ function setIsolation(value: string) {
     delete form.value.runtime.native;
     nativeHostAccessJSON.value = [];
   }
-}
-
-function addDevicePlugin() {
-  const native = form.value?.runtime.native;
-  if (!native) return;
-  native.devicePlugins.push({resourceName: cluster.value.deviceResources[0]?.name ?? '', count: 1, hostAccess: {}});
-  nativeHostAccessJSON.value.push('{}');
-}
-
-function removeDevicePlugin(index: number) {
-  form.value?.runtime.native?.devicePlugins.splice(index, 1);
-  nativeHostAccessJSON.value.splice(index, 1);
-}
-
-function setCDI(index: number, enabled: boolean) {
-  const device = form.value?.runtime.native?.devicePlugins[index];
-  if (!device) return;
-  device.cdi = enabled ? {kind: '', deviceIDEnvironment: ''} : undefined;
 }
 
 function edit(item?: Resource<Environment>) {
@@ -511,136 +419,11 @@ function remove(item: Resource<Environment>) {
     </div>
 
     <template v-if="form.runtime.isolation === 'native' && form.runtime.native">
-      <h2>{{ t('environment.nativeSection') }}</h2>
-      <p class="section-help">{{ t('environment.nativeHelp') }}</p>
-      <div class="form-grid">
-        <NFormItem
-          :label="t('environment.runtimeCapabilities')"
-          :feedback="t('environment.runtimeCapabilitiesHelp')"
-        >
-          <NSelect
-            v-model:value="runtimeCapabilities"
-            multiple
-            filterable
-            clearable
-            tag
-            max-tag-count="responsive"
-            :options="runtimeCapabilityOptions"
-          />
-        </NFormItem>
-        <NFormItem
-          :label="t('environment.devContainerCapabilities')"
-          :feedback="t('environment.devContainerCapabilitiesHelp')"
-        >
-          <NSelect
-            v-model:value="form.runtime.native.devContainerCapAdd"
-            multiple
-            filterable
-            clearable
-            tag
-            max-tag-count="responsive"
-            :options="capabilityOptions"
-          />
-        </NFormItem>
-      </div>
-      <div class="subsection-heading">
-        <div>
-          <h3>{{ t('environment.devicePlugins') }}</h3>
-          <p class="section-help">{{ t('environment.devicePluginsHelp') }}</p>
-        </div>
-        <NButton
-          size="small"
-          :disabled="!cluster.deviceResources.length"
-          @click="addDevicePlugin"
-        >
-          <template #icon><Plus :size="16" /></template>
-          {{ t('environment.addDevice') }}
-        </NButton>
-      </div>
-      <NAlert
-        v-if="!cluster.deviceResources.length"
-        type="warning"
-        class="notice"
-      >
-        {{ t('environment.noDeviceResources') }}
-      </NAlert>
-      <div
-        v-for="(device, index) in form.runtime.native.devicePlugins"
-        :key="`${device.resourceName}-${index}`"
-        class="device-entry"
-      >
-        <div class="subsection-heading">
-          <strong>{{ device.resourceName || t('environment.deviceResource') }}</strong>
-          <NButton
-            quaternary
-            type="error"
-            :aria-label="t('environment.removeDevice')"
-            :title="t('environment.removeDevice')"
-            @click="removeDevicePlugin(index)"
-          >
-            <template #icon><Trash2 :size="16" /></template>
-          </NButton>
-        </div>
-        <div class="form-grid">
-          <NFormItem
-            :label="t('environment.deviceResource')"
-            :feedback="t('environment.deviceResourceHelp')"
-          >
-            <NSelect
-              v-model:value="device.resourceName"
-              filterable
-              :options="deviceResourceOptions"
-            />
-          </NFormItem>
-          <NFormItem :label="t('environment.deviceCount')">
-            <NInputNumber
-              v-model:value="device.count"
-              :min="1"
-              :precision="0"
-            />
-          </NFormItem>
-          <NFormItem>
-            <NCheckbox v-model:checked="device.providesGPU">{{ t('environment.providesGPU') }}</NCheckbox>
-          </NFormItem>
-          <NFormItem>
-            <NCheckbox
-              :checked="Boolean(device.cdi)"
-              @update:checked="setCDI(index, $event)"
-            >
-              {{ t('environment.cdiEnabled') }}
-            </NCheckbox>
-          </NFormItem>
-          <template v-if="device.cdi">
-            <NFormItem
-              :label="t('environment.cdiKind')"
-              :feedback="t('environment.cdiKindHelp')"
-            >
-              <NInput
-                v-model:value="device.cdi.kind"
-                placeholder="nvidia.com/gpu"
-              />
-            </NFormItem>
-            <NFormItem
-              :label="t('environment.deviceIDEnvironment')"
-              :feedback="t('environment.deviceIDEnvironmentHelp')"
-            >
-              <NInput
-                v-model:value="device.cdi.deviceIDEnvironment"
-                placeholder="NVIDIA_VISIBLE_DEVICES"
-              />
-            </NFormItem>
-          </template>
-          <details class="field-wide advanced-fields">
-            <summary>{{ t('environment.hostAccess') }}</summary>
-            <NFormItem :feedback="t('environment.hostAccessHelp')">
-              <JsonEditor
-                v-model="nativeHostAccessJSON[index]"
-                :label="t('environment.hostAccess')"
-              />
-            </NFormItem>
-          </details>
-        </div>
-      </div>
+      <NativeRuntimeFields
+        :native="form.runtime.native"
+        :cluster="cluster"
+        v-model:host-access="nativeHostAccessJSON"
+      />
     </template>
 
     <h2>{{ t('environment.storageSection') }}</h2>
@@ -725,94 +508,13 @@ function remove(item: Resource<Environment>) {
       </NFormItem>
     </div>
 
-    <h2>{{ t('environment.webIDESection') }}</h2>
-    <p class="section-help">{{ t('environment.webIDEHelp') }}</p>
-    <div class="form-grid">
-      <NFormItem class="field-wide">
-        <NCheckbox v-model:checked="form.runtime.devContainer.webIDE.enabled">
-          {{ t('environment.webIDEEnabled') }}
-        </NCheckbox>
-      </NFormItem>
-      <template v-if="form.runtime.devContainer.webIDE.enabled">
-        <NFormItem class="field-wide">
-          <NCheckbox v-model:checked="customWebIDEArchive">
-            {{ t('environment.webIDECustomArchive') }}
-          </NCheckbox>
-        </NFormItem>
-        <NFormItem
-          v-if="customWebIDEArchive"
-          class="field-wide"
-          :label="t('environment.webIDEArchiveURL')"
-        >
-          <NInput
-            v-model:value="form.runtime.devContainer.webIDE.archiveURL"
-            :placeholder="t('environment.webIDEArchiveURLPlaceholder')"
-          />
-          <template #feedback>{{ t('environment.webIDEArchiveURLHelp') }}</template>
-        </NFormItem>
-        <NFormItem
-          class="field-wide"
-          :label="t('environment.webIDESettings')"
-        >
-          <JsonEditor
-            v-model="webIDESettingsJSON"
-            :label="t('environment.jsonWebIDESettingsLabel')"
-          />
-        </NFormItem>
-        <NFormItem
-          class="field-wide"
-          :label="t('environment.webIDEExtensions')"
-        >
-          <NInput
-            v-model:value="webIDEExtensions"
-            type="textarea"
-            :autosize="{minRows: 3, maxRows: 10}"
-            :placeholder="t('environment.webIDEExtensionsPlaceholder')"
-          />
-          <template #feedback>{{ t('environment.webIDEExtensionsHelp') }}</template>
-        </NFormItem>
-      </template>
-    </div>
-    <h2>{{ t('environment.giteaCLISection') }}</h2>
-    <p class="section-help">{{ t('environment.giteaCLIHelp') }}</p>
-    <div class="form-grid">
-      <NFormItem class="field-wide">
-        <NCheckbox v-model:checked="form.runtime.devContainer.giteaCLI">
-          {{ t('environment.giteaCLIEnabled') }}
-        </NCheckbox>
-      </NFormItem>
-    </div>
-    <h2>{{ t('environment.featuresSection') }}</h2>
-    <div class="form-grid">
-      <NFormItem
-        class="field-wide"
-        :label="t('environment.features')"
-      >
-        <JsonEditor
-          v-model="featuresJSON"
-          :label="t('environment.jsonFeaturesLabel')"
-        />
-      </NFormItem>
-    </div>
-    <h2>{{ t('environment.lifecycleSection') }}</h2>
-    <p class="section-help">{{ t('environment.lifecycleHelp') }}</p>
-    <div class="form-grid">
-      <NFormItem
-        class="field-wide"
-        :label="t('environment.lifecycleScript')"
-      >
-        <NInput
-          v-model:value="form.runtime.devContainer.lifecycleScript"
-          class="script-input"
-          type="textarea"
-          :autosize="{minRows: 10, maxRows: 24}"
-          :maxlength="65536"
-          show-count
-          :placeholder="t('environment.lifecyclePlaceholder')"
-          :aria-label="t('environment.lifecycleScript')"
-        />
-      </NFormItem>
-    </div>
+    <DevContainerFields
+      :configuration="form.runtime.devContainer"
+      v-model:settings="webIDESettingsJSON"
+      v-model:extensions="webIDEExtensions"
+      v-model:custom-archive="customWebIDEArchive"
+      v-model:features="featuresJSON"
+    />
     <h2>{{ t('proxy.section') }}</h2>
     <ProxySettings
       v-model="form.runtime.proxy"

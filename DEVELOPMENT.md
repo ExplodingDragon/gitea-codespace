@@ -1,15 +1,16 @@
 # Developing Gitea Codespace
 
-This guide covers the contributor workflow. Deployment belongs in the
-[Helm guide](charts/gitea-codespace/README.md). The
+This guide covers source changes and local validation. Use the
+[Helm guide](charts/gitea-codespace/README.md) for deployment and the
 [architecture documents](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
-explain system design and component boundaries.
+for system design.
 
 ## Set up
 
-Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Kubernetes
-changes also need Helm and kubectl. Image builds need a Docker-compatible
-container tool, curl, tar, xz, and sha256sum.
+Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Changes to
+Kubernetes resources also need Helm and kubectl. Image builds need a
+Docker-compatible container tool and the archive and checksum tools used by the
+Makefile.
 
 ```sh
 make install-tools
@@ -18,24 +19,27 @@ pnpm --dir extension install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-The Makefile pins development tools so local and CI checks use the same
-versions.
+The Makefile installs pinned development tools so local and CI checks use the
+same versions.
 
 ## Repository layout
 
-| Path               | Responsibility                                                     |
-| ------------------ | ------------------------------------------------------------------ |
-| `cmd`              | Process entry points                                                |
-| `devcontainer`     | Dev Container specification parsing and execution                  |
-| `internal`         | Manager, Agent, Gateway, Cache, and platform implementation        |
-| `web`              | Vue administration interface                                       |
-| `extension`        | Required Web IDE extension and endpoint CLI adapter                |
-| `charts`, `deploy` | Helm resources, CRDs, and platform image                           |
-| `tests/e2e`        | Kubernetes lifecycle test harness                                  |
+| Path               | Responsibility                                              |
+| ------------------ | ----------------------------------------------------------- |
+| `cmd`              | Process entry points                                         |
+| `devcontainer`     | Dev Container specification parsing and execution           |
+| `internal`         | Manager, Agent, Gateway, Cache, and platform implementation |
+| `web`              | Administration interface                                    |
+| `extension`        | Web IDE extension                                           |
+| `charts`, `deploy` | Helm resources, CRDs, and platform image                    |
+| `tests/e2e`        | Kubernetes lifecycle tests                                  |
 
-Dev Container specification fields remain in `devcontainer`; platform behavior
-belongs in `internal`. This boundary keeps repository configuration portable to
-other compliant Dev Container implementations.
+Keep Dev Container specification fields in `devcontainer` and Codespace
+platform behavior in `internal`. This keeps repository configuration portable.
+The Agent records observed platform results, such as whether the optional Web
+IDE started, beside the Dev Container recovery state rather than in
+`devcontainer.State`. Requested configuration and the services observed during
+a runtime operation therefore remain separate.
 
 ## Validate
 
@@ -55,8 +59,8 @@ Run focused package tests while editing. Before submitting, run `make lint`,
 
 ## Generated sources
 
-Generated Kubernetes and RPC sources are committed so a normal build does not
-need the generator toolchain.
+Generated Kubernetes and RPC sources are committed so normal builds do not need
+the generator toolchain.
 
 | Source changed                    | Command                                        |
 | --------------------------------- | ---------------------------------------------- |
@@ -71,8 +75,10 @@ immutable version.
 
 `make admin-dev` starts the administration frontend and proxies `/api` to
 `http://127.0.0.1:18080`. Run Manager locally or port-forward its administration
-Service first. Add administration text to every catalog under `web/locales`;
-extension text belongs in `extension/package.nls.*.json` or `extension/l10n`.
+Service first.
+
+Add administration text to every catalog under `web/locales`. Add extension
+text to `extension/package.nls.*.json` or `extension/l10n`.
 
 `make images` prepares the Gitea CLI, code-server distribution, and Codespace
 VSIX before building the platform image. Set `CODESPACE_IMAGE` to select the
@@ -80,10 +86,10 @@ image name and `CONTAINER_TOOL` to select the builder.
 
 ## Run Kubernetes E2E
 
-The E2E suite needs a test cluster, compatible runtime and storage support, a
-Gitea endpoint reachable from the cluster, and an immutable platform image.
-Kata and Sysbox use a labeled RuntimeClass. Native tests use the default CRI
-runtime and the test Device Plugin.
+Use a disposable test cluster for E2E. The suite needs compatible runtime and
+storage support, a Gitea endpoint reachable from the cluster, and an immutable
+platform image. Kata and Sysbox use a labeled RuntimeClass; Native tests use the
+default CRI runtime and the test Device Plugin.
 
 ```sh
 export KUBECONFIG=/path/to/test-kubeconfig

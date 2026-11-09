@@ -29,7 +29,10 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	require.NoError(t, j.RunOnce(t.Context(), 1, "create", func(context.Context) error {
 		data, err := json.Marshal(state)
 		require.NoError(t, err)
-		return j.write("state/environment.json", data)
+		require.NoError(t, j.write(environmentStatePath, data))
+		data, err = json.Marshal(savedPlatformOutcome{WebIDEAvailable: true})
+		require.NoError(t, err)
+		return j.write(platformOutcomePath, data)
 	}))
 	executor := &Executor{Journal: j, PodUID: "new-pod", Stdout: io.Discard, Stderr: io.Discard}
 	request := devcontainerruntime.Request{
@@ -40,9 +43,10 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	require.NoError(t, err)
 	want, err := json.Marshal(state)
 	require.NoError(t, err)
-	got, err := json.Marshal(recovered)
+	got, err := json.Marshal(recovered.Environment)
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), string(got))
+	require.True(t, recovered.WebIDEAvailable)
 	request.CodespaceUUID = "another-runtime"
 	_, err = executor.Apply(t.Context(), request)
 	require.ErrorContains(t, err, "identity")

@@ -466,33 +466,9 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 		deployment.Labels = labels
 		deployment.Spec.Replicas = ptr.To(int32(1))
 		deployment.Spec.Strategy = appsv1.DeploymentStrategy{Type: appsv1.RecreateDeploymentStrategyType}
-		var affinity *corev1.Affinity
-		if role == "gateway" {
-			deployment.Spec.Replicas = ptr.To(component.Spec.Gateway.Replicas)
-			deployment.Spec.Strategy = appsv1.DeploymentStrategy{
-				Type: appsv1.RollingUpdateDeploymentStrategyType,
-				RollingUpdate: &appsv1.RollingUpdateDeployment{
-					MaxUnavailable: ptr.To(intstr.FromInt(0)),
-					MaxSurge:       ptr.To(intstr.FromInt(1)),
-				},
-			}
-			if component.Spec.Gateway.Replicas > 1 {
-				affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
-					Weight: 100,
-					PodAffinityTerm: corev1.PodAffinityTerm{
-						LabelSelector: &metav1.LabelSelector{MatchLabels: labels},
-						TopologyKey:   corev1.LabelHostname,
-					},
-				}}}}
-			}
-		}
 		deployment.Spec.Selector = &metav1.LabelSelector{MatchLabels: labels}
-		args := []string{role}
-		if role == "cache" {
-			args = append(args, "--id", component.Name)
-		}
 		container := corev1.Container{
-			Name: role, Image: r.PlatformImage, ImagePullPolicy: pullPolicy, Args: args,
+			Name: role, Image: r.PlatformImage, ImagePullPolicy: pullPolicy, Args: []string{role},
 			Env: []corev1.EnvVar{
 				{Name: "GITEA_CODESPACE_MANAGER_URL", Value: r.ManagerURL},
 				{Name: "GITEA_CODESPACE_MANAGER_IDENTITY", Value: r.ManagerIdentity},
@@ -502,19 +478,6 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			Resources:       component.Spec.Resources,
 			SecurityContext: &corev1.SecurityContext{AllowPrivilegeEscalation: ptr.To(false), ReadOnlyRootFilesystem: ptr.To(true), Capabilities: &corev1.Capabilities{Drop: []corev1.Capability{"ALL"}}},
 			VolumeMounts:    []corev1.VolumeMount{{Name: "identity", MountPath: "/var/run/codespace/identity", ReadOnly: true}},
-		}
-		if role == "cache" && component.Spec.Cache.Proxy != nil {
-			container.Env = append(container.Env, proxyEnvironmentFromSecret(credential.Name)...)
-			if len(credential.Data[proxyCAKey]) != 0 {
-				container.Env = append(container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/var/run/codespace/cache/" + proxyCAKey})
-			}
-		}
-		for index, port := range ports {
-			name := "https"
-			if role == "gateway" {
-				name = []string{"http", "ssh"}[index]
-			}
-			container.Ports = append(container.Ports, corev1.ContainerPort{Name: name, ContainerPort: port})
 		}
 		container.Ports = append(container.Ports, corev1.ContainerPort{Name: "health", ContainerPort: healthcheck.DefaultPort})
 		container.ReadinessProbe = &corev1.Probe{
@@ -532,43 +495,97 @@ func (r *ComponentReconciler) reconcileDeployment(ctx context.Context, component
 			SuccessThreshold: 1,
 		}
 		volumes := []corev1.Volume{{Name: "identity", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: identitySecret, DefaultMode: ptr.To(int32(0o440))}}}}
-		if role == "gateway" {
-			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "ssh-host-key", MountPath: "/var/run/codespace/gateway", ReadOnly: true})
-			volumes = append(volumes, corev1.Volume{Name: "ssh-host-key", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-				SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)),
-				Items: []corev1.KeyToPath{{Key: "hostKey", Path: "ssh-host-key"}, {Key: gatewaySessionKey, Path: "session-key"}},
-			}}})
-		} else {
-			items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
-			if cache.Storage.Driver == "s3" {
-				items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})
-			}
-			if len(credential.Data[proxyCAKey]) != 0 {
-				items = append(items, corev1.KeyToPath{Key: proxyCAKey, Path: proxyCAKey})
-			}
-			container.VolumeMounts = append(container.VolumeMounts,
-				corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true},
-				corev1.VolumeMount{Name: "registry-tls", MountPath: "/var/run/codespace/registry-tls", ReadOnly: true},
-			)
-			volumes = append(volumes, corev1.Volume{Name: "cache-secret", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)), Items: items}}})
-			volumes = append(volumes, corev1.Volume{Name: "registry-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-				SecretName: registryTLSSecret, DefaultMode: ptr.To(int32(0o440)),
-				Items: []corev1.KeyToPath{{Key: identitypkg.TLSCertificateKey, Path: "tls.crt"}, {Key: identitypkg.TLSPrivateKeyKey, Path: "tls.key"}},
-			}}})
-			if cache.Storage.Driver == "filesystem" {
-				container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "storage", MountPath: cache.Storage.Path})
-				volumes = append(volumes, corev1.Volume{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: component.Name}}})
-			}
-		}
 		deployment.Spec.Template = corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: labels, Annotations: map[string]string{platformRevisionAnnotation: r.PlatformRevision, componentCredentialRevisionAnnotation: credential.ResourceVersion}}, Spec: corev1.PodSpec{
 			AutomountServiceAccountToken: ptr.To(false), EnableServiceLinks: ptr.To(false), TerminationGracePeriodSeconds: ptr.To(int64(30)),
-			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets), Affinity: affinity,
-			SecurityContext: &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
-			Containers:      []corev1.Container{container}, Volumes: volumes,
+			ImagePullSecrets: localObjectReferences(r.ImagePullSecrets),
+			SecurityContext:  &corev1.PodSecurityContext{RunAsNonRoot: ptr.To(true), RunAsUser: ptr.To(int64(65532)), RunAsGroup: ptr.To(int64(65532)), FSGroup: ptr.To(int64(65532)), SeccompProfile: &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeRuntimeDefault}},
+			Containers:       []corev1.Container{container}, Volumes: volumes,
 		}}
-		return nil
+		switch role {
+		case "gateway":
+			return configureGatewayDeployment(component, deployment, credential, ports)
+		case "cache":
+			if cache == nil {
+				return fmt.Errorf("cache component configuration is missing")
+			}
+			return configureCacheDeployment(component, deployment, credential, registryTLSSecret, ports, cache)
+		default:
+			return fmt.Errorf("unsupported component role %q", role)
+		}
 	})
 	return err
+}
+
+func configureGatewayDeployment(component *api.CodespaceComponent, deployment *appsv1.Deployment, credential *corev1.Secret, ports []int32) error {
+	if len(ports) != 2 {
+		return fmt.Errorf("gateway workload requires HTTP and SSH ports")
+	}
+	deployment.Spec.Replicas = ptr.To(component.Spec.Gateway.Replicas)
+	deployment.Spec.Strategy = appsv1.DeploymentStrategy{
+		Type: appsv1.RollingUpdateDeploymentStrategyType,
+		RollingUpdate: &appsv1.RollingUpdateDeployment{
+			MaxUnavailable: ptr.To(intstr.FromInt(0)),
+			MaxSurge:       ptr.To(intstr.FromInt(1)),
+		},
+	}
+	if component.Spec.Gateway.Replicas > 1 {
+		deployment.Spec.Template.Spec.Affinity = &corev1.Affinity{PodAntiAffinity: &corev1.PodAntiAffinity{PreferredDuringSchedulingIgnoredDuringExecution: []corev1.WeightedPodAffinityTerm{{
+			Weight: 100,
+			PodAffinityTerm: corev1.PodAffinityTerm{
+				LabelSelector: &metav1.LabelSelector{MatchLabels: deployment.Spec.Template.Labels},
+				TopologyKey:   corev1.LabelHostname,
+			},
+		}}}}
+	}
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	container.Ports = append([]corev1.ContainerPort{
+		corev1.ContainerPort{Name: "http", ContainerPort: ports[0]},
+		corev1.ContainerPort{Name: "ssh", ContainerPort: ports[1]},
+	}, container.Ports...)
+	container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "ssh-host-key", MountPath: "/var/run/codespace/gateway", ReadOnly: true})
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, corev1.Volume{Name: "ssh-host-key", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+		SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)),
+		Items: []corev1.KeyToPath{{Key: "hostKey", Path: "ssh-host-key"}, {Key: gatewaySessionKey, Path: "session-key"}},
+	}}})
+	return nil
+}
+
+func configureCacheDeployment(component *api.CodespaceComponent, deployment *appsv1.Deployment, credential *corev1.Secret, registryTLSSecret string, ports []int32, cache *configpkg.CacheConfig) error {
+	if len(ports) != 1 {
+		return fmt.Errorf("cache workload requires one HTTPS port")
+	}
+	container := &deployment.Spec.Template.Spec.Containers[0]
+	container.Args = append(container.Args, "--id", component.Name)
+	if component.Spec.Cache.Proxy != nil {
+		container.Env = append(container.Env, proxyEnvironmentFromSecret(credential.Name)...)
+		if len(credential.Data[proxyCAKey]) != 0 {
+			container.Env = append(container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/var/run/codespace/cache/" + proxyCAKey})
+		}
+	}
+	container.Ports = append([]corev1.ContainerPort{{Name: "https", ContainerPort: ports[0]}}, container.Ports...)
+	items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
+	if cache.Storage.Driver == "s3" {
+		items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})
+	}
+	if len(credential.Data[proxyCAKey]) != 0 {
+		items = append(items, corev1.KeyToPath{Key: proxyCAKey, Path: proxyCAKey})
+	}
+	container.VolumeMounts = append(container.VolumeMounts,
+		corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true},
+		corev1.VolumeMount{Name: "registry-tls", MountPath: "/var/run/codespace/registry-tls", ReadOnly: true},
+	)
+	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes,
+		corev1.Volume{Name: "cache-secret", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)), Items: items}}},
+		corev1.Volume{Name: "registry-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
+			SecretName: registryTLSSecret, DefaultMode: ptr.To(int32(0o440)),
+			Items: []corev1.KeyToPath{{Key: identitypkg.TLSCertificateKey, Path: "tls.crt"}, {Key: identitypkg.TLSPrivateKeyKey, Path: "tls.key"}},
+		}}},
+	)
+	if cache.Storage.Driver == "filesystem" {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: "storage", MountPath: cache.Storage.Path})
+		deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes, corev1.Volume{Name: "storage", VolumeSource: corev1.VolumeSource{PersistentVolumeClaim: &corev1.PersistentVolumeClaimVolumeSource{ClaimName: component.Name}}})
+	}
+	return nil
 }
 
 func (r *ComponentReconciler) reconcileGatewayDisruptionBudget(ctx context.Context, component *api.CodespaceComponent) error {

@@ -13,9 +13,9 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
-	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	"github.com/stretchr/testify/require"
 )
 
@@ -24,7 +24,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
 	journal, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
-	runtime := &Runtime{Journal: journal, DevContainer: devcontainerruntime.Configuration{WebIDE: devcontainerruntime.WebIDEConfiguration{Enabled: true}}}
+	runtime := &Runtime{Journal: journal}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
 	target := accessTargetForContainer(1, "container", "/workspaces/project", true, runtime.endpoints, nil)
 	runtime.setAccessState(target, nil)
@@ -37,7 +37,23 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.Equal(t, "/workspaces/project", updated.WorkspaceFolder)
 	require.Len(t, updated.Endpoints, 3)
 	require.True(t, updated.Endpoints[2].Endpoint.Public)
+	require.Equal(t, runtimeendpoint.WorkspaceEndpointID, updated.Endpoints[0].Endpoint.EndpointId)
 	require.Empty(t, accessTargetForContainer(1, "container", "/workspaces/project", false, nil, nil).Endpoints)
+
+	runtime.setAccessState(accessTargetForContainer(3, "container", "/workspaces/project", false, runtime.endpoints, nil), nil)
+	_, err = runtime.setEndpoint(&codespacev1.RuntimeEndpoint{EndpointId: "port-9090", Label: "Metrics", Port: 9090})
+	require.NoError(t, err)
+	updated = runtime.CurrentAccessTarget()
+	require.Len(t, updated.Endpoints, 3)
+	endpointIDs := make([]string, len(updated.Endpoints))
+	for index, endpoint := range updated.Endpoints {
+		endpointIDs[index] = endpoint.Endpoint.EndpointId
+	}
+	require.Equal(t, []string{
+		runtimeendpoint.PortEndpointID(3000),
+		runtimeendpoint.PortEndpointID(8080),
+		runtimeendpoint.PortEndpointID(9090),
+	}, endpointIDs)
 
 	require.NoError(t, journal.Close())
 	journal, err = OpenJournal(directory, identity)
@@ -46,8 +62,8 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	recovered := &Runtime{Journal: journal}
 	endpoints, err = recovered.listEndpoints()
 	require.NoError(t, err)
-	require.Len(t, endpoints, 2)
-	require.EqualValues(t, 8080, endpoints[1].Port)
+	require.Len(t, endpoints, 3)
+	require.EqualValues(t, 9090, endpoints[2].Port)
 }
 
 func TestRuntimeEndpointServiceOverUnixSocket(t *testing.T) {
