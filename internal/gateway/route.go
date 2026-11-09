@@ -16,8 +16,6 @@ import (
 	"gitea.dev/codespace/internal/runtimeendpoint"
 )
 
-const gatewayResponseHeaderTimeout = 30 * time.Second
-
 // An endpoint route binds an authorized public address to one site's Runtime.
 type endpointRoute struct {
 	SiteUID       string
@@ -37,7 +35,6 @@ type routeStore struct {
 	mu          sync.RWMutex
 	routes      map[gatewayRouteKey]*gatewayRouteEntry
 	nextLeaseID int64
-	sessions    *sessionRegistry
 	backend     workspaceBackend
 	runtimes    map[string]runtimeSnapshot
 }
@@ -73,16 +70,6 @@ func (s *routeStore) Get(codespaceUUID, endpointID string) (endpointRoute, bool)
 		return endpointRoute{}, false
 	}
 	return entry.route, true
-}
-
-func (s *routeStore) SetSessionRegistry(sessions *sessionRegistry) {
-	if s == nil {
-		return
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.sessions = sessions
 }
 
 func (s *routeStore) giteaWebURLForCodespace(codespaceUUID string) (string, bool) {
@@ -157,7 +144,7 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 	oldEntries := s.routes
 	s.routes = make(map[gatewayRouteKey]*gatewayRouteEntry, len(routes))
 	for key, route := range routes {
-		if old := oldEntries[key]; old != nil && sameGatewayEndpointRouting(old.route, route) {
+		if old := oldEntries[key]; old != nil && sameGatewayEndpointTarget(old.route, route) {
 			old.route = route
 			s.routes[key] = old
 			delete(oldEntries, key)
@@ -167,7 +154,6 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 	}
 	oldRuntimes := s.runtimes
 	s.runtimes = runtimes
-	sessions := s.sessions
 	var cancels []context.CancelFunc
 	for _, entry := range oldEntries {
 		cancels = append(cancels, entry.takeCancels()...)
@@ -179,11 +165,6 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 			if !found || oldRuntime.PodUID != newRuntime.PodUID || oldRuntime.AgentAddress != newRuntime.AgentAddress {
 				closer.ClosePod(oldRuntime.PodUID)
 			}
-		}
-	}
-	if sessions != nil {
-		for key := range oldEntries {
-			sessions.DeleteEndpoint(key.codespaceUUID, key.endpointID)
 		}
 	}
 	cancelGatewayRouteLeases(cancels)
@@ -258,19 +239,15 @@ func (s *routeStore) Put(route endpointRoute) error {
 	key := gatewayRouteKey{codespaceUUID: route.CodespaceUUID, endpointID: route.EndpointID}
 	s.mu.Lock()
 	oldEntry := s.routes[key]
-	if oldEntry != nil && sameGatewayEndpointRouting(oldEntry.route, route) {
+	if oldEntry != nil && sameGatewayEndpointTarget(oldEntry.route, route) {
 		oldEntry.route = route
 		s.mu.Unlock()
 		return nil
 	}
 	s.routes[key] = &gatewayRouteEntry{route: route}
-	sessions := s.sessions
 	cancels := oldEntry.takeCancels()
 	s.mu.Unlock()
 
-	if oldEntry != nil && sessions != nil {
-		sessions.DeleteEndpoint(route.CodespaceUUID, route.EndpointID)
-	}
 	cancelGatewayRouteLeases(cancels)
 	return nil
 }
@@ -282,13 +259,9 @@ func (s *routeStore) Delete(codespaceUUID, endpointID string) {
 	s.mu.Lock()
 	entry := s.routes[gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID}]
 	delete(s.routes, gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID})
-	sessions := s.sessions
 	cancels := entry.takeCancels()
 	s.mu.Unlock()
 
-	if entry != nil && sessions != nil {
-		sessions.DeleteEndpoint(codespaceUUID, endpointID)
-	}
 	cancelGatewayRouteLeases(cancels)
 }
 
@@ -314,9 +287,8 @@ func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
 	}
 }
 
-func sameGatewayEndpointRouting(left, right endpointRoute) bool {
+func sameGatewayEndpointTarget(left, right endpointRoute) bool {
 	return left.SiteUID == right.SiteUID &&
-		left.GiteaWebURL == right.GiteaWebURL &&
 		left.PodUID == right.PodUID &&
 		left.AgentAddress == right.AgentAddress &&
 		left.CodespaceUUID == right.CodespaceUUID &&
@@ -359,7 +331,7 @@ func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	entry := s.routes[gatewayRouteKey{codespaceUUID: route.CodespaceUUID, endpointID: route.EndpointID}]
-	if entry == nil || !sameGatewayEndpointRouting(entry.route, route) {
+	if entry == nil || !sameGatewayEndpointTarget(entry.route, route) {
 		return nil, fmt.Errorf("gateway endpoint route changed")
 	}
 	if s.backend == nil {
@@ -370,9 +342,8 @@ func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				return s.backend.OpenWorkspaceEndpoint(ctx, route.CodespaceUUID, route.EndpointID)
 			},
-			IdleConnTimeout:       90 * time.Second,
-			MaxIdleConnsPerHost:   8,
-			ResponseHeaderTimeout: gatewayResponseHeaderTimeout,
+			IdleConnTimeout:     90 * time.Second,
+			MaxIdleConnsPerHost: 8,
 		}
 	}
 	return entry.transport, nil

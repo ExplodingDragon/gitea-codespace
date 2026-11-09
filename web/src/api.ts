@@ -170,7 +170,6 @@ export type ResolvedWebIDEImage = {
   version: string;
   protocolVersion: number;
   platforms: string[];
-  optionsSchema: Record<string, unknown>;
   optionDefaults: Record<string, unknown>;
 };
 

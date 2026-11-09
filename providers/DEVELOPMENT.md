@@ -23,8 +23,8 @@ The selected provider participates in a codespace start as follows:
    Dev Container.
 4. Agent invokes `bin/prepare` as the Dev Container remote user. The adapter
    receives the template and repository settings on standard input.
-5. Agent supervises `bin/serve`, waits for its loopback port, and only then
-   publishes the browser endpoint through Gateway.
+5. Agent starts the `bin/serve` supervisor and publishes the browser endpoint
+   as soon as the supervisor process starts successfully.
 
 The init image is a carrier rather than the editor process itself. The editor
 runs inside the Dev Container, so its executable must be compatible with the
@@ -230,8 +230,22 @@ exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/program/bin/example-ide" \
 ```
 
 Replace the flags with the editor's own command line. The editor must serve HTTP
-and WebSocket traffic from the same address. Agent waits up to 30 seconds for a
-TCP listener and supervises the process afterward with bounded restart delay.
+and WebSocket traffic from the same address. The supervisor restarts the process
+with bounded delay when it exits. Gateway may return `502 Workspace is
+unavailable` before the process begins listening; a later request succeeds once
+the provider is ready. Publishing the endpoint at supervisor startup avoids a
+fixed startup deadline and lets the same restart path recover both slow starts
+and later provider failures without changing the codespace lifecycle state.
+
+### Implementation acceptance criteria
+
+- A valid bundle whose `prepare` program succeeds receives a browser endpoint
+  after the supervisor starts, even when the editor takes more than 30 seconds
+  to listen.
+- Requests made before the editor listens receive the temporary Gateway error;
+  requests made after it listens succeed without resuming the codespace.
+- Exiting `bin/serve` is restarted by the supervisor and does not stop SSH or the
+  Dev Container.
 
 ## Build the carrier image
 
@@ -340,9 +354,10 @@ cat "$output/current/manifest.json"
 ```
 
 An export failure prevents the runtime pod from starting because Kubernetes
-must complete the init container first. A later `prepare` or `serve` failure is
-reported in the codespace operation log and only withholds browser access; SSH
-and the rest of the Dev Container remain available.
+must complete the init container first. A later `prepare` failure is reported
+in the codespace operation log and only withholds browser access. A `serve`
+failure is recorded in the supervisor log and retried; SSH and the rest of the
+Dev Container remain available in both cases.
 
 ## Connect the provider to Codespace
 

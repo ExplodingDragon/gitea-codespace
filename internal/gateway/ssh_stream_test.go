@@ -84,7 +84,7 @@ func TestSSHCommandDrainsOutputBeforeExit(t *testing.T) {
 }
 
 func TestGatewaySSHRuntimeRequiresAuthorizedSite(t *testing.T) {
-	server := &sshServer{state: gatewaySiteTargetStore{siteUID: "site-1"}, backend: gatewayHandlerTestBackend{}}
+	server := &sshServer{state: gatewaySiteTargetStore{siteUID: "site-1"}, backend: gatewayTestBackend{}}
 	available := server.runtimeAvailable("runtime", "site-1")
 	require.True(t, available)
 	available = server.runtimeAvailable("runtime", "site-2")

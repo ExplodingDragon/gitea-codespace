@@ -61,7 +61,6 @@ type resolvedWebIDEImage struct {
 	Version         string          `json:"version"`
 	ProtocolVersion int             `json:"protocolVersion"`
 	Platforms       []string        `json:"platforms"`
-	OptionsSchema   json.RawMessage `json:"optionsSchema"`
 	OptionDefaults  json.RawMessage `json:"optionDefaults"`
 	compiledSchema  *jsonschema.Schema
 }
@@ -268,7 +267,7 @@ func resolveWebIDEImage(ctx context.Context, source webIDEContent, repository, i
 	canonicalMetadata, _ := json.Marshal(first.metadata)
 	result := resolvedWebIDEImage{
 		Image: repository + "@" + descriptor.Digest.String(), Provider: first.metadata.Provider.ID, ProviderName: first.metadata.Provider.Name,
-		Version: first.version, ProtocolVersion: first.metadata.ProtocolVersion, OptionsSchema: first.metadata.OptionsSchema,
+		Version: first.version, ProtocolVersion: first.metadata.ProtocolVersion,
 		OptionDefaults: first.defaults, compiledSchema: first.schema,
 	}
 	seenPlatforms := make(map[string]struct{}, len(platforms))

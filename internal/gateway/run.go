@@ -280,7 +280,6 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		_ = sshLn.Close()
 		return nil, fmt.Errorf("initialize Gateway sessions: %w", err)
 	}
-	routes.SetSessionRegistry(sessions)
 	access := newAccessControllerFromConfig(config)
 	control := &componentControlPlane{Client: client}
 	origin, err := newOriginPolicy(config.HTTP.PublicURL)

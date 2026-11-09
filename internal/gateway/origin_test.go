@@ -51,6 +51,51 @@ func TestGatewayAuthenticatedSourceRequiresGatewayURLPort(t *testing.T) {
 	}
 }
 
+func TestGatewayAuthenticatedSourcePolicy(t *testing.T) {
+	t.Parallel()
+
+	policy, err := newOriginPolicy("https://gateway.example.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const requestURL = "https://11111111111141118111111111111111.gateway.example.test/api"
+	const requestOrigin = "https://11111111111141118111111111111111.gateway.example.test"
+	tests := []struct {
+		name    string
+		method  string
+		origin  []string
+		headers map[string]string
+		allowed bool
+	}{
+		{name: "matching origin", method: http.MethodPost, origin: []string{requestOrigin}, allowed: true},
+		{name: "missing origin with same origin metadata", method: http.MethodPost, headers: map[string]string{"Sec-Fetch-Site": "same-origin"}, allowed: true},
+		{name: "mismatched origin cannot use metadata fallback", method: http.MethodPost, origin: []string{"https://other.example.test"}, headers: map[string]string{"Sec-Fetch-Site": "same-origin"}},
+		{name: "null origin cannot use metadata fallback", method: http.MethodPost, origin: []string{"null"}, headers: map[string]string{"Sec-Fetch-Site": "same-origin"}},
+		{name: "multiple origins", method: http.MethodPost, origin: []string{requestOrigin, requestOrigin}},
+		{name: "mutation without browser metadata", method: http.MethodPost},
+		{name: "same site mutation", method: http.MethodPost, headers: map[string]string{"Sec-Fetch-Site": "same-site"}},
+		{name: "top level navigation", method: http.MethodGet, headers: map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document"}, allowed: true},
+		{name: "read without fetch metadata", method: http.MethodGet, allowed: true},
+		{name: "cross site subresource", method: http.MethodGet, headers: map[string]string{"Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "no-cors", "Sec-Fetch-Dest": "image"}},
+		{name: "websocket matching origin", method: http.MethodGet, origin: []string{requestOrigin}, headers: map[string]string{"Connection": "Upgrade", "Upgrade": "websocket"}, allowed: true},
+		{name: "websocket metadata fallback is rejected", method: http.MethodGet, headers: map[string]string{"Connection": "Upgrade", "Upgrade": "websocket", "Sec-Fetch-Site": "same-origin"}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			request := httptest.NewRequest(test.method, requestURL, nil)
+			for _, origin := range test.origin {
+				request.Header.Add("Origin", origin)
+			}
+			for name, value := range test.headers {
+				request.Header.Set(name, value)
+			}
+			if got := isGatewayAuthenticatedSourceAllowed(request, policy); got != test.allowed {
+				t.Fatalf("allowed = %v, want %v", got, test.allowed)
+			}
+		})
+	}
+}
+
 func TestGatewayOriginPolicyParsesEndpointHosts(t *testing.T) {
 	t.Parallel()
 

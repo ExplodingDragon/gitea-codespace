@@ -461,6 +461,30 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 	}
 }
 
+func TestGatewaySessionRegistryKeepsActiveEndpointSession(t *testing.T) {
+	t.Parallel()
+
+	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
+	now := time.Now()
+	token, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace"}, now)
+	require.NoError(t, err)
+	session, ok := registry.Authenticate(token, "codespace-1", "workspace", now)
+	require.True(t, ok)
+	release := registry.BeginSessionCancelable(session.id, "codespace-1", nil)
+
+	registry.mu.Lock()
+	registry.sessions[session.id].lastActive = now.Add(-2 * time.Minute)
+	registry.mu.Unlock()
+	require.Equal(t, map[string]int{"codespace-1": 1}, registry.Activity(now))
+	require.Contains(t, registry.sessions, session.id)
+
+	release()
+	registry.mu.Lock()
+	lastActive := registry.sessions[session.id].lastActive
+	registry.mu.Unlock()
+	require.WithinDuration(t, time.Now(), lastActive, time.Second)
+}
+
 func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	t.Parallel()
 

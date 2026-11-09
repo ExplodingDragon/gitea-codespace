@@ -195,8 +195,6 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 	if startErr == nil {
 		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "serve"}, values); err != nil {
 			startErr = fmt.Errorf("start platform Web IDE: %w", err)
-		} else if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "wait"}, values, nil); err != nil {
-			startErr = fmt.Errorf("wait for platform Web IDE: %w", err)
 		}
 	}
 	if startErr != nil {

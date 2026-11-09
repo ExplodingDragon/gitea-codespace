@@ -142,26 +142,20 @@ func isGatewayAuthenticatedSourceAllowed(request *http.Request, policy originPol
 	if !ok {
 		return false
 	}
-	if isGatewayWebSocketRequest(request) {
-		return gatewayOriginMatches(request.Header.Values("Origin"), expectedOrigin)
-	}
-	if gatewayMethodRequiresOrigin(request.Method) {
-		return gatewayOriginMatches(request.Header.Values("Origin"), expectedOrigin)
-	}
 	originValues := request.Header.Values("Origin")
-	if len(originValues) > 0 {
+	if isGatewayWebSocketRequest(request) {
 		return gatewayOriginMatches(originValues, expectedOrigin)
 	}
-	if request.Method != http.MethodGet && request.Method != http.MethodHead {
-		return false
+	if len(originValues) > 0 {
+		return gatewayOriginMatches(originValues, expectedOrigin)
 	}
 	if strings.EqualFold(strings.TrimSpace(request.Header.Get("Sec-Fetch-Site")), "same-origin") {
 		return true
 	}
-	if gatewayIsTopLevelNavigation(request) {
-		return true
+	if request.Method == http.MethodGet || request.Method == http.MethodHead {
+		return gatewayIsTopLevelNavigation(request) || gatewayHasNoFetchMetadata(request)
 	}
-	return gatewayHasNoFetchMetadata(request)
+	return false
 }
 
 func gatewayOriginMatches(values []string, expectedOrigin string) bool {
@@ -228,15 +222,6 @@ func gatewayOriginFromAuthority(scheme, authority string) string {
 		return scheme + "://" + host
 	}
 	return scheme + "://" + authority
-}
-
-func gatewayMethodRequiresOrigin(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete, http.MethodOptions:
-		return true
-	default:
-		return false
-	}
 }
 
 func isGatewayWebSocketRequest(request *http.Request) bool {

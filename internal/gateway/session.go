@@ -270,6 +270,9 @@ func (r *sessionRegistry) beginLive(codespaceUUID string, entry gatewayLiveSessi
 			if current.countsSession {
 				r.decrementSessionCountLocked(current.siteUID, current.userID, codespaceUUID)
 			}
+			if session := r.sessions[current.sessionID]; session != nil {
+				session.lastActive = time.Now()
+			}
 			delete(r.liveEntries[codespaceUUID], liveID)
 			if len(r.liveEntries[codespaceUUID]) == 0 {
 				delete(r.liveEntries, codespaceUUID)
@@ -289,32 +292,6 @@ func (r *sessionRegistry) signalActivityChange() {
 	case r.activityChanges <- struct{}{}:
 	default:
 	}
-}
-
-func (r *sessionRegistry) DeleteEndpoint(codespaceUUID, endpointID string) int {
-	if r == nil || codespaceUUID == "" || endpointID == "" {
-		return 0
-	}
-	r.mu.Lock()
-
-	deleted := 0
-	deletedIDs := make(map[string]struct{})
-	for id, session := range r.sessions {
-		if session.codespaceUUID == codespaceUUID && session.endpointID == endpointID {
-			r.deleteGatewaySessionLocked(id)
-			deletedIDs[id] = struct{}{}
-			deleted++
-		}
-	}
-	var cancels []context.CancelFunc
-	for id := range deletedIDs {
-		cancels = append(cancels, r.deleteLiveEntriesLocked(codespaceUUID, id)...)
-	}
-	r.mu.Unlock()
-	for _, cancel := range cancels {
-		cancel()
-	}
-	return deleted
 }
 
 func (r *sessionRegistry) DeleteCodespace(codespaceUUID string) int {
@@ -472,7 +449,15 @@ func (r *sessionRegistry) sessionExpiredLocked(session *gatewaySession, now time
 	if !session.expires.IsZero() && now.After(session.expires) {
 		return true
 	}
-	return session.established && r.idleTimeout > 0 && now.Sub(session.lastActive) > r.idleTimeout
+	if !session.established || r.idleTimeout <= 0 || now.Sub(session.lastActive) <= r.idleTimeout {
+		return false
+	}
+	for _, entry := range r.liveEntries[session.codespaceUUID] {
+		if entry.sessionID == session.id {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *sessionRegistry) issueTicket(session *gatewaySession, now time.Time) (string, error) {

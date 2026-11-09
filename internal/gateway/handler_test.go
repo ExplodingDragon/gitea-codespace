@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -40,35 +41,40 @@ func (gatewayHandlerTestControlPlane) RevalidateSSHSession(context.Context, stri
 	return gatewayAccessDecision{}, nil
 }
 
-type gatewayHandlerTestBackend struct {
-	address string
+type gatewayTestBackend struct {
+	address       string
+	endpointError error
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceShell(context.Context, workspaceShellRequest) (workspaceCommandSession, error) {
+func (gatewayTestBackend) OpenWorkspaceShell(context.Context, workspaceShellRequest) (workspaceCommandSession, error) {
 	return nil, fmt.Errorf("shell is not available")
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceCommand(context.Context, workspaceCommandRequest) (workspaceCommandSession, error) {
+func (gatewayTestBackend) OpenWorkspaceCommand(context.Context, workspaceCommandRequest) (workspaceCommandSession, error) {
 	return nil, fmt.Errorf("command is not available")
 }
 
-func (gatewayHandlerTestBackend) OpenWorkspaceSFTP(context.Context, workspaceSFTPRequest) (io.ReadWriteCloser, error) {
+func (gatewayTestBackend) OpenWorkspaceSFTP(context.Context, workspaceSFTPRequest) (io.ReadWriteCloser, error) {
 	return nil, fmt.Errorf("SFTP is not available")
 }
 
-func (b gatewayHandlerTestBackend) OpenWorkspaceTCP(ctx context.Context, _ string, _ uint32) (net.Conn, error) {
+func (b gatewayTestBackend) OpenWorkspaceTCP(ctx context.Context, _ string, _ uint32) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "tcp", b.address)
 }
 
-func (b gatewayHandlerTestBackend) OpenWorkspaceEndpoint(ctx context.Context, _, _ string) (net.Conn, error) {
+func (b gatewayTestBackend) OpenWorkspaceEndpoint(ctx context.Context, _, _ string) (net.Conn, error) {
+	if b.endpointError != nil {
+		return nil, b.endpointError
+	}
 	return (&net.Dialer{}).DialContext(ctx, "tcp", b.address)
 }
 
 func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	t.Parallel()
 
+	const externalHost = "app-3000-11111111111141118111111111111111.gateway.example.test"
 	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/socket" || !isGatewayWebSocketRequest(request) {
+		if request.URL.Path != "/socket" || !isGatewayWebSocketRequest(request) || request.Host != externalHost {
 			http.Error(writer, "invalid upgrade request", http.StatusBadRequest)
 			return
 		}
@@ -89,7 +95,7 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	defer upstream.Close()
 
 	upstreamAddress := upstream.Listener.Addr().String()
-	routes := newRouteStore(gatewayHandlerTestBackend{address: upstreamAddress})
+	routes := newRouteStore(gatewayTestBackend{address: upstreamAddress})
 	t.Cleanup(routes.Close)
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
 	if err := routes.Put(endpointRoute{
@@ -122,7 +128,7 @@ func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	request.Host = "app-3000-11111111111141118111111111111111.gateway.example.test"
+	request.Host = externalHost
 	request.Header.Set("Connection", "Upgrade")
 	request.Header.Set("Upgrade", "websocket")
 	response, err := gateway.Client().Do(request)
@@ -153,7 +159,7 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	t.Parallel()
 
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	routes := newRouteStore(gatewayHandlerTestBackend{})
+	routes := newRouteStore(gatewayTestBackend{})
 	t.Cleanup(routes.Close)
 	if err := routes.Put(endpointRoute{
 		SiteUID:       "site-1",
@@ -222,8 +228,10 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		routes.SetSessionRegistry(sessions.sessionRegistry)
 		routes.Delete(runtimeUUID, runtimeendpoint.WorkspaceEndpointID)
+		if _, ok := sessions.Authenticate(token, runtimeUUID, runtimeendpoint.WorkspaceEndpointID, time.Now()); !ok {
+			t.Fatal("route removal invalidated the browser session")
+		}
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/", nil)
 		request.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: token})
 		response := httptest.NewRecorder()
@@ -232,4 +240,81 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 			t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
 		}
 	})
+}
+
+func TestGatewayOpenCodeAllowsUnrelatedQueryParameters(t *testing.T) {
+	t.Parallel()
+
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/open?code=secret&utm_source=gitea", nil)
+	code, ok := gatewayOpenCode(request)
+	if !ok || code != "secret" {
+		t.Fatalf("open code = %q, ok = %v", code, ok)
+	}
+	request = httptest.NewRequest(http.MethodGet, "https://gateway.example.test/open?code=first&code=second", nil)
+	if _, ok := gatewayOpenCode(request); ok {
+		t.Fatal("duplicate open code was accepted")
+	}
+}
+
+func TestGatewayProxyRevalidationRetriesTransientFailure(t *testing.T) {
+	t.Parallel()
+
+	type result struct {
+		decision gatewayAccessDecision
+		err      error
+	}
+	results := make(chan result)
+	calls := make(chan struct{}, 2)
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/", nil)
+	proxyRequest, cancel := withGatewayProxyRevalidation(request, 10*time.Millisecond, "test revalidation", func(context.Context) (gatewayAccessDecision, error) {
+		calls <- struct{}{}
+		outcome := <-results
+		return outcome.decision, outcome.err
+	})
+	defer cancel()
+
+	results <- result{err: errors.New("temporary failure")}
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("revalidation did not run")
+	}
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("revalidation did not retry")
+	}
+	select {
+	case <-proxyRequest.Context().Done():
+		t.Fatal("transient failure canceled the proxy request")
+	default:
+	}
+	results <- result{decision: gatewayAccessDecision{Allowed: false}}
+	select {
+	case <-proxyRequest.Context().Done():
+	case <-time.After(time.Second):
+		t.Fatal("explicit denial did not cancel the proxy request")
+	}
+}
+
+func TestGatewayProxyClientCancellationDoesNotWriteGatewayError(t *testing.T) {
+	t.Parallel()
+
+	routes := newRouteStore(gatewayTestBackend{endpointError: context.Canceled})
+	t.Cleanup(routes.Close)
+	route := endpointRoute{
+		SiteUID: "site-1", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: "codespace-1",
+		EndpointID: "app", Label: "App", Public: true,
+	}
+	if err := routes.Put(route); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	request := httptest.NewRequest(http.MethodGet, "https://app.gateway.example.test/", nil).WithContext(ctx)
+	response := httptest.NewRecorder()
+	proxyGatewayEndpoint(response, request, routes, route, "/", gatewayProxyRequestContext{externalScheme: "https", externalHost: request.Host})
+	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" {
+		t.Fatalf("client cancellation produced a gateway response: %q", response.Body.String())
+	}
 }

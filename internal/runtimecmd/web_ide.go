@@ -8,14 +8,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
 	"time"
 
-	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/webide"
 	"golang.org/x/sys/unix"
 )
@@ -127,28 +125,4 @@ func (s webIDESupervisor) run(ctx context.Context) error {
 		}
 	}
 	return nil
-}
-
-// WaitForWebIDE waits for the provider to accept a local connection before
-// its endpoint is published through the Agent and Gateway.
-func WaitForWebIDE(ctx context.Context) error {
-	address := net.JoinHostPort("127.0.0.1", fmt.Sprint(runtimeendpoint.WorkspaceEndpointPort))
-	deadline := time.NewTimer(30 * time.Second)
-	defer deadline.Stop()
-	ticker := time.NewTicker(200 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		connection, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, "tcp", address)
-		if err == nil {
-			_ = connection.Close()
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return fmt.Errorf("web IDE did not listen on %s within 30 seconds", address)
-		case <-ticker.C:
-		}
-	}
 }

@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import {computed, ref, watch} from 'vue';
-import Ajv2020 from 'ajv/dist/2020.js';
 import {Search} from '@lucide/vue';
 import {NAlert, NAutoComplete, NButton, NCheckbox, NFormItem, NIcon, NInput, NTag} from 'naive-ui';
 import {useI18n} from 'vue-i18n';
@@ -21,21 +20,11 @@ const resolved = ref<ResolvedWebIDEImage>();
 const resolvedInput = ref('');
 
 const imageOptions = computed(() => props.imageSuggestions.map((value) => ({label: value, value})));
-const optionsValidator = computed(() => {
-  if (!resolved.value) return undefined;
-  return new Ajv2020({allErrors: true, strict: false}).compile(resolved.value.optionsSchema);
-});
 const optionsValidation = computed(() => {
-  const validate = optionsValidator.value;
-  if (!validate) return '';
   try {
     const value: unknown = JSON.parse(options.value);
     if (!value || Array.isArray(value) || typeof value !== 'object') return t('environment.invalidWebIDEOptions');
-    if (validate(value)) return '';
-    return (
-      validate.errors?.map(({instancePath, message}) => `${instancePath || '/'} ${message ?? ''}`.trim()).join('\n') ??
-      ''
-    );
+    return '';
   } catch {
     return t('environment.invalidWebIDEOptions');
   }

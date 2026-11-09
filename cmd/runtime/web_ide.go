@@ -25,13 +25,6 @@ func newWebIDECommand() *cobra.Command {
 				return runtimecmd.SuperviseWebIDE(ctx)
 			},
 		},
-		&cobra.Command{
-			Use:  "wait",
-			Args: cobra.NoArgs,
-			RunE: func(command *cobra.Command, _ []string) error {
-				return runtimecmd.WaitForWebIDE(command.Context())
-			},
-		},
 	)
 	return command
 }

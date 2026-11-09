@@ -55,7 +55,7 @@ func newHandler(
 	mux.HandleFunc("/p/", func(writer http.ResponseWriter, request *http.Request) {
 		handleGatewayPublicEndpoint(writer, request, routeStore, access, controlPlane, originPolicy)
 	})
-	return loggingMiddleware(mux)
+	return mux
 }
 
 func handleGatewayOpen(
@@ -67,10 +67,8 @@ func handleGatewayOpen(
 	controlPlane gatewayControlPlaneClient,
 	originPolicy originPolicy,
 ) {
-	setGatewayOpenResponseHeaders(writer)
-	if rejectGatewayServiceWorkerRequest(writer, request) {
-		return
-	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.Header().Set("Referrer-Policy", "no-referrer")
 	if request.Method != http.MethodGet {
 		writeGatewayError(writer, request, http.StatusMethodNotAllowed, "Method not allowed", "This gateway endpoint only accepts GET requests.", "method_not_allowed")
 		return
@@ -151,15 +149,10 @@ func handleGatewayOpen(
 	http.Redirect(writer, request, gatewayOpenRedirectPath(decision.Binding.CodespaceUUID, decision.Binding.EndpointID, originPolicy, returnTo), http.StatusSeeOther)
 }
 
-func setGatewayOpenResponseHeaders(writer http.ResponseWriter) {
-	writer.Header().Set("Cache-Control", "no-store")
-	writer.Header().Set("Referrer-Policy", "no-referrer")
-}
-
 func gatewayOpenCode(request *http.Request) (string, bool) {
 	query := request.URL.Query()
 	codes := query["code"]
-	if len(query) != 1 || len(codes) != 1 || strings.TrimSpace(codes[0]) == "" {
+	if len(codes) != 1 || strings.TrimSpace(codes[0]) == "" {
 		return "", false
 	}
 	return codes[0], true
@@ -182,9 +175,6 @@ func handleGatewayWorkspace(
 	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
 	if !ok {
 		writeGatewayNotFound(writer, request, "Codespace workspace")
-		return
-	}
-	if rejectGatewayServiceWorkerRequest(writer, request) {
 		return
 	}
 	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
@@ -321,9 +311,6 @@ func handleGatewayPublicEndpoint(
 	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
 	if !ok {
 		writeGatewayNotFound(writer, request, "Codespace endpoint")
-		return
-	}
-	if rejectGatewayServiceWorkerRequest(writer, request) {
 		return
 	}
 	clearGatewayReservedCookies(writer)
@@ -507,9 +494,11 @@ func withGatewayProxyRevalidation(
 			case <-ticker.C:
 				decision, err := validate(ctx)
 				if err != nil {
+					if ctx.Err() != nil {
+						return
+					}
 					log.Printf("%s: %v", logMessage, err)
-					cancel()
-					return
+					continue
 				}
 				if !decision.Allowed {
 					cancel()
@@ -546,33 +535,6 @@ func gatewayPeerIP(request *http.Request) string {
 		return parsed.String()
 	}
 	return request.RemoteAddr
-}
-
-func rejectGatewayServiceWorkerRequest(writer http.ResponseWriter, request *http.Request) bool {
-	if !isGatewayServiceWorkerRequest(request) {
-		return false
-	}
-	writer.Header().Del("Service-Worker-Allowed")
-	writeGatewayError(writer, request, http.StatusForbidden, "Service worker is not allowed", "Codespace Gateway does not allow runtime pages to register a service worker on the gateway origin.", "service worker is not allowed")
-	return true
-}
-
-func isGatewayServiceWorkerRequest(request *http.Request) bool {
-	if request == nil {
-		return false
-	}
-	if values := request.Header.Values("Service-Worker"); len(values) > 0 {
-		return true
-	}
-	values := request.Header.Values("Sec-Fetch-Dest")
-	if len(values) == 0 {
-		return false
-	}
-	if len(values) > 1 {
-		return true
-	}
-	value := strings.TrimSpace(values[0])
-	return value == "" || strings.EqualFold(value, "serviceworker")
 }
 
 func gatewayWorkspacePath(codespaceUUID, endpointID string) string {
@@ -703,11 +665,4 @@ func writeGatewayErrorHTML(writer http.ResponseWriter, statusCode int, title, me
 	}{statusCode, http.StatusText(statusCode), title, message, category}); err != nil {
 		log.Printf("render gateway error page: %v", err)
 	}
-}
-
-func loggingMiddleware(next http.Handler) http.Handler {
-	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		log.Printf("%s %s", request.Method, request.URL.Path)
-		next.ServeHTTP(writer, request)
-	})
 }

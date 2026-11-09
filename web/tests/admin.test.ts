@@ -136,7 +136,6 @@ test('administration workflows preserve resource identity and validate cluster-b
           version: 'test',
           protocolVersion: 1,
           platforms: ['linux/amd64', 'linux/arm64'],
-          optionsSchema: {type: 'object'},
           optionDefaults: {},
         },
       });

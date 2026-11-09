@@ -4,6 +4,8 @@
 package gateway
 
 import (
+	"context"
+	"errors"
 	"log"
 	"net"
 	"net/http"
@@ -66,7 +68,7 @@ func proxyGatewayEndpoint(
 		proxyRequest.Out.URL.Host = target.Host
 		proxyRequest.Out.URL.Path = upstreamPath
 		proxyRequest.Out.URL.RawPath = ""
-		proxyRequest.Out.Host = target.Host
+		proxyRequest.Out.Host = firstNonEmpty(proxyContext.externalHost, proxyRequest.In.Host)
 		prepareGatewayProxyRequest(proxyRequest.Out, proxyContext)
 	}
 	proxy.ModifyResponse = func(response *http.Response) error {
@@ -78,6 +80,9 @@ func proxyGatewayEndpoint(
 		return nil
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
+		if request.Context().Err() != nil || errors.Is(err, context.Canceled) {
+			return
+		}
 		log.Printf("gateway proxy %s/%s: %v", route.CodespaceUUID, route.EndpointID, err)
 		title := "Endpoint is unavailable"
 		message := "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting."
@@ -163,7 +168,6 @@ func isGatewayReservedCookieName(name string) bool {
 }
 
 func normalizeGatewayProxyResponse(header http.Header, proxyContext gatewayProxyResponseContext) {
-	header.Del("Service-Worker-Allowed")
 	rebuildGatewayProxySetCookieHeaders(header, proxyContext)
 	if location := header.Get("Location"); location != "" {
 		header.Set("Location", rewriteGatewayProxyLocation(location, proxyContext))

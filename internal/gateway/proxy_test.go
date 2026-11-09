@@ -190,7 +190,7 @@ func TestGatewayProxyResponseRewritesDefaultPortLocation(t *testing.T) {
 	}
 }
 
-func TestGatewayProxyResponseDeletesServiceWorkerAllowedAndKeepsRuntimeCORS(t *testing.T) {
+func TestGatewayProxyResponseKeepsProviderHeaders(t *testing.T) {
 	t.Parallel()
 
 	header := http.Header{
@@ -200,7 +200,7 @@ func TestGatewayProxyResponseDeletesServiceWorkerAllowedAndKeepsRuntimeCORS(t *t
 		"Vary":                         {"Origin"},
 	}
 	normalizeGatewayProxyResponse(header, gatewayProxyResponseContext{})
-	if got := header.Get("Service-Worker-Allowed"); got != "" {
+	if got := header.Get("Service-Worker-Allowed"); got != "/" {
 		t.Fatalf("service worker allowed = %q", got)
 	}
 	if got := header.Get("Access-Control-Allow-Origin"); got != "https://app.example.test" {
