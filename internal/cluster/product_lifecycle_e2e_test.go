@@ -770,7 +770,10 @@ func (c *gatewayWebIDEClient) verifyWebSocket(ctx context.Context) error {
 			return (&net.Dialer{}).DialContext(ctx, "tcp", c.address)
 		},
 	}
-	header := http.Header{"Cookie": {c.session.String()}}
+	header := http.Header{
+		"Cookie": {(&http.Cookie{Name: c.session.Name, Value: c.session.Value}).String()},
+		"Origin": {"http://" + c.host},
+	}
 	connection, response, err := dialer.DialContext(ctx, "ws://"+c.host+"/__e2e/ws", header)
 	if response != nil {
 		defer func() { _ = response.Body.Close() }()
