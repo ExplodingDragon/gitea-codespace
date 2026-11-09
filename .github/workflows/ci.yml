@@ -252,7 +252,7 @@ jobs:
 
           {
             echo "CODESPACE_IMAGE=$image_reference"
-            echo "CODESPACE_E2E_WEB_IDE_IMAGE=$(cat .tmp/e2e-web-ide/tag)"
+            echo "WEB_IDE_E2E_IMAGE=$(cat .tmp/e2e-web-ide/tag)"
             echo "CODESPACE_E2E_WEB_IDE_LAYOUT=$PWD/.tmp/e2e-web-ide/layout"
             echo "CODESPACE_E2E_GITEA_LISTEN=$node_address:0"
             echo "CODESPACE_E2E_NODE_ADDRESS=$node_address"
