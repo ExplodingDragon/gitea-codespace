@@ -78,8 +78,9 @@ editor release can be updated without rebuilding the platform services.
 
 Use `make -C providers/vscode check` or `make -C providers/dsh check` for
 focused provider validation. Each provider's `image` target builds an image for
-the current architecture. See [providers/README.md](providers/README.md) for the
-image contract and third-party integration guide.
+the current architecture. See the [provider development
+guide](providers/DEVELOPMENT.md) for the complete third-party integration
+workflow.
 
 ## Kubernetes E2E
 

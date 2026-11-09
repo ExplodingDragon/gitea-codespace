@@ -84,9 +84,11 @@ access after the address accepts connections.
 
 ## Develop a provider
 
-Use [vscode](vscode/README.md) and [dsh](dsh/README.md) as complete examples.
-The deterministic implementation under `tests/e2e/web-ide` is a smaller example
-for contract testing.
+Follow the [provider development guide](DEVELOPMENT.md) to implement the image
+contract, publish a multi-platform image, and connect it to Manager. Use
+[vscode](vscode/README.md) and [dsh](dsh/README.md) as production examples. The
+deterministic implementation under `tests/e2e/web-ide` is a smaller reference
+that exercises the complete contract without downloading an editor release.
 
 Run the focused checks from the repository root:
 

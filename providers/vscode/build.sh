@@ -26,7 +26,8 @@ command -v tar >/dev/null 2>&1 || fail "tar is required"
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT INT TERM
 asset="code-server-$version-$os-$arch.tar.gz"
-curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors \
+curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 \
+  --retry 8 --retry-all-errors --retry-max-time 900 \
   -o "$work/archive.tar.gz" "https://github.com/coder/code-server/releases/download/v$version/$asset" || fail "cannot download $asset"
 root=$(tar -tzf "$work/archive.tar.gz" | sed -n '1{s|/.*||;p;}')
 [ "$root" = "code-server-$version-$os-$arch" ] || fail "$asset has an unexpected top-level directory"

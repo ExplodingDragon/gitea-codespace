@@ -167,11 +167,12 @@ jobs:
         env:
           IMAGE_NAME: ${{ inputs.image }}
         run: |
-          references=""
+          set --
           for digest in .tmp/provider-digests/*; do
-            references="$references $IMAGE_NAME@sha256:${digest##*/}"
+            set -- "$@" "$IMAGE_NAME@sha256:${digest##*/}"
           done
-          docker buildx imagetools create --tag "$IMAGE_NAME:main" $references
+          test "$#" -eq 2
+          docker buildx imagetools create --tag "$IMAGE_NAME:main" "$@"
           docker buildx imagetools inspect --raw "$IMAGE_NAME:main" >.tmp/manifest.json
           test "$(jq '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))] | length' .tmp/manifest.json)" -eq 2
           digest="$(docker buildx imagetools inspect "$IMAGE_NAME:main" --format '{{json .Manifest}}' | jq -r .digest)"
