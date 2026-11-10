@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"gitea.dev/codespace/internal/certificates"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/healthcheck"
 	"github.com/stretchr/testify/require"
@@ -36,6 +37,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 	gateway.Spec.Gateway.HTTPExposure = api.GatewayHTTPExposure{Mode: "ingress", Ingress: &api.GatewayIngressExposure{ClassName: "nginx", TLS: api.GatewayIngressTLS{Source: "secret", SecretName: "wildcard-tls"}}}
 	gateway.Spec.Gateway.SSHExposure = api.GatewaySSHExposure{Mode: "loadBalancer"}
 	cache := testCacheComponent("cache", "cache-uid")
+	cache.Spec.Cache.Proxy = &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128", CABundle: string(newTestIdentityAuthority(t).authority.RootPEM())}
 	ingressClass := &networkingv1.IngressClass{ObjectMeta: metav1.ObjectMeta{Name: "nginx"}, Spec: networkingv1.IngressClassSpec{Controller: "k8s.io/ingress-nginx"}}
 	tlsSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "wildcard-tls", Namespace: namespace}, Type: corev1.SecretTypeTLS, Data: map[string][]byte{corev1.TLSCertKey: []byte("certificate"), corev1.TLSPrivateKeyKey: []byte("private-key")}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(gateway, cache).WithObjects(gateway, cache, ingressClass, tlsSecret).Build()
@@ -87,6 +89,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 			require.Len(t, deployment.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 1)
 		} else {
 			require.Contains(t, container.Ports, corev1.ContainerPort{Name: cacheHTTPSPortName, ContainerPort: 8443})
+			require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "cache-secret", MountPath: certificates.ProxyCABundlePath, SubPath: proxyCAKey, ReadOnly: true})
 			require.Equal(t, int32(1), ptr.Deref(deployment.Spec.Replicas, int32(0)))
 			require.Equal(t, appsv1.RecreateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 			require.Nil(t, deployment.Spec.Strategy.RollingUpdate)

@@ -393,7 +393,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 	if err != nil {
 		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
 	}
-	registryClient, err := featureRegistryClient(cache.RootCAPEM)
+	registryClient, err := featureRegistryClient(cache.CABundlePEM)
 	if err != nil {
 		return nil, fmt.Errorf("configure OCI client for Dev Container Feature %s: %w", featureReference, err)
 	}
@@ -411,16 +411,13 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, registryClient)
 }
 
-func featureRegistryClient(rootCAPEM []byte) (*http.Client, error) {
-	if len(rootCAPEM) == 0 {
+func featureRegistryClient(caBundlePEM []byte) (*http.Client, error) {
+	if len(caBundlePEM) == 0 {
 		return retry.DefaultClient, nil
 	}
-	roots, err := x509.SystemCertPool()
-	if err != nil {
-		return nil, fmt.Errorf("load system CA pool: %w", err)
-	}
-	if !roots.AppendCertsFromPEM(rootCAPEM) {
-		return nil, fmt.Errorf("internal registry CA is invalid")
+	roots := x509.NewCertPool()
+	if !roots.AppendCertsFromPEM(caBundlePEM) {
+		return nil, fmt.Errorf("runtime CA bundle is invalid")
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}

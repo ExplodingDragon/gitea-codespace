@@ -78,9 +78,9 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		injected = append(injected, devcontainer.InjectedFeature{Reference: strings.TrimSpace(feature.Reference), Origin: "environment template", Options: options})
 	}
 	containerEnvironment := map[string]string{
-		"CODESPACE_CA_BUNDLE": containerCABundlePath,
 		"GITEA_INSTANCE_URL":  request.GiteaURL,
 		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
+		"SSL_CERT_FILE":       containerCABundlePath,
 	}
 	if request.DevContainer.GiteaCLI {
 		containerEnvironment["GITEA_CLI_NO_UPDATE_NOTIFIER"] = "1"
@@ -90,9 +90,6 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		if value := request.LocalEnvironment[name]; value != "" {
 			platformEnvironment[name] = value
 		}
-	}
-	if request.GiteaCustomCA {
-		containerEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
 	}
 	deviceMappings := make([]containerdocker.DeviceMapping, 0, len(request.Native.Devices))
 	for _, mapping := range request.Native.Devices {
@@ -120,7 +117,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 }
 
 func configureCreate(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
-	if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
+	if err := configureCA(ctx, engine, state); err != nil {
 		return err
 	}
 	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
@@ -135,29 +132,21 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 		"GITEA_GIT_USER_EMAIL": request.GitUserEmail,
 		"GITEA_WORKSPACE":      state.RemoteWorkdir,
 	}
-	if request.GiteaCustomCA {
-		values["GITEA_CA_BUNDLE"] = containerCABundlePath
-	}
 	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
 	}
 	return nil
 }
 
-func configureCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, giteaCustom bool) error {
+func configureCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"/bin/sh", "-c", installCAScript}, nil, nil); err != nil {
 		return fmt.Errorf("configure platform CA in Dev Container: %w", err)
 	}
 	if state.RemoteEnvironment == nil {
 		state.RemoteEnvironment = map[string]string{}
 	}
-	state.RemoteEnvironment["CODESPACE_CA_BUNDLE"] = containerCABundlePath
 	state.RemoteEnvironment["NODE_EXTRA_CA_CERTS"] = containerCABundlePath
-	if giteaCustom {
-		state.RemoteEnvironment["GITEA_CA_BUNDLE"] = containerCABundlePath
-	} else {
-		delete(state.RemoteEnvironment, "GITEA_CA_BUNDLE")
-	}
+	state.RemoteEnvironment["SSL_CERT_FILE"] = containerCABundlePath
 	return nil
 }
 

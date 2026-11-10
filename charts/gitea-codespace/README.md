@@ -87,31 +87,14 @@ chart. The source chart defaults to the `main` image tag with no digest for
 local development, while each published chart contains the digest of the
 platform image built for that chart.
 
-Configure `image.pullSecrets` when the platform or Web IDE images are stored in
-a private registry. The same credentials are made available to workspace Pods.
+## Configure Web IDE storage and image access
 
-## Configure Web IDE access
-
-Environment templates contain one Web IDE image field. Leaving it empty
-disables browser access. The administration page suggests the official VS Code
-and DeepSeek Harness images and also accepts compatible third-party images.
-Manager validates the image options and stores its immutable digest when the
-environment is saved. Existing environments therefore keep the selected editor
-version when a mutable tag is updated.
-
-`webIDE.programVolumeSize` reserves temporary Pod storage for the selected
-editor program. Increase it when a provider image needs more unpacked space.
-See the [Web IDE provider guide](../../providers/README.md) when using a custom
-provider.
-
-### Verify
-
-- Leaving the provider empty creates a codespace with SSH and forwarded ports
-  but no browser workspace endpoint.
-- Resolving a provider displays its identity and options, and saving the
-  environment records an immutable image digest.
-- A codespace starts the provider on either supported node architecture with
-  its persistent configuration intact.
+`webIDE.programVolumeSize` reserves temporary Pod storage for the selected Web
+IDE program. Increase it when the unpacked provider bundle exceeds the default
+capacity. Configure `image.pullSecrets` when platform or provider images are
+stored in a private registry; the same credentials are available to workspace
+Pods. See the [Web IDE provider guide](../../providers/README.md) for image
+selection and editor configuration.
 
 ## Connect Gitea
 
@@ -123,13 +106,9 @@ kubectl -n codespace-system port-forward \
   service/codespace-gitea-codespace-admin 18080:18080
 ```
 
-Open <http://127.0.0.1:18080>, sign in with the administration token, and then:
-
-1. create a Gateway and any Cache components;
-2. create an environment template using the verified runtime and storage;
-3. create a registration token in Gitea's Codespace Managers page;
-4. register Gitea and assign the template and components;
-5. enable the site after its readiness checks pass.
+Open <http://127.0.0.1:18080> and sign in with the administration token. Follow
+the project [connection guide](../../README.md#connect-gitea) to create the
+platform resources and register Gitea.
 
 For a stable administration endpoint, configure `admin.ingress`. When Network
 Policy is enabled, add the ingress controller networks to
@@ -158,21 +137,21 @@ components trust this identity. Enable Kubernetes Secret encryption at rest.
 Add a private Gitea CA to the site configuration when Gitea does not use a
 publicly trusted certificate.
 
+Each Runtime combines the system roots, the internal service root, the site
+CA, and the optional proxy CA before starting its Docker daemon. Git, image
+pulls, OCI Features, and the Dev Container therefore use the same trust set.
+Component mTLS identities remain in separate Secrets and are not exposed to
+the Dev Container.
+
 Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
 Gateway. Allow configured outbound proxies through the site NetworkPolicy.
 
 Cache is cluster-internal and uses Manager's internal CA. Use a persistent
 volume for the local backend or shared object storage for the S3 backend.
 
-Cache cleanup is coordinated with the existing Cache GC Lease. During cleanup,
-new cache credentials are temporarily withheld while credentials already issued
-remain valid long enough to finish a multi-request image push. New workspaces
-use another Cache when one is available; when no Cache is available, the
-workspace can continue without cache acceleration. This keeps cleanup from
-removing a layer between upload and manifest submission without changing
-workspace lifecycle state. A Cache control-stream reconnect or Manager restart
-continues the existing cleanup deadline instead of extending the lifetime of
-already issued credentials.
+Cache cleanup pauses new use of that Cache while allowing active image pushes
+to finish. New workspaces use another available Cache or continue without cache
+acceleration, so cleanup does not change workspace lifecycle state.
 
 The StorageClass of a Cache PVC is selected when the PVC is created and then
 becomes part of the running storage configuration. The administration page
@@ -184,8 +163,10 @@ not require a data migration workflow.
 ### Verify
 
 - Runtime Pods can reach the Cache Service through its `443/https` endpoint.
-- An image push that overlaps the beginning of Cache cleanup can finish its
-  blob and manifest requests before cleanup starts.
+- A site with a private CA can clone repositories and pull Dev Container or
+  OCI Feature images from that Gitea installation.
+- Cache cleanup completes without interrupting active image pushes or workspace
+  lifecycle operations.
 - Editing an existing Cache shows its actual StorageClass and does not report a
   changed class as successfully applied.
 
@@ -196,19 +177,18 @@ with Agent cgroup measurements as a fallback. Install Metrics Server if the
 cluster does not already provide `metrics.k8s.io`. Limits come from the actual
 Runtime Pod configuration; an unset limit is displayed as unlimited.
 
-CPU and memory are collected every 30 seconds. Filesystem volume statistics
-are collected from kubelet Summary once per relevant node every 60 seconds.
-Manager combines valid Agent and kubelet available-space measurements by
-taking the smaller value. Kata block volumes use the Agent's mounted
-filesystem. PVC requested capacity is not a free-space measurement, and a
-shared filesystem's free space is not an exclusive workspace quota.
+Filesystem usage combines Runtime observations with kubelet volume statistics
+when the cluster exposes them. Kata block volumes use the mounted filesystem
+observation. The displayed value represents available filesystem space rather
+than the PVC request, which is important because shared storage capacity is not
+an exclusive workspace quota.
 
-The chart grants `list` on `metrics.k8s.io/pods` and `get` on `nodes/proxy`.
-The latter lets Manager reach kubelet Summary through the Kubernetes API;
-Kubernetes authorizes the whole node proxy rather than only the Summary path,
-so this permission grants broader kubelet access. Operators managing RBAC
-separately can omit it and use Agent filesystem measurements instead. Missing
-monitoring APIs or permissions affect statistics, not workspace lifecycle.
+The chart grants `list` on `metrics.k8s.io/pods` for CPU and memory statistics
+and `get` on `nodes/proxy` for kubelet filesystem statistics. Kubernetes grants
+the latter permission for the complete node proxy. Operators managing RBAC
+separately can omit it and use Runtime filesystem observations instead. Missing
+monitoring APIs or permissions affect displayed statistics, not workspace
+lifecycle.
 
 ### Verify
 
@@ -216,8 +196,8 @@ monitoring APIs or permissions affect statistics, not workspace lifecycle.
   --containers`, allowing for different sample times.
 - Filesystem statistics report available space rather than the PVC request;
   a valid zero available-space observation is shown as full.
-- A temporary metrics outage retains fresh observations and then falls back
-  to Agent measurements; observations expire instead of becoming zero usage.
+- A metrics outage falls back to Runtime observations without changing the
+  workspace lifecycle.
 
 ## Upgrade
 

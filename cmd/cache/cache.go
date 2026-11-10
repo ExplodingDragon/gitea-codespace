@@ -10,12 +10,12 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 
 	"github.com/spf13/cobra"
 
 	cachepkg "gitea.dev/codespace/internal/cache"
+	"gitea.dev/codespace/internal/certificates"
 	componentpkg "gitea.dev/codespace/internal/component"
 	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/healthcheck"
@@ -35,10 +35,12 @@ func NewCommand() *cobra.Command {
 			if !configpkg.ValidCacheID(id) {
 				return fmt.Errorf("a valid cache ID is required")
 			}
-			if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
-				if err := transportpkg.ExtendDefaultRootCAs(path); err != nil {
+			if _, err := os.Stat(certificates.ProxyCABundlePath); err == nil {
+				if err := transportpkg.ExtendDefaultRootCAs(certificates.ProxyCABundlePath); err != nil {
 					return fmt.Errorf("configure proxy CA: %w", err)
 				}
+			} else if !os.IsNotExist(err) {
+				return fmt.Errorf("inspect proxy CA: %w", err)
 			}
 			connection, err := componentpkg.NewManagerConnection()
 			if err != nil {

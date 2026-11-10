@@ -116,44 +116,21 @@ page shows the resulting Gateway URL for every published port.
 ## Web IDE providers
 
 Choose a Web IDE provider in the environment template when browser access is
-needed. Official providers are published independently from the platform:
-
-| Provider         | Image                                                         |
-| ---------------- | ------------------------------------------------------------- |
-| VS Code          | `ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main` |
-| DeepSeek Harness | `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main`    |
-
-See [Web IDE providers](providers/README.md) for configuration and third-party
-provider integration.
+needed. See [Web IDE providers](providers/README.md) for the official images,
+editor configuration, and third-party provider integration.
 
 ## Versions
 
-The `main` image tag tracks the current development build and is intended for
-evaluation before the first stable release. CI publishes
-pre-release OCI charts with versions in the form `0.1.0-main.<run>`. Use
-`--devel` to select the latest pre-release, or pin an exact chart version for a
-repeatable deployment:
-
-```sh
-helm upgrade --install codespace \
-  oci://ghcr.io/explodingdragon/charts/gitea-codespace \
-  --version <chart-version> \
-  --namespace codespace-system \
-  --set admin.tokenSecret.name=codespace-admin \
-  --wait
-```
-
-Replace `<chart-version>` with the exact prerelease version to install.
-Published charts already contain the digest of the platform image built for
-that chart.
-
-Follow the [upgrade procedure](charts/gitea-codespace/README.md#upgrade) when
+The `main` tag tracks the current development build. Published OCI charts use
+versions in the form `0.1.0-main.<run>` and contain the digest of the matching
+platform image. Pin an exact chart version for repeatable deployments and
+follow the [upgrade procedure](charts/gitea-codespace/README.md#upgrade) when
 moving an existing installation to another version.
 
 ## Documentation
 
 - [Install and operate with Helm](charts/gitea-codespace/README.md)
-- [Configure or build a Web IDE provider](providers/README.md)
+- [Choose and configure a Web IDE provider](providers/README.md)
 - [Develop and test Gitea Codespace](DEVELOPMENT.md)
 - [Review the architecture and design](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
 

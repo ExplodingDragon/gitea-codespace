@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-vscode.yml
+      - providers/export.sh
       - providers/vscode/**
       - '!providers/vscode/README.md'
       - '!providers/vscode/extension/README.md'
@@ -16,6 +17,7 @@ on:
     paths:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-vscode.yml
+      - providers/export.sh
       - providers/vscode/**
       - '!providers/vscode/README.md'
       - '!providers/vscode/extension/README.md'

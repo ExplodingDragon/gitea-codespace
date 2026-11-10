@@ -138,7 +138,10 @@ executable files. Everything else under the bundle is provider-owned.
 
 The entrypoint should stage the complete bundle and finish with one rename. The
 rename prevents Agent from observing a partially copied editor when the init
-container is interrupted:
+container is interrupted. The official images use the shared
+[`export.sh`](export.sh) implementation so every provider applies the same
+manifest, executable, and atomic-publication checks. A third-party image can
+use the same flow:
 
 ```sh
 #!/bin/sh
@@ -258,9 +261,8 @@ exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/program/bin/example-ide" \
 
 Replace the flags with the editor's own command line. The editor must serve HTTP
 and WebSocket traffic from the same address. A simple Provider can use `exec` as
-shown above. A Provider that needs automatic restart can run its own foreground
-process manager from `bin/serve`; Codespace does not monitor or restart Provider
-processes.
+shown above. A Provider that needs automatic restart owns that behavior in a
+foreground process manager behind `bin/serve`.
 
 The official VS Code and DeepSeek Harness Providers restart their editor after
 every exit, with a one-second delay to avoid a tight failure loop. Exit status
@@ -269,12 +271,12 @@ editor running. `HUP`, `INT`, and `TERM` are forwarded to the current editor
 process and end the Provider loop, which lets Docker stop the Dev Container
 without the Provider starting a replacement process.
 
-Docker accepting the detached execution is the complete platform launch
-contract. Codespace does not wait for the address to accept connections because
-editor readiness does not determine whether the Dev Container, SSH, or other
-endpoints are usable. Gateway may return `502 Workspace is unavailable` before
-the Provider listens or after it exits. A later request succeeds whenever the
-Provider is serving again, without changing the Codespace lifecycle state.
+Docker accepting the detached execution completes the platform launch contract
+and publishes the browser endpoint. Provider readiness remains independent from
+the Dev Container, SSH, and other endpoints. Gateway returns `502 Workspace is
+unavailable` while the Provider is not listening, and later requests succeed as
+soon as the Provider is serving again without changing the Codespace lifecycle
+state.
 
 ### Implementation acceptance criteria
 

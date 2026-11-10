@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"gitea.dev/codespace/internal/certificates"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/healthcheck"
@@ -572,9 +573,6 @@ func configureCacheDeployment(component *api.CodespaceComponent, deployment *app
 	container.Args = append(container.Args, "--id", component.Name)
 	if component.Spec.Cache.Proxy != nil {
 		container.Env = append(container.Env, proxyEnvironmentFromSecret(credential.Name)...)
-		if len(credential.Data[proxyCAKey]) != 0 {
-			container.Env = append(container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/var/run/codespace/cache/" + proxyCAKey})
-		}
 	}
 	container.Ports = append([]corev1.ContainerPort{{Name: cacheHTTPSPortName, ContainerPort: ports[0]}}, container.Ports...)
 	items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
@@ -588,6 +586,11 @@ func configureCacheDeployment(component *api.CodespaceComponent, deployment *app
 		corev1.VolumeMount{Name: "cache-secret", MountPath: "/var/run/codespace/cache", ReadOnly: true},
 		corev1.VolumeMount{Name: "registry-tls", MountPath: "/var/run/codespace/registry-tls", ReadOnly: true},
 	)
+	if len(credential.Data[proxyCAKey]) != 0 {
+		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{
+			Name: "cache-secret", MountPath: certificates.ProxyCABundlePath, SubPath: proxyCAKey, ReadOnly: true,
+		})
+	}
 	deployment.Spec.Template.Spec.Volumes = append(deployment.Spec.Template.Spec.Volumes,
 		corev1.Volume{Name: "cache-secret", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{SecretName: credential.Name, DefaultMode: ptr.To(int32(0o440)), Items: items}}},
 		corev1.Volume{Name: "registry-tls", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{

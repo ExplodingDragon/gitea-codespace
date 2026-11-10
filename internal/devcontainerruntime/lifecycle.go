@@ -81,15 +81,12 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 				startFailed = true
 				return err
 			}
-			if err := configureCA(ctx, engine, state, request.GiteaCustomCA); err != nil {
+			if err := configureCA(ctx, engine, state); err != nil {
 				return err
 			}
 			values := map[string]string{
 				"GITEA_CONFIGURE_CA_ONLY": "true",
 				"GITEA_URL":               request.GiteaURL,
-			}
-			if request.GiteaCustomCA {
-				values["GITEA_CA_BUNDLE"] = containerCABundlePath
 			}
 			if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
 				return fmt.Errorf("configure Gitea CA for Git in Dev Container: %w", err)

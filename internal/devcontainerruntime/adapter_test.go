@@ -21,8 +21,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 			GiteaCLI: true, WebIDE: WebIDEConfiguration{Provider: "vscode", Image: "ghcr.io/example/web-ide@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
 			Features: []InjectedFeature{{Reference: "ghcr.io/example/features/tool:1"}}, LifecycleScript: "case \"$1\" in build) : ;; esac\n",
 		},
-		Cache:         devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/cache", BuildScope: "scope"},
-		GiteaCustomCA: true,
+		Cache: devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/cache", BuildScope: "scope"},
 		Native: NativeContainerConfiguration{
 			CDIDeviceIDs: []string{"nvidia.com/gpu=GPU-1"}, Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
 			Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
@@ -39,6 +38,8 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: "/opt/example", Target: "/opt/example", ReadOnly: true})
 	require.Equal(t, request.Native.CDIDeviceIDs, options.PlatformDevices.CDI)
 	require.Equal(t, "1", options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"])
+	require.Equal(t, containerCABundlePath, options.ContainerEnv["SSL_CERT_FILE"])
+	require.Equal(t, containerCABundlePath, options.ContainerEnv["NODE_EXTRA_CA_CERTS"])
 }
 
 func TestCreateOptionsSkipsWebIDEMountsWhenDisabled(t *testing.T) {

@@ -2,18 +2,36 @@
 
 set -eu
 
-source_dir=/var/lib/gitea-codespace/ca
-available=false
-for certificate in "$source_dir"/codespace-*.crt; do
-  if [ -e "$certificate" ]; then
-    available=true
-    break
-  fi
-done
-[ "$available" = true ] || {
+source_bundle=/var/lib/gitea-codespace/ca/bundle.pem
+[ -s "$source_bundle" ] || {
   echo "cannot update the Dev Container CA store: the platform CA bundle is unavailable" >&2
   exit 1
 }
+split_dir=$(mktemp -d)
+trap 'rm -rf "$split_dir"' 0 HUP INT TERM
+certificate_count=0
+certificate_active=false
+certificate_path=
+while IFS= read -r line || [ -n "$line" ]; do
+  case $line in
+  '-----BEGIN CERTIFICATE-----')
+    [ "$certificate_active" = false ] || break
+    certificate_count=$((certificate_count + 1))
+    certificate_path=$(printf '%s/codespace-%03d.crt' "$split_dir" "$certificate_count")
+    certificate_active=true
+    ;;
+  esac
+  if [ "$certificate_active" = true ]; then
+    printf '%s\n' "$line" >>"$certificate_path"
+  fi
+  case $line in
+  '-----END CERTIFICATE-----') certificate_active=false ;;
+  esac
+done <"$source_bundle"
+if [ "$certificate_count" -eq 0 ] || [ "$certificate_active" = true ]; then
+  echo "cannot update the Dev Container CA store: the platform CA bundle is invalid" >&2
+  exit 1
+fi
 
 for directory in \
   /usr/local/share/ca-certificates \
@@ -105,7 +123,7 @@ if ! command -v "$1" >/dev/null 2>&1; then
   exit 1
 fi
 mkdir -p "$target"
-for certificate in "$source_dir"/codespace-*.crt; do
+for certificate in "$split_dir"/codespace-*.crt; do
   cp "$certificate" "$target/$(basename "$certificate")"
 done
 "$@"

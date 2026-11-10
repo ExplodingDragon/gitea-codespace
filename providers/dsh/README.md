@@ -8,21 +8,9 @@ Codespace platform.
 
 ## Workspace startup
 
-The provider enters the current repository and registers its absolute path in
-the native DSH Workspace Registry before publishing the browser endpoint.
-Entering the directory gives project-relative tools the correct process
-context, while registry registration makes the same project visible in the DSH
-workspace list. Registration is idempotent, so restarting the provider
-preserves one workspace record and leaves any other user-created workspaces
-unchanged.
-
-### Expected behavior
-
-- Opening DSH for the first time shows the current repository as a workspace.
-- Restarting DSH retains one registration for the repository and starts from
-  the repository root.
-- A missing repository directory stops provider startup with a direct error
-  while the rest of the codespace remains available.
+DSH opens the current repository as a workspace and uses its root as the process
+working directory. The registration persists across provider and codespace
+restarts while other workspaces created in DSH remain unchanged.
 
 ## Configuration
 
@@ -30,10 +18,7 @@ The provider accepts `plugins` and `settings` options. Settings are keyed by an
 existing top-level DSH profile entry ID and contain that entry's complete
 configuration. Repository `customizations.dsh.settings` replaces the template
 configuration for a matching entry ID, following DSH profile semantics. The
-adapter translates this structured input into DSH's native profile format.
-Plugin packages continue to use the official DSH package command. The provider
-keeps its connection settings separate from template options so it continues
-to use the loopback address and trusted proxy mode required by Gateway.
+provider installs plugin packages with the official DSH package command.
 
 ```json
 {
@@ -44,22 +29,10 @@ to use the loopback address and trusted proxy mode required by Gateway.
 }
 ```
 
-The generated profile is validated before it becomes persistent. Later starts
-reuse that profile, which preserves changes made through the DSH settings and
-plugin interfaces instead of reapplying template defaults. A setting whose
-top-level entry is unavailable after plugin installation is skipped with a
-warning. This lets one template work across provider or plugin versions while
-keeping unsupported configuration out of the persistent profile. A setting
-that matches an entry but is invalid still stops Web IDE initialization so an
-incorrect active configuration is not published.
-
-### Expected behavior
-
-- Plugins from the template and repository are installed through the DSH
-  package command.
-- Repository settings replace template settings for the same profile entry.
-- Supported settings persist in the web profile, missing entries produce a
-  warning, and invalid active entries stop initialization with a direct error.
+The provider validates the initial profile and then preserves changes made
+through DSH. A setting for an unavailable plugin entry produces a warning and
+is skipped; an invalid setting for an active entry reports an initialization
+error. Repository settings replace template settings for the same profile entry.
 
 ### Use an OpenAI-compatible service
 
@@ -119,15 +92,6 @@ new codespace once; later starts retain changes made through DSH. Create a new
 codespace to apply changed repository defaults, or use **Settings → Models** in
 DSH to adjust an existing codespace.
 
-### Expected behavior
-
-- Gitea offers the declared token during codespace creation and supplies it to
-  DSH as `COMPANY_OPENAI_TOKEN`.
-- DSH lists the configured provider and models without persisting the token in
-  the repository configuration.
-- Restarting the codespace retains the DSH profile and uses the currently
-  authorized secret value.
-
 ## Codespace ports
 
 The bundled Codespace plugin provides a **Ports** page for listing, publishing,
@@ -149,17 +113,7 @@ The model can use `codespace_list_ports`, `codespace_publish_port`, and
 ports. Authenticated access is the default; public access must be selected
 explicitly because it allows requests without a Codespace user session.
 
-### Expected behavior
-
-- The Ports page, `/ports` command, and model tools show the same endpoint set.
-- Publishing or editing a port updates its label and visibility without
-  restarting the application that listens on it.
-- Removing a port removes Gateway access without stopping the application.
-
 ## Development
 
-Run `make -C providers/dsh check` for adapter, plugin, and script checks. Run
-`make -C providers/dsh image` on a host matching the requested architecture to
-build the pinned upstream release and a local provider image. The dedicated
-GitHub workflow uses native amd64 and arm64 runners and publishes the combined
-image as `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main`.
+Run `make -C providers/dsh check` for focused validation. See the [provider
+development guide](../DEVELOPMENT.md) for build, image, and publishing details.

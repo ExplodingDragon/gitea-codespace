@@ -39,7 +39,6 @@ type Request struct {
 	GitUserName          string
 	GitUserEmail         string
 	GiteaURL             string
-	GiteaCustomCA        bool
 	LocalEnvironment     map[string]string
 	Secrets              map[string]string
 	DevContainer         Configuration
@@ -59,9 +58,6 @@ func (r Request) Validate() error {
 		giteaURL, err := url.Parse(strings.TrimSpace(r.GiteaURL))
 		if err != nil || (giteaURL.Scheme != "http" && giteaURL.Scheme != "https") || giteaURL.Host == "" || giteaURL.User != nil || giteaURL.RawQuery != "" || giteaURL.Fragment != "" {
 			return fmt.Errorf("invalid Gitea URL")
-		}
-		if r.GiteaCustomCA && giteaURL.Scheme != "https" {
-			return fmt.Errorf("custom Gitea CA requires HTTPS")
 		}
 	}
 	switch r.Action {

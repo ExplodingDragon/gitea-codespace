@@ -20,27 +20,12 @@ so user changes survive stops and Pod replacements.
 }
 ```
 
-The Gitea Codespace extension is always installed because it provides the port
-management integration expected by the platform.
-
-### Expected behavior
-
-- During initial preparation, template settings are merged with repository
-  settings and written only when the persistent settings file does not exist.
-  Repository values take precedence for matching keys.
-- During initial preparation, extensions from both sources are installed once
-  per identifier, using the repository version when both sources select the
-  same extension.
-- During resume preparation, existing settings, extensions, and other user
-  state are preserved; template and repository options are not reapplied.
-- The bundled Codespace extension is checked during every preparation and is
-  installed or updated when its version marker differs from the bundled
-  version.
+The initial preparation merges template and repository values, with repository
+values taking precedence. Later starts preserve editor settings, extensions,
+and other user state. The bundled Gitea Codespace extension is kept current
+because it provides the platform's port management integration.
 
 ## Development
 
-Run `make -C providers/vscode check` for the adapter and extension checks. Run
-`make -C providers/vscode image` to download the pinned code-server release,
-package the extension, and build a local image for the current architecture. The
-dedicated GitHub workflow publishes linux/amd64 and linux/arm64 manifests under
-`ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main`.
+Run `make -C providers/vscode check` for focused validation. See the [provider
+development guide](../DEVELOPMENT.md) for build, image, and publishing details.

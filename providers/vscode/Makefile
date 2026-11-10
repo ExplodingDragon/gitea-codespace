@@ -7,10 +7,13 @@ ARCH ?= $(shell $(GO) env GOARCH)
 IMAGE ?= gitea-codespace-web-ide-vscode:local
 PROVIDER_SOURCE ?= https://github.com/ExplodingDragon/gitea-codespace
 PROVIDER_REVISION ?= development
+EXPORT_SCRIPT := ../export.sh
+SHELL_SCRIPTS := build.sh $(EXPORT_SCRIPT) runtime/prepare runtime/serve
 
 .PHONY: check version bundle image clean
 check:
-	$(SHFMT) -d -ln posix -i 2 build.sh export.sh runtime/prepare runtime/serve
+	@set -e; for script in $(SHELL_SCRIPTS); do sh -n "$$script"; done
+	$(SHFMT) -d -ln posix -i 2 $(SHELL_SCRIPTS)
 	node --check runtime/prepare.mjs
 	node --test adapter.test.mjs
 	$(PNPM) --dir extension install --frozen-lockfile
@@ -24,6 +27,7 @@ version:
 bundle: check
 	$(PNPM) --dir extension run build
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
+	cp $(EXPORT_SCRIPT) .tmp/export.sh
 
 image: bundle
 	@set -e; . ./version.env; \

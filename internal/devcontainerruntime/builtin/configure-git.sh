@@ -4,6 +4,7 @@ set -eu
 
 credential_helper='!f() { while IFS= read -r line; do [ -n "$line" ] || break; done; printf "username=codespace\npassword=%s\n\n" "$(cat /var/lib/gitea-codespace/gitea-token)"; }; f'
 ssh_command='ssh -i /var/lib/gitea-codespace/git/id -o IdentitiesOnly=yes -o UserKnownHostsFile=/var/lib/gitea-codespace/git/known_hosts -o StrictHostKeyChecking=yes'
+ca_bundle=/var/lib/gitea-codespace/ca/bundle.pem
 
 if command -v git >/dev/null 2>&1; then
   if [ "${GITEA_CONFIGURE_CA_ONLY:-false}" != true ]; then
@@ -17,13 +18,10 @@ if command -v git >/dev/null 2>&1; then
       git config --global core.sshCommand "$ssh_command"
     fi
   fi
-  if [ -n "${GITEA_URL:-}" ]; then
-    if [ -s "${GITEA_CA_BUNDLE:-}" ]; then
-      git config --global "http.$GITEA_URL/.sslCAInfo" "$GITEA_CA_BUNDLE"
-    else
-      git config --global --unset-all "http.$GITEA_URL/.sslCAInfo" 2>/dev/null || true
-    fi
-  fi
+  case ${GITEA_URL:-} in
+  https://*) git config --global "http.$GITEA_URL/.sslCAInfo" "$ca_bundle" ;;
+  http://*) git config --global --unset-all "http.$GITEA_URL/.sslCAInfo" 2>/dev/null || true ;;
+  esac
   exit 0
 fi
 
@@ -50,7 +48,7 @@ quote_git_config_value() {
   if [ -r /var/lib/gitea-codespace/git/id ] && [ -r /var/lib/gitea-codespace/git/known_hosts ]; then
     printf '[core]\n\tsshCommand = %s\n' "$(quote_git_config_value "$ssh_command")"
   fi
-  if [ -s "${GITEA_CA_BUNDLE:-}" ]; then
-    printf '[http %s]\n\tsslCAInfo = %s\n' "$(quote_git_config_value "$GITEA_URL/")" "$(quote_git_config_value "$GITEA_CA_BUNDLE")"
-  fi
+  case ${GITEA_URL:-} in
+  https://*) printf '[http %s]\n\tsslCAInfo = %s\n' "$(quote_git_config_value "$GITEA_URL/")" "$(quote_git_config_value "$ca_bundle")" ;;
+  esac
 } >>"$HOME/.gitconfig"

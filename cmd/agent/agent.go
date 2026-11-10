@@ -85,11 +85,6 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err != nil {
 		return fmt.Errorf("prepare native devices: %w", err)
 	}
-	if path := strings.TrimSpace(os.Getenv("CODESPACE_PROXY_CA_FILE")); path != "" {
-		if err := transport.ExtendDefaultRootCAs(path); err != nil {
-			return fmt.Errorf("configure proxy CA: %w", err)
-		}
-	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	managerIdentity := strings.TrimSpace(os.Getenv("CODESPACE_MANAGER_IDENTITY"))

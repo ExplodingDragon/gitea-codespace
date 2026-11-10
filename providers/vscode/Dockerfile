@@ -5,7 +5,7 @@ ARG TARGETARCH
 ARG PROVIDER_VERSION
 ARG PROVIDER_SOURCE
 ARG PROVIDER_REVISION
-COPY --chmod=0555 export.sh /usr/local/bin/export-web-ide
+COPY --chmod=0555 .tmp/export.sh /usr/local/bin/export-web-ide
 COPY .tmp/${TARGETARCH}/ /provider/
 
 LABEL org.opencontainers.image.title="Gitea Codespace VS Code Web IDE provider" \

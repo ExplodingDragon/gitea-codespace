@@ -384,10 +384,9 @@ func TestRuntimePodUsesProxySecret(t *testing.T) {
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
-	require.Contains(t, container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/proxy-ca.crt"})
 	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
 	require.Contains(t, pod.Spec.Volumes, corev1.Volume{Name: "proxy-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-		SecretName: "runtime-proxy", DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: proxyCAKey}},
+		SecretName: "runtime-proxy", DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: "ca.crt"}},
 	}}})
 	for _, name := range devcontainer.ProxyVariableNames() {
 		require.Contains(t, container.Env, corev1.EnvVar{Name: name, ValueFrom: &corev1.EnvVarSource{SecretKeyRef: &corev1.SecretKeySelector{

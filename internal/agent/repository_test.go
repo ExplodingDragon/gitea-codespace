@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/certificates"
 	"github.com/stretchr/testify/require"
 )
 
@@ -28,7 +29,7 @@ func TestGitCredentialCommand(t *testing.T) {
 func TestGitCredentialScope(t *testing.T) {
 	t.Parallel()
 
-	trust := siteTrust{giteaURL: "https://gitea.example.com/root"}
+	trust := runtimeTrust{giteaURL: "https://gitea.example.com/root", caBundlePath: certificates.OutboundBundlePath}
 	environment := trust.gitEnvironment([]string{"HOME=" + t.TempDir(), "GIT_CONFIG_NOSYSTEM=1"}, true)
 	lookup := func(rawURL string) ([]byte, error) {
 		command := exec.Command("git", "config", "--get-urlmatch", "credential.helper", rawURL)

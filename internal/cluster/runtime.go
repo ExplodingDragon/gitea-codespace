@@ -12,6 +12,7 @@ import (
 	"time"
 	"uuid"
 
+	"gitea.dev/codespace/internal/certificates"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	identitypkg "gitea.dev/codespace/internal/identity"
 	"gitea.dev/codespace/internal/runtimeplatform"
@@ -353,10 +354,9 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 		pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, proxyEnvironmentFromSecret(secretName)...)
 		if runtime.Proxy.CABundle != "" {
 			pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "proxy-ca", VolumeSource: corev1.VolumeSource{Secret: &corev1.SecretVolumeSource{
-				SecretName: secretName, DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: proxyCAKey}},
+				SecretName: secretName, DefaultMode: ptr.To(int32(0o444)), Items: []corev1.KeyToPath{{Key: proxyCAKey, Path: "ca.crt"}},
 			}}})
-			pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
-			pod.Spec.Containers[0].Env = append(pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/run/codespace/proxy/" + proxyCAKey})
+			pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: certificates.ProxyCADirectory, ReadOnly: true})
 		}
 	}
 	if runtime.DevContainer.WebIDE.Enabled() {

@@ -39,8 +39,8 @@ var (
 
 var platformEnvironmentNames = func() map[string]struct{} {
 	names := map[string]struct{}{
-		"CODESPACE_CA_BUNDLE": {}, "GITEA_CA_BUNDLE": {}, "GITEA_CLI_NO_UPDATE_NOTIFIER": {},
-		"GITEA_INSTANCE_URL": {}, "NODE_EXTRA_CA_CERTS": {},
+		"GITEA_CLI_NO_UPDATE_NOTIFIER": {}, "GITEA_INSTANCE_URL": {},
+		"NODE_EXTRA_CA_CERTS": {}, "SSL_CERT_FILE": {},
 	}
 	for _, name := range devcontainer.ProxyVariableNames() {
 		names[name] = struct{}{}

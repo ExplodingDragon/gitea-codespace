@@ -96,7 +96,7 @@ type DockerDaemon struct {
 	err     error
 }
 
-func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, nativeRuntime bool, output io.Writer) (*DockerDaemon, error) {
+func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, nativeRuntime bool, caBundlePath string, output io.Writer) (*DockerDaemon, error) {
 	if nativeRuntime {
 		// Kubernetes gives the container private, read-only cgroup and sysctl
 		// mounts. Making those mounts writable keeps nested containers inside
@@ -123,6 +123,7 @@ func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, native
 		arguments = append(arguments, "--cdi-spec-dir="+cdiSpecDirectory)
 	}
 	command := exec.Command("dockerd", arguments...)
+	command.Env = append(os.Environ(), "SSL_CERT_FILE="+caBundlePath)
 	command.Stdout, command.Stderr = output, output
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	if err := command.Start(); err != nil {

@@ -28,7 +28,7 @@ func repositoryWorkspace(repository *codespacev1.RepositoryCheckout) (string, er
 	return filepath.Join(workspaceRoot, parts[1]), nil
 }
 
-func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, trust siteTrust, stdout, stderr io.Writer) error {
+func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayload, repository *codespacev1.RepositoryCheckout, owner devcontainer.HostUser, trust runtimeTrust, stdout, stderr io.Writer) error {
 	target, err := repositoryWorkspace(repository)
 	if err != nil {
 		return err
@@ -108,7 +108,7 @@ func repositoryCloneEndpoint(cloneURL string) (string, string) {
 	return "SSH", host
 }
 
-func configureRepositoryCredentials(ctx context.Context, owner devcontainer.HostUser, directory, cloneURL string, trust siteTrust) error {
+func configureRepositoryCredentials(ctx context.Context, owner devcontainer.HostUser, directory, cloneURL string, trust runtimeTrust) error {
 	var key, value string
 	if strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://") {
 		if trust.giteaURL == "" {
@@ -119,7 +119,7 @@ func configureRepositoryCredentials(ctx context.Context, owner devcontainer.Host
 		key, value = "core.sshCommand", gitSSHCommand(runtimeGitDirectory)
 	}
 	command := exec.CommandContext(ctx, "git", "-C", directory, "config", key, value)
-	configureGitCommand(command, owner, "", siteTrust{})
+	configureGitCommand(command, owner, "", runtimeTrust{})
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("configure repository credentials: %w: %s", err, strings.TrimSpace(string(output)))
 	}
@@ -128,7 +128,7 @@ func configureRepositoryCredentials(ctx context.Context, owner devcontainer.Host
 
 func verifyWorkspace(ctx context.Context, owner devcontainer.HostUser, directory, commit string) error {
 	command := exec.CommandContext(ctx, "git", "-C", directory, "rev-parse", "HEAD")
-	configureGitCommand(command, owner, "", siteTrust{})
+	configureGitCommand(command, owner, "", runtimeTrust{})
 	output, err := command.Output()
 	if err != nil || strings.TrimSpace(string(output)) != strings.ToLower(commit) {
 		return fmt.Errorf("workspace commit does not match create input")
@@ -136,7 +136,7 @@ func verifyWorkspace(ctx context.Context, owner devcontainer.HostUser, directory
 	return nil
 }
 
-func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, directory string, repository *codespacev1.RepositoryCheckout, trust siteTrust, stdout, stderr io.Writer) error {
+func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, directory string, repository *codespacev1.RepositoryCheckout, trust runtimeTrust, stdout, stderr io.Writer) error {
 	ref, commit := strings.TrimSpace(repository.StartRef), strings.ToLower(repository.CommitSha)
 	run := func(arguments ...string) error {
 		return runGit(ctx, owner, directory, trust, stdout, stderr, "", arguments...)
@@ -176,7 +176,7 @@ func checkoutRepository(ctx context.Context, owner devcontainer.HostUser, direct
 	return verifyWorkspace(ctx, owner, directory, commit)
 }
 
-func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, trust siteTrust, stdout, stderr io.Writer, cloneURL string, arguments ...string) error {
+func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, trust runtimeTrust, stdout, stderr io.Writer, cloneURL string, arguments ...string) error {
 	if directory != "" {
 		arguments = append([]string{"-C", directory}, arguments...)
 	}
@@ -189,7 +189,7 @@ func runGit(ctx context.Context, owner devcontainer.HostUser, directory string, 
 	return nil
 }
 
-func configureGitCommand(command *exec.Cmd, owner devcontainer.HostUser, cloneURL string, trust siteTrust) {
+func configureGitCommand(command *exec.Cmd, owner devcontainer.HostUser, cloneURL string, trust runtimeTrust) {
 	command.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: owner.UID, Gid: owner.GID}}
 	command.Env = append(os.Environ(), "HOME="+owner.Home)
 	httpClone := strings.HasPrefix(cloneURL, "http://") || strings.HasPrefix(cloneURL, "https://")
