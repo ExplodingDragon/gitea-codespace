@@ -16,23 +16,35 @@ export const inject = ['remote', 'slots', 'locale']
 /** Mount the generated Remote namespace and the global Ports panel. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(codespaceRemote)
-  ctx.effect(() => ctx.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'codespace: port dictionaries')
-  const t = ctx.locale.bind(NS)
-  const unwrap = async <T,>(operation: () => Promise<{ ok: true; value: T } | { ok: false; error: { message: string } }>): Promise<T> => {
-    const result = await operation()
-    if (!result.ok) throw new Error(result.error.message)
-    return result.value
+  const ui = ctx.inject(['remote.codespace', 'slots', 'locale'], (scope) => {
+    scope.effect(() => scope.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'codespace: port dictionaries')
+    const t = scope.locale.bind(NS)
+    const unwrap = async <T,>(operation: () => Promise<{ ok: true; value: T } | { ok: false; error: { message: string } }>): Promise<T> => {
+      const result = await operation()
+      if (!result.ok) throw new Error(result.error.message)
+      return result.value
+    }
+    const injected: PortsPanelInjected = {
+      list: () => unwrap(() => scope.remote.codespace.list()),
+      publish: endpoint => unwrap(() => scope.remote.codespace.publish(endpoint)),
+      unpublish: port => unwrap(() => scope.remote.codespace.unpublish(port)),
+    }
+    scope.effect(() => scope.slots.inject('main', () => scope.slots.register({
+      name: 'main', key: PANEL_ID, locale: NS, inject: () => injected,
+    }, PortsPanel)), 'codespace: ports panel')
+    scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register({
+      name: 'sidebar.panellist', id: PANEL_ID, order: 20, locale: NS, label: () => t('panel'),
+    }, PortsPanelIcon)), 'codespace: ports navigation')
+  })
+  try {
+    await ui
+  } catch (error) {
+    await ui.dispose()
+    await disposeRemote()
+    throw error
   }
-  const injected: PortsPanelInjected = {
-    list: () => unwrap(() => ctx.remote.codespace.list()),
-    publish: endpoint => unwrap(() => ctx.remote.codespace.publish(endpoint)),
-    unpublish: port => unwrap(() => ctx.remote.codespace.unpublish(port)),
+  return async () => {
+    await ui.dispose()
+    await disposeRemote()
   }
-  ctx.effect(() => ctx.slots.inject('main', () => ctx.slots.register({
-    name: 'main', key: PANEL_ID, locale: NS, inject: () => injected,
-  }, PortsPanel)), 'codespace: ports panel')
-  ctx.effect(() => ctx.slots.inject('sidebar.panellist', () => ctx.slots.register({
-    name: 'sidebar.panellist', id: PANEL_ID, order: 20, locale: NS, label: () => t('panel'),
-  }, PortsPanelIcon)), 'codespace: ports navigation')
-  return disposeRemote
 }
