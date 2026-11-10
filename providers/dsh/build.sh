@@ -64,7 +64,7 @@ git -C "$work/source" apply "$source_root/codespace-integration.patch"
   mkdir -p packages/codespace/codespace
   cp -R "$source_root/plugin/package/." packages/codespace/codespace/
   node "$source_root/plugin/integrate.mjs" "$work/source"
-  pnpm install --filter @gitea/codespace-dsh --lockfile=false --offline
+  pnpm install --filter @gitea/codespace-dsh --lockfile=false --prefer-offline
   pnpm exec tsx scripts/generate-typert.ts
   pnpm exec tsc -b packages/codespace/codespace/tsconfig.host.json packages/codespace/codespace/tsconfig.client.json
   pnpm --dir packages/codespace/codespace run bundle
