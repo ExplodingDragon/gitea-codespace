@@ -61,6 +61,73 @@ incorrect active configuration is not published.
 - Supported settings persist in the web profile, missing entries produce a
   warning, and invalid active entries stop initialization with a direct error.
 
+### Use an OpenAI-compatible service
+
+A repository can supply the address, API protocol, and model catalog for an
+OpenAI-compatible service while asking Gitea to provide the API token as a
+Codespace secret. This keeps the shared Dev Container configuration useful to
+every contributor without storing a token in Git.
+
+Add the following structure to `.devcontainer/devcontainer.json`, replacing
+the example address and model ID with values accepted by the service:
+
+```jsonc
+{
+  "secrets": {
+    "COMPANY_OPENAI_TOKEN": {
+      "description": "API token for the company OpenAI-compatible service"
+    }
+  },
+  "customizations": {
+    "dsh": {
+      "settings": {
+        "llm-pi-ai": {
+          "providers": {
+            "company-openai": {
+              "apiKeyEnv": "COMPANY_OPENAI_TOKEN",
+              "api": "openai-completions",
+              "baseURL": "https://llm.example.com/v1",
+              "models": [{"id": "company-model"}]
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+`apiKeyEnv` names the environment variable that DSH reads; its value comes
+from the Codespace secret rather than this file. Use `openai-completions` when
+the service implements OpenAI Chat Completions, or `openai-responses` when it
+implements the OpenAI Responses API. The `baseURL` and every model `id` must
+match the service's API documentation.
+
+Before creating the codespace:
+
+1. Open **User settings → Codespaces → Secrets** in Gitea.
+2. Create `COMPANY_OPENAI_TOKEN` and grant it access to the repository. The
+   create page also offers a declared secret that has not been configured yet.
+3. Create the codespace and confirm the secret selection.
+4. Open DSH and select `company-openai` and the configured model.
+
+Each key under `settings` is a complete DSH profile entry. If the repository
+already configures `llm-pi-ai`, place every required provider in the same
+`providers` object because the repository entry replaces an environment
+template entry with the same ID. The repository configuration initializes a
+new codespace once; later starts retain changes made through DSH. Create a new
+codespace to apply changed repository defaults, or use **Settings → Models** in
+DSH to adjust an existing codespace.
+
+### Expected behavior
+
+- Gitea offers the declared token during codespace creation and supplies it to
+  DSH as `COMPANY_OPENAI_TOKEN`.
+- DSH lists the configured provider and models without persisting the token in
+  the repository configuration.
+- Restarting the codespace retains the DSH profile and uses the currently
+  authorized secret value.
+
 ## Codespace ports
 
 The bundled Codespace plugin provides a **Ports** page for listing, publishing,
