@@ -96,6 +96,22 @@ the current architecture. See the [provider development
 guide](providers/DEVELOPMENT.md) for the complete third-party integration
 workflow.
 
+The validation recipes fail fast when a required formatter, generator, rendered
+manifest comparison, Helm assertion, image build, or provider version load
+fails. This behavior is local to recipes that combine several shell steps, so
+optional Make variables retain their existing meaning. A successful final copy
+or cleanup command must not hide a failed check that ran earlier in the same
+recipe.
+
+### Implementation acceptance criteria
+
+- A failure injected into an earlier step of the Proto, Kubernetes, Helm, image
+  export, or provider version recipe produces a non-zero target result.
+- A successful cleanup or comparison after a failed step cannot make the target
+  appear successful.
+- Normal format, lint, generation, image, and provider workflows keep their
+  existing output and variable behavior.
+
 ## Kubernetes E2E
 
 The E2E suite uses a deterministic test provider and the Kubernetes cluster

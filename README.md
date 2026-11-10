@@ -128,18 +128,24 @@ provider integration.
 
 ## Versions
 
-The `main` chart and image tags track the current development build and are
-intended for evaluation before the first stable release. Published releases
-use matching chart and application versions; install one with:
+The `main` image tag tracks the current development build and is intended for
+evaluation before the first stable release. CI publishes
+pre-release OCI charts with versions in the form `0.1.0-main.<run>`. Use
+`--devel` to select the latest pre-release, or pin an exact chart version for a
+repeatable deployment:
 
 ```sh
 helm upgrade --install codespace \
   oci://ghcr.io/explodingdragon/charts/gitea-codespace \
-  --version <version> \
+  --version <chart-version> \
   --namespace codespace-system \
   --set admin.tokenSecret.name=codespace-admin \
   --wait
 ```
+
+Replace `<chart-version>` with the exact prerelease version to install.
+Published charts already contain the digest of the platform image built for
+that chart.
 
 Follow the [upgrade procedure](charts/gitea-codespace/README.md#upgrade) when
 moving an existing installation to another version.

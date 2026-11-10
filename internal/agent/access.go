@@ -6,6 +6,7 @@
 package agent
 
 import (
+	"bufio"
 	"context"
 	"crypto/ed25519"
 	"encoding/json"
@@ -27,12 +28,12 @@ import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
-	"gitea.dev/codespace/internal/runtimeendpoint"
 	dockertypes "github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 	"golang.org/x/sys/unix"
+	"google.golang.org/protobuf/encoding/protodelim"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -83,9 +84,6 @@ func (s *AccessServer) Access(ctx context.Context, stream agentv1connect.AgentAc
 	target, state, secrets, capability, endpoint, err := s.Runtime.authorize(open)
 	if err != nil {
 		return connect.NewError(connect.CodePermissionDenied, err.Error()).WithCause(err)
-	}
-	if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
-		return err
 	}
 	return runAccess(ctx, stream, state, secrets, target, capability, endpoint, open)
 }
@@ -189,9 +187,6 @@ func prepareAccessExec(ctx context.Context, state *devcontainer.State, secrets m
 		}
 		containerID = endpoint.ContainerId
 		command, user, workdir = []string{devcontainerruntime.ContainerRuntimeBinary, "runtime", "connect", "--host", "localhost", "--port", strconv.FormatUint(uint64(endpoint.Port), 10)}, "", "/"
-		if endpoint.Endpoint.GetEndpointId() == runtimeendpoint.WorkspaceEndpointID {
-			command = append(command, "--wait", "10s")
-		}
 	case agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP:
 		port := open.GetTcp().GetPort()
 		if port == 0 || port > 65535 {
@@ -259,11 +254,25 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	defer attached.Close()
 	stopClose := context.AfterFunc(ctx, attached.Close)
 	defer stopClose()
+	tcp := capability == agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT || capability == agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP
+	if !tcp {
+		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
+			return err
+		}
+	}
 	writeErr := make(chan error, 1)
 	go func() {
-		writeErr <- receiveAccessInput(ctx, stream, apiClient, created.ID, &attached, options.Tty)
+		writeErr <- receiveAccessInput(ctx, stream, apiClient, created.ID, &attached, options.Tty, tcp)
 	}()
-	outputErr := sendAccessOutput(stream, attached.Reader, options.Tty)
+	var outputErr error
+	if tcp {
+		outputErr = sendTCPAccessOutput(stream.Send, attached.Reader)
+	} else {
+		outputErr = sendAccessOutput(stream, attached.Reader, options.Tty)
+	}
+	if outputErr != nil {
+		return outputErr
+	}
 	result, inspectErr := apiClient.ContainerExecInspect(ctx, created.ID)
 	if inspectErr == nil {
 		inspectErr = stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: int32(result.ExitCode)}})
@@ -271,23 +280,36 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	select {
 	case receiveErr := <-writeErr:
 		if !errors.Is(receiveErr, io.EOF) && !errors.Is(receiveErr, context.Canceled) {
-			return errors.Join(outputErr, inspectErr, receiveErr)
+			return errors.Join(inspectErr, receiveErr)
 		}
 	default:
 	}
-	return errors.Join(outputErr, inspectErr)
+	return inspectErr
 }
 
-func receiveAccessInput(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, apiClient *client.Client, execID string, attached *dockertypes.HijackedResponse, tty bool) error {
+func receiveAccessInput(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, apiClient *client.Client, execID string, attached *dockertypes.HijackedResponse, tty, tcp bool) error {
 	for {
 		frame, err := stream.Receive()
 		if err != nil {
-			if errors.Is(err, io.EOF) && ctx.Err() == nil {
+			if !tcp && errors.Is(err, io.EOF) && ctx.Err() == nil {
 				_ = attached.CloseWrite()
 			} else {
 				attached.Close()
 			}
 			return err
+		}
+		if tcp {
+			switch frame.Frame.(type) {
+			case *agentv1.AccessRequest_Stdin, *agentv1.AccessRequest_StdinEof:
+				_, err = protodelim.MarshalTo(attached.Conn, frame)
+			default:
+				err = fmt.Errorf("invalid TCP input frame")
+			}
+			if err != nil {
+				attached.Close()
+				return err
+			}
+			continue
 		}
 		switch value := frame.Frame.(type) {
 		case *agentv1.AccessRequest_Stdin:
@@ -340,6 +362,61 @@ func receiveAccessInput(ctx context.Context, stream agentv1connect.AgentAccessSe
 		}
 		if err != nil {
 			attached.Close()
+			return err
+		}
+	}
+}
+
+// The helper's stdout is one ordered protocol stream. Docker stderr is only a
+// bounded diagnostic, including failures before the TCP connection is accepted.
+func sendTCPAccessOutput(send func(*agentv1.AccessResponse) error, reader io.Reader) error {
+	stdout, writer := io.Pipe()
+	done := make(chan error, 1)
+	var diagnostic []byte
+	go func() {
+		stderr := frameWriter{send: func(value []byte) error {
+			diagnostic = append(diagnostic, value[:min(len(value), 4096-len(diagnostic))]...)
+			return nil
+		}}
+		_, err := stdcopy.StdCopy(writer, stderr, reader)
+		_ = writer.CloseWithError(err)
+		done <- err
+	}()
+	defer func() { _ = stdout.Close() }()
+	buffer := bufio.NewReader(stdout)
+	accepted, outputEOF := false, false
+	for {
+		frame := &agentv1.AccessResponse{}
+		err := (protodelim.UnmarshalOptions{MaxSize: 256 * 1024}).UnmarshalFrom(buffer, frame)
+		if err != nil {
+			if errors.Is(err, io.EOF) {
+				copyErr := <-done
+				if !accepted || !outputEOF {
+					return errors.Join(copyErr, fmt.Errorf("TCP helper ended before completing the stream: %s", strings.TrimSpace(string(diagnostic))))
+				}
+				return copyErr
+			}
+			return err
+		}
+		switch value := frame.Frame.(type) {
+		case *agentv1.AccessResponse_Accepted:
+			if accepted || !value.Accepted {
+				return fmt.Errorf("invalid TCP acceptance")
+			}
+			accepted = true
+		case *agentv1.AccessResponse_Stdout:
+			if !accepted || outputEOF {
+				return fmt.Errorf("TCP output outside the connected stream")
+			}
+		case *agentv1.AccessResponse_StdoutEof:
+			if !accepted || outputEOF || !value.StdoutEof {
+				return fmt.Errorf("invalid TCP output EOF")
+			}
+			outputEOF = true
+		default:
+			return fmt.Errorf("invalid TCP output frame")
+		}
+		if err := send(frame); err != nil {
 			return err
 		}
 	}

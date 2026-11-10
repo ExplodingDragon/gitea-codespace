@@ -62,33 +62,41 @@ func (s *sshServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channe
 		defer close(requestsDone)
 		s.rejectWorkspaceSessionRequests(requests, activity)
 	}()
-	clientToBackendDone := make(chan struct{})
-	backendToClientDone := make(chan struct{})
+	copyDone := make(chan error, 2)
 	go func() {
-		defer close(clientToBackendDone)
-		_ = copyGatewaySSHData(conn, channel, activity)
-		if writer, ok := conn.(interface{ CloseWrite() error }); ok {
-			_ = writer.CloseWrite()
+		err := copyGatewaySSHData(conn, channel, activity)
+		if writer, ok := conn.(interface{ CloseWrite() error }); ok && err == nil {
+			err = writer.CloseWrite()
 		}
+		copyDone <- err
 	}()
 	go func() {
-		defer close(backendToClientDone)
-		_ = copyGatewaySSHData(channel, conn, activity)
+		err := copyGatewaySSHData(channel, conn, activity)
+		if err == nil {
+			err = channel.CloseWrite()
+		}
+		copyDone <- err
 	}()
-	select {
-	case <-ctx.Done():
-	case <-requestsDone:
-	case <-backendToClientDone:
-	case <-clientToBackendDone:
+	remaining := 2
+copying:
+	for remaining > 0 {
 		select {
 		case <-ctx.Done():
+			break copying
 		case <-requestsDone:
-		case <-backendToClientDone:
+			break copying
+		case err := <-copyDone:
+			remaining--
+			if err != nil {
+				break copying
+			}
 		}
 	}
 	_ = channel.Close()
 	_ = conn.Close()
-	waitGatewaySSHChannels(ctx, clientToBackendDone, backendToClientDone)
+	for range remaining {
+		<-copyDone
+	}
 }
 
 func (s *sshServer) handleWorkspaceSessionRequests(session workspaceCommandSession, requests <-chan *ssh.Request, ptyEnabled bool, activity chan<- struct{}) {

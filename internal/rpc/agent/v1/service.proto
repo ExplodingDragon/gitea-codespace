@@ -236,9 +236,12 @@ message LoopbackTCP {
 
 message AccessResponse {
   oneof frame {
+    // Process attached, or TCP target connected. Sent before stdout.
     bool accepted = 1;
     bytes stdout = 2;
     bytes stderr = 3;
     int32 exit_status = 4;
+    // TCP target finished sending. The input direction remains writable.
+    bool stdout_eof = 5;
   }
 }

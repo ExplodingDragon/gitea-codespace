@@ -32,6 +32,10 @@ func attachTestCacheControl(t *testing.T, cache *registryCache) {
 	cache.tokenKey = []byte(strings.Repeat("t", 32))
 }
 
+func testMirrorRepository(host, image string) string {
+	return "mirror/" + configpkg.CacheUpstreamID(host) + "/" + image
+}
+
 func testRegistryToken(t *testing.T, cache *registryCache, namespace string, policy configpkg.CachePolicy) string {
 	t.Helper()
 	if cache.id == "" {
@@ -92,7 +96,7 @@ func TestRegistryCacheProxyRefreshesTagsAndRejectsWrites(t *testing.T) {
 	unknown := httptest.NewRecorder()
 	cache.httpHandler().ServeHTTP(unknown, httptest.NewRequest(http.MethodGet, "/", nil))
 	require.Equal(t, http.StatusUnauthorized, unknown.Code)
-	path := "/v2/mirror/" + host + "/team/image/manifests/latest"
+	path := "/v2/" + testMirrorRepository(host, "team/image/manifests/latest")
 	var previous string
 	for i := range 2 {
 		revision.Store(int32(i))
@@ -328,58 +332,59 @@ func TestRegistryCacheCleanupAcceptsEmptyStorage(t *testing.T) {
 	}
 }
 
-func TestRegistryCacheAuthorizesScopedCacheRepository(t *testing.T) {
-	t.Parallel()
+func TestRegistryCachePruneCanBeCanceledWhileRequestsAreActive(t *testing.T) {
+	cache := &registryCache{enabled: true, storageDir: t.TempDir()}
+	driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": cache.storageDir})
+	require.NoError(t, err)
+	cache.driver = driver
 
-	cache := &registryCache{
-		secret: []byte("secret"),
-		upstreams: map[string]registryCacheUpstream{
-			"ghcr.io": {allow: []string{"devcontainers/*"}},
-		},
-	}
-	repoHash := Namespace(cache.secret, "site-one", 2, 3)
-	request, err := http.NewRequest(http.MethodPut, "/v2/cache/"+repoHash+"/build/manifests/cache", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.SetBasicAuth(Username, testRegistryToken(t, cache, repoHash, configpkg.CachePolicy{Public: true, Build: true}))
-	if err := cache.authorize(request, "cache/"+repoHash+"/build", "push"); err != nil {
-		t.Fatalf("authorize cache push: %v", err)
-	}
-	if err := cache.authorize(request, "mirror/ghcr.io/devcontainers/features/go", "pull"); err != nil {
-		t.Fatalf("authorize mirror pull: %v", err)
-	}
+	cache.maintenance.RLock()
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	err = cache.prune(ctx)
+	cache.maintenance.RUnlock()
+
+	require.ErrorIs(t, err, context.DeadlineExceeded)
+	require.False(t, cache.maintenanceRequested.Load())
 }
 
-func TestRegistryCacheRejectsUnauthorizedRepositories(t *testing.T) {
+func TestRegistryCacheRepositoryAuthorization(t *testing.T) {
 	t.Parallel()
 
 	cache := &registryCache{
 		secret: []byte("secret"),
 		upstreams: map[string]registryCacheUpstream{
-			"ghcr.io": {allow: []string{"devcontainers/*"}},
+			configpkg.CacheUpstreamID("ghcr.io"): {host: "ghcr.io", allow: []string{"devcontainers/*", "team/*"}},
 		},
 	}
 	repoHash := Namespace(cache.secret, "site-one", 2, 3)
-	request, err := http.NewRequest(http.MethodGet, "/v2/cache/"+repoHash+"/build/manifests/cache", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.SetBasicAuth(Username, testRegistryToken(t, cache, repoHash, configpkg.CachePolicy{Public: true, Build: true}))
+	token := testRegistryToken(t, cache, repoHash, configpkg.CachePolicy{Public: true, Build: true})
 
 	for _, tc := range []struct {
 		name       string
 		repository string
 		action     string
+		allowed    bool
 	}{
+		{name: "scoped build push", repository: "cache/" + repoHash + "/build", action: "push", allowed: true},
+		{name: "allowed mirror pull", repository: testMirrorRepository("ghcr.io", "devcontainers/features/go"), action: "pull", allowed: true},
 		{name: "tampered cache namespace", repository: "cache/" + repoHash[:len(repoHash)-1] + "x/build", action: "pull"},
-		{name: "unknown mirror host", repository: "mirror/docker.io/library/ubuntu", action: "pull"},
-		{name: "disallowed mirror path", repository: "mirror/ghcr.io/other/image", action: "pull"},
+		{name: "unknown mirror host", repository: testMirrorRepository("docker.io", "library/ubuntu"), action: "pull"},
+		{name: "disallowed mirror path", repository: testMirrorRepository("ghcr.io", "other/image"), action: "pull"},
 		{name: "unsupported action", repository: "cache/" + repoHash + "/build", action: "other"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := cache.authorize(request, tc.repository, tc.action); err == nil {
-				t.Fatalf("authorized %s %s", tc.action, tc.repository)
+			method := http.MethodGet
+			if tc.action == "push" {
+				method = http.MethodPut
+			}
+			request := httptest.NewRequest(method, "/v2/"+tc.repository+"/manifests/cache", nil)
+			request.SetBasicAuth(Username, token)
+			err := cache.authorize(request, tc.repository, tc.action)
+			if tc.allowed {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
 			}
 		})
 	}

@@ -39,6 +39,8 @@ type agentBackend struct {
 }
 
 type agentClient struct {
+	ctx         context.Context
+	cancel      context.CancelFunc
 	address     string
 	siteUID     string
 	resourceUID string
@@ -46,22 +48,32 @@ type agentClient struct {
 	access      agentv1connect.AgentAccessServiceClient
 }
 
-type agentAccessStream struct {
-	cancel context.CancelFunc
-	stream agentv1connect.AgentAccessServiceAccessClientStream
-	mu     sync.Mutex
+func (c *agentClient) close() {
+	c.cancel()
+	c.transport.CloseIdleConnections()
 }
 
-func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentAccessStream, error) {
+type agentAccessStream struct {
+	ctx      context.Context
+	cancel   context.CancelFunc
+	stream   agentv1connect.AgentAccessServiceAccessClientStream
+	mu       sync.Mutex
+	once     sync.Once
+	closeErr error
+}
+
+func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (_ *agentAccessStream, resultErr error) {
 	if b == nil || b.Manager == nil {
 		return nil, fmt.Errorf("agent backend is unavailable")
 	}
-	streamCtx, cancel := context.WithCancel(ctx)
-	setupTimer := time.AfterFunc(agentAccessSetupTimeout, cancel)
+	streamCtx, cancelCause := context.WithCancelCause(ctx)
+	cancel := func() { cancelCause(context.Canceled) }
+	setupTimer := time.AfterFunc(agentAccessSetupTimeout, func() { cancelCause(context.DeadlineExceeded) })
 	established := false
 	defer func() {
 		if !established {
 			setupTimer.Stop()
+			resultErr = errors.Join(resultErr, context.Cause(streamCtx))
 			cancel()
 		}
 	}()
@@ -80,6 +92,12 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	client, err := b.clientFor(route)
 	if err != nil {
 		return nil, wrapGatewayUpstreamTargetError("agent_connect", target, err)
+	}
+	stopClient := context.AfterFunc(client.ctx, cancel)
+	streamCancel := cancel
+	cancel = func() {
+		stopClient()
+		streamCancel()
 	}
 	stream, err := client.access.Access(streamCtx)
 	if err != nil {
@@ -102,7 +120,7 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	established = true
 	gatewayLog(streamCtx, slog.LevelDebug, "gateway_agent_access_opened",
 		append(gatewayRuntimeLogAttrs(target), slog.String("capability", capability.String()), slog.String("endpoint_id", endpointID))...)
-	return &agentAccessStream{cancel: cancel, stream: stream}, nil
+	return &agentAccessStream{ctx: streamCtx, cancel: cancel, stream: stream}, nil
 }
 
 func (b *agentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agentClient, error) {
@@ -115,7 +133,7 @@ func (b *agentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 		if client.address == route.AgentAddress && client.siteUID == route.SiteUid && client.resourceUID == route.ResourceUid {
 			return client, nil
 		}
-		client.transport.CloseIdleConnections()
+		client.close()
 		delete(b.clients, route.PodUid)
 	}
 	if b.Certificates == nil {
@@ -131,9 +149,13 @@ func (b *agentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agent
 	if err != nil {
 		return nil, err
 	}
-	httpTransport := &http.Transport{TLSClientConfig: tlsConfig, ForceAttemptHTTP2: true, TLSHandshakeTimeout: 10 * time.Second}
+	httpTransport := http.DefaultTransport.(*http.Transport).Clone()
+	httpTransport.Proxy = nil
+	httpTransport.TLSClientConfig = tlsConfig
 	httpClient := &http.Client{Transport: httpTransport}
+	ctx, cancel := context.WithCancel(context.Background())
 	client := &agentClient{
+		ctx: ctx, cancel: cancel,
 		address: route.AgentAddress, siteUID: route.SiteUid, resourceUID: route.ResourceUid,
 		transport: httpTransport,
 		access:    agentv1connect.NewAgentAccessServiceClient(connect.NewClient(connecthttp.NewTransport(httpClient, "https://"+route.AgentAddress, connecthttp.WithGRPC()))),
@@ -148,7 +170,7 @@ func (b *agentBackend) ClosePod(podUID string) {
 	delete(b.clients, podUID)
 	b.mu.Unlock()
 	if client != nil {
-		client.transport.CloseIdleConnections()
+		client.close()
 	}
 }
 
@@ -158,7 +180,7 @@ func (b *agentBackend) Close() {
 	b.clients = make(map[string]*agentClient)
 	b.mu.Unlock()
 	for _, client := range clients {
-		client.transport.CloseIdleConnections()
+		client.close()
 	}
 }
 
@@ -169,18 +191,21 @@ func (s *agentAccessStream) send(frame *agentv1.AccessRequest) error {
 }
 
 func (s *agentAccessStream) close() error {
-	s.cancel()
-	s.mu.Lock()
-	requestErr := s.stream.CloseSend()
-	s.mu.Unlock()
-	responseErr := s.stream.Close()
-	if errors.Is(requestErr, io.EOF) || errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, net.ErrClosed) {
-		requestErr = nil
-	}
-	if errors.Is(responseErr, io.EOF) || errors.Is(responseErr, context.Canceled) || errors.Is(responseErr, net.ErrClosed) {
-		responseErr = nil
-	}
-	return errors.Join(requestErr, responseErr)
+	s.once.Do(func() {
+		s.cancel()
+		s.mu.Lock()
+		requestErr := s.stream.CloseSend()
+		s.mu.Unlock()
+		responseErr := s.stream.Close()
+		if errors.Is(requestErr, io.EOF) || errors.Is(requestErr, context.Canceled) || errors.Is(requestErr, net.ErrClosed) {
+			requestErr = nil
+		}
+		if errors.Is(responseErr, io.EOF) || errors.Is(responseErr, context.Canceled) || errors.Is(responseErr, net.ErrClosed) {
+			responseErr = nil
+		}
+		s.closeErr = errors.Join(requestErr, responseErr)
+	})
+	return s.closeErr
 }
 
 type agentCommandSession struct {
@@ -245,9 +270,15 @@ func (b *agentBackend) openWorkspaceProcess(ctx context.Context, runtimeUUID str
 	stderrReader, stderrWriter := io.Pipe()
 	session := &agentCommandSession{access: access, stdout: stdoutReader, stderr: stderrReader, done: make(chan error, 1)}
 	session.stdin = &agentInput{access: access}
+	stopClose := context.AfterFunc(access.ctx, func() {
+		_ = stdoutWriter.CloseWithError(access.ctx.Err())
+		_ = stderrWriter.CloseWithError(access.ctx.Err())
+	})
 	go func() {
+		defer func() { _ = access.close() }()
 		defer func() { _ = stdoutWriter.Close() }()
 		defer func() { _ = stderrWriter.Close() }()
+		defer stopClose()
 		for {
 			response, err := access.stream.Receive()
 			if err != nil {
@@ -298,10 +329,15 @@ func (s *agentCommandSession) Close() error {
 }
 
 type agentConn struct {
-	reader net.Conn
-	writer net.Conn
-	access *agentAccessStream
-	once   sync.Once
+	reader         net.Conn
+	writer         net.Conn
+	responseBridge net.Conn
+	requestBridge  net.Conn
+	access         *agentAccessStream
+	once           sync.Once
+	mu             sync.Mutex
+	terminalErr    error
+	outputEOF      bool
 }
 
 func (b *agentBackend) openStream(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (*agentConn, error) {
@@ -311,33 +347,72 @@ func (b *agentBackend) openStream(ctx context.Context, runtimeUUID string, capab
 	}
 	reader, responseBridge := net.Pipe()
 	writer, requestBridge := net.Pipe()
-	conn := &agentConn{reader: reader, writer: writer, access: access}
+	conn := &agentConn{reader: reader, writer: writer, responseBridge: responseBridge, requestBridge: requestBridge, access: access}
+	stopClose := context.AfterFunc(access.ctx, func() { conn.finish(access.ctx.Err()) })
 	go func() {
-		defer func() { _ = responseBridge.Close() }()
-		defer func() { _ = requestBridge.Close() }()
-		defer access.cancel()
+		defer stopClose()
+		var diagnostic []byte
+		var receiveErr error
+		defer func() {
+			if receiveErr != nil && len(diagnostic) != 0 {
+				receiveErr = fmt.Errorf("%w: %s", receiveErr, strings.TrimSpace(string(diagnostic)))
+			}
+			conn.finish(receiveErr)
+		}()
+		outputEOF := false
 		for {
 			response, err := access.stream.Receive()
 			if err != nil {
+				if errors.Is(err, io.EOF) {
+					err = io.ErrUnexpectedEOF
+				}
+				receiveErr = err
 				return
 			}
 			switch frame := response.Frame.(type) {
 			case *agentv1.AccessResponse_Stdout:
-				_, err = responseBridge.Write(frame.Stdout)
+				if outputEOF {
+					err = fmt.Errorf("agent sent data after TCP output EOF")
+				} else {
+					_, err = responseBridge.Write(frame.Stdout)
+				}
 			case *agentv1.AccessResponse_Stderr:
-				_, err = responseBridge.Write(frame.Stderr)
+				diagnostic = append(diagnostic, frame.Stderr[:min(len(frame.Stderr), 4096-len(diagnostic))]...)
+			case *agentv1.AccessResponse_StdoutEof:
+				if outputEOF || !frame.StdoutEof || capability == agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
+					err = fmt.Errorf("invalid Agent TCP output EOF")
+				} else {
+					outputEOF = true
+					conn.mu.Lock()
+					conn.outputEOF = true
+					conn.mu.Unlock()
+					_ = responseBridge.Close()
+				}
 			case *agentv1.AccessResponse_ExitStatus:
+				if frame.ExitStatus != 0 {
+					receiveErr = &workspaceCommandExitError{Status: int(frame.ExitStatus)}
+				} else if !outputEOF && capability != agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
+					receiveErr = io.ErrUnexpectedEOF
+				}
 				return
+			default:
+				err = fmt.Errorf("invalid Agent output frame")
 			}
 			if err != nil {
+				receiveErr = err
 				return
 			}
 		}
 	}()
 	go func() {
 		input := &agentInput{access: access}
-		_, _ = io.Copy(input, requestBridge)
-		_ = input.Close()
+		_, err := io.Copy(input, requestBridge)
+		if err == nil {
+			err = input.Close()
+		}
+		if err != nil {
+			conn.finish(err)
+		}
 		_ = requestBridge.Close()
 	}()
 	return conn, nil
@@ -355,16 +430,45 @@ func (b *agentBackend) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, e
 	return b.openStream(ctx, runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, endpointID, &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Endpoint{Endpoint: &agentv1.Endpoint{EndpointId: endpointID}}})
 }
 
-func (c *agentConn) Read(value []byte) (int, error)  { return c.reader.Read(value) }
-func (c *agentConn) Write(value []byte) (int, error) { return c.writer.Write(value) }
-func (c *agentConn) CloseWrite() error               { return c.writer.Close() }
+func (c *agentConn) Read(value []byte) (int, error) {
+	n, err := c.reader.Read(value)
+	if err != nil {
+		c.mu.Lock()
+		if !c.outputEOF && c.terminalErr != nil {
+			err = c.terminalErr
+		}
+		c.mu.Unlock()
+	}
+	return n, err
+}
+
+func (c *agentConn) Write(value []byte) (int, error) {
+	n, err := c.writer.Write(value)
+	if err != nil {
+		c.mu.Lock()
+		if c.terminalErr != nil {
+			err = c.terminalErr
+		}
+		c.mu.Unlock()
+	}
+	return n, err
+}
+func (c *agentConn) CloseWrite() error { return c.writer.Close() }
+
+func (c *agentConn) finish(err error) {
+	c.once.Do(func() {
+		c.mu.Lock()
+		c.terminalErr = err
+		c.mu.Unlock()
+		_ = c.responseBridge.Close()
+		_ = c.requestBridge.Close()
+		_ = c.access.close()
+	})
+}
 
 func (c *agentConn) Close() error {
-	var err error
-	c.once.Do(func() {
-		err = errors.Join(c.reader.Close(), c.writer.Close(), c.access.close())
-	})
-	return err
+	c.finish(net.ErrClosed)
+	return errors.Join(c.reader.Close(), c.writer.Close())
 }
 func (c *agentConn) LocalAddr() net.Addr  { return agentAddress("gateway") }
 func (c *agentConn) RemoteAddr() net.Addr { return agentAddress("runtime-agent") }

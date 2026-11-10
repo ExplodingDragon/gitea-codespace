@@ -86,6 +86,7 @@ func TestComponentReconcilerMaterializesGatewayAndCache(t *testing.T) {
 			require.Equal(t, intstr.FromInt(1), *deployment.Spec.Strategy.RollingUpdate.MaxSurge)
 			require.Len(t, deployment.Spec.Template.Spec.Affinity.PodAntiAffinity.PreferredDuringSchedulingIgnoredDuringExecution, 1)
 		} else {
+			require.Contains(t, container.Ports, corev1.ContainerPort{Name: cacheHTTPSPortName, ContainerPort: 8443})
 			require.Equal(t, int32(1), ptr.Deref(deployment.Spec.Replicas, int32(0)))
 			require.Equal(t, appsv1.RecreateDeploymentStrategyType, deployment.Spec.Strategy.Type)
 			require.Nil(t, deployment.Spec.Strategy.RollingUpdate)
@@ -185,6 +186,26 @@ func TestComponentReconcilerRejectsCredentialOwnershipConflict(t *testing.T) {
 
 	_, err := reconciler.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(component)})
 	require.ErrorContains(t, err, "credential ownership conflicts")
+}
+
+func TestComponentReconcilerRejectsCacheStorageClassChange(t *testing.T) {
+	component := testCacheComponent("cache", "cache-uid")
+	component.Spec.Cache.Storage.StorageClassName = "fast"
+	claim := managedCacheVolume(component, "slow")
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(claim).Build()
+	reconciler := &ComponentReconciler{Client: c, ManagementNamespace: claim.Namespace}
+	require.EqualError(t, reconciler.reconcileCacheVolume(t.Context(), component), `cache volume storage class is "slow", but configuration requests "fast"; storage class is immutable after PVC creation`)
+}
+
+func TestComponentReconcilerKeepsDefaultStorageClassOnExistingCacheVolume(t *testing.T) {
+	component := testCacheComponent("cache", "cache-uid")
+	claim := managedCacheVolume(component, "slow")
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(claim).Build()
+	reconciler := &ComponentReconciler{Client: c, ManagementNamespace: claim.Namespace}
+	require.NoError(t, reconciler.reconcileCacheVolume(t.Context(), component))
+	var updated corev1.PersistentVolumeClaim
+	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(claim), &updated))
+	require.Equal(t, "slow", ptr.Deref(updated.Spec.StorageClassName, ""))
 }
 
 func TestComponentReconcilerWaitsForCertManagerTLSSecret(t *testing.T) {

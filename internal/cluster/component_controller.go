@@ -53,6 +53,7 @@ const (
 	componentCredentialRevisionAnnotation = "codespace.gitea.dev/credential-revision"
 	componentReconcileInterval            = 5 * time.Minute
 	gatewaySessionKey                     = "sessionKey"
+	cacheHTTPSPortName                    = "https"
 )
 
 func gatewayHostKeySecretName(componentName string) string {
@@ -410,8 +411,8 @@ func (r *ComponentReconciler) reconcileService(ctx context.Context, component *a
 		}
 	} else {
 		containerPorts = []int32{cacheContainerPort}
-		https := "https"
-		ports = []corev1.ServicePort{{Name: "https", Port: cacheServicePort, TargetPort: intstr.FromString("https"), AppProtocol: &https}}
+		https := cacheHTTPSPortName
+		ports = []corev1.ServicePort{{Name: cacheHTTPSPortName, Port: cacheServicePort, TargetPort: intstr.FromString(cacheHTTPSPortName), AppProtocol: &https}}
 	}
 	service := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
 	_, err := controllerutil.CreateOrPatch(ctx, r.Client, service, func() error {
@@ -435,16 +436,29 @@ func (r *ComponentReconciler) reconcileCacheVolume(ctx context.Context, componen
 	}
 	claim := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: component.Name, Namespace: r.ManagementNamespace}}
 	_, err = controllerutil.CreateOrPatch(ctx, r.Client, claim, func() error {
+		existing := claim.ResourceVersion != ""
+		if existing {
+			if !metav1.IsControlledBy(claim, component) || claim.Labels[ComponentUIDLabel] != string(component.UID) {
+				return fmt.Errorf("cache volume ownership conflicts")
+			}
+			actualStorageClass := ptr.Deref(claim.Spec.StorageClassName, "")
+			if storage.StorageClassName != "" && actualStorageClass != storage.StorageClassName {
+				return fmt.Errorf("cache volume storage class is %q, but configuration requests %q; storage class is immutable after PVC creation", actualStorageClass, storage.StorageClassName)
+			}
+		}
 		if err := controllerutil.SetControllerReference(component, claim, r.Client.Scheme()); err != nil {
 			return err
 		}
 		claim.Labels = map[string]string{ComponentLabel: "cache", ComponentUIDLabel: string(component.UID)}
-		if claim.Spec.Resources.Requests == nil {
+		if !existing {
 			claim.Spec.AccessModes = []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce}
 			claim.Spec.Resources.Requests = corev1.ResourceList{}
 			if storage.StorageClassName != "" {
 				claim.Spec.StorageClassName = ptr.To(storage.StorageClassName)
 			}
+		}
+		if claim.Spec.Resources.Requests == nil {
+			claim.Spec.Resources.Requests = corev1.ResourceList{}
 		}
 		claim.Spec.Resources.Requests[corev1.ResourceStorage] = volumeSize
 		return nil
@@ -562,7 +576,7 @@ func configureCacheDeployment(component *api.CodespaceComponent, deployment *app
 			container.Env = append(container.Env, corev1.EnvVar{Name: "CODESPACE_PROXY_CA_FILE", Value: "/var/run/codespace/cache/" + proxyCAKey})
 		}
 	}
-	container.Ports = append([]corev1.ContainerPort{{Name: "https", ContainerPort: ports[0]}}, container.Ports...)
+	container.Ports = append([]corev1.ContainerPort{{Name: cacheHTTPSPortName, ContainerPort: ports[0]}}, container.Ports...)
 	items := []corev1.KeyToPath{{Key: "registryKey", Path: "registry-key"}, {Key: "tokenKey", Path: "token-key"}}
 	if cache.Storage.Driver == "s3" {
 		items = append(items, corev1.KeyToPath{Key: "s3AccessKey", Path: "s3-access-key"}, corev1.KeyToPath{Key: "s3SecretKey", Path: "s3-secret-key"})

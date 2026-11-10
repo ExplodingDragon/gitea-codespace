@@ -217,7 +217,9 @@
     "pods": "Pods",
     "persistentVolumes": "Persistent volumes",
     "cpuRequests": "CPU requests",
-    "deviceQuota": "{{resource}} requests",
+    "deviceQuota": "{resource} requests",
+    "deviceQuotaUnused": "{resource} requests (not used by selected templates)",
+    "removeUnusedDeviceQuota": "Remove unused {resource} quota",
     "memoryRequests": "Memory requests",
     "storage": "Storage",
     "invalidQuota": "Enter a positive quota for {resource}."
@@ -287,6 +289,7 @@
     "maxCacheSizeHelp": "Cache cleanup keeps stored data at or below this size.",
     "volumeSizeHelp": "Persistent volume capacity for cache data and reserved free space.",
     "storageClassHelp": "Select the StorageClass used to provision the cache volume.",
+    "storageClassLockedHelp": "This cache already has a persistent volume. Its StorageClass is fixed at {name}.",
     "s3Endpoint": "S3 endpoint",
     "region": "Region",
     "bucket": "Bucket",

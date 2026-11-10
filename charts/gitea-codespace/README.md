@@ -80,9 +80,12 @@ helm upgrade --install codespace \
   --timeout 5m
 ```
 
-This installs the latest `main` prerelease. For a release, replace `--devel`
-with `--version <chart-version>`. Published charts select the matching platform
-image by digest.
+This installs the latest `main` prerelease. Published prerelease versions use
+the form `0.1.0-main.<run>`; replace `--devel` with
+`--version 0.1.0-main.<run>` when the installation must select one exact
+chart. The source chart defaults to the `main` image tag with no digest for
+local development, while each published chart contains the digest of the
+platform image built for that chart.
 
 Configure `image.pullSecrets` when the platform or Web IDE images are stored in
 a private registry. The same credentials are made available to workspace Pods.
@@ -160,6 +163,61 @@ Gateway. Allow configured outbound proxies through the site NetworkPolicy.
 
 Cache is cluster-internal and uses Manager's internal CA. Use a persistent
 volume for the local backend or shared object storage for the S3 backend.
+
+Cache cleanup is coordinated with the existing Cache GC Lease. During cleanup,
+new cache credentials are temporarily withheld while credentials already issued
+remain valid long enough to finish a multi-request image push. New workspaces
+use another Cache when one is available; when no Cache is available, the
+workspace can continue without cache acceleration. This keeps cleanup from
+removing a layer between upload and manifest submission without changing
+workspace lifecycle state. A Cache control-stream reconnect or Manager restart
+continues the existing cleanup deadline instead of extending the lifetime of
+already issued credentials.
+
+The StorageClass of a Cache PVC is selected when the PVC is created and then
+becomes part of the running storage configuration. The administration page
+shows the actual class for an existing PVC; changing it requires creating a new
+Cache and rebinding the site because Kubernetes does not migrate an existing
+PVC between StorageClasses. Cache data is reproducible, so this operation does
+not require a data migration workflow.
+
+### Verify
+
+- Runtime Pods can reach the Cache Service through its `443/https` endpoint.
+- An image push that overlaps the beginning of Cache cleanup can finish its
+  blob and manifest requests before cleanup starts.
+- Editing an existing Cache shows its actual StorageClass and does not report a
+  changed class as successfully applied.
+
+## Resource monitoring
+
+Manager prefers the cluster Metrics API for Runtime CPU and memory usage,
+with Agent cgroup measurements as a fallback. Install Metrics Server if the
+cluster does not already provide `metrics.k8s.io`. Limits come from the actual
+Runtime Pod configuration; an unset limit is displayed as unlimited.
+
+CPU and memory are collected every 30 seconds. Filesystem volume statistics
+are collected from kubelet Summary once per relevant node every 60 seconds.
+Manager combines valid Agent and kubelet available-space measurements by
+taking the smaller value. Kata block volumes use the Agent's mounted
+filesystem. PVC requested capacity is not a free-space measurement, and a
+shared filesystem's free space is not an exclusive workspace quota.
+
+The chart grants `list` on `metrics.k8s.io/pods` and `get` on `nodes/proxy`.
+The latter lets Manager reach kubelet Summary through the Kubernetes API;
+Kubernetes authorizes the whole node proxy rather than only the Summary path,
+so this permission grants broader kubelet access. Operators managing RBAC
+separately can omit it and use Agent filesystem measurements instead. Missing
+monitoring APIs or permissions affect statistics, not workspace lifecycle.
+
+### Verify
+
+- CPU and memory usage match the Runtime container in `kubectl top pod
+  --containers`, allowing for different sample times.
+- Filesystem statistics report available space rather than the PVC request;
+  a valid zero available-space observation is shown as full.
+- A temporary metrics outage retains fresh observations and then falls back
+  to Agent measurements; observations expire instead of becoming zero usage.
 
 ## Upgrade
 

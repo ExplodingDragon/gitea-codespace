@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/stretchr/testify/require"
@@ -84,7 +85,7 @@ func TestRuntimePreparesDockerCacheTrust(t *testing.T) {
 	}
 	cache := &agentv1.RuntimeCache{
 		BuildRegistry: "https://cache.codespace-system.svc/cache/example",
-		Mirrors:       map[string]string{"ghcr.io": "https://cache.codespace-system.svc/mirror/ghcr.io"},
+		Mirrors:       map[string]string{"ghcr.io": "https://cache.codespace-system.svc/mirror/" + configpkg.CacheUpstreamID("ghcr.io")},
 	}
 	prepared, err := runtime.prepareDockerCacheTrust(cache)
 	require.NoError(t, err)

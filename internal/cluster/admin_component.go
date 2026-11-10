@@ -51,6 +51,8 @@ type adminComponentStatus struct {
 	CacheBytes               int64             `json:"cacheBytes,omitempty"`
 	MirrorBytes              int64             `json:"mirrorBytes,omitempty"`
 	CleanupResult            string            `json:"cleanupResult,omitempty"`
+	StorageClassName         string            `json:"storageClassName,omitempty"`
+	StorageClassLocked       bool              `json:"storageClassLocked,omitempty"`
 }
 
 func (s *AdminServer) rotateGatewayHostKey(w http.ResponseWriter, r *http.Request, name string) {
@@ -140,6 +142,15 @@ func (s *AdminServer) componentStatus(ctx context.Context, component *api.Codesp
 		}
 		return status, nil
 	}
+	var claim corev1.PersistentVolumeClaim
+	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &claim); err == nil {
+		if metav1.IsControlledBy(&claim, component) && claim.Labels[ComponentUIDLabel] == string(component.UID) {
+			status.StorageClassName = ptr.Deref(claim.Spec.StorageClassName, "")
+			status.StorageClassLocked = true
+		}
+	} else if !apierrors.IsNotFound(err) {
+		return status, err
+	}
 	deploymentAvailable := status.Available
 	status.Available = false
 	var lease coordinationv1.Lease
@@ -167,6 +178,10 @@ func (s *AdminServer) componentStatus(ctx context.Context, component *api.Codesp
 
 func (s *AdminServer) saveComponent(ctx context.Context, component *api.CodespaceComponent, body adminComponentWrite, creating bool) error {
 	previousRole := component.Spec.Role
+	previousStorageClassName := ""
+	if !creating && component.Spec.Role == "cache" && component.Spec.Cache != nil && component.Spec.Cache.Storage.Driver == "filesystem" {
+		previousStorageClassName = component.Spec.Cache.Storage.StorageClassName
+	}
 	component.Spec = body.Spec
 	component.Spec.DisplayName = strings.TrimSpace(component.Spec.DisplayName)
 	if err := component.Validate(); err != nil {
@@ -205,12 +220,25 @@ func (s *AdminServer) saveComponent(ctx context.Context, component *api.Codespac
 		}
 		if component.Spec.Cache.Storage.Driver == "filesystem" {
 			storageClassName := component.Spec.Cache.Storage.StorageClassName
-			if storageClassName != "" {
+			var claim corev1.PersistentVolumeClaim
+			err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.Namespace, Name: component.Name}, &claim)
+			switch {
+			case err == nil:
+				if creating || !metav1.IsControlledBy(&claim, component) || claim.Labels[ComponentUIDLabel] != string(component.UID) {
+					return apierrors.NewConflict(corev1.Resource("persistentvolumeclaims"), component.Name, fmt.Errorf("cache volume ownership conflicts"))
+				}
+				actualStorageClassName := ptr.Deref(claim.Spec.StorageClassName, "")
+				if previousStorageClassName != storageClassName || (storageClassName != "" && actualStorageClassName != storageClassName) {
+					return apierrors.NewBadRequest(fmt.Sprintf("cache storage class cannot be changed after PVC creation; existing class is %q", actualStorageClassName))
+				}
+			case !apierrors.IsNotFound(err):
+				return err
+			case storageClassName != "":
 				var storage storagev1.StorageClass
 				if err := s.Client.Get(ctx, types.NamespacedName{Name: storageClassName}, &storage); err != nil {
 					return apierrors.NewBadRequest(fmt.Sprintf("storage class %q is unavailable: %v", storageClassName, err))
 				}
-			} else {
+			default:
 				var storages storagev1.StorageClassList
 				if err := s.Client.List(ctx, &storages); err != nil {
 					return err

@@ -339,10 +339,13 @@ func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.
 		return cachepkg.GCGrant{}, err
 	}
 	grant := response.GcGrant
-	if grant == nil || grant.CacheId == "" || grant.Id == "" {
+	if grant == nil {
+		return cachepkg.GCGrant{}, nil
+	}
+	if grant.CacheId != owner.CacheID || grant.Id == "" || grant.ReadyAtUnixMilliseconds <= 0 || grant.ExpiresAtUnixMilliseconds <= grant.ReadyAtUnixMilliseconds {
 		return cachepkg.GCGrant{}, fmt.Errorf("cache GC grant is incomplete")
 	}
-	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
+	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ReadyAt: time.UnixMilli(grant.ReadyAtUnixMilliseconds), ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
 }
 
 // CompleteCacheGC releases a maintenance grant after cleanup.

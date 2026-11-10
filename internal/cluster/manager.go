@@ -21,9 +21,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/validation"
 	"k8s.io/client-go/kubernetes/scheme"
+	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
 	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
+	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
@@ -314,6 +316,17 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges, Connections: connections}
 	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components, Connections: connections}
+	resourceMetrics, err := metricsclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	coreClient, err := coreclient.NewForConfig(config)
+	if err != nil {
+		return nil, err
+	}
+	if err := mgr.Add(&ResourceCollector{Reader: mgr.GetClient(), Metrics: resourceMetrics, Nodes: coreClient.RESTClient(), Samples: &control.Samples}); err != nil {
+		return nil, err
+	}
 	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, Connections: connections, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
 	}

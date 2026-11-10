@@ -4,123 +4,147 @@
 package agent
 
 import (
-	"os"
-	"strconv"
-	"strings"
+	"errors"
+	"log/slog"
+	"math"
 	"sync"
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/cgroup"
 	"golang.org/x/sys/unix"
 )
 
 // ResourceSampler reads the Runtime Pod's cgroup and PVC filesystem. CPU use
 // is a rate between samples; memory and disk are point-in-time observations.
+// Each metric is sampled independently so the Manager can combine sources.
 type ResourceSampler struct {
-	mu        sync.Mutex
-	lastCPU   int64
-	lastClock time.Time
+	mu             sync.Mutex
+	cgroup         cgroup.Reader
+	lastCPU        int64
+	lastClock      time.Time
+	metricFailures map[string]bool
+	volume         string
+}
+
+// NewResourceSampler anchors cgroup discovery before the runtime starts its
+// Docker daemon. Filesystem observations remain available if cgroup discovery
+// is unavailable.
+func NewResourceSampler() *ResourceSampler {
+	reader, err := cgroup.Current()
+	if err != nil {
+		slog.Warn("Discover Agent cgroup", "error", err)
+	}
+	return &ResourceSampler{cgroup: reader, metricFailures: make(map[string]bool), volume: runtimeVolume}
+}
+
+func (s *ResourceSampler) recordMetric(name string, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.metricFailures == nil {
+		s.metricFailures = make(map[string]bool)
+	}
+	if err != nil {
+		if !s.metricFailures[name] {
+			slog.Warn("Read Agent resource metric", "metric", name, "error", err)
+		}
+		s.metricFailures[name] = true
+		return
+	}
+	if s.metricFailures[name] {
+		slog.Info("Agent resource metric recovered", "metric", name)
+	}
+	delete(s.metricFailures, name)
 }
 
 func (s *ResourceSampler) Sample() *codespacev1.RuntimeResourceUsage {
 	now := time.Now()
-	usedCPU, err := cgroupValue("/sys/fs/cgroup/cpu.stat", "usage_usec")
-	if err != nil {
+	usage := &codespacev1.RuntimeResourceUsage{}
+	var err error
+	usage.Cpu, err = s.sampleCPU(now)
+	s.recordMetric("cpu", err)
+	usage.Memory, err = s.sampleMemory()
+	s.recordMetric("memory", err)
+	usage.Disk, err = s.sampleDisk()
+	s.recordMetric("disk", err)
+	if usage.Cpu == nil && usage.Memory == nil && usage.Disk == nil {
 		return nil
 	}
-	cpuMax, err := os.ReadFile("/sys/fs/cgroup/cpu.max")
+	usage.ObservedUnix = now.Unix()
+	return usage
+}
+
+func (s *ResourceSampler) sampleCPU(now time.Time) (*codespacev1.RuntimeCPUUsage, error) {
+	used, err := s.cgroup.Value("cpu.stat", "usage_usec")
 	if err != nil {
-		return nil
+		return nil, err
 	}
-	limitCPU, err := parseCPUMax(cpuMax)
+	limitData, err := s.cgroup.Read("cpu.max")
 	if err != nil {
-		return nil
+		return nil, err
+	}
+	quota, period, unlimited, err := cgroup.ParseCPUQuota(limitData)
+	if err != nil {
+		return nil, err
+	}
+	limitCPU := int64(0)
+	if !unlimited {
+		if quota > math.MaxInt64/1000 {
+			return nil, errors.New("cpu.max quota is too large")
+		}
+		limitCPU = quota * 1000 / period
 	}
 	s.mu.Lock()
-	usedMillicores := int64(0)
-	if s.lastCPU > 0 && usedCPU >= s.lastCPU && now.After(s.lastClock) {
-		usedMillicores = (usedCPU - s.lastCPU) * 1000 / now.Sub(s.lastClock).Microseconds()
-	}
-	s.lastCPU, s.lastClock = usedCPU, now
+	previous, previousAt := s.lastCPU, s.lastClock
+	s.lastCPU, s.lastClock = used, now
 	s.mu.Unlock()
-	memory, err := fileInt64("/sys/fs/cgroup/memory.current")
-	if err != nil {
-		return nil
+	if previousAt.IsZero() || !now.After(previousAt) || used < previous {
+		return nil, nil
 	}
-	memoryMax, err := os.ReadFile("/sys/fs/cgroup/memory.max")
-	if err != nil {
-		return nil
+	delta := now.Sub(previousAt).Microseconds()
+	if delta <= 0 {
+		return nil, nil
 	}
-	memoryLimit, err := parseMemoryMax(memoryMax)
-	if err != nil {
-		return nil
+	usedMillicores := (used - previous) * 1000 / delta
+	if usedMillicores < 0 {
+		usedMillicores = 0
 	}
+	return &codespacev1.RuntimeCPUUsage{UsedMillicores: usedMillicores, LimitMillicores: limitCPU}, nil
+}
+
+func (s *ResourceSampler) sampleMemory() (*codespacev1.RuntimeMemoryUsage, error) {
+	current, err := s.cgroup.ReadInt("memory.current")
+	if err != nil {
+		return nil, err
+	}
+	inactive, err := s.cgroup.Value("memory.stat", "inactive_file")
+	if err != nil {
+		return nil, err
+	}
+	limitData, err := s.cgroup.Read("memory.max")
+	if err != nil {
+		return nil, err
+	}
+	limitMemory, err := cgroup.ParseMemoryMax(limitData)
+	if err != nil {
+		return nil, err
+	}
+	return &codespacev1.RuntimeMemoryUsage{UsedBytes: max(current-inactive, 0), LimitBytes: limitMemory}, nil
+}
+
+func (s *ResourceSampler) sampleDisk() (*codespacev1.RuntimeDiskUsage, error) {
 	var filesystem unix.Statfs_t
-	if err := unix.Statfs(runtimeVolume, &filesystem); err != nil {
-		return nil
+	if err := unix.Statfs(s.volume, &filesystem); err != nil {
+		return nil, err
 	}
-	diskLimit := int64(filesystem.Blocks) * filesystem.Bsize
-	if diskLimit <= 0 {
-		return nil
+	if filesystem.Bsize <= 0 {
+		return nil, errors.New("filesystem block size is invalid")
 	}
-	diskUsed := int64(filesystem.Blocks-filesystem.Bavail) * filesystem.Bsize
-	return &codespacev1.RuntimeResourceUsage{
-		Cpu:          &codespacev1.RuntimeCPUUsage{UsedMillicores: max(usedMillicores, 0), LimitMillicores: limitCPU},
-		Memory:       &codespacev1.RuntimeMemoryUsage{UsedBytes: max(memory, 0), LimitBytes: memoryLimit},
-		Disk:         &codespacev1.RuntimeDiskUsage{UsedBytes: max(diskUsed, 0), LimitBytes: diskLimit},
-		ObservedUnix: now.Unix(),
+	blockSize := uint64(filesystem.Bsize)
+	if filesystem.Blocks == 0 || filesystem.Blocks > math.MaxInt64/blockSize || filesystem.Bavail > filesystem.Blocks {
+		return nil, errors.New("filesystem capacity is invalid")
 	}
-}
-
-func parseCPUMax(data []byte) (int64, error) {
-	parts := strings.Fields(string(data))
-	if len(parts) != 2 {
-		return 0, os.ErrInvalid
-	}
-	period, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || period <= 0 {
-		return 0, os.ErrInvalid
-	}
-	if parts[0] == "max" {
-		return 0, nil
-	}
-	quota, err := strconv.ParseInt(parts[0], 10, 64)
-	if err != nil || quota <= 0 {
-		return 0, os.ErrInvalid
-	}
-	return quota * 1000 / period, nil
-}
-
-func parseMemoryMax(data []byte) (int64, error) {
-	value := strings.TrimSpace(string(data))
-	if value == "max" {
-		return 0, nil
-	}
-	limit, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || limit <= 0 {
-		return 0, os.ErrInvalid
-	}
-	return limit, nil
-}
-
-func cgroupValue(path, name string) (int64, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	for line := range strings.Lines(string(data)) {
-		parts := strings.Fields(line)
-		if len(parts) == 2 && parts[0] == name {
-			return strconv.ParseInt(parts[1], 10, 64)
-		}
-	}
-	return 0, os.ErrNotExist
-}
-
-func fileInt64(path string) (int64, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
-	}
-	return strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+	capacity := filesystem.Blocks * blockSize
+	used := (filesystem.Blocks - filesystem.Bavail) * blockSize
+	return &codespacev1.RuntimeDiskUsage{UsedBytes: int64(used), LimitBytes: int64(capacity)}, nil
 }

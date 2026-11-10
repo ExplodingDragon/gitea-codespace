@@ -270,6 +270,8 @@ export type ComponentStatus = {
   cacheBytes?: number;
   mirrorBytes?: number;
   cleanupResult?: string;
+  storageClassName?: string;
+  storageClassLocked?: boolean;
 };
 
 export type RuntimeInstance = {

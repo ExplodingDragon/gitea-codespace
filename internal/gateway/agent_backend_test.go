@@ -4,10 +4,15 @@
 package gateway
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -17,7 +22,9 @@ import (
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
+	"gitea.dev/codespace/internal/runtimecmd"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/encoding/protodelim"
 )
 
 type backendTestServer struct {
@@ -26,6 +33,167 @@ type backendTestServer struct {
 	access     func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error
 	capability chan agentv1.AccessCapability
 	open       chan *agentv1.OpenAccess
+	accept     bool
+}
+
+func TestAgentHTTPReusesConnectionAndRedialsAfterTargetClose(t *testing.T) {
+	idle := make(chan net.Conn, 4)
+	upstream := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "ok")
+	}))
+	upstream.Config.ConnState = func(conn net.Conn, state http.ConnState) {
+		if state == http.StateIdle {
+			idle <- conn
+		}
+	}
+	upstream.Start()
+	defer upstream.Close()
+	port := uint16(upstream.Listener.Addr().(*net.TCPAddr).Port)
+	var opened atomic.Int32
+	targetEOF := make(chan struct{}, 4)
+	backend, service := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+		opened.Add(1)
+		stdin, input := io.Pipe()
+		output, stdout := io.Pipe()
+		stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = output.Close() })
+		defer stop()
+		defer func() { _ = stdin.Close(); _ = output.Close() }()
+		done := make(chan error, 1)
+		go func() {
+			err := runtimecmd.Connect(ctx, "127.0.0.1", port, stdin, stdout)
+			_ = stdout.CloseWithError(err)
+			done <- err
+		}()
+		go func() {
+			defer func() { _ = input.Close() }()
+			for {
+				frame, err := stream.Receive()
+				if err != nil {
+					return
+				}
+				if _, err := protodelim.MarshalTo(input, frame); err != nil {
+					return
+				}
+			}
+		}()
+		reader := bufio.NewReader(output)
+		for {
+			frame := &agentv1.AccessResponse{}
+			err := protodelim.UnmarshalFrom(reader, frame)
+			if err != nil {
+				if errors.Is(err, io.EOF) {
+					if err := <-done; err != nil {
+						return err
+					}
+					return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}})
+				}
+				return err
+			}
+			if err := stream.Send(frame); err != nil {
+				return err
+			}
+			if frame.GetStdoutEof() {
+				targetEOF <- struct{}{}
+			}
+		}
+	})
+	service.accept = false
+	routes := newRouteStore(backend)
+	defer routes.Close()
+	route := endpointRoute{SiteUID: "site", CodespaceUUID: "runtime", GiteaWebURL: "https://gitea.test", EndpointID: "app", Public: true}
+	require.NoError(t, routes.Put(route))
+	transport, err := routes.Transport(route)
+	require.NoError(t, err)
+	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
+	for i := range 3 {
+		response, err := client.Get("http://workspace.test/")
+		require.NoError(t, err)
+		body, err := io.ReadAll(response.Body)
+		require.NoError(t, err)
+		require.NoError(t, response.Body.Close())
+		require.Equal(t, "ok", string(body))
+		var conn net.Conn
+		select {
+		case conn = <-idle:
+		case <-time.After(3 * time.Second):
+			t.Fatal("upstream did not become idle")
+		}
+		if i == 1 {
+			require.Equal(t, int32(1), opened.Load(), "HTTP connection must be reused")
+			require.NoError(t, conn.Close())
+			select {
+			case <-targetEOF:
+			case <-time.After(3 * time.Second):
+				t.Fatal("target EOF was hidden behind open input")
+			}
+		}
+	}
+	require.Equal(t, int32(2), opened.Load())
+}
+
+func TestAgentStreamDiagnosticsAndExitStatus(t *testing.T) {
+	for _, status := range []int32{0, 7} {
+		t.Run(fmt.Sprintf("exit %d", status), func(t *testing.T) {
+			backend, _ := newBackendTestClient(t, func(_ context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+				for _, frame := range []*agentv1.AccessResponse{
+					{Frame: &agentv1.AccessResponse_Stderr{Stderr: []byte("diagnostic")}},
+					{Frame: &agentv1.AccessResponse_Stdout{Stdout: []byte("payload")}},
+					{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: status}},
+				} {
+					if err := stream.Send(frame); err != nil {
+						return err
+					}
+				}
+				return nil
+			})
+			conn, err := backend.OpenWorkspaceSFTP(t.Context(), workspaceSFTPRequest{RuntimeUUID: "runtime"})
+			require.NoError(t, err)
+			defer func() { _ = conn.Close() }()
+			body, err := io.ReadAll(conn)
+			require.Equal(t, "payload", string(body))
+			if status == 0 {
+				require.NoError(t, err)
+			} else {
+				var exit *workspaceCommandExitError
+				require.ErrorAs(t, err, &exit)
+				require.Equal(t, int(status), exit.Status)
+				require.ErrorContains(t, err, "diagnostic")
+			}
+		})
+	}
+}
+
+func TestAgentClientCancellationClosesActiveStreams(t *testing.T) {
+	backend, _ := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: []byte("ready")}}); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	})
+	first, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8000)
+	require.NoError(t, err)
+	second, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8001)
+	require.NoError(t, err)
+	defer func() { _ = second.Close() }()
+	require.NoError(t, first.Close())
+	require.NoError(t, second.SetReadDeadline(time.Now().Add(3*time.Second)))
+	buffer := make([]byte, 5)
+	_, err = io.ReadFull(second, buffer)
+	require.NoError(t, err)
+	require.Equal(t, "ready", string(buffer))
+	backend.ClosePod("pod")
+	_, err = second.Read(buffer)
+	require.ErrorIs(t, err, context.Canceled)
+}
+
+func TestAgentOpenReportsTargetFailure(t *testing.T) {
+	backend, service := newBackendTestClient(t, func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error {
+		return connect.NewError(connect.CodeUnavailable, "connection refused")
+	})
+	service.accept = false
+	_, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8000)
+	require.ErrorContains(t, err, "connection refused")
 }
 
 func (s *backendTestServer) IssueAgentAccess(_ context.Context, request *componentv1.IssueAgentAccessRequest) (*componentv1.IssueAgentAccessResponse, error) {
@@ -39,8 +207,10 @@ func (s *backendTestServer) Access(ctx context.Context, stream agentv1connect.Ag
 		return err
 	}
 	s.open <- request.GetOpen()
-	if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
-		return err
+	if s.accept {
+		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
+			return err
+		}
 	}
 	return s.access(ctx, stream)
 }
@@ -49,9 +219,9 @@ func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1conn
 	t.Helper()
 	route := &componentv1.GatewayRuntimeRoute{RuntimeUuid: "runtime", SiteUid: "site", ResourceUid: "resource", PodUid: "pod", AgentAddress: "agent:8444"}
 	service := &backendTestServer{
-		route: route, access: handle,
-		capability: make(chan agentv1.AccessCapability, 1),
-		open:       make(chan *agentv1.OpenAccess, 1),
+		route: route, access: handle, accept: true,
+		capability: make(chan agentv1.AccessCapability, 16),
+		open:       make(chan *agentv1.OpenAccess, 16),
 	}
 	rpc := connect.NewServer()
 	componentv1connect.RegisterComponentServiceHandler(rpc, service)
@@ -63,8 +233,9 @@ func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1conn
 	server.StartTLS()
 	t.Cleanup(server.Close)
 	client := connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))
+	ctx, cancel := context.WithCancel(t.Context())
 	backend := &agentBackend{Manager: componentv1connect.NewComponentServiceClient(client), clients: map[string]*agentClient{
-		"pod": {address: route.AgentAddress, siteUID: route.SiteUid, resourceUID: route.ResourceUid,
+		"pod": {ctx: ctx, cancel: cancel, address: route.AgentAddress, siteUID: route.SiteUid, resourceUID: route.ResourceUid,
 			transport: server.Client().Transport.(*http.Transport), access: agentv1connect.NewAgentAccessServiceClient(client)},
 	}}
 	t.Cleanup(backend.Close)
@@ -166,6 +337,9 @@ func TestAgentTCPHalfCloseReceivesResponse(t *testing.T) {
 			}
 		}
 		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: append([]byte("response:"), request...)}}); err != nil {
+			return err
+		}
+		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_StdoutEof{StdoutEof: true}}); err != nil {
 			return err
 		}
 		return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}})

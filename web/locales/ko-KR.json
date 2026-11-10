@@ -217,7 +217,9 @@
     "pods": "Pod",
     "persistentVolumes": "영구 볼륨",
     "cpuRequests": "CPU 요청",
-    "deviceQuota": "{{resource}} 요청",
+    "deviceQuota": "{resource} 요청",
+    "deviceQuotaUnused": "{resource} 요청 (선택한 템플릿에서 사용하지 않음)",
+    "removeUnusedDeviceQuota": "사용하지 않는 {resource} 할당량 삭제",
     "memoryRequests": "메모리 요청",
     "storage": "스토리지",
     "invalidQuota": "{resource}에 0보다 큰 할당량을 입력하세요."
@@ -287,6 +289,7 @@
     "maxCacheSizeHelp": "캐시 정리는 저장된 데이터를 이 용량 이하로 유지합니다.",
     "volumeSizeHelp": "캐시 데이터와 예약 여유 공간에 사용할 영구 볼륨 용량입니다.",
     "storageClassHelp": "캐시 볼륨을 생성할 StorageClass를 선택합니다.",
+    "storageClassLockedHelp": "이 캐시에는 영구 볼륨이 있으므로 StorageClass가 {name}(으)로 고정됩니다.",
     "s3Endpoint": "S3 엔드포인트",
     "region": "리전",
     "bucket": "버킷",

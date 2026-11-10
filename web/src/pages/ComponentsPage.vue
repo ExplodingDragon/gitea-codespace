@@ -204,9 +204,12 @@ async function save() {
       if (spec.cache.storage.driver === 'filesystem') {
         spec.cache.storage.s3 = {};
         const storageClassName = spec.cache.storage.storageClassName;
-        const storageClassAvailable = storageClassName
-          ? cluster.value.storageClasses.some(({name: storageName}) => storageName === storageClassName)
-          : cluster.value.storageClasses.some(({default: isDefault}) => isDefault);
+        const storageClassLocked = !!selected.value?.status?.storageClassLocked;
+        const storageClassAvailable =
+          storageClassLocked ||
+          (storageClassName
+            ? cluster.value.storageClasses.some(({name: storageName}) => storageName === storageClassName)
+            : cluster.value.storageClasses.some(({default: isDefault}) => isDefault));
         if (!storageClassAvailable) throw new Error(t('component.invalidStorageClass'));
         const volume = measurementBaseValue(spec.cache.storage.volumeSize, 'storage');
         const maximum = measurementBaseValue(spec.cache.maxSize, 'bytes');
@@ -412,6 +415,7 @@ function rotateHostKey(item: Resource<Component, ComponentStatus>) {
       <CacheFields
         :cache="form.cache"
         :cluster="cluster"
+        :status="selected?.status"
         v-model:s3-access-key="s3AccessKey"
         v-model:s3-secret-key="s3SecretKey"
         v-model:upstreams="upstreams"

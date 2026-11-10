@@ -61,6 +61,39 @@ test('administration workflows preserve resource identity and validate cluster-b
       },
       status: {available: true, readyReplicas: 2, desiredReplicas: 2},
     },
+    {
+      name: 'cache',
+      uid: 'cache-uid',
+      resourceVersion: '1',
+      generation: 1,
+      deleting: false,
+      spec: {
+        role: 'cache',
+        displayName: 'Registry cache',
+        resources: {requests: {cpu: '50m', memory: '64Mi'}, limits: {cpu: '1', memory: '512Mi'}},
+        cache: {
+          enabled: true,
+          storage: {
+            driver: 'filesystem',
+            volumeSize: '50Gi',
+            storageClassName: 'requested-class',
+            minFreeSpace: '1Gi',
+            s3: {},
+          },
+          maxSize: '45Gi',
+          maxAge: '720h',
+          gcInterval: '24h',
+          upstreams: {},
+        },
+      },
+      status: {
+        available: true,
+        readyReplicas: 1,
+        desiredReplicas: 1,
+        storageClassName: 'local-path',
+        storageClassLocked: true,
+      },
+    },
   ];
   const runtimes: Resource<RuntimeInstance, RuntimeStatus>[] = [
     {
@@ -201,7 +234,17 @@ test('administration workflows preserve resource identity and validate cluster-b
           resourceVersion: '1',
           generation: 1,
           deleting: false,
-          spec: body.spec,
+          spec: {
+            ...body.spec,
+            quota: {
+              pods: '10',
+              persistentvolumeclaims: '10',
+              'requests.cpu': '10',
+              'requests.memory': '10Gi',
+              'requests.storage': '100Gi',
+              'requests.example.com/gpu': '2',
+            },
+          },
         });
     }
     await route.fulfill({
@@ -326,24 +369,54 @@ test('administration workflows preserve resource identity and validate cluster-b
   expect(lastWrite.registrationToken).toBe('0000000000000000000000000000000000000000');
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
   await expect(field('Registration token')).toHaveCount(0);
+  await expect(
+    page.getByText('example.com/gpu requests (not used by selected templates)', {exact: true}),
+  ).toBeVisible();
   await field('Display name').fill('Renamed Gitea');
   await page.getByRole('button', {name: 'Save site'}).click();
   await expect(page.getByText('Renamed Gitea', {exact: true})).toBeVisible();
+  expect(lastWrite.spec?.quota).toEqual({
+    pods: '10',
+    persistentvolumeclaims: '10',
+    'requests.cpu': '10',
+    'requests.memory': '10Gi',
+    'requests.storage': '100Gi',
+    'requests.example.com/gpu': '2',
+  });
   expect(lastWrite.uid).toBe('site-uid');
   expect(lastWrite.resourceVersion).toBe('1');
   expect(lastWrite.registrationToken).toBe('');
+  await page.getByRole('button', {name: 'Edit site', exact: true}).click();
+  await page.getByRole('button', {name: 'Remove unused requests.example.com/gpu quota', exact: true}).click();
+  await page.getByRole('button', {name: 'Save site'}).click();
+  expect(lastWrite.spec?.quota).toEqual({
+    pods: '10',
+    persistentvolumeclaims: '10',
+    'requests.cpu': '10',
+    'requests.memory': '10Gi',
+    'requests.storage': '100Gi',
+  });
   await page.setViewportSize({width: 390, height: 844});
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('link', {name: 'Components', exact: true}).click();
   await expect(page.getByRole('cell', {name: 'https://workspace.example.com'})).toBeVisible();
-  await expect(page.getByText('Available', {exact: true})).toBeVisible();
+  await expect(page.getByText('Available', {exact: true}).first()).toBeVisible();
   await expect(page.getByText('2 of 2 replicas ready', {exact: true})).toBeVisible();
+  const cacheRow = page.getByRole('row').filter({hasText: 'Registry cache'});
+  await cacheRow.getByRole('button', {name: 'Edit component', exact: true}).click();
+  await expect(selectField('Storage class')).toHaveClass(/n-base-selection--disabled/);
+  await expect(selectField('Storage class').getByText('local-path (unavailable)', {exact: true})).toBeVisible();
+  await page.getByRole('button', {name: 'Cancel', exact: true}).click();
   await page.getByRole('button', {name: 'Rotate SSH host key', exact: true}).click();
   await page.getByRole('button', {name: 'Rotate key', exact: true}).click();
   await expect.poll(() => rotationWrite).toEqual({name: 'gateway', uid: 'gateway-uid', resourceVersion: '1'});
-  await page.getByRole('button', {name: 'Edit component', exact: true}).click();
+  await page
+    .getByRole('row')
+    .filter({hasText: 'Primary gateway'})
+    .getByRole('button', {name: 'Edit component', exact: true})
+    .click();
   await expect(field('Endpoint base URL')).toHaveValue('https://workspace.example.com');
   await expect(
     page

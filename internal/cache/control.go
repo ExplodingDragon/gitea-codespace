@@ -68,5 +68,9 @@ type GCGrant struct {
 	CacheID        string
 	ID             string
 	ConfigRevision int64
-	ExpiresAt      time.Time
+	// ReadyAt is the earliest time at which credentials issued before the
+	// maintenance freeze have expired. Until then, an in-flight push may still
+	// submit its manifest after uploading a blob.
+	ReadyAt   time.Time
+	ExpiresAt time.Time
 }

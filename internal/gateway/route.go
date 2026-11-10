@@ -34,17 +34,22 @@ type endpointRoute struct {
 // The route store owns routes and their live connections, closing them when a
 // newer Manager snapshot replaces the Runtime target.
 type routeStore struct {
-	mu          sync.RWMutex
-	routes      map[gatewayRouteKey]*gatewayRouteEntry
-	nextLeaseID int64
-	backend     workspaceBackend
-	runtimes    map[string]runtimeSnapshot
+	mu       sync.RWMutex
+	routes   map[gatewayRouteKey]*gatewayRouteEntry
+	backend  workspaceBackend
+	runtimes map[string]runtimeSnapshot
 }
 
 type gatewayRouteEntry struct {
 	route     endpointRoute
-	leases    map[int64]context.CancelFunc
+	ctx       context.Context
+	cancel    context.CancelFunc
 	transport *http.Transport
+}
+
+func newGatewayRouteEntry(route endpointRoute) *gatewayRouteEntry {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &gatewayRouteEntry{route: route, ctx: ctx, cancel: cancel}
 }
 
 type gatewayRouteKey struct {
@@ -180,15 +185,14 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 			delete(oldEntries, key)
 			continue
 		}
-		s.routes[key] = &gatewayRouteEntry{route: route}
+		s.routes[key] = newGatewayRouteEntry(route)
 	}
 	oldRuntimes := s.runtimes
 	s.runtimes = runtimes
-	var cancels []context.CancelFunc
-	for _, entry := range oldEntries {
-		cancels = append(cancels, entry.takeCancels()...)
-	}
 	s.mu.Unlock()
+	for _, entry := range oldEntries {
+		entry.close()
+	}
 	gatewayLog(context.Background(), slog.LevelInfo, "gateway_routes_updated",
 		slog.Int("runtime_count", len(runtimes)),
 		slog.Int("runtimes_added", runtimesAdded),
@@ -211,12 +215,11 @@ func (s *routeStore) ReplaceSharedGatewayRuntimes(snapshots []runtimeSnapshot) e
 	if closer, ok := s.backend.(interface{ ClosePod(string) }); ok {
 		for runtimeUUID, oldRuntime := range oldRuntimes {
 			newRuntime, found := runtimes[runtimeUUID]
-			if !found || oldRuntime.PodUID != newRuntime.PodUID || oldRuntime.AgentAddress != newRuntime.AgentAddress {
+			if !found || oldRuntime.PodUID != newRuntime.PodUID || oldRuntime.AgentAddress != newRuntime.AgentAddress || oldRuntime.SiteUID != newRuntime.SiteUID || oldRuntime.ResourceUID != newRuntime.ResourceUID {
 				closer.ClosePod(oldRuntime.PodUID)
 			}
 		}
 	}
-	cancelGatewayRouteLeases(cancels)
 	return nil
 }
 
@@ -244,34 +247,23 @@ func (s *routeStore) BeginProxy(request *http.Request, codespaceUUID, endpointID
 	if s == nil || request == nil {
 		return endpointRoute{}, request, func() {}, false
 	}
-	ctx, cancel := context.WithCancel(request.Context())
+	ctx, cancel := context.WithCancelCause(request.Context())
 	key := gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID}
 
-	s.mu.Lock()
+	s.mu.RLock()
 	entry, ok := s.routes[key]
 	if !ok {
-		s.mu.Unlock()
-		cancel()
+		s.mu.RUnlock()
+		cancel(context.Canceled)
 		return endpointRoute{}, request, func() {}, false
 	}
-	s.nextLeaseID++
-	leaseID := s.nextLeaseID
-	if entry.leases == nil {
-		entry.leases = make(map[int64]context.CancelFunc)
-	}
-	entry.leases[leaseID] = cancel
+	stop := context.AfterFunc(entry.ctx, func() { cancel(fmt.Errorf("gateway endpoint route changed")) })
 	route := entry.route
-	s.mu.Unlock()
+	s.mu.RUnlock()
 
-	var once sync.Once
 	release := func() {
-		once.Do(func() {
-			cancel()
-			s.mu.Lock()
-			defer s.mu.Unlock()
-
-			delete(entry.leases, leaseID)
-		})
+		stop()
+		cancel(context.Canceled)
 	}
 	return route, request.WithContext(ctx), release, true
 }
@@ -299,11 +291,10 @@ func (s *routeStore) Put(route endpointRoute) error {
 		}
 		return nil
 	}
-	s.routes[key] = &gatewayRouteEntry{route: route}
-	cancels := oldEntry.takeCancels()
+	s.routes[key] = newGatewayRouteEntry(route)
 	s.mu.Unlock()
 
-	cancelGatewayRouteLeases(cancels)
+	oldEntry.close()
 	attrs := gatewayRouteLogAttrs(route)
 	if oldEntry == nil {
 		gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_added", attrs...)
@@ -321,34 +312,21 @@ func (s *routeStore) Delete(codespaceUUID, endpointID string) {
 	s.mu.Lock()
 	entry := s.routes[gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID}]
 	delete(s.routes, gatewayRouteKey{codespaceUUID: codespaceUUID, endpointID: endpointID})
-	cancels := entry.takeCancels()
 	s.mu.Unlock()
 
-	cancelGatewayRouteLeases(cancels)
+	entry.close()
 	if entry != nil {
 		gatewayLog(context.Background(), slog.LevelDebug, "gateway_route_removed", gatewayRouteLogAttrs(entry.route)...)
 	}
 }
 
-func (e *gatewayRouteEntry) takeCancels() []context.CancelFunc {
+func (e *gatewayRouteEntry) close() {
 	if e == nil {
-		return nil
+		return
 	}
+	e.cancel()
 	if e.transport != nil {
 		e.transport.CloseIdleConnections()
-		e.transport = nil
-	}
-	cancels := make([]context.CancelFunc, 0, len(e.leases))
-	for _, cancel := range e.leases {
-		cancels = append(cancels, cancel)
-	}
-	e.leases = nil
-	return cancels
-}
-
-func cancelGatewayRouteLeases(cancels []context.CancelFunc) {
-	for _, cancel := range cancels {
-		cancel()
 	}
 }
 
@@ -407,7 +385,15 @@ func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 	if entry.transport == nil {
 		entry.transport = &http.Transport{
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return s.backend.OpenWorkspaceEndpoint(ctx, route.CodespaceUUID, route.EndpointID)
+				ctx, cancel := context.WithCancel(ctx)
+				stop := context.AfterFunc(entry.ctx, cancel)
+				closeContext := func() { stop(); cancel() }
+				conn, err := s.backend.OpenWorkspaceEndpoint(ctx, route.CodespaceUUID, route.EndpointID)
+				if err != nil {
+					closeContext()
+					return nil, err
+				}
+				return &routeConn{Conn: conn, cancel: closeContext}, nil
 			},
 			IdleConnTimeout:     90 * time.Second,
 			MaxIdleConnsPerHost: 8,
@@ -416,17 +402,34 @@ func (s *routeStore) Transport(route endpointRoute) (*http.Transport, error) {
 	return entry.transport, nil
 }
 
+// The transport owns the pooled connection; the route can also invalidate it.
+type routeConn struct {
+	net.Conn
+	cancel context.CancelFunc
+}
+
+func (c *routeConn) Close() error {
+	c.cancel()
+	return c.Conn.Close()
+}
+
+func (c *routeConn) CloseWrite() error {
+	if conn, ok := c.Conn.(interface{ CloseWrite() error }); ok {
+		return conn.CloseWrite()
+	}
+	return c.Close()
+}
+
 func (s *routeStore) Close() {
 	s.mu.Lock()
-	var cancels []context.CancelFunc
-	for _, entry := range s.routes {
-		cancels = append(cancels, entry.takeCancels()...)
-	}
+	entries := s.routes
 	s.routes = make(map[gatewayRouteKey]*gatewayRouteEntry)
 	s.runtimes = make(map[string]runtimeSnapshot)
 	backend := s.backend
 	s.mu.Unlock()
-	cancelGatewayRouteLeases(cancels)
+	for _, entry := range entries {
+		entry.close()
+	}
 	if closer, ok := backend.(interface{ Close() }); ok {
 		closer.Close()
 	}

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
@@ -38,31 +39,32 @@ import (
 const Username = "gitea-codespace"
 
 type registryCache struct {
-	id             string
-	configRevision int64
-	enabled        bool
-	listen         string
-	storageDir     string
-	storageConfig  configpkg.CacheStorageConfig
-	driver         storagedriver.StorageDriver
-	mirrorDrivers  map[string]storagedriver.StorageDriver
-	maxBytes       int64
-	minFreeBytes   int64
-	maxAge         time.Duration
-	gcInterval     time.Duration
-	secret         []byte
-	tokenKey       []byte
-	upstreams      map[string]registryCacheUpstream
-	handler        http.Handler
-	registries     []*handlers.App
-	storageLock    *os.File
-	owner          Owner
-	maintenance    sync.RWMutex
-	sessionsMu     sync.Mutex
-	sessions       map[string]cachedCacheSession
-	cleanupMu      sync.Mutex
-	lastCleanup    time.Time
-	cleanupResult  string
+	id                   string
+	configRevision       int64
+	enabled              bool
+	listen               string
+	storageDir           string
+	storageConfig        configpkg.CacheStorageConfig
+	driver               storagedriver.StorageDriver
+	mirrorDrivers        map[string]storagedriver.StorageDriver
+	maxBytes             int64
+	minFreeBytes         int64
+	maxAge               time.Duration
+	gcInterval           time.Duration
+	secret               []byte
+	tokenKey             []byte
+	upstreams            map[string]registryCacheUpstream
+	handler              http.Handler
+	registries           []*handlers.App
+	storageLock          *os.File
+	owner                Owner
+	maintenance          sync.RWMutex
+	maintenanceRequested atomic.Bool
+	sessionsMu           sync.Mutex
+	sessions             map[string]cachedCacheSession
+	cleanupMu            sync.Mutex
+	lastCleanup          time.Time
+	cleanupResult        string
 }
 
 type cachedCacheSession struct {
@@ -71,6 +73,7 @@ type cachedCacheSession struct {
 }
 
 type registryCacheUpstream struct {
+	host  string
 	allow []string
 }
 
@@ -116,13 +119,13 @@ func newRegistryCache(ctx context.Context, config configpkg.CacheConfig, cacheKe
 		return nil, err
 	}
 	cache.mirrorDrivers = make(map[string]storagedriver.StorageDriver, len(cache.upstreams))
-	for host := range cache.upstreams {
-		driver, err := factory.Create(ctx, config.Storage.Driver, cache.storageParameters(host))
+	for _, upstream := range cache.upstreams {
+		driver, err := factory.Create(ctx, config.Storage.Driver, cache.storageParameters(upstream.host))
 		if err != nil {
 			_ = cache.Close()
 			return nil, err
 		}
-		cache.mirrorDrivers[host] = driver
+		cache.mirrorDrivers[upstream.host] = driver
 	}
 	cache.handler = cache.wrapDistributionHandler(ctx)
 	return cache, nil
@@ -152,7 +155,8 @@ func newRegistryCacheConfig(registry configpkg.CacheConfig) (*registryCache, err
 		}
 	}
 	for host, upstream := range registry.Upstreams {
-		upstreams[host] = registryCacheUpstream{
+		upstreams[configpkg.CacheUpstreamID(host)] = registryCacheUpstream{
+			host:  host,
 			allow: append([]string(nil), upstream.Allow...),
 		}
 	}
@@ -236,26 +240,27 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 	app := handlers.NewApp(ctx, config)
 	c.registries = append(c.registries, app)
 	mirrors := make(map[string]*handlers.App, len(c.upstreams))
-	for host := range c.upstreams {
-		remoteURL := "https://" + host
-		if host == "docker.io" {
+	for upstreamID, upstream := range c.upstreams {
+		remoteURL := "https://" + upstream.host
+		if upstream.host == "docker.io" {
 			remoteURL = "https://registry-1.docker.io"
 		}
 		proxyConfig := *config
 		proxyConfig.Storage = configuration.Storage{
-			c.storageConfig.Driver: configuration.Parameters(c.storageParameters(host)),
+			c.storageConfig.Driver: configuration.Parameters(c.storageParameters(upstream.host)),
 			"redirect":             configuration.Parameters{"disable": true},
 			"delete":               configuration.Parameters{"enabled": true},
 			"maintenance":          config.Storage["maintenance"],
 		}
 		proxyConfig.Proxy = configuration.Proxy{RemoteURL: remoteURL, TTL: &c.maxAge}
 		proxy := handlers.NewApp(ctx, &proxyConfig)
-		mirrors[host] = proxy
+		mirrors[upstreamID] = proxy
 		c.registries = append(c.registries, proxy)
 	}
 	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		// Wait for in-flight requests before GC and reject new requests during it.
-		if !c.maintenance.TryRLock() {
+		// A maintenance pass first marks the cache unavailable to new requests,
+		// then waits for existing requests to leave the read section.
+		if c.maintenanceRequested.Load() || !c.maintenance.TryRLock() {
 			writer.Header().Set("Retry-After", "30")
 			http.Error(writer, "cache registry maintenance in progress", http.StatusServiceUnavailable)
 			return
@@ -276,12 +281,12 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			}
 		}
 		if mirrored {
-			host, _, _ := strings.Cut(mirrorRepository, "/")
+			upstreamID, _, _ := strings.Cut(mirrorRepository, "/")
 			forward := request.Clone(request.Context())
-			forward.URL.Path = "/v2/" + strings.TrimPrefix(request.URL.Path, "/v2/mirror/"+host+"/")
+			forward.URL.Path = "/v2/" + strings.TrimPrefix(request.URL.Path, "/v2/mirror/"+upstreamID+"/")
 			forward.URL.RawPath = ""
 			forward.Header.Del("Authorization")
-			mirrors[host].ServeHTTP(writer, forward)
+			mirrors[upstreamID].ServeHTTP(writer, forward)
 			return
 		}
 		app.ServeHTTP(writer, request)
@@ -337,8 +342,8 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 		if action != "pull" {
 			return errors.New("cache registry mirror action is not allowed")
 		}
-		host, imagePath, ok := strings.Cut(strings.TrimPrefix(repository, "mirror/"), "/")
-		if !ok || !c.upstreamAllows(host, imagePath) {
+		upstreamID, imagePath, ok := strings.Cut(strings.TrimPrefix(repository, "mirror/"), "/")
+		if !ok || !c.upstreamAllows(upstreamID, imagePath) {
 			return errors.New("cache registry mirror repository is not allowed")
 		}
 		if err := validateRegistryCacheBlobMount(request, repository); err != nil {
@@ -365,8 +370,8 @@ func validateRegistryCacheBlobMount(request *http.Request, repository string) er
 	return nil
 }
 
-func (c *registryCache) upstreamAllows(host, imagePath string) bool {
-	upstream, ok := c.upstreams[host]
+func (c *registryCache) upstreamAllows(upstreamID, imagePath string) bool {
+	upstream, ok := c.upstreams[upstreamID]
 	if !ok {
 		return false
 	}
@@ -395,7 +400,13 @@ func (c *registryCache) prune(ctx context.Context) (err error) {
 		}
 		c.cleanupResult = result
 	}()
-	c.maintenance.Lock()
+	// Set the request gate before waiting for the write lock. Polling TryLock
+	// keeps a manager lease loss from leaving an unbounded lock wait behind.
+	c.maintenanceRequested.Store(true)
+	defer c.maintenanceRequested.Store(false)
+	if err := c.lockMaintenance(ctx); err != nil {
+		return err
+	}
 	defer c.maintenance.Unlock()
 	total, err := cacheBlobBytes(ctx, c.driver)
 	if err != nil {
@@ -477,6 +488,21 @@ func (c *registryCache) prune(ctx context.Context) (err error) {
 	// Abandoned uploads can leave committed blobs without any manifest.
 	// Collect them even when retention did not evict a repository this time.
 	return storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{})
+}
+
+func (c *registryCache) lockMaintenance(ctx context.Context) error {
+	for {
+		if c.maintenance.TryLock() {
+			return nil
+		}
+		timer := time.NewTimer(10 * time.Millisecond)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return ctx.Err()
+		case <-timer.C:
+		}
+	}
 }
 
 func deleteCacheRepository(ctx context.Context, driver storagedriver.StorageDriver, registry distribution.Namespace, repositoryName string) error {

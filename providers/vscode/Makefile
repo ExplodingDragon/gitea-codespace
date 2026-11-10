@@ -19,14 +19,14 @@ check:
 	$(PNPM) --dir extension run test
 
 version:
-	@. ./version.env; printf '%s\n' "$$CODE_SERVER_DEFAULT_VERSION"
+	@set -e; . ./version.env; printf '%s\n' "$$CODE_SERVER_DEFAULT_VERSION"
 
 bundle: check
 	$(PNPM) --dir extension run build
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle
-	@. ./version.env; \
+	@set -e; . ./version.env; \
 	$(CONTAINER_TOOL) build \
 		--build-arg TARGETARCH="$(ARCH)" \
 		--build-arg PROVIDER_VERSION="$$CODE_SERVER_DEFAULT_VERSION" \

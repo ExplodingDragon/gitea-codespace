@@ -1784,6 +1784,7 @@ type CacheGCGrant struct {
 	Id                        string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
 	ConfigRevision            int64                  `protobuf:"varint,3,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
 	ExpiresAtUnixMilliseconds int64                  `protobuf:"varint,4,opt,name=expires_at_unix_milliseconds,json=expiresAtUnixMilliseconds,proto3" json:"expires_at_unix_milliseconds,omitempty"`
+	ReadyAtUnixMilliseconds   int64                  `protobuf:"varint,5,opt,name=ready_at_unix_milliseconds,json=readyAtUnixMilliseconds,proto3" json:"ready_at_unix_milliseconds,omitempty"`
 	unknownFields             protoimpl.UnknownFields
 	sizeCache                 protoimpl.SizeCache
 }
@@ -1842,6 +1843,13 @@ func (x *CacheGCGrant) GetConfigRevision() int64 {
 func (x *CacheGCGrant) GetExpiresAtUnixMilliseconds() int64 {
 	if x != nil {
 		return x.ExpiresAtUnixMilliseconds
+	}
+	return 0
+}
+
+func (x *CacheGCGrant) GetReadyAtUnixMilliseconds() int64 {
+	if x != nil {
+		return x.ReadyAtUnixMilliseconds
 	}
 	return 0
 }
@@ -2093,12 +2101,13 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\fmirror_bytes\x18\x03 \x01(\x03R\vmirrorBytes\x12?\n" +
 	"\x1cscanned_at_unix_milliseconds\x18\x04 \x01(\x03R\x19scannedAtUnixMilliseconds\x12C\n" +
 	"\x1elast_cleanup_unix_milliseconds\x18\x05 \x01(\x03R\x1blastCleanupUnixMilliseconds\x12%\n" +
-	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResult\"\xa3\x01\n" +
+	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResult\"\xe0\x01\n" +
 	"\fCacheGCGrant\x12\x19\n" +
 	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12'\n" +
 	"\x0fconfig_revision\x18\x03 \x01(\x03R\x0econfigRevision\x12?\n" +
-	"\x1cexpires_at_unix_milliseconds\x18\x04 \x01(\x03R\x19expiresAtUnixMilliseconds\"\x10\n" +
+	"\x1cexpires_at_unix_milliseconds\x18\x04 \x01(\x03R\x19expiresAtUnixMilliseconds\x12;\n" +
+	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"\x10\n" +
 	"\x0eCacheGCRequest\",\n" +
 	"\x0fCacheGCComplete\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x94\x03\n" +

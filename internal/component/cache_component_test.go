@@ -98,7 +98,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		request = <-stream.requests
 		stream.responses <- &componentv1.CacheControlResponse{
 			ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000,
-			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ConfigRevision: 1, ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},
+			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ConfigRevision: 1, ReadyAtUnixMilliseconds: time.Now().UnixMilli(), ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},
 		}
 		require.NoError(t, <-done)
 		require.Equal(t, "next-grant", issued.ID)

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import {computed, onMounted, ref, watch} from 'vue';
 import {NAlert, NButton, NCheckbox, NForm, NFormItem, NInput, NInputNumber, NSelect, useDialog} from 'naive-ui';
-import {Pencil, Trash2, RefreshCw} from '@lucide/vue';
+import {Pencil, Trash2, RefreshCw, X} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import {
   errorMessage,
@@ -40,15 +40,22 @@ const dirty = useDirtyForm(() => ({
   quota: quotaDraft.value,
 }));
 const siteUsesHTTPS = computed(() => form.value?.url.trim().toLowerCase().startsWith('https://') ?? false);
-type QuotaField = {key: string; label: string; kind: MeasurementKind; initial: string};
+type QuotaField = {key: string; label: string; kind: MeasurementKind; initial: string; unused?: boolean};
+type BaseQuotaField = {key: string; labelKey: string; kind: MeasurementKind; initial: string};
+const baseQuotaFields: BaseQuotaField[] = [
+  {key: 'pods', labelKey: 'site.pods', kind: 'count', initial: '10'},
+  {key: 'persistentvolumeclaims', labelKey: 'site.persistentVolumes', kind: 'count', initial: '10'},
+  {key: 'requests.cpu', labelKey: 'site.cpuRequests', kind: 'cpu', initial: '10'},
+  {key: 'requests.memory', labelKey: 'site.memoryRequests', kind: 'memory', initial: '10Gi'},
+  {key: 'requests.storage', labelKey: 'site.storage', kind: 'storage', initial: '100Gi'},
+];
 const quotaFields = computed<QuotaField[]>(() => {
-  const fields: QuotaField[] = [
-    {key: 'pods', label: t('site.pods'), kind: 'count', initial: '10'},
-    {key: 'persistentvolumeclaims', label: t('site.persistentVolumes'), kind: 'count', initial: '10'},
-    {key: 'requests.cpu', label: t('site.cpuRequests'), kind: 'cpu', initial: '10'},
-    {key: 'requests.memory', label: t('site.memoryRequests'), kind: 'memory', initial: '10Gi'},
-    {key: 'requests.storage', label: t('site.storage'), kind: 'storage', initial: '100Gi'},
-  ];
+  const fields: QuotaField[] = baseQuotaFields.map(({key, labelKey, kind, initial}) => ({
+    key,
+    label: t(labelKey),
+    kind,
+    initial,
+  }));
   const selectedTemplates = new Set(form.value?.templates.map(({uid}) => uid) ?? []);
   const devices = new Map<string, number>();
   for (const environment of environments.value) {
@@ -65,20 +72,27 @@ const quotaFields = computed<QuotaField[]>(() => {
       initial: String(count),
     });
   }
+  const known = new Set(fields.map(({key}) => key));
+  for (const [key, value] of Object.entries(form.value?.quota ?? {})) {
+    if (known.has(key) || !key.startsWith('requests.')) continue;
+    const resource = key.slice('requests.'.length);
+    fields.push({
+      key,
+      label: t('site.deviceQuotaUnused', {resource}),
+      kind: 'count',
+      initial: value,
+      unused: true,
+    });
+  }
   return fields;
 });
-function defaultQuota() {
-  return {
-    pods: '10',
-    persistentvolumeclaims: '10',
-    'requests.cpu': '10',
-    'requests.memory': '10Gi',
-    'requests.storage': '100Gi',
-  };
-}
 watch(quotaFields, (fields) => {
   for (const field of fields) quotaDraft.value[field.key] ??= field.initial;
 });
+function removeUnusedQuota(key: string) {
+  delete quotaDraft.value[key];
+  if (form.value) delete form.value.quota[key];
+}
 async function load() {
   loading.value = true;
   error.value = '';
@@ -119,7 +133,9 @@ function edit(site?: Resource<Site>) {
   form.value.caches ||= [];
   form.value.upstreams ||= [];
   quotaEnabled.value = Object.keys(form.value.quota ?? {}).length > 0;
-  quotaDraft.value = quotaEnabled.value ? cloneFormValue(form.value.quota) : defaultQuota();
+  quotaDraft.value = quotaEnabled.value
+    ? cloneFormValue(form.value.quota)
+    : Object.fromEntries(baseQuotaFields.map(({key, initial}) => [key, initial]));
   editing.value = true;
   dirty.beginTracking();
 }
@@ -141,8 +157,10 @@ async function save() {
     }
     const spec = cloneFormValue(form.value!);
     if (!siteUsesHTTPS.value) spec.caBundle = '';
+    const quotaKeys = new Set(quotaFields.value.map(({key}) => key));
+    for (const key of Object.keys(spec.quota ?? {})) quotaKeys.add(key);
     spec.quota = quotaEnabled.value
-      ? Object.fromEntries(quotaFields.value.map(({key}) => [key, quotaDraft.value[key]]))
+      ? Object.fromEntries(Object.entries(quotaDraft.value).filter(([key]) => quotaKeys.has(key)))
       : {};
     const saved = await request<Resource<Site>>(
       `sites${selected.value ? `/${name.value}` : ''}`,
@@ -365,11 +383,24 @@ function remove(site: Resource<Site>) {
         :key="field.key"
         :label="field.label"
       >
-        <MeasurementInput
-          v-model="quotaDraft[field.key]"
-          :kind="field.kind"
-          :aria-label="field.label"
-        />
+        <div class="quota-input">
+          <MeasurementInput
+            v-model="quotaDraft[field.key]"
+            :kind="field.kind"
+            :aria-label="field.label"
+          />
+          <NButton
+            v-if="field.unused"
+            quaternary
+            circle
+            type="error"
+            :aria-label="t('site.removeUnusedDeviceQuota', {resource: field.key})"
+            :title="t('site.removeUnusedDeviceQuota', {resource: field.key})"
+            @click="removeUnusedQuota(field.key)"
+          >
+            <template #icon><X :size="16" /></template>
+          </NButton>
+        </div>
       </NFormItem>
     </div>
     <h2>{{ t('site.upstreams') }}</h2>

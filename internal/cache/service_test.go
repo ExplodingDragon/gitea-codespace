@@ -19,6 +19,8 @@ import (
 
 	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/healthcheck"
+	"github.com/distribution/distribution/v3/registry/storage/driver/filesystem"
+	"github.com/stretchr/testify/require"
 )
 
 func TestCacheAuthenticationExpiry(t *testing.T) {
@@ -115,6 +117,11 @@ type fakeCacheControl struct {
 	heartbeatErr   error
 	permitDuration time.Duration
 	stallHeartbeat bool
+	gcGrant        GCGrant
+	gcGrantSet     bool
+	beginSignal    chan struct{}
+	completeSignal chan struct{}
+	completeCount  int
 }
 
 func (f *fakeCacheControl) GetCache(context.Context, string) (ControlConfig, error) {
@@ -163,7 +170,95 @@ func (f *fakeCacheControl) ReleaseCache(_ context.Context, owner Owner) error {
 }
 
 func (f *fakeCacheControl) BeginCacheGC(context.Context, Owner) (GCGrant, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.beginSignal != nil {
+		close(f.beginSignal)
+		f.beginSignal = nil
+	}
+	if f.gcGrantSet {
+		return f.gcGrant, nil
+	}
 	return GCGrant{CacheID: f.owner.CacheID, ID: "gc"}, nil
 }
 
-func (f *fakeCacheControl) CompleteCacheGC(context.Context, GCGrant) error { return nil }
+func (f *fakeCacheControl) CompleteCacheGC(context.Context, GCGrant) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.completeCount++
+	if f.completeSignal != nil {
+		close(f.completeSignal)
+		f.completeSignal = nil
+	}
+	return nil
+}
+
+func TestCacheMaintenanceWaitsForReadyAt(t *testing.T) {
+	config := configpkg.CacheConfig{ID: "test", Revision: 1, Enabled: true, GCInterval: configpkg.Duration(time.Nanosecond)}
+	driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": t.TempDir()})
+	require.NoError(t, err)
+	readyAt := time.Now().Add(3 * time.Second)
+	control := &fakeCacheControl{
+		config:      ControlConfig{Config: config},
+		gcGrantSet:  true,
+		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ConfigRevision: 1, ReadyAt: readyAt, ExpiresAt: readyAt.Add(time.Minute)},
+		beginSignal: make(chan struct{}), completeSignal: make(chan struct{}),
+	}
+	beginSignal, completeSignal := control.beginSignal, control.completeSignal
+	cache := &registryCache{id: "test", configRevision: 1, gcInterval: time.Nanosecond, driver: driver}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { cache.maintain(ctx, control); close(done) }()
+
+	select {
+	case <-beginSignal:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cache maintenance did not request a grant")
+	}
+	select {
+	case <-completeSignal:
+		if time.Now().Before(readyAt) {
+			t.Fatalf("cache maintenance completed before ReadyAt %s", readyAt)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cache maintenance did not run after ReadyAt")
+	}
+	cancel()
+	<-done
+	control.mu.Lock()
+	require.Equal(t, 1, control.completeCount)
+	control.mu.Unlock()
+}
+
+func TestCacheMaintenanceCancellationKeepsPendingGrant(t *testing.T) {
+	config := configpkg.CacheConfig{ID: "test", Revision: 1, Enabled: true, GCInterval: configpkg.Duration(time.Nanosecond)}
+	driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": t.TempDir()})
+	require.NoError(t, err)
+	control := &fakeCacheControl{
+		config:      ControlConfig{Config: config},
+		gcGrantSet:  true,
+		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ConfigRevision: 1, ReadyAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(2 * time.Minute)},
+		beginSignal: make(chan struct{}),
+	}
+	beginSignal := control.beginSignal
+	cache := &registryCache{id: "test", configRevision: 1, gcInterval: time.Nanosecond, driver: driver}
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	done := make(chan struct{})
+	go func() { cache.maintain(ctx, control); close(done) }()
+	select {
+	case <-beginSignal:
+	case <-time.After(3 * time.Second):
+		t.Fatal("cache maintenance did not request a grant")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("cache maintenance did not stop after cancellation")
+	}
+	control.mu.Lock()
+	require.Equal(t, 0, control.completeCount)
+	control.mu.Unlock()
+}

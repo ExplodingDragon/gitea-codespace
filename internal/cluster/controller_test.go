@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -211,6 +212,16 @@ func TestSiteOwnershipAndCleanup(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: "codespace", Namespace: ns.Name}, &policy))
 	require.Len(t, policy.Spec.PolicyTypes, 2)
 	require.Equal(t, "gateway", policy.Spec.Ingress[0].From[0].PodSelector.MatchLabels[ComponentLabel])
+	var cachePortFound bool
+	for _, rule := range policy.Spec.Egress {
+		for _, peer := range rule.To {
+			if peer.NamespaceSelector != nil && peer.NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] == "codespace-system" && peer.PodSelector != nil && peer.PodSelector.MatchLabels[ComponentLabel] == "cache" {
+				require.Equal(t, []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromString(cacheHTTPSPortName))}}, rule.Ports)
+				cachePortFound = true
+			}
+		}
+	}
+	require.True(t, cachePortFound)
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "retained", Namespace: ns.Name}}
 	require.NoError(t, c.Create(ctx, volume))
 	require.NoError(t, c.Delete(ctx, site))

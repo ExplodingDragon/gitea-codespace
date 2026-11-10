@@ -6,10 +6,12 @@ Code APIs, while the Codespace platform only depends on the provider protocol.
 
 ## Configuration
 
-The provider accepts `settings` and `extensions` options. Environment-template
-values are applied first and repository `customizations.vscode` values are
-applied afterwards. Repository settings override matching template keys, while
-an extension with the same identifier replaces the template version.
+The provider accepts `settings` and `extensions` options for initial setup.
+Environment-template values are applied first and repository
+`customizations.vscode` values are applied afterwards. Repository settings
+override matching template keys, while an extension with the same identifier
+replaces the template version. Resume preserves the persisted configuration
+so user changes survive stops and Pod replacements.
 
 ```json
 {
@@ -23,11 +25,17 @@ management integration expected by the platform.
 
 ### Expected behavior
 
-- Template settings are applied when repository customizations omit the same
-  key, while repository settings take precedence for matching keys.
-- Extensions from both sources are installed once per identifier, using the
-  repository version when both sources select the same extension.
-- The Codespace extension is present after provider preparation.
+- During initial preparation, template settings are merged with repository
+  settings and written only when the persistent settings file does not exist.
+  Repository values take precedence for matching keys.
+- During initial preparation, extensions from both sources are installed once
+  per identifier, using the repository version when both sources select the
+  same extension.
+- During resume preparation, existing settings, extensions, and other user
+  state are preserved; template and repository options are not reapplied.
+- The bundled Codespace extension is checked during every preparation and is
+  installed or updated when its version marker differs from the bundled
+  version.
 
 ## Development
 

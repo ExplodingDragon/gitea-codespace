@@ -1955,6 +1955,7 @@ type AccessResponse struct {
 	//	*AccessResponse_Stdout
 	//	*AccessResponse_Stderr
 	//	*AccessResponse_ExitStatus
+	//	*AccessResponse_StdoutEof
 	Frame         isAccessResponse_Frame `protobuf_oneof:"frame"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2033,11 +2034,21 @@ func (x *AccessResponse) GetExitStatus() int32 {
 	return 0
 }
 
+func (x *AccessResponse) GetStdoutEof() bool {
+	if x != nil {
+		if x, ok := x.Frame.(*AccessResponse_StdoutEof); ok {
+			return x.StdoutEof
+		}
+	}
+	return false
+}
+
 type isAccessResponse_Frame interface {
 	isAccessResponse_Frame()
 }
 
 type AccessResponse_Accepted struct {
+	// Process attached, or TCP target connected. Sent before stdout.
 	Accepted bool `protobuf:"varint,1,opt,name=accepted,proto3,oneof"`
 }
 
@@ -2053,6 +2064,11 @@ type AccessResponse_ExitStatus struct {
 	ExitStatus int32 `protobuf:"varint,4,opt,name=exit_status,json=exitStatus,proto3,oneof"`
 }
 
+type AccessResponse_StdoutEof struct {
+	// TCP target finished sending. The input direction remains writable.
+	StdoutEof bool `protobuf:"varint,5,opt,name=stdout_eof,json=stdoutEof,proto3,oneof"`
+}
+
 func (*AccessResponse_Accepted) isAccessResponse_Frame() {}
 
 func (*AccessResponse_Stdout) isAccessResponse_Frame() {}
@@ -2060,6 +2076,8 @@ func (*AccessResponse_Stdout) isAccessResponse_Frame() {}
 func (*AccessResponse_Stderr) isAccessResponse_Frame() {}
 
 func (*AccessResponse_ExitStatus) isAccessResponse_Frame() {}
+
+func (*AccessResponse_StdoutEof) isAccessResponse_Frame() {}
 
 var File_agent_v1_service_proto protoreflect.FileDescriptor
 
@@ -2202,13 +2220,15 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\vendpoint_id\x18\x01 \x01(\tR\n" +
 	"endpointId\"!\n" +
 	"\vLoopbackTCP\x12\x12\n" +
-	"\x04port\x18\x01 \x01(\rR\x04port\"\x8e\x01\n" +
+	"\x04port\x18\x01 \x01(\rR\x04port\"\xaf\x01\n" +
 	"\x0eAccessResponse\x12\x1c\n" +
 	"\baccepted\x18\x01 \x01(\bH\x00R\baccepted\x12\x18\n" +
 	"\x06stdout\x18\x02 \x01(\fH\x00R\x06stdout\x12\x18\n" +
 	"\x06stderr\x18\x03 \x01(\fH\x00R\x06stderr\x12!\n" +
 	"\vexit_status\x18\x04 \x01(\x05H\x00R\n" +
-	"exitStatusB\a\n" +
+	"exitStatus\x12\x1f\n" +
+	"\n" +
+	"stdout_eof\x18\x05 \x01(\bH\x00R\tstdoutEofB\a\n" +
 	"\x05frame*\xd1\x01\n" +
 	"\x10AccessCapability\x12!\n" +
 	"\x1dACCESS_CAPABILITY_UNSPECIFIED\x10\x00\x12\x1b\n" +
@@ -2360,6 +2380,7 @@ func file_agent_v1_service_proto_init() {
 		(*AccessResponse_Stdout)(nil),
 		(*AccessResponse_Stderr)(nil),
 		(*AccessResponse_ExitStatus)(nil),
+		(*AccessResponse_StdoutEof)(nil),
 	}
 	type x struct{}
 	out := protoimpl.TypeBuilder{

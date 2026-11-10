@@ -114,6 +114,15 @@ h2 {
 .field-wide {
   grid-column: 1 / -1;
 }
+.quota-input {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.quota-input > :first-child {
+  flex: 1;
+  min-width: 0;
+}
 .web-ide-image-field {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;

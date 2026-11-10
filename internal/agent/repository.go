@@ -22,7 +22,7 @@ import (
 func repositoryWorkspace(repository *codespacev1.RepositoryCheckout) (string, error) {
 	fullName := strings.Trim(strings.TrimSpace(repository.FullName), "/")
 	parts := strings.Split(fullName, "/")
-	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(parts[1], `\\\x00`) {
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.ContainsAny(parts[1], "\\\x00") {
 		return "", fmt.Errorf("repository full name is invalid")
 	}
 	return filepath.Join(workspaceRoot, parts[1]), nil

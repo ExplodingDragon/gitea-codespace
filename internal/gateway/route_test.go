@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -53,7 +54,7 @@ func TestGatewayRouteMetadataUpdateKeepsConnections(t *testing.T) {
 	}
 	select {
 	case <-request.Context().Done():
-	default:
+	case <-time.After(time.Second):
 		t.Fatal("target route update did not cancel the proxy")
 	}
 }

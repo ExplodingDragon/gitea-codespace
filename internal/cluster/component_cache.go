@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"uuid"
 
 	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
@@ -75,7 +74,29 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			continue
 		}
 		namespace := cachepkg.Namespace(material.secret.Data["registryKey"], string(site.UID), create.Repository.RepositoryId, create.GitIdentity.UserId)
-		token, err := cachepkg.SignCredential(material.secret.Data["tokenKey"], material.component.Name, namespace, configpkg.CachePolicy{Public: true, Build: true}, time.Now().Add(cacheCredentialTTL))
+		expires := time.Now().Add(cacheCredentialTTL).Truncate(time.Second)
+		token, err := cachepkg.SignCredential(material.secret.Data["tokenKey"], material.component.Name, namespace, configpkg.CachePolicy{Public: true, Build: true}, expires)
+		if err != nil {
+			return nil, err
+		}
+		// Register the entire credential lifetime before the client can use it.
+		// GC and issuance update the same Lease, including on Manager restart.
+		err = s.updateCacheGCLease(ctx, material.component, func(lease *coordinationv1.Lease) error {
+			if time.Now().Before(cacheLeaseDeadline(lease)) {
+				return connect.NewError(connect.CodeResourceExhausted, "cache maintenance is in progress")
+			}
+			until, err := cacheCredentialDeadline(lease)
+			if err != nil {
+				return err
+			}
+			if expires.After(until) {
+				lease.Annotations[cacheCredentialUntilAnnotation] = expires.Format(time.RFC3339Nano)
+			}
+			return nil
+		})
+		if connect.CodeOf(err) == connect.CodeResourceExhausted {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -87,7 +108,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			Credentials:   make(map[string]*agentv1.RegistryCredential, 1),
 		}
 		for upstream := range material.config.Upstreams {
-			result.Mirrors[upstream] = registryURL + "/mirror/" + upstream
+			result.Mirrors[upstream] = registryURL + "/mirror/" + configpkg.CacheUpstreamID(upstream)
 		}
 		result.Credentials[registryAddress] = &agentv1.RegistryCredential{Username: cachepkg.Username, Password: token}
 		digest := sha256.New()
@@ -245,39 +266,6 @@ func (s *ComponentServer) renewCache(ctx context.Context, identity componentIden
 	return s.Client.Update(ctx, &lease)
 }
 
-func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*componentv1.CacheGCGrant, error) {
-	grantID, now := uuid.NewV4().String(), metav1.NowMicro()
-	lease := &coordinationv1.Lease{ObjectMeta: metav1.ObjectMeta{Name: "cache-gc-" + material.component.Name, Namespace: s.ManagementNamespace, Labels: map[string]string{ComponentUIDLabel: identity.UID}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(material.component, api.GroupVersion.WithKind("CodespaceComponent"))}}, Spec: coordinationv1.LeaseSpec{HolderIdentity: ptr.To(sessionID + "/" + grantID), LeaseDurationSeconds: ptr.To(int32(cacheGCTTL / time.Second)), AcquireTime: &now, RenewTime: &now}}
-	if err := s.Client.Create(ctx, lease); apierrors.IsAlreadyExists(err) {
-		var current coordinationv1.Lease
-		if err := s.Client.Get(ctx, client.ObjectKeyFromObject(lease), &current); err != nil {
-			return nil, err
-		}
-		active := current.Spec.RenewTime != nil && time.Now().Before(current.Spec.RenewTime.Add(time.Duration(ptr.Deref(current.Spec.LeaseDurationSeconds, 0))*time.Second))
-		if active {
-			return nil, connect.NewError(connect.CodeResourceExhausted, "cache cleanup is already active")
-		}
-		current.Labels, current.OwnerReferences, current.Spec = lease.Labels, lease.OwnerReferences, lease.Spec
-		if err := s.Client.Update(ctx, &current); err != nil {
-			return nil, err
-		}
-	} else if err != nil {
-		return nil, err
-	}
-	return &componentv1.CacheGCGrant{CacheId: material.component.Name, Id: grantID, ConfigRevision: material.config.Revision, ExpiresAtUnixMilliseconds: now.Add(cacheGCTTL).UnixMilli()}, nil
-}
-
-func (s *ComponentServer) completeCacheGC(ctx context.Context, identity componentIdentity, cacheID, sessionID, grantID string) error {
-	var lease coordinationv1.Lease
-	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: "cache-gc-" + cacheID}, &lease); err != nil {
-		return err
-	}
-	if lease.Labels[ComponentUIDLabel] != identity.UID || ptr.Deref(lease.Spec.HolderIdentity, "") != sessionID+"/"+grantID {
-		return connect.NewError(connect.CodeFailedPrecondition, "cache cleanup grant is no longer current")
-	}
-	return client.IgnoreNotFound(s.Client.Delete(ctx, &lease, client.Preconditions{UID: &lease.UID, ResourceVersion: &lease.ResourceVersion}))
-}
-
 func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1connect.ComponentServiceCacheControlServerStream) error {
 	first, err := stream.Receive()
 	if err != nil {
@@ -362,7 +350,7 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 			case *componentv1.CacheControlRequest_BeginGc:
 				response.GcGrant, err = s.beginCacheGC(ctx, identity, material, first.SessionId)
 			case *componentv1.CacheControlRequest_CompleteGc:
-				err = s.completeCacheGC(ctx, identity, first.CacheId, first.SessionId, maintenance.CompleteGc.GrantId)
+				err = s.completeCacheGC(ctx, material.component, first.SessionId, maintenance.CompleteGc.GrantId)
 			}
 			if err != nil {
 				return err

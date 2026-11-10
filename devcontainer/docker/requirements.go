@@ -6,36 +6,67 @@ package docker
 import (
 	"context"
 	"fmt"
-	"os"
 	"runtime"
-	"strconv"
 	"strings"
 
 	dockerunits "github.com/docker/go-units"
 	"golang.org/x/sys/unix"
 
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/cgroup"
 )
 
 func checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
+	var reader cgroup.Reader
+	if requirements.CPUs != nil || strings.TrimSpace(requirements.Memory) != "" {
+		var err error
+		reader, err = cgroup.Current()
+		if err != nil {
+			return fmt.Errorf("inspect runtime cgroup: %w", err)
+		}
+	}
+	return checkHostRequirementsWithCgroup(requirements, workspace, reader)
+}
+
+func checkHostRequirementsWithCgroup(requirements devcontainer.HostRequirements, workspace string, reader cgroup.Reader) error {
 	if requirements.CPUs != nil && *requirements.CPUs > runtime.NumCPU() {
 		return fmt.Errorf("dev container requires %d CPUs but the runtime provides %d", *requirements.CPUs, runtime.NumCPU())
+	}
+	if requirements.CPUs != nil {
+		data, err := reader.Read("cpu.max")
+		if err == nil {
+			quota, period, unlimited, err := cgroup.ParseCPUQuota(data)
+			if err != nil {
+				return fmt.Errorf("inspect runtime CPU limit: %w", err)
+			}
+			if !unlimited && int64(*requirements.CPUs)*period > quota {
+				return fmt.Errorf("dev container requires %d CPUs but the runtime CPU quota is %d/%d", *requirements.CPUs, quota, period)
+			}
+		} else {
+			return fmt.Errorf("inspect runtime CPU limit: %w", err)
+		}
 	}
 	if strings.TrimSpace(requirements.Memory) != "" {
 		required, err := dockerunits.RAMInBytes(requirements.Memory)
 		if err != nil || required <= 0 {
 			return fmt.Errorf("dev container hostRequirements.memory %q is invalid", requirements.Memory)
 		}
-		var available uint64
-		if content, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil && strings.TrimSpace(string(content)) != "max" {
-			available, _ = strconv.ParseUint(strings.TrimSpace(string(content)), 10, 64)
+		content, err := reader.Read("memory.max")
+		if err != nil {
+			return fmt.Errorf("inspect runtime memory: %w", err)
 		}
-		if available == 0 {
-			var info unix.Sysinfo_t
-			if err := unix.Sysinfo(&info); err != nil {
-				return fmt.Errorf("inspect runtime memory: %w", err)
-			}
-			available = info.Totalram * uint64(info.Unit)
+		limit, err := cgroup.ParseMemoryMax(content)
+		if err != nil {
+			return fmt.Errorf("inspect runtime memory: %w", err)
+		}
+		var info unix.Sysinfo_t
+		if err := unix.Sysinfo(&info); err != nil {
+			return fmt.Errorf("inspect runtime memory: %w", err)
+		}
+		visible := info.Totalram * uint64(info.Unit)
+		available := visible
+		if limit > 0 && uint64(limit) < available {
+			available = uint64(limit)
 		}
 		if uint64(required) > available {
 			return fmt.Errorf("dev container requires %s memory but the runtime provides %s", requirements.Memory, dockerunits.BytesSize(float64(available)))
@@ -49,6 +80,9 @@ func checkHostRequirements(requirements devcontainer.HostRequirements, workspace
 		var info unix.Statfs_t
 		if err := unix.Statfs(workspace, &info); err != nil {
 			return fmt.Errorf("inspect runtime storage: %w", err)
+		}
+		if info.Bsize <= 0 {
+			return fmt.Errorf("inspect runtime storage: invalid filesystem block size")
 		}
 		available := info.Bavail * uint64(info.Bsize)
 		if uint64(required) > available {

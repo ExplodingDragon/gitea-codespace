@@ -88,8 +88,13 @@ func proxyGatewayEndpoint(
 		return nil
 	}
 	proxy.ErrorHandler = func(writer http.ResponseWriter, request *http.Request, err error) {
-		if request.Context().Err() != nil || errors.Is(err, context.Canceled) {
-			return
+		if cause := context.Cause(request.Context()); cause != nil {
+			if errors.Is(cause, context.Canceled) || errors.Is(cause, context.DeadlineExceeded) {
+				return
+			}
+			if !errors.Is(err, cause) {
+				err = errors.Join(err, cause)
+			}
 		}
 		attrs := append([]slog.Attr{}, logAttrs...)
 		attrs = append(attrs,

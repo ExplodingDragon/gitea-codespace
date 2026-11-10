@@ -211,6 +211,7 @@ message CacheGCGrant {
   string id = 2;
   int64 config_revision = 3;
   int64 expires_at_unix_milliseconds = 4;
+  int64 ready_at_unix_milliseconds = 5;
 }
 
 message CacheGCRequest {}

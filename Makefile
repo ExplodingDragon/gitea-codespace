@@ -37,6 +37,7 @@ POSIX_SCRIPTS := \
 GO_FILES := $(shell find . -path './.git' -prune -o -path './.tmp' -prune -o -path './web/node_modules' -prune -o -type f -name '*.go' -print)
 
 define prepare-proto-workspace
+set -e; \
 mkdir -p .tmp; \
 work="$$(mktemp -d .tmp/proto-work.XXXXXX)"; \
 trap 'rm -rf "$$work"; rmdir .tmp 2>/dev/null || true' EXIT; \
@@ -53,7 +54,8 @@ generate-kubernetes:
 	cp deploy/crds/*.yaml charts/gitea-codespace/crds/
 
 kubernetes-check:
-	@mkdir -p .tmp; \
+	@set -e; \
+	mkdir -p .tmp; \
 	work="$$(mktemp -d .tmp/kubernetes-work.XXXXXX)"; \
 	trap 'rm -rf "$$work"; rmdir .tmp 2>/dev/null || true' EXIT; \
 	$(GO) run sigs.k8s.io/controller-tools/cmd/controller-gen@$(CONTROLLER_GEN_VERSION) object crd paths=./internal/cluster/api/... output:crd:artifacts:config="$$work"; \
@@ -101,7 +103,7 @@ lint: go-format-check proto-check scripts-check scripts-format-check workflow-ch
 	$(STATICCHECK) ./...
 
 go-format-check:
-	@unformatted="$$($(GOFMT) -l $(GO_FILES))"; test -z "$$unformatted" || { printf 'Go files need formatting:\n%s\n' "$$unformatted" >&2; exit 1; }
+	@set -e; unformatted="$$($(GOFMT) -l $(GO_FILES))"; test -z "$$unformatted" || { printf 'Go files need formatting:\n%s\n' "$$unformatted" >&2; exit 1; }
 
 build: frontend
 	$(GO) build -ldflags="-X 'gitea.dev/codespace/internal/controlplane.buildVersion=$(CODESPACE_VERSION)'" -o bin/gitea-codespace .
@@ -113,7 +115,7 @@ prepare-gitea-cli:
 	GITEA_CLI_VERSION="$(GITEA_CLI_VERSION)" ./deploy/prepare-gitea-cli.sh linux amd64 bin
 
 images: build-linux prepare-gitea-cli
-	@. bin/gitea-cli.env; \
+	@set -e; . bin/gitea-cli.env; \
 	$(CONTAINER_TOOL) build \
 		--build-arg GITEA_CLI_VERSION="$$GITEA_CLI_VERSION" \
 		--build-arg GITEA_CLI_SHA256="$$GITEA_CLI_SHA256" \
@@ -123,7 +125,7 @@ e2e-web-ide-image:
 	$(RM) -r .tmp/e2e-web-ide
 	mkdir -p .tmp/e2e-web-ide/layout
 	CGO_ENABLED=0 GOOS=linux GOARCH=$(WEB_IDE_E2E_ARCH) $(GO) build -trimpath -ldflags='-s -w' -o .tmp/e2e-web-ide/web-ide-e2e ./tests/e2e/web-ide
-	@if $(CONTAINER_TOOL) --version | grep -qi podman; then \
+	@set -e; if $(CONTAINER_TOOL) --version | grep -qi podman; then \
 		$(CONTAINER_TOOL) build --platform linux/$(WEB_IDE_E2E_ARCH) --build-arg TARGETARCH=$(WEB_IDE_E2E_ARCH) --tag $(WEB_IDE_E2E_IMAGE) -f tests/e2e/web-ide/Dockerfile .; \
 		$(CONTAINER_TOOL) save --format oci-archive --output .tmp/e2e-web-ide/image.tar $(WEB_IDE_E2E_IMAGE); \
 	else \
@@ -150,13 +152,13 @@ test-frontend:
 
 helm-check:
 	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin
-	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
+	@set -e; rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'; \
 	printf '%s\n' "$$rendered" | grep -Fq -- '--web-ide-program-volume-size=4Gi'; \
 	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'
 	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
-	@rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
+	@set -e; rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: IfNotPresent'
 

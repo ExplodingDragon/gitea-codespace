@@ -278,13 +278,29 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 			}
 			continue
 		}
-		// Drain cached authentication before deleting data; stop before the grant expires.
-		deadline := grant.ExpiresAt.Add(-5 * time.Second)
-		if time.Until(deadline) <= authenticationTTL {
-			_ = control.CompleteCacheGC(ctx, grant)
+		if grant.ID == "" {
+			// Reconnected instances may still be inside the persisted GC interval.
+			// Avoid an authorization RPC on every local configuration poll.
+			timer := time.NewTimer(min(c.gcInterval, time.Minute))
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return
+			case <-timer.C:
+			}
 			continue
 		}
-		timer := time.NewTimer(authenticationTTL)
+		// Manager freezes credential issuance before returning ReadyAt. Waiting
+		// until that point protects uploads whose manifest request follows the
+		// blob request that obtained the credential.
+		deadline := grant.ExpiresAt.Add(-5 * time.Second)
+		if grant.ReadyAt.IsZero() || !grant.ReadyAt.Before(deadline) {
+			if ctx.Err() == nil {
+				_ = control.CompleteCacheGC(ctx, grant)
+			}
+			continue
+		}
+		timer := time.NewTimer(time.Until(grant.ReadyAt))
 		select {
 		case <-ctx.Done():
 			timer.Stop()
@@ -294,6 +310,11 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 		gcCtx, stop := context.WithDeadline(ctx, deadline)
 		err = c.prune(gcCtx)
 		stop()
+		if ctx.Err() != nil {
+			// Keep the Manager's pending grant. A control stream rotation can
+			// resume the same maintenance window after this process reconnects.
+			return
+		}
 		completeErr := control.CompleteCacheGC(ctx, grant)
 		if completeErr != nil {
 			err = errors.Join(err, completeErr)

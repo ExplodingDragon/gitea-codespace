@@ -3,18 +3,24 @@ import {computed} from 'vue';
 import {NButton, NCheckbox, NFormItem, NInput, NSelect} from 'naive-ui';
 import {Plus, X} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
-import type {ClusterOptions, Component} from '../api';
+import type {ClusterOptions, Component, ComponentStatus} from '../api';
 import MeasurementInput from './MeasurementInput.vue';
 import ProxySettings from './ProxySettings.vue';
 
 const props = defineProps<{
   cache: NonNullable<Component['cache']>;
   cluster: ClusterOptions;
+  status?: ComponentStatus;
 }>();
 const s3AccessKey = defineModel<string>('s3AccessKey', {required: true});
 const s3SecretKey = defineModel<string>('s3SecretKey', {required: true});
 const upstreams = defineModel<{host: string; allow: string}[]>('upstreams', {required: true});
 const {t} = useI18n();
+const currentStorageClass = computed(() =>
+  props.status?.storageClassLocked
+    ? (props.status.storageClassName ?? '')
+    : (props.cache.storage.storageClassName ?? ''),
+);
 
 const storageOptions = computed(() => {
   const hasDefaultStorage = props.cluster.storageClasses.some(({default: isDefault}) => isDefault);
@@ -32,7 +38,7 @@ const storageOptions = computed(() => {
       disabled: false,
     })),
   ];
-  const current = props.cache.storage.storageClassName;
+  const current = currentStorageClass.value;
   if (current && !options.some(({value}) => value === current))
     options.push({label: t('common.unavailableOption', {name: current}), value: current, disabled: true});
   return options;
@@ -96,11 +102,16 @@ const storageOptions = computed(() => {
     </NFormItem>
     <NFormItem
       :label="t('component.storageClass')"
-      :feedback="t('component.storageClassHelp')"
+      :feedback="
+        status?.storageClassLocked
+          ? t('component.storageClassLockedHelp', {name: currentStorageClass})
+          : t('component.storageClassHelp')
+      "
     >
       <NSelect
-        :value="cache.storage.storageClassName || '__default__'"
+        :value="currentStorageClass || '__default__'"
         :options="storageOptions"
+        :disabled="props.status?.storageClassLocked"
         @update:value="cache.storage.storageClassName = $event === '__default__' ? '' : $event"
       />
     </NFormItem>

@@ -24,6 +24,7 @@ import (
 	"gitea.dev/codespace/internal/accessticket"
 	cachepkg "gitea.dev/codespace/internal/cache"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	configpkg "gitea.dev/codespace/internal/config"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
@@ -264,7 +265,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	namespace := "codespace-system"
 	component := testCacheComponent("cache", "cache-uid")
 	component.Generation = 7
-	component.Spec.Cache.Upstreams = map[string]api.CacheUpstream{"ghcr.io": {Allow: []string{"devcontainers/*"}}}
+	component.Spec.Cache.Upstreams = map[string]api.CacheUpstream{"ghcr.io:5443": {Allow: []string{"devcontainers/*"}}}
 	secret := testComponentCredential(component, map[string][]byte{
 		"registryKey": []byte(strings.Repeat("r", 32)), "tokenKey": []byte(strings.Repeat("t", 32)),
 	})
@@ -283,7 +284,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, err)
 	require.EqualValues(t, component.Generation, material.config.Revision)
 
-	const sessionID = "11111111-1111-4111-8111-111111111111"
+	sessionID := "11111111-1111-4111-8111-111111111111"
 	material.config.Enabled = false
 	err = server.claimCache(cacheContext, identity, material, sessionID)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
@@ -308,6 +309,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, err)
 	cacheNamespace := cachepkg.Namespace(secret.Data["registryKey"], string(site.UID), 7, 9)
 	require.Equal(t, "https://cache.codespace-system.svc/cache/"+cacheNamespace, runtimeCache.BuildRegistry)
+	require.Equal(t, "https://cache.codespace-system.svc/mirror/"+configpkg.CacheUpstreamID("ghcr.io:5443"), runtimeCache.Mirrors["ghcr.io:5443"])
 	credential := runtimeCache.Credentials["cache.codespace-system.svc"]
 	require.NotNil(t, credential)
 	require.Equal(t, cachepkg.Username, credential.Username)
@@ -317,17 +319,77 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.True(t, verified.Policy.Build)
 	grant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
+	require.Equal(t, verified.ExpiresAt.UnixMilli(), grant.ReadyAtUnixMilliseconds)
+	require.GreaterOrEqual(t, grant.ExpiresAtUnixMilliseconds-grant.ReadyAtUnixMilliseconds, cacheGCTTL.Milliseconds())
+	repeatedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	require.NoError(t, err)
+	require.Equal(t, grant, repeatedGrant)
+	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
+	require.NoError(t, err)
+	require.Nil(t, runtimeCache)
 	var gcLease coordinationv1.Lease
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "cache-gc-" + component.Name}, &gcLease))
 	require.True(t, metav1.IsControlledBy(&gcLease, component))
-	err = server.completeCacheGC(cacheContext, identity, component.Name, sessionID, grant.Id)
+
+	// Replacing both processes preserves the drain cutoff and fences the old owner.
+	server = &ComponentServer{Client: c, IdentityIndex: identityIndex, ManagementNamespace: namespace}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))
+	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
+	ownerLease.Spec.RenewTime = &expired
+	require.NoError(t, c.Update(ctx, &ownerLease))
+	previousSession := sessionID
+	sessionID = "replacement-session"
+	require.NoError(t, server.claimCache(cacheContext, identity, material, sessionID))
+	resumedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
+	require.NotEqual(t, grant.Id, resumedGrant.Id)
+	require.Equal(t, grant.ReadyAtUnixMilliseconds, resumedGrant.ReadyAtUnixMilliseconds)
+	require.Equal(t, grant.ExpiresAtUnixMilliseconds, resumedGrant.ExpiresAtUnixMilliseconds)
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.completeCacheGC(ctx, component, previousSession, grant.Id)))
+	grant = resumedGrant
+	err = server.completeCacheGC(cacheContext, component, sessionID, grant.Id)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&gcLease), &gcLease))
+	protectedUntil, err := cacheCredentialDeadline(&gcLease)
+	require.NoError(t, err)
+	require.Equal(t, verified.ExpiresAt, protectedUntil)
+	notDue, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	require.NoError(t, err)
+	require.Nil(t, notDue)
+	gcLease.Annotations[cacheLastCleanupAnnotation] = time.Now().Add(-material.config.GCInterval.ToStdlib()).Format(time.RFC3339Nano)
+	require.NoError(t, c.Update(ctx, &gcLease))
+
+	// Maintenance wins after issuance has read the Lease but before its CAS update.
+	maintenanceServer := *server
+	raced := false
+	server.Client = interceptor.NewClient(c, interceptor.Funcs{
+		Update: func(ctx context.Context, underlying client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+			if obj.GetName() == gcLease.Name && !raced {
+				raced = true
+				grant, err = maintenanceServer.beginCacheGC(cacheContext, identity, material, sessionID)
+				require.NoError(t, err)
+			}
+			return underlying.Update(ctx, obj, opts...)
+		},
+	})
+	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
+	require.NoError(t, err)
+	require.True(t, raced)
+	require.Nil(t, runtimeCache)
+	server.Client = c
+
+	// An expired grant releases issuance without a cleanup callback.
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&gcLease), &gcLease))
+	gcLease.Spec.RenewTime, gcLease.Spec.LeaseDurationSeconds = &expired, ptr.To(int32(1))
+	require.NoError(t, c.Update(ctx, &gcLease))
+	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
+	require.NoError(t, err)
+	require.NotNil(t, runtimeCache)
 
 	wrongContext := contextWithComponent(ctx, componentIdentity{Role: "cache", UID: "other-cache"})
 	_, _, err = server.cacheForRequest(wrongContext, component.Name)
 	require.Equal(t, connect.CodePermissionDenied, connect.CodeOf(err))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))
-	expired := metav1.NewMicroTime(time.Now().Add(-time.Minute))
 	ownerLease.Spec.RenewTime = &expired
 	require.NoError(t, c.Update(ctx, &ownerLease))
 	runtimeCache, err = server.runtimeCache(ctx, cs, operation)

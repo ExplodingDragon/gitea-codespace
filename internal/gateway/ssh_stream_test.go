@@ -6,11 +6,15 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"io"
+	"net"
 	"strings"
 	"sync"
 	"testing"
 	"testing/synctest"
+	"time"
 
 	"github.com/stretchr/testify/require"
 	"golang.org/x/crypto/ssh"
@@ -89,4 +93,108 @@ func TestGatewaySSHRuntimeRequiresAuthorizedSite(t *testing.T) {
 	require.True(t, available)
 	available = server.runtimeAvailable("runtime", "site-2")
 	require.False(t, available)
+}
+
+func TestSSHForwardingHalfCloseAndChannelIsolation(t *testing.T) {
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer, err := ssh.NewSignerFromKey(key)
+	require.NoError(t, err)
+	config := &ssh.ServerConfig{NoClientAuth: true}
+	config.AddHostKey(signer)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	defer func() { _ = listener.Close() }()
+	targets, err := net.ListenTCP("tcp", &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	require.NoError(t, err)
+	defer func() { _ = targets.Close() }()
+	require.NoError(t, targets.SetDeadline(time.Now().Add(5*time.Second)))
+	done := make(chan error, 1)
+	go func() {
+		raw, err := listener.Accept()
+		if err != nil {
+			done <- err
+			return
+		}
+		server, channels, requests, err := ssh.NewServerConn(raw, config)
+		if err != nil {
+			_ = raw.Close()
+			done <- err
+			return
+		}
+		defer func() { _ = server.Close() }()
+		go ssh.DiscardRequests(requests)
+		var workers sync.WaitGroup
+		for incoming := range channels {
+			conn, err := net.DialTimeout("tcp", targets.Addr().String(), time.Second)
+			if err != nil {
+				done <- err
+				return
+			}
+			channel, requests, err := incoming.Accept()
+			if err != nil {
+				_ = conn.Close()
+				done <- err
+				return
+			}
+			workers.Go(func() {
+				(&sshServer{}).proxyWorkspaceStream(t.Context(), channel, requests, conn, nil)
+			})
+		}
+		workers.Wait()
+		done <- nil
+	}()
+	client, err := ssh.Dial("tcp", listener.Addr().String(), &ssh.ClientConfig{
+		User: "test", HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 3 * time.Second,
+	})
+	require.NoError(t, err)
+	defer func() { _ = client.Close() }()
+	channels := make([]ssh.Channel, 0, 2)
+	connections := make([]*net.TCPConn, 0, 2)
+	for range 2 {
+		channel, requests, err := client.OpenChannel("direct-tcpip", nil)
+		require.NoError(t, err)
+		go ssh.DiscardRequests(requests)
+		channels = append(channels, channel)
+		conn, err := targets.AcceptTCP()
+		require.NoError(t, err)
+		require.NoError(t, conn.SetDeadline(time.Now().Add(3*time.Second)))
+		connections = append(connections, conn)
+		defer func() { _ = conn.Close() }()
+	}
+	// The target finishes sending first; the client must still be able to send.
+	_, err = connections[0].Write([]byte("response"))
+	require.NoError(t, err)
+	require.NoError(t, connections[0].CloseWrite())
+	response, err := io.ReadAll(channels[0])
+	require.NoError(t, err)
+	require.Equal(t, "response", string(response))
+	_, err = channels[0].Write([]byte("final input"))
+	require.NoError(t, err)
+	require.NoError(t, channels[0].CloseWrite())
+	input, err := io.ReadAll(connections[0])
+	require.NoError(t, err)
+	require.Equal(t, "final input", string(input))
+	_ = channels[0].Close()
+	// The second channel remains usable and closes its input first.
+	_, err = channels[1].Write([]byte("second request"))
+	require.NoError(t, err)
+	require.NoError(t, channels[1].CloseWrite())
+	input, err = io.ReadAll(connections[1])
+	require.NoError(t, err)
+	require.Equal(t, "second request", string(input))
+	_, err = connections[1].Write([]byte("second response"))
+	require.NoError(t, err)
+	require.NoError(t, connections[1].CloseWrite())
+	response, err = io.ReadAll(channels[1])
+	require.NoError(t, err)
+	require.Equal(t, "second response", string(response))
+	_ = channels[1].Close()
+	require.NoError(t, client.Close())
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH forwarding workers did not finish")
+	}
 }

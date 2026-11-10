@@ -4,10 +4,42 @@
 package gateway
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+
+	"github.com/stretchr/testify/require"
 )
+
+func TestGatewayProxyUpstreamCancellationReturnsBadGateway(t *testing.T) {
+	for _, routeChanged := range []bool{false, true} {
+		name := "agent canceled"
+		if routeChanged {
+			name = "route changed"
+		}
+		t.Run(name, func(t *testing.T) {
+			routes := newRouteStore(gatewayTestBackend{endpointError: context.Canceled})
+			defer routes.Close()
+			route := endpointRoute{SiteUID: "site", CodespaceUUID: "runtime", GiteaWebURL: "https://gitea.test", EndpointID: "app", Public: true}
+			require.NoError(t, routes.Put(route))
+			request := httptest.NewRequest(http.MethodGet, "http://workspace.test/", nil)
+			if routeChanged {
+				_, changed, release, ok := routes.BeginProxy(request, route.CodespaceUUID, route.EndpointID)
+				require.True(t, ok)
+				defer release()
+				routes.Delete(route.CodespaceUUID, route.EndpointID)
+				<-changed.Context().Done()
+				request = changed
+				require.NoError(t, routes.Put(route))
+			}
+			response := httptest.NewRecorder()
+			proxyGatewayEndpoint(response, request, routes, route, "/", gatewayProxyRequestContext{})
+			require.Equal(t, http.StatusBadGateway, response.Code)
+			require.JSONEq(t, `{"error":"gateway upstream unavailable"}`, response.Body.String())
+		})
+	}
+}
 
 func TestGatewayProxyRequestInjectsAuthenticatedContext(t *testing.T) {
 	t.Parallel()

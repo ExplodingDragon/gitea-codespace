@@ -147,7 +147,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		_ = endpointListener.Close()
 		_ = os.Remove(runtimeendpoint.AgentSocketPath)
 	}()
-	sampler := &agentpkg.ResourceSampler{}
+	sampler := agentpkg.NewResourceSampler()
 	client := &agentpkg.ControlClient{Journal: journal, Remote: remote, Execute: runtime.Execute, Sample: sampler.Sample, TargetChanges: runtime.TargetChanges(), CurrentTarget: runtime.CurrentAccessTarget}
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runAccessServer(groupCtx, runtime, certificates) })

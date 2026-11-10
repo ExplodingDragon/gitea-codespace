@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"github.com/stretchr/testify/require"
 )
 
@@ -55,5 +56,33 @@ func TestRepositoryCloneEndpoint(t *testing.T) {
 		protocol, endpoint := repositoryCloneEndpoint(test.url)
 		require.Equal(t, test.protocol, protocol)
 		require.Equal(t, test.endpoint, endpoint)
+	}
+}
+
+func TestRepositoryWorkspace(t *testing.T) {
+	tests := []struct {
+		name      string
+		fullName  string
+		wantError bool
+	}{
+		{name: "ordinary", fullName: "owner/demo"},
+		{name: "contains x", fullName: "owner/box"},
+		{name: "contains zero", fullName: "owner/repo0"},
+		{name: "backslash", fullName: "owner/repo\\name", wantError: true},
+		{name: "nul", fullName: "owner/repo\x00name", wantError: true},
+		{name: "missing owner", fullName: "/repository", wantError: true},
+		{name: "missing repository", fullName: "owner/", wantError: true},
+		{name: "extra path segment", fullName: "owner/team/repository", wantError: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			path, err := repositoryWorkspace(&codespacev1.RepositoryCheckout{FullName: test.fullName})
+			if test.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, filepath.Join(workspaceRoot, strings.TrimPrefix(test.fullName, "owner/")), path)
+		})
 	}
 }

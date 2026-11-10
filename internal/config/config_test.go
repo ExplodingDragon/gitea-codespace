@@ -11,6 +11,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+func TestCacheUpstreamID(t *testing.T) {
+	t.Parallel()
+
+	first := configpkg.CacheUpstreamID("registry.example.test:5000")
+	if len(first) != 64 {
+		t.Fatalf("upstream ID length = %d, want 64", len(first))
+	}
+	if first != configpkg.CacheUpstreamID("registry.example.test:5000") {
+		t.Fatal("upstream ID is not stable")
+	}
+	if first == configpkg.CacheUpstreamID("registry.example.test:5001") {
+		t.Fatal("upstream IDs collide for different ports")
+	}
+}
+
 func validGatewayConfig() configpkg.GatewayConfig {
 	return configpkg.GatewayConfig{
 		HTTP: configpkg.GatewayHTTPConfig{Listen: ":18081", PublicURL: "http://gateway.example.com:18081"},

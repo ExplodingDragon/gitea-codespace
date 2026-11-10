@@ -4,6 +4,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -16,6 +18,15 @@ import (
 
 	dockerunits "github.com/docker/go-units"
 )
+
+// CacheUpstreamID returns the stable route component used for one cache
+// upstream. The complete validated host is hashed so hosts that differ only
+// by port remain distinct while the value stays valid in an OCI repository
+// path.
+func CacheUpstreamID(host string) string {
+	digest := sha256.Sum256([]byte(host))
+	return hex.EncodeToString(digest[:])
+}
 
 var gatewayDNSLabelPattern = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 

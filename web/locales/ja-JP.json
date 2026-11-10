@@ -217,7 +217,9 @@
     "pods": "Pod",
     "persistentVolumes": "永続ボリューム",
     "cpuRequests": "CPU リクエスト",
-    "deviceQuota": "{{resource}} リクエスト",
+    "deviceQuota": "{resource} リクエスト",
+    "deviceQuotaUnused": "{resource} リクエスト（選択したテンプレートでは未使用）",
+    "removeUnusedDeviceQuota": "未使用の {resource} クォータを削除",
     "memoryRequests": "メモリーリクエスト",
     "storage": "ストレージ",
     "invalidQuota": "{resource} に 0 より大きいクォータを入力してください。"
@@ -287,6 +289,7 @@
     "maxCacheSizeHelp": "キャッシュのクリーンアップにより、保存データをこの容量以下に保ちます。",
     "volumeSizeHelp": "キャッシュデータと予約空き容量に使用する永続ボリュームの容量です。",
     "storageClassHelp": "キャッシュボリュームの作成に使用する StorageClass を選択します。",
+    "storageClassLockedHelp": "このキャッシュには永続ボリュームがあり、StorageClass は {name} に固定されています。",
     "s3Endpoint": "S3 エンドポイント",
     "region": "リージョン",
     "bucket": "バケット",

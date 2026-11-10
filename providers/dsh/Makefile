@@ -19,13 +19,13 @@ check: adapter-check
 	./build.sh linux $(ARCH) .tmp/$(ARCH) check
 
 version:
-	@. ./version.env; printf '%s\n' "$$DSH_DEFAULT_VERSION"
+	@set -e; . ./version.env; printf '%s\n' "$$DSH_DEFAULT_VERSION"
 
 bundle: adapter-check
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle
-	@. ./version.env; \
+	@set -e; . ./version.env; \
 	$(CONTAINER_TOOL) build \
 		--build-arg TARGETARCH="$(ARCH)" \
 		--build-arg PROVIDER_VERSION="$$DSH_DEFAULT_VERSION" \

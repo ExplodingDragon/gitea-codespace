@@ -5,7 +5,7 @@
 package runtime
 
 import (
-	"time"
+	"io"
 
 	"github.com/spf13/cobra"
 
@@ -15,16 +15,19 @@ import (
 func newConnectCommand() *cobra.Command {
 	var host string
 	var port uint16
-	var wait time.Duration
 	command := &cobra.Command{
 		Use:  "connect",
 		Args: cobra.NoArgs,
 		RunE: func(command *cobra.Command, _ []string) error {
-			return runtimecmd.Connect(command.Context(), host, port, wait, command.InOrStdin(), command.OutOrStdout())
+			input := command.InOrStdin()
+			stdin, ok := input.(io.ReadCloser)
+			if !ok {
+				stdin = io.NopCloser(input)
+			}
+			return runtimecmd.Connect(command.Context(), host, port, stdin, command.OutOrStdout())
 		},
 	}
 	command.Flags().StringVar(&host, "host", "localhost", "Dev Container loopback host")
 	command.Flags().Uint16Var(&port, "port", 0, "Dev Container loopback port")
-	command.Flags().DurationVar(&wait, "wait", 0, "Wait for the loopback service to start")
 	return command
 }

@@ -217,7 +217,9 @@
     "pods": "Pod",
     "persistentVolumes": "持久卷",
     "cpuRequests": "CPU 请求",
-    "deviceQuota": "{{resource}} 请求数",
+    "deviceQuota": "{resource} 请求数",
+    "deviceQuotaUnused": "{resource} 请求数（当前模板未使用）",
+    "removeUnusedDeviceQuota": "删除未使用的 {resource} 配额",
     "memoryRequests": "内存请求",
     "storage": "存储",
     "invalidQuota": "请为{resource}输入大于零的配额。"
@@ -287,6 +289,7 @@
     "maxCacheSizeHelp": "缓存清理会将已存储数据控制在该容量以内。",
     "volumeSizeHelp": "用于缓存数据和预留剩余空间的持久卷容量。",
     "storageClassHelp": "选择用于创建缓存卷的 StorageClass。",
+    "storageClassLockedHelp": "此缓存已经有持久化卷，StorageClass 已固定为 {name}。",
     "s3Endpoint": "S3 端点",
     "region": "区域",
     "bucket": "存储桶",
