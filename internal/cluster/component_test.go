@@ -352,7 +352,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&gcLease), &gcLease))
 	protectedUntil, err := cacheCredentialDeadline(&gcLease)
 	require.NoError(t, err)
-	require.Equal(t, verified.ExpiresAt, protectedUntil)
+	require.WithinDuration(t, verified.ExpiresAt, protectedUntil, 0)
 	notDue, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
 	require.Nil(t, notDue)
