@@ -42,7 +42,7 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version-file: providers/${{ inputs.provider }}/.node-version
-      - name: Validate adapter and scripts
+      - name: Validate provider source
         env:
           PNPM_VERSION: ${{ inputs.pnpm-version }}
           PROVIDER: ${{ inputs.provider }}

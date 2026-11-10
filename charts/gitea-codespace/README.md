@@ -53,7 +53,7 @@ Select the resource and CDI settings in the environment template. Validate
 nested containers, persistent storage, and device access before making the
 template available to users.
 
-### Implementation acceptance criteria
+### Verify
 
 - A workspace Pod starts with the selected isolation mode and StorageClass.
 - Workspace data remains available after a normal stop and start.
@@ -101,7 +101,7 @@ editor program. Increase it when a provider image needs more unpacked space.
 See the [Web IDE provider guide](../../providers/README.md) when using a custom
 provider.
 
-### Implementation acceptance criteria
+### Verify
 
 - Leaving the provider empty creates a codespace with SSH and forwarded ports
   but no browser workspace endpoint.
@@ -139,7 +139,7 @@ WebSocket traffic; port `22` carries SSH and SFTP. Publish HTTP with an Ingress
 and SSH with a LoadBalancer Service, or route the ClusterIP Service through
 existing cluster infrastructure. Configure public DNS and TLS at that boundary.
 
-### Implementation acceptance criteria
+### Verify
 
 - The published HTTP address supports browser navigation and WebSocket
   upgrades through the same Gateway Service.

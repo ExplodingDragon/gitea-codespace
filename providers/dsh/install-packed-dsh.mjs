@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import {execFileSync, spawnSync} from 'node:child_process';
-import {mkdirSync, readdirSync, writeFileSync} from 'node:fs';
+import {mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {fileURLToPath, pathToFileURL} from 'node:url';
 
@@ -47,7 +47,7 @@ for (const source of sources) {
 }
 
 const selected = new Set();
-const queue = ['@deepseek-ai/dsh'];
+const queue = ['@deepseek-ai/dsh', '@gitea/codespace-dsh'];
 for (const name of queue) {
   if (selected.has(name)) continue;
   const entry = packed.get(name);
@@ -96,3 +96,9 @@ const install = spawnSync('npm', [
 ], {cwd: output, stdio: 'inherit'});
 if (install.error) throw install.error;
 if (install.status !== 0) process.exit(install.status ?? 1);
+
+const dshManifestPath = resolve(output, 'node_modules/@deepseek-ai/dsh/package.json');
+const dshManifest = JSON.parse(readFileSync(dshManifestPath, 'utf8'));
+dshManifest.dependencies ??= {};
+dshManifest.dependencies['@gitea/codespace-dsh'] = packed.get('@gitea/codespace-dsh').manifest.version;
+writeFileSync(dshManifestPath, `${JSON.stringify(dshManifest, null, 2)}\n`);

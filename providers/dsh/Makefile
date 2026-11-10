@@ -7,17 +7,21 @@ IMAGE ?= gitea-codespace-web-ide-dsh:local
 PROVIDER_SOURCE ?= https://github.com/ExplodingDragon/gitea-codespace
 PROVIDER_REVISION ?= development
 
-.PHONY: check version bundle image clean
-check:
+.PHONY: adapter-check check version bundle image clean
+adapter-check:
 	$(SHFMT) -d -ln posix -i 2 build.sh export.sh runtime/prepare runtime/serve
 	node --check install-packed-dsh.mjs
+	node --check plugin/integrate.mjs
 	node --check runtime/prepare.mjs
 	node --test adapter.test.mjs
+
+check: adapter-check
+	./build.sh linux $(ARCH) .tmp/$(ARCH) check
 
 version:
 	@. ./version.env; printf '%s\n' "$$DSH_DEFAULT_VERSION"
 
-bundle: check
+bundle: adapter-check
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle

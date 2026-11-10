@@ -96,6 +96,23 @@ The Codespace page lists the available Web IDE, SSH connection, and forwarded
 application URLs. Stopping a Codespace releases its runtime resources while
 retaining the workspace for its next start.
 
+## Publish application ports
+
+VS Code and DeepSeek Harness include a Ports interface. The same operations are
+available from any Dev Container through `gitea-codespace-endpoint`, which is
+useful for scripts and other editors:
+
+```sh
+gitea-codespace-endpoint list
+gitea-codespace-endpoint set 3000 --label "Web application"
+gitea-codespace-endpoint set 8080 --label "Public preview" --public
+gitea-codespace-endpoint delete 8080
+```
+
+Authenticated ports require the current Gitea session. Use `--public` only for
+services that are intended to be reachable without that session. The Codespace
+page shows the resulting Gateway URL for every published port.
+
 ## Web IDE providers
 
 Choose a Web IDE provider in the environment template when browser access is

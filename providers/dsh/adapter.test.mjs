@@ -124,7 +124,7 @@ test('DeepSeek Harness restarts a clean exit and stops on termination', async (t
 
   assert.equal(
     await readFile(log, 'utf8'),
-    `cwd=${workspace} args=web --workspace ${workspace} --trusted-proxy --no-open --host 127.0.0.1 --port 3080\n`.repeat(2),
+    `cwd=${workspace} args=web --patch ${root}/lib/codespace.patch.yml --workspace ${workspace} --trusted-proxy --no-open --host 127.0.0.1 --port 3080\n`.repeat(2),
   );
 });
 

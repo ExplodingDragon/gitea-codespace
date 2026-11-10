@@ -1,0 +1,21 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "lib/types",
+    "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
+  },
+  "files": [
+    "src/commands.ts",
+    "src/endpoint.ts",
+    "src/index.ts",
+    "src/tools.ts",
+    "src/types.ts"
+  ],
+  "references": [
+    { "path": "../../../vendor/cordis" },
+    { "path": "../../core/tools" },
+    { "path": "../../interaction/commands" },
+    { "path": "../../typert/protocol" }
+  ]
+}

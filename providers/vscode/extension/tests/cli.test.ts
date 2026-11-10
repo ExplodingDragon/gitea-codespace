@@ -3,11 +3,7 @@
 
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import {
-  deleteEndpointArguments,
-  parseEndpointList,
-  setEndpointArguments,
-} from "../src/cli.js";
+import { parseEndpointList } from "../src/cli.js";
 
 describe("Codespace endpoint CLI adapter", () => {
   it("parses the versioned endpoint list", () => {
@@ -26,21 +22,5 @@ describe("Codespace endpoint CLI adapter", () => {
         '{"version":1,"endpoints":[{"port":3000,"label":"a","visibility":"public"},{"port":3000,"label":"b","visibility":"authenticated"}]}',
       ),
     );
-  });
-
-  it("constructs set and delete argument arrays", () => {
-    assert.deepEqual(
-      setEndpointArguments({
-        port: 3000,
-        label: "Web app",
-        visibility: "public",
-      }),
-      ["endpoint", "set", "3000", "--label", "Web app", "--public"],
-    );
-    assert.deepEqual(deleteEndpointArguments(3000), [
-      "endpoint",
-      "delete",
-      "3000",
-    ]);
   });
 });

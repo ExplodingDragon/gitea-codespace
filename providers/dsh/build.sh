@@ -7,6 +7,7 @@ set -eu
 os=${1:-}
 arch=${2:-}
 output=${3:-}
+mode=${4:-bundle}
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$source_root/version.env"
 dsh_version=${DSH_VERSION:-$DSH_DEFAULT_VERSION}
@@ -31,6 +32,10 @@ arm64)
 *) fail "unsupported architecture: $arch" ;;
 esac
 [ -n "$output" ] || fail "output directory is required"
+case $mode in
+bundle | check) ;;
+*) fail "unsupported build mode: $mode" ;;
+esac
 [ -n "$dsh_version" ] || fail "DSH_VERSION is required"
 [ -n "$node_version" ] || fail "DSH_NODE_VERSION is required"
 [ -n "$pnpm_version" ] || fail "DSH_PNPM_VERSION is required"
@@ -49,15 +54,31 @@ git -C "$work/source" apply "$source_root/codespace-integration.patch"
   cd "$work/source"
   CI=1 pnpm install --frozen-lockfile
   [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$pnpm_version" ] || fail "DeepSeek Harness requires a different pnpm version"
-  pnpm exec vitest run packages/bundle/web-app/tests/startup.spec.ts packages/bundle/web-app/tests/web-app.spec.ts packages/client/connection/tests/browser-auth.host.spec.ts
-  pnpm exec tsx scripts/build.ts --profile official --serial
-  pnpm exec tsx scripts/release/pack.ts --family dsh --out "$work/pack" --concurrency 8
-  pnpm exec tsx scripts/release/pack.ts --family vendor --out "$work/vendor" --concurrency 8
-  pnpm --dir native/system run build:ts
-  mkdir -p "$work/landlock"
-  pnpm --dir native/system/packages/entry pack --pack-destination "$work/landlock"
+  if [ "$mode" = bundle ]; then
+    pnpm exec vitest run packages/bundle/web-app/tests/startup.spec.ts packages/bundle/web-app/tests/web-app.spec.ts packages/client/connection/tests/browser-auth.host.spec.ts
+    pnpm exec tsx scripts/build.ts --profile official --serial
+    pnpm exec tsx scripts/release/pack.ts --family dsh --out "$work/pack" --concurrency 8
+    pnpm exec tsx scripts/release/pack.ts --family vendor --out "$work/vendor" --concurrency 8
+  fi
+
+  mkdir -p packages/codespace/codespace
+  cp -R "$source_root/plugin/package/." packages/codespace/codespace/
+  node "$source_root/plugin/integrate.mjs" "$work/source"
+  pnpm install --filter @gitea/codespace-dsh --lockfile=false --offline
+  pnpm exec tsx scripts/generate-typert.ts
+  pnpm exec tsc -b packages/codespace/codespace/tsconfig.host.json packages/codespace/codespace/tsconfig.client.json
+  pnpm --dir packages/codespace/codespace run bundle
+  pnpm exec vitest run packages/codespace/codespace/tests
+  if [ "$mode" = bundle ]; then
+    mkdir -p "$work/codespace"
+    pnpm --dir packages/codespace/codespace pack --pack-destination "$work/codespace"
+    pnpm --dir native/system run build:ts
+    mkdir -p "$work/landlock"
+    pnpm --dir native/system/packages/entry pack --pack-destination "$work/landlock"
+  fi
 )
-node "$source_root/install-packed-dsh.mjs" "$work/app" "$work/pack" "$work/vendor" "$work/landlock" || fail "cannot install packed DeepSeek Harness"
+[ "$mode" = bundle ] || exit 0
+node "$source_root/install-packed-dsh.mjs" "$work/app" "$work/pack" "$work/vendor" "$work/landlock" "$work/codespace" || fail "cannot install packed DeepSeek Harness"
 
 node_asset="node-v$node_version-linux-$node_arch.tar.xz"
 curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors \
@@ -85,8 +106,13 @@ EOF
 cp "$source_root/runtime/prepare" "$output/bin/prepare"
 cp "$source_root/runtime/serve" "$output/bin/serve"
 cp "$source_root/runtime/prepare.mjs" "$output/lib/prepare.mjs"
+cp "$source_root/runtime/codespace.patch.yml" "$output/lib/codespace.patch.yml"
 chmod 0555 "$output/program/bin/dsh" "$output/program/bin/pnpm" "$output/bin/prepare" "$output/bin/serve"
+config=$(DSH_HOME="$work/home" "$output/program/bin/dsh" --profile web --patch "$output/lib/codespace.patch.yml" --dump-config)
+printf '%s\n' "$config" | grep -F "name: '@gitea/codespace-dsh'" >/dev/null || fail "Codespace DSH plugin is absent from the composed profile"
 help=$(DSH_HOME="$work/home" "$output/program/bin/dsh" web --help)
 printf '%s\n' "$help" | grep -F -- '--trusted-proxy' >/dev/null || fail "trusted-proxy option is unavailable"
 printf '%s\n' "$help" | grep -F -- '--workspace' >/dev/null || fail "workspace option is unavailable"
+[ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/client.js" ] || fail "Codespace DSH client bundle is unavailable"
+[ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/typert.host.js" ] || fail "Codespace DSH Remote metadata is unavailable"
 printf '{"schemaVersion":1,"provider":"dsh","architecture":"%s","version":"%s"}\n' "$arch" "$dsh_version" >"$output/manifest.json"

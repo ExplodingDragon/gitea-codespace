@@ -5,7 +5,7 @@ import {mkdir, readFile, rename, rm, writeFile} from 'node:fs/promises';
 import {spawn} from 'node:child_process';
 import path from 'node:path';
 
-const providerOwnedEntries = new Set(['connection', 'web-runtime', 'web-startup', 'webserver']);
+const providerOwnedEntries = new Set(['codespace', 'connection', 'web-runtime', 'web-startup', 'webserver']);
 const root = requiredEnv('CODESPACE_WEB_IDE_PROGRAM_DIR');
 const home = requiredEnv('CODESPACE_WEB_IDE_DATA_DIR');
 const request = JSON.parse(await readStdin());

@@ -98,9 +98,11 @@ workflow.
 
 ## Kubernetes E2E
 
-The E2E suite uses a deterministic test provider and a disposable Kubernetes
-cluster. It validates the workspace lifecycle, Gateway access, storage, and the
-selected isolation runtime.
+The E2E suite uses a deterministic test provider and the Kubernetes cluster
+selected by an explicit `KUBECONFIG`. It validates the workspace lifecycle,
+Gateway access, storage, and the selected isolation runtime. Local runs clean up
+the resources created by the test but do not create or remove the cluster; CI
+provisions a fresh single-node k3s cluster for each runtime variant.
 
 ```sh
 make images e2e-web-ide-image
@@ -116,4 +118,4 @@ make test-e2e \
 ```
 
 The harness imports the locally built images, records failure diagnostics, and
-removes its temporary resources. CI runs Kata, Sysbox, and Native variants.
+removes its test resources. CI runs Kata, Sysbox, and Native variants.

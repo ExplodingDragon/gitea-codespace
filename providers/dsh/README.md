@@ -16,7 +16,7 @@ workspace list. Registration is idempotent, so restarting the provider
 preserves one workspace record and leaves any other user-created workspaces
 unchanged.
 
-### Implementation acceptance criteria
+### Expected behavior
 
 - Opening DSH for the first time shows the current repository as a workspace.
 - Restarting DSH retains one registration for the repository and starts from
@@ -53,7 +53,7 @@ keeping unsupported configuration out of the persistent profile. A setting
 that matches an entry but is invalid still stops Web IDE initialization so an
 incorrect active configuration is not published.
 
-### Implementation acceptance criteria
+### Expected behavior
 
 - Plugins from the template and repository are installed through the DSH
   package command.
@@ -61,9 +61,37 @@ incorrect active configuration is not published.
 - Supported settings persist in the web profile, missing entries produce a
   warning, and invalid active entries stop initialization with a direct error.
 
+## Codespace ports
+
+The bundled Codespace plugin provides a **Ports** page for listing, publishing,
+editing, and removing Gateway endpoints. It uses the same runtime endpoint API
+as the Dev Container command, so changes made in DSH, VS Code, the command line,
+or an application script all update one authoritative list.
+
+The `/ports` command exposes the same operations in a DSH conversation:
+
+```text
+/ports
+/ports publish 3000 authenticated Web application
+/ports publish 8080 public Public preview
+/ports remove 8080
+```
+
+The model can use `codespace_list_ports`, `codespace_publish_port`, and
+`codespace_unpublish_port` when a task needs to inspect or change published
+ports. Authenticated access is the default; public access must be selected
+explicitly because it allows requests without a Codespace user session.
+
+### Expected behavior
+
+- The Ports page, `/ports` command, and model tools show the same endpoint set.
+- Publishing or editing a port updates its label and visibility without
+  restarting the application that listens on it.
+- Removing a port removes Gateway access without stopping the application.
+
 ## Development
 
-Run `make -C providers/dsh check` for adapter and script checks. Run
+Run `make -C providers/dsh check` for adapter, plugin, and script checks. Run
 `make -C providers/dsh image` on a host matching the requested architecture to
 build the pinned upstream release and a local provider image. The dedicated
 GitHub workflow uses native amd64 and arm64 runners and publishes the combined

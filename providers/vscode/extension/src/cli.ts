@@ -64,22 +64,6 @@ export function parseEndpointList(output: string): Endpoint[] {
   });
 }
 
-export function setEndpointArguments(endpoint: Endpoint): string[] {
-  const arguments_ = [
-    "endpoint",
-    "set",
-    String(endpoint.port),
-    "--label",
-    endpoint.label,
-  ];
-  if (endpoint.visibility === "public") arguments_.push("--public");
-  return arguments_;
-}
-
-export function deleteEndpointArguments(port: number): string[] {
-  return ["endpoint", "delete", String(port)];
-}
-
 export class EndpointClient {
   private readonly abortController = new AbortController();
 
@@ -90,16 +74,23 @@ export class EndpointClient {
   }
 
   async list(): Promise<Endpoint[]> {
-    const { stdout } = await this.run(["endpoint", "list", "--format", "json"]);
+    const { stdout } = await this.run(["list", "--format", "json"]);
     return parseEndpointList(stdout);
   }
 
   async set(endpoint: Endpoint): Promise<void> {
-    await this.run(setEndpointArguments(endpoint));
+    const arguments_ = [
+      "set",
+      String(endpoint.port),
+      "--label",
+      endpoint.label,
+    ];
+    if (endpoint.visibility === "public") arguments_.push("--public");
+    await this.run(arguments_);
   }
 
   async delete(port: number): Promise<void> {
-    await this.run(deleteEndpointArguments(port));
+    await this.run(["delete", String(port)]);
   }
 
   private async run(

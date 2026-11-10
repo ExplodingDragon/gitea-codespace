@@ -27,7 +27,8 @@ trap 'stop INT' INT
 trap 'stop TERM' TERM
 
 while :; do
-  "$root/program/bin/dsh" web --workspace "$workspace" --trusted-proxy --no-open --host "$host" --port "$port" &
+  "$root/program/bin/dsh" web --patch "$root/lib/codespace.patch.yml" \
+    --workspace "$workspace" --trusted-proxy --no-open --host "$host" --port "$port" &
   child=$!
   wait "$child" || :
   child=

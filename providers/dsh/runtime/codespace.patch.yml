@@ -1,0 +1,3 @@
+- insert:
+    - id: codespace
+      name: '@gitea/codespace-dsh'

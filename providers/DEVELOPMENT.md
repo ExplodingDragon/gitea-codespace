@@ -282,8 +282,8 @@ Provider is serving again, without changing the Codespace lifecycle state.
   repository options deterministically, and stores writable state only in the
   provider data directory.
 - A valid bundle whose `prepare` program succeeds receives a browser endpoint
-  after Docker accepts its detached `bin/serve` execution, even when the editor
-  takes more than 30 seconds to listen.
+  as soon as Docker accepts its detached `bin/serve` execution; editor listen
+  timing does not determine Endpoint publication or Codespace lifecycle state.
 - Requests made before the editor listens receive the temporary Gateway error;
   requests made after it listens succeed without resuming the codespace.
 - Exiting `bin/serve` does not stop SSH, the Dev Container, or other endpoints.
@@ -363,6 +363,11 @@ make -C providers/vscode check
 make -C providers/dsh check
 ```
 
+The DSH check clones the pinned upstream release and compiles the Codespace
+plugin against those exact workspace packages. It stops after plugin bundling
+and tests, so pull-request validation catches upstream API drift without
+building the editor release or carrier image.
+
 Pull requests that change an official provider run its dedicated validation
 workflow. A push to `main` builds native amd64 and arm64 bundles and publishes a
 multi-platform `main` image. The platform workflow ignores `providers/**`
@@ -412,6 +417,7 @@ case.
 5. Create a codespace with that environment and open its browser workspace.
 
 When publishing an updated provider, publish a new image, resolve it again in
-the environment template, and save the template. Existing runtime snapshots
-keep their selected digest until their normal lifecycle applies the updated
-template.
+the environment template, and save the template. Codespaces created after that
+save use the new digest. Existing codespaces keep the digest and options copied
+into their runtime snapshot for all later stop, resume, and Pod replacement
+operations.

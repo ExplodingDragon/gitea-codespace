@@ -18,8 +18,11 @@ come from the image itself. A compatible third-party provider can be used in
 the same way.
 
 Provider data is stored with the codespace and reused across normal starts.
-Changing the image or its configuration affects new runtime preparation; it
-does not couple the editor release to Manager, Agent, or Gateway.
+Changing an environment template affects codespaces created after that save.
+Existing codespaces keep the provider digest and options copied into their
+runtime snapshot, including after a stop, resume, or Pod replacement. This
+keeps an editor release independent from Manager, Agent, and Gateway while
+making each existing environment reproducible.
 
 ## Develop a provider
 
