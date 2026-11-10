@@ -95,9 +95,10 @@ test('DeepSeek Harness adapter skips a setting without a profile entry', async (
   assert.equal(await readFile(path.join(data, '.codespace-initialized'), 'utf8'), '1\n');
 });
 
-test('DeepSeek Harness starts in and registers the current workspace', async (t) => {
+test('DeepSeek Harness restarts a clean exit and stops on termination', async (t) => {
   const {root, data, log} = await createFixture(t, '');
   const workspace = path.join(path.dirname(root), 'workspace');
+  const restartMarker = path.join(path.dirname(root), 'restart-marker');
   await mkdir(workspace);
 
   await new Promise((resolve, reject) => {
@@ -109,6 +110,7 @@ test('DeepSeek Harness starts in and registers the current workspace', async (t)
         CODESPACE_WEB_IDE_ADDRESS: '127.0.0.1:3080',
         CODESPACE_WEB_IDE_WORKSPACE: workspace,
         CODESPACE_TEST_LOG: log,
+        CODESPACE_TEST_RESTART_MARKER: restartMarker,
       },
       stdio: ['ignore', 'ignore', 'pipe'],
     });
@@ -122,7 +124,7 @@ test('DeepSeek Harness starts in and registers the current workspace', async (t)
 
   assert.equal(
     await readFile(log, 'utf8'),
-    `cwd=${workspace} args=web --workspace ${workspace} --trusted-proxy --no-open --host 127.0.0.1 --port 3080\n`,
+    `cwd=${workspace} args=web --workspace ${workspace} --trusted-proxy --no-open --host 127.0.0.1 --port 3080\n`.repeat(2),
   );
 });
 
@@ -135,7 +137,7 @@ async function createFixture(t, schema) {
   await mkdir(path.join(root, 'program/bin'), {recursive: true});
   await writeFile(
     path.join(root, 'program/bin/dsh'),
-    '#!/bin/sh\nprintf \'cwd=%s args=%s\\n\' "$PWD" "$*" >>"$CODESPACE_TEST_LOG"\nmkdir -p "$DSH_HOME/profiles/web"\ncase "$*" in *--dump-config-schema*) printf \'%s\\n\' "$CODESPACE_TEST_SCHEMA";; esac\n',
+    '#!/bin/sh\nprintf \'cwd=%s args=%s\\n\' "$PWD" "$*" >>"$CODESPACE_TEST_LOG"\nmkdir -p "$DSH_HOME/profiles/web"\ncase "$*" in *--dump-config-schema*) printf \'%s\\n\' "$CODESPACE_TEST_SCHEMA";; esac\nif [ -n "${CODESPACE_TEST_RESTART_MARKER:-}" ]; then\n  if [ ! -e "$CODESPACE_TEST_RESTART_MARKER" ]; then\n    : >"$CODESPACE_TEST_RESTART_MARKER"\n    exit 0\n  fi\n  kill -TERM "$PPID"\n  exec sleep 5\nfi\n',
     {mode: 0o755},
   );
   return {root, data, log};

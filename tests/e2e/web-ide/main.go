@@ -96,13 +96,6 @@ func serve() {
 			_ = connection.WriteMessage(kind, message)
 		}
 	})
-	mux.HandleFunc("/__e2e/exit", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-		go func() {
-			time.Sleep(50 * time.Millisecond)
-			os.Exit(0)
-		}()
-	})
 	server := &http.Server{Addr: address, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	if err := server.ListenAndServe(); err != nil {
 		fatalf("serve fake Web IDE: %v", err)

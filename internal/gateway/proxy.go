@@ -105,7 +105,7 @@ func proxyGatewayEndpoint(
 		message := "Codespace Gateway could not connect to the runtime endpoint. The service may still be starting."
 		if route.EndpointID == runtimeendpoint.WorkspaceEndpointID {
 			title = "Workspace is unavailable"
-			message = "Codespace Gateway could not connect to the Web IDE. The development environment may still be starting."
+			message = "Codespace Gateway could not connect to the Web IDE. The Provider may still be starting or may have exited."
 		}
 		writeGatewayError(writer, request, http.StatusBadGateway, title, message, "gateway upstream unavailable")
 	}

@@ -16,5 +16,11 @@
   Helm guide focused on cluster operators, and `DEVELOPMENT.md` focused on
   contributors. Explain the reason for an action where it affects correctness;
   keep protocol and controller rationale in the architecture documents.
+- Describe the current design positively and explain why a boundary or workflow
+  exists. End each design section with implementation acceptance criteria that
+  translate the design intent into behavior a contributor can verify.
+- Keep detailed examples only when they help a reader complete the documented
+  task. Link to the canonical guide instead of repeating the same procedure in
+  several documents.
 - Run focused tests while iterating, then run `make lint`, `make test`, and
   `make test-frontend` before submitting a change.

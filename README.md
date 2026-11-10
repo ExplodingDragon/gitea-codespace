@@ -30,11 +30,6 @@ configuration and can be used from a browser, a desktop editor, SSH, or SFTP.
 - A StorageClass suitable for workspace data
 - Kata or Sysbox installed when the corresponding isolation mode is selected
 
-The workspace runtime and StorageClass must be tested together on the nodes
-that will run Codespaces. A RuntimeClass can start a basic Pod successfully
-while still lacking the nested-container or storage behavior required by a Dev
-Container.
-
 See the [Helm deployment guide](charts/gitea-codespace/README.md) for runtime
 preparation, production networking, storage, backup, and upgrade procedures.
 
@@ -84,10 +79,9 @@ Complete the initial configuration in the administration interface:
 5. Enable the site after its readiness checks pass.
 
 Gateway HTTP and SSH services remain internal until the cluster operator
-publishes them. This keeps certificate, DNS, Ingress, and LoadBalancer policy
-under the control of the Kubernetes deployment. The
-[deployment guide](charts/gitea-codespace/README.md#publish-workspace-access)
-describes the supported publishing model.
+publishes them. See the [deployment
+guide](charts/gitea-codespace/README.md#publish-workspace-access) for Ingress,
+DNS, TLS, and SSH exposure.
 
 ## Create a codespace
 
@@ -104,10 +98,8 @@ retaining the workspace for its next start.
 
 ## Web IDE providers
 
-Official providers are published independently from the platform image so an
-editor can be updated without rebuilding Manager, Agent, Gateway, or Cache.
-Environment templates resolve a selected provider image to an immutable digest
-to keep existing environments reproducible.
+Choose a Web IDE provider in the environment template when browser access is
+needed. Official providers are published independently from the platform:
 
 | Provider         | Image                                                         |
 | ---------------- | ------------------------------------------------------------- |
@@ -132,10 +124,8 @@ helm upgrade --install codespace \
   --wait
 ```
 
-Using the same release for the CRDs, chart, and platform image keeps the
-Kubernetes API and controllers aligned. Follow the
-[upgrade procedure](charts/gitea-codespace/README.md#upgrade) when moving an
-existing installation to another version.
+Follow the [upgrade procedure](charts/gitea-codespace/README.md#upgrade) when
+moving an existing installation to another version.
 
 ## Documentation
 

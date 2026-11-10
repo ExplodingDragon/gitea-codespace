@@ -216,16 +216,16 @@ func (r *Runtime) updateTargetEndpointsLocked() (*agentv1.AccessTarget, bool, er
 		return nil, false, fmt.Errorf("runtime endpoint target version is exhausted")
 	}
 	containers := make(map[string]string, len(r.target.Endpoints))
-	webIDEAvailable := false
+	publishWebIDEEndpoint := false
 	for _, endpoint := range r.target.Endpoints {
 		endpointID := endpoint.GetEndpoint().GetEndpointId()
 		if endpointID == runtimeendpoint.WorkspaceEndpointID {
-			webIDEAvailable = true
+			publishWebIDEEndpoint = true
 			continue
 		}
 		containers[endpointID] = endpoint.GetContainerId()
 	}
-	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.target.WorkspaceFolder, webIDEAvailable, r.endpoints, containers)
+	target := accessTargetForContainer(r.target.Version+1, r.target.PrimaryContainerId, r.target.WorkspaceFolder, publishWebIDEEndpoint, r.endpoints, containers)
 	r.target = proto.Clone(target).(*agentv1.AccessTarget)
 	return target, true, nil
 }

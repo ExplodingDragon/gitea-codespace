@@ -23,13 +23,21 @@ The selected provider participates in a codespace start as follows:
    Dev Container.
 4. Agent invokes `bin/prepare` as the Dev Container remote user. The adapter
    receives the template and repository settings on standard input.
-5. Agent starts the `bin/serve` supervisor and publishes the browser endpoint
-   as soon as the supervisor process starts successfully.
+5. Agent starts `bin/serve` with a detached Docker execution and publishes the
+   browser endpoint after Docker accepts that execution.
 
 The init image is a carrier rather than the editor process itself. The editor
 runs inside the Dev Container, so its executable must be compatible with the
 libraries available in the Dev Container images that the environment supports.
 A statically linked executable is the most portable choice.
+
+### Implementation acceptance criteria
+
+- Saving an environment resolves its provider image to an immutable digest.
+- Starting a codespace exports one complete bundle, prepares it as the remote
+  user, starts `bin/serve`, and publishes one browser endpoint.
+- The editor process runs inside the Dev Container and can use the workspace,
+  declared environment, and persistent provider data.
 
 ## Provider identity and image metadata
 
@@ -93,6 +101,15 @@ For a multi-platform image, the provider metadata, version, source, and
 revision must be identical on `linux/amd64` and `linux/arm64`. This makes one
 template behave the same regardless of the Kubernetes node selected for a pod.
 
+### Implementation acceptance criteria
+
+- Manager resolves the image, displays its provider identity and options, and
+  stores the selected digest in the environment template.
+- Valid option values round-trip through the administration form and validate
+  against the embedded schema.
+- Every platform manifest presents the same provider ID, version, source,
+  revision, and option schema.
+
 ## Bundle layout
 
 The image entrypoint publishes this directory at `/output/current`:
@@ -142,6 +159,15 @@ grep -Fq '"provider":"example"' "$staging/manifest.json"
 mv "$staging" "$output/current"
 trap - EXIT INT TERM
 ```
+
+### Implementation acceptance criteria
+
+- Running the image with an empty `/output` creates one complete
+  `/output/current` directory.
+- The manifest provider and architecture match the selected image manifest.
+- `bin/prepare` and `bin/serve` are executable, while program assets remain
+  provider-owned and read-only after they enter the Dev Container.
+- Interrupting export leaves no partial `current` directory for Agent to mount.
 
 ## Adapter programs
 
@@ -216,9 +242,10 @@ so it appears in the codespace operation log.
 
 ### `bin/serve`
 
-`bin/serve` must remain in the foreground and make the editor listen on exactly
-`CODESPACE_WEB_IDE_ADDRESS`. Binding to this loopback address keeps access on
-the authenticated Gateway path instead of exposing another pod listener.
+`bin/serve` owns the Provider process lifetime. It must remain in the foreground
+and make the editor listen on exactly `CODESPACE_WEB_IDE_ADDRESS`. Binding to
+this loopback address keeps access on the authenticated Gateway path instead of
+exposing another pod listener.
 
 ```sh
 #!/bin/sh
@@ -230,22 +257,40 @@ exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/program/bin/example-ide" \
 ```
 
 Replace the flags with the editor's own command line. The editor must serve HTTP
-and WebSocket traffic from the same address. The supervisor restarts the process
-with bounded delay when it exits. Gateway may return `502 Workspace is
-unavailable` before the process begins listening; a later request succeeds once
-the provider is ready. Publishing the endpoint at supervisor startup avoids a
-fixed startup deadline and lets the same restart path recover both slow starts
-and later provider failures without changing the codespace lifecycle state.
+and WebSocket traffic from the same address. A simple Provider can use `exec` as
+shown above. A Provider that needs automatic restart can run its own foreground
+process manager from `bin/serve`; Codespace does not monitor or restart Provider
+processes.
+
+The official VS Code and DeepSeek Harness Providers restart their editor after
+every exit, with a one-second delay to avoid a tight failure loop. Exit status
+does not control availability because these Providers are expected to keep the
+editor running. `HUP`, `INT`, and `TERM` are forwarded to the current editor
+process and end the Provider loop, which lets Docker stop the Dev Container
+without the Provider starting a replacement process.
+
+Docker accepting the detached execution is the complete platform launch
+contract. Codespace does not wait for the address to accept connections because
+editor readiness does not determine whether the Dev Container, SSH, or other
+endpoints are usable. Gateway may return `502 Workspace is unavailable` before
+the Provider listens or after it exits. A later request succeeds whenever the
+Provider is serving again, without changing the Codespace lifecycle state.
 
 ### Implementation acceptance criteria
 
+- `bin/prepare` accepts both initialization values, combines template and
+  repository options deterministically, and stores writable state only in the
+  provider data directory.
 - A valid bundle whose `prepare` program succeeds receives a browser endpoint
-  after the supervisor starts, even when the editor takes more than 30 seconds
-  to listen.
+  after Docker accepts its detached `bin/serve` execution, even when the editor
+  takes more than 30 seconds to listen.
 - Requests made before the editor listens receive the temporary Gateway error;
   requests made after it listens succeed without resuming the codespace.
-- Exiting `bin/serve` is restarted by the supervisor and does not stop SSH or the
-  Dev Container.
+- Exiting `bin/serve` does not stop SSH, the Dev Container, or other endpoints.
+- A Provider that needs automatic restart keeps its own process manager in the
+  foreground behind `bin/serve`.
+- The official Providers restart after every editor exit and stop only after a
+  termination signal.
 
 ## Build the carrier image
 
@@ -322,13 +367,8 @@ Pull requests that change an official provider run its dedicated validation
 workflow. A push to `main` builds native amd64 and arm64 bundles and publishes a
 multi-platform `main` image. The platform workflow ignores `providers/**`
 because provider images have independent dependencies and release lifecycles;
-changes that also touch platform files still run the platform workflow. Pure
-documentation changes do not rebuild or publish an image.
-
-The reusable `.github/workflows/provider-build.yml` workflow contains the
-shared build and publication steps. Keeping provider-specific dependencies in
-each provider directory prevents an editor update from expanding the platform
-image or its build toolchain.
+changes that also touch platform files still run the platform workflow. This
+keeps provider-specific dependencies out of the platform build toolchain.
 
 ## Test the image locally
 
@@ -354,10 +394,12 @@ cat "$output/current/manifest.json"
 ```
 
 An export failure prevents the runtime pod from starting because Kubernetes
-must complete the init container first. A later `prepare` failure is reported
-in the codespace operation log and only withholds browser access. A `serve`
-failure is recorded in the supervisor log and retried; SSH and the rest of the
-Dev Container remain available in both cases.
+must complete the init container first. A later `prepare` or Docker execution
+failure is reported in the codespace operation log and only withholds browser
+access. Once Docker accepts `bin/serve`, the endpoint remains published even if
+the Provider later exits; Gateway then reports that the Workspace is
+unavailable. SSH and the rest of the Dev Container remain available in each
+case.
 
 ## Connect the provider to Codespace
 
@@ -373,27 +415,3 @@ When publishing an updated provider, publish a new image, resolve it again in
 the environment template, and save the template. Existing runtime snapshots
 keep their selected digest until their normal lifecycle applies the updated
 template.
-
-## Verification checklist
-
-Before publishing a provider for users, verify all of the following:
-
-- `linux/amd64` and `linux/arm64` images carry identical provider metadata and
-  standard OCI labels.
-- Running the image with an empty directory mounted at `/output` creates only a
-  complete `/output/current` bundle.
-- The bundle manifest identity and architecture match the image.
-- `bin/prepare` accepts both initialization values, validates repository
-  options, and preserves state in the provider data directory.
-- `bin/serve` listens on the supplied loopback address, serves HTTP, upgrades
-  WebSocket connections, and stays in the foreground.
-- Stopping and starting the editor process does not damage persistent provider
-  state.
-- Manager resolves the published reference and saves it as a `sha256` digest.
-
-The repository's fake provider demonstrates these checks without depending on
-a production editor release:
-
-```sh
-make e2e-web-ide-image
-```

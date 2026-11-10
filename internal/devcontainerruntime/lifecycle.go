@@ -22,8 +22,8 @@ import (
 // Outcome records the Dev Container and the optional platform services that
 // were actually started for this lifecycle action.
 type Outcome struct {
-	Environment     *devcontainer.State
-	WebIDEAvailable bool
+	Environment   *devcontainer.State
+	WebIDEStarted bool
 }
 
 // Apply executes one validated lifecycle request against the local Docker daemon.
@@ -40,7 +40,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	if request.DevContainer.WebIDE.Enabled() && (request.Action == "create" || request.Action == "resume") {
 		err := webide.Prepare(string(request.DevContainer.WebIDE.Provider), request.HostUser.UID, request.HostUser.GID)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "Warning: Web IDE is unavailable and will not affect Codespace access: prepare platform Web IDE: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "Warning: Web IDE did not start and Codespace access remains available: prepare Provider bundle: %v\n", err)
 			request.DevContainer.WebIDE = WebIDEConfiguration{}
 		}
 	}
@@ -71,8 +71,8 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		if err != nil {
 			return nil, err
 		}
-		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stderr)
-		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
+		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stderr)
+		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "resume":
 		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
@@ -105,8 +105,8 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			}
 			return nil, err
 		}
-		webIDEAvailable := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
-		return &Outcome{Environment: state, WebIDEAvailable: webIDEAvailable}, nil
+		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
+		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "stop":
 		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
 		stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)

@@ -20,7 +20,7 @@ pnpm --dir web exec playwright install chromium
 The Makefile installs pinned development tools so local and CI checks use the
 same versions.
 
-## Repository layout
+## Repository layout and boundaries
 
 | Path               | Responsibility                                              |
 | ------------------ | ----------------------------------------------------------- |
@@ -34,39 +34,21 @@ same versions.
 
 Keep Dev Container specification fields in `devcontainer` and platform behavior
 in `internal`. This preserves repository portability while allowing Codespace
-to manage Kubernetes and runtime state independently.
-
-## Gateway proxy design
-
-Gateway authenticates a browser before forwarding traffic and binds the session
-to one Gitea site, user, codespace, and endpoint. HTTP requests with an `Origin`
-must match the complete external Workspace origin. When a normal HTTP request
-does not carry `Origin`, `Sec-Fetch-Site: same-origin` provides the browser's
-equivalent signal; WebSocket upgrades always require the exact `Origin`. This
-keeps sibling subdomains isolated while accepting browser APIs that omit Origin
-on a same-origin request.
-
-The validated external Host is forwarded to the provider because editors use it
-to construct links, cookies, redirects, and WebSocket URLs. The internal runtime
-address remains only the transport target. Gateway rebuilds forwarded identity
-headers and keeps provider Service Worker headers, so standard browser features
-work without allowing request headers to choose another runtime.
-
-Long-running requests use the client context and per-instance concurrency
-limits instead of a fixed response-header deadline. A transient permission
-validation error leaves an established connection running and is retried at the
-next interval; an explicit denial closes it. A runtime target change closes old
-upstream connections but retains the browser session so the browser can connect
-to the replacement target. Active connections do not count as idle sessions.
+to manage Kubernetes and runtime state independently. Provider-specific editor
+logic belongs in `providers`, which lets editor releases and dependencies change
+without expanding the platform binary or its build toolchain. Public
+Gitea-to-Manager messages live in `codespace-proto-go`; RPC used only inside one
+platform binary remains under `internal`.
 
 ### Implementation acceptance criteria
 
-- Same-origin HTTP APIs, exact-origin WebSockets, Service Workers, slow responses,
-  and provider-generated external URLs work through Gateway.
-- Cross-origin requests, mismatched site or endpoint sessions, spoofed identity
-  headers, and invalid Agent identities remain rejected.
-- Provider startup delay, a transient authorization error, or a runtime target
-  replacement can recover without reopening the codespace from Gitea.
+- Dev Container fields round-trip through parsing and resolution without
+  Codespace-specific loss.
+- Kubernetes APIs and internal RPC bindings are generated from their canonical
+  type or protocol sources.
+- A Web IDE provider can be built and validated without compiling the platform,
+  while platform builds do not require an editor toolchain.
+- Gitea and Manager consume the same released public protocol version.
 
 ## Validate
 

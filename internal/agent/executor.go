@@ -23,7 +23,7 @@ type Executor struct {
 }
 
 type savedPlatformOutcome struct {
-	WebIDEAvailable bool `json:"web_ide_available"`
+	WebIDEStarted bool `json:"web_ide_started"`
 }
 
 const (
@@ -80,7 +80,7 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 		if err := e.Journal.write(environmentStatePath, data); err != nil {
 			return err
 		}
-		data, err = json.Marshal(savedPlatformOutcome{WebIDEAvailable: outcome.WebIDEAvailable})
+		data, err = json.Marshal(savedPlatformOutcome{WebIDEStarted: outcome.WebIDEStarted})
 		if err != nil {
 			return err
 		}
@@ -123,5 +123,5 @@ func (e *Executor) readSavedOutcome() (*devcontainerruntime.Outcome, error) {
 	if err := json.Unmarshal(data, &platform); err != nil {
 		return nil, fmt.Errorf("decode saved platform outcome: %w", err)
 	}
-	return &devcontainerruntime.Outcome{Environment: environment, WebIDEAvailable: platform.WebIDEAvailable}, nil
+	return &devcontainerruntime.Outcome{Environment: environment, WebIDEStarted: platform.WebIDEStarted}, nil
 }

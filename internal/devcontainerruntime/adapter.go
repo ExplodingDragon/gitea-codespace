@@ -179,13 +179,12 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 	if len(repositoryOptions) == 0 {
 		repositoryOptions = json.RawMessage(`{}`)
 	}
-	payload, err := json.Marshal(struct {
+	payload, startErr := json.Marshal(struct {
 		ProtocolVersion   int             `json:"protocolVersion"`
 		Initialize        bool            `json:"initialize"`
 		TemplateOptions   json.RawMessage `json:"templateOptions"`
 		RepositoryOptions json.RawMessage `json:"repositoryOptions"`
 	}{1, initialize, templateOptions, repositoryOptions})
-	startErr := err
 	if startErr == nil {
 		prepare := webide.ContainerProgramPath + "/" + webide.PrepareProgram
 		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{prepare}, values, bytes.NewReader(payload)); err != nil {
@@ -193,12 +192,13 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 		}
 	}
 	if startErr == nil {
-		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{ContainerRuntimeBinary, "runtime", "web-ide", "serve"}, values); err != nil {
-			startErr = fmt.Errorf("start platform Web IDE: %w", err)
+		serve := webide.ContainerProgramPath + "/" + webide.ServeProgram
+		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{serve}, values); err != nil {
+			startErr = fmt.Errorf("start %s Web IDE Provider: %w", configuration.WebIDE.Provider, err)
 		}
 	}
 	if startErr != nil {
-		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE is unavailable and will not affect Codespace access: %v\n", startErr)
+		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE did not start and Codespace access remains available: %v\n", startErr)
 		return false
 	}
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {

@@ -588,11 +588,6 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, "repository", initialWebIDEState.LastRequest.RepositoryOptions["text"])
 	require.NoError(t, webIDEClient.verifyWebSocket(ctx))
 	serveCount := initialWebIDEState.ServeCount
-	require.NoError(t, webIDEClient.restart(ctx))
-	require.Eventually(t, func() bool {
-		state, stateErr := webIDEClient.state(ctx)
-		return stateErr == nil && state.ServeCount > serveCount
-	}, 30*time.Second, time.Second, "Web IDE supervisor did not restart the provider")
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 
@@ -619,7 +614,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, 2, resumedWebIDEState.PrepareCount)
 	require.Equal(t, 1, resumedWebIDEState.InitializeCount)
 	require.False(t, resumedWebIDEState.LastRequest.Initialize)
-	require.GreaterOrEqual(t, resumedWebIDEState.ServeCount, serveCount+2)
+	require.Equal(t, serveCount+1, resumedWebIDEState.ServeCount)
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
@@ -791,25 +786,6 @@ func (c *gatewayWebIDEClient) verifyWebSocket(ctx context.Context) error {
 	}
 	if string(message) != "codespace-e2e" {
 		return fmt.Errorf("Web IDE WebSocket returned %q", message)
-	}
-	return nil
-}
-
-func (c *gatewayWebIDEClient) restart(ctx context.Context) error {
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+c.address+"/__e2e/exit", nil)
-	if err != nil {
-		return err
-	}
-	request.Host = c.host
-	request.AddCookie(c.session)
-	request.Header.Set("Origin", "http://"+c.host)
-	response, err := c.client.Do(request)
-	if err != nil {
-		return err
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusNoContent {
-		return fmt.Errorf("restart Web IDE provider: %s", response.Status)
 	}
 	return nil
 }

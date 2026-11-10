@@ -15,4 +15,26 @@ port=${address##*:}
 }
 cd "$workspace"
 export DSH_HOME=$data
-exec "$root/program/bin/dsh" web --workspace "$workspace" --trusted-proxy --no-open --host "$host" --port "$port"
+
+child=
+stopping=
+stop() {
+  stopping=$1
+  [ -z "$child" ] || kill -s "$1" "$child" 2>/dev/null || :
+}
+trap 'stop HUP' HUP
+trap 'stop INT' INT
+trap 'stop TERM' TERM
+
+while :; do
+  "$root/program/bin/dsh" web --workspace "$workspace" --trusted-proxy --no-open --host "$host" --port "$port" &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+  sleep 1 &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+done

@@ -29,7 +29,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 		data, err := json.Marshal(state)
 		require.NoError(t, err)
 		require.NoError(t, j.write(environmentStatePath, data))
-		data, err = json.Marshal(savedPlatformOutcome{WebIDEAvailable: true})
+		data, err = json.Marshal(savedPlatformOutcome{WebIDEStarted: true})
 		require.NoError(t, err)
 		return j.write(platformOutcomePath, data)
 	}))
@@ -45,7 +45,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	got, err := json.Marshal(recovered.Environment)
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), string(got))
-	require.True(t, recovered.WebIDEAvailable)
+	require.True(t, recovered.WebIDEStarted)
 	request.CodespaceUUID = "another-runtime"
 	_, err = executor.Apply(t.Context(), request)
 	require.ErrorContains(t, err, "identity")

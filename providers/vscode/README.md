@@ -21,6 +21,14 @@ an extension with the same identifier replaces the template version.
 The Gitea Codespace extension is always installed because it provides the port
 management integration expected by the platform.
 
+### Implementation acceptance criteria
+
+- Template settings are applied when repository customizations omit the same
+  key, while repository settings take precedence for matching keys.
+- Extensions from both sources are installed once per identifier, using the
+  repository version when both sources select the same extension.
+- The Codespace extension is present after provider preparation.
+
 ## Development
 
 Run `make -C providers/vscode check` for the adapter and extension checks. Run

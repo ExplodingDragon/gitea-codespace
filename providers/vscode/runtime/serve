@@ -7,11 +7,33 @@ root=${CODESPACE_WEB_IDE_PROGRAM_DIR:?}
 data=${CODESPACE_WEB_IDE_DATA_DIR:?}
 address=${CODESPACE_WEB_IDE_ADDRESS:?}
 workspace=${CODESPACE_WEB_IDE_WORKSPACE:?}
-exec "$root/program/bin/code-server" \
-  --bind-addr "$address" \
-  --auth none \
-  --disable-telemetry \
-  --disable-update-check \
-  --user-data-dir "$data/user-data" \
-  --extensions-dir "$data/extensions" \
-  "$workspace"
+
+child=
+stopping=
+stop() {
+  stopping=$1
+  [ -z "$child" ] || kill -s "$1" "$child" 2>/dev/null || :
+}
+trap 'stop HUP' HUP
+trap 'stop INT' INT
+trap 'stop TERM' TERM
+
+while :; do
+  "$root/program/bin/code-server" \
+    --bind-addr "$address" \
+    --auth none \
+    --disable-telemetry \
+    --disable-update-check \
+    --user-data-dir "$data/user-data" \
+    --extensions-dir "$data/extensions" \
+    "$workspace" &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+  sleep 1 &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+done

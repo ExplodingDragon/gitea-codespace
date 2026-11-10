@@ -53,6 +53,14 @@ Select the resource and CDI settings in the environment template. Validate
 nested containers, persistent storage, and device access before making the
 template available to users.
 
+### Implementation acceptance criteria
+
+- A workspace Pod starts with the selected isolation mode and StorageClass.
+- Workspace data remains available after a normal stop and start.
+- Dev Container builds can run nested containers with Kata or Sysbox.
+- Native environments receive the selected extended resources, CDI devices,
+  capabilities, and mounts.
+
 ## Install
 
 Store the administration token in a Secret so Helm values and release history
@@ -93,6 +101,15 @@ editor program. Increase it when a provider image needs more unpacked space.
 See the [Web IDE provider guide](../../providers/README.md) when using a custom
 provider.
 
+### Implementation acceptance criteria
+
+- Leaving the provider empty creates a codespace with SSH and forwarded ports
+  but no browser workspace endpoint.
+- Resolving a provider displays its identity and options, and saving the
+  environment records an immutable image digest.
+- A codespace starts the provider on either supported node architecture with
+  its persistent configuration intact.
+
 ## Connect Gitea
 
 The administration Service is a ClusterIP by default. Access it from an
@@ -121,6 +138,15 @@ Each Gateway has a same-name ClusterIP Service. Port `80` carries HTTP and
 WebSocket traffic; port `22` carries SSH and SFTP. Publish HTTP with an Ingress
 and SSH with a LoadBalancer Service, or route the ClusterIP Service through
 existing cluster infrastructure. Configure public DNS and TLS at that boundary.
+
+### Implementation acceptance criteria
+
+- The published HTTP address supports browser navigation and WebSocket
+  upgrades through the same Gateway Service.
+- The published SSH address supports both SSH and SFTP on the configured host
+  and port.
+- Gateway Services remain reachable inside the cluster when public publishing
+  is managed by separate infrastructure.
 
 ## Operations
 

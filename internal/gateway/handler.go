@@ -324,8 +324,8 @@ func handleGatewayWorkspace(
 		title := "Endpoint is not ready"
 		message := "The runtime endpoint is not ready yet. Try again after the service starts."
 		if session.endpointID == runtimeendpoint.WorkspaceEndpointID {
-			title = "Workspace is not ready"
-			message = "The Web IDE is not ready yet. Try again after the codespace finishes starting."
+			title = "Workspace is unavailable"
+			message = "The Web IDE endpoint is unavailable. SSH and other Codespace access remain independent."
 		}
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, title, message, "gateway route unavailable")
 		return

@@ -343,7 +343,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(operation.OperationRversion, state, outcome.WebIDEAvailable)
+	target, err := r.accessTarget(operation.OperationRversion, state, outcome.WebIDEStarted)
 	if err != nil {
 		return err
 	}
@@ -382,7 +382,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(response.Operation.OperationRversion, outcome.Environment, outcome.WebIDEAvailable)
+	target, err := r.accessTarget(response.Operation.OperationRversion, outcome.Environment, outcome.WebIDEStarted)
 	if err != nil {
 		return err
 	}
@@ -406,7 +406,7 @@ func (r *Runtime) setAccessState(target *agentv1.AccessTarget, secrets map[strin
 	r.secrets = maps.Clone(secrets)
 }
 
-func (r *Runtime) accessTarget(version int64, state *devcontainer.State, webIDEAvailable bool) (*agentv1.AccessTarget, error) {
+func (r *Runtime) accessTarget(version int64, state *devcontainer.State, publishWebIDEEndpoint bool) (*agentv1.AccessTarget, error) {
 	if err := state.Validate(); err != nil {
 		return nil, err
 	}
@@ -419,12 +419,12 @@ func (r *Runtime) accessTarget(version int64, state *devcontainer.State, webIDEA
 	if err != nil {
 		return nil, err
 	}
-	return accessTargetForContainer(version, state.PrimaryContainerID, state.WorkspaceFolder, webIDEAvailable, r.endpoints, containers), nil
+	return accessTargetForContainer(version, state.PrimaryContainerID, state.WorkspaceFolder, publishWebIDEEndpoint, r.endpoints, containers), nil
 }
 
-func accessTargetForContainer(version int64, primaryContainerID, workspaceFolder string, webIDEAvailable bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
+func accessTargetForContainer(version int64, primaryContainerID, workspaceFolder string, publishWebIDEEndpoint bool, endpoints []*codespacev1.RuntimeEndpoint, containers map[string]string) *agentv1.AccessTarget {
 	target := &agentv1.AccessTarget{Version: version, PrimaryContainerId: primaryContainerID, WorkspaceFolder: workspaceFolder, Ready: true}
-	if webIDEAvailable {
+	if publishWebIDEEndpoint {
 		target.Endpoints = append(target.Endpoints, &agentv1.EndpointTarget{
 			Endpoint:    &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel},
 			ContainerId: primaryContainerID, Port: runtimeendpoint.WorkspaceEndpointPort,
