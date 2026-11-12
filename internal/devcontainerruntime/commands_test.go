@@ -84,7 +84,7 @@ func TestConfigureRuntimeCommands(t *testing.T) {
 }
 
 func TestGiteaCLIWrapperLoadsEnvironment(t *testing.T) {
-	t.Parallel()
+	// Concurrent fork/exec can inherit a writable script descriptor; run this test serially.
 	directory := t.TempDir()
 	environmentPath := filepath.Join(directory, "env.sh")
 	binaryPath := filepath.Join(directory, "gt-real")
@@ -113,7 +113,7 @@ func TestGiteaCLIWrapperLoadsEnvironment(t *testing.T) {
 }
 
 func TestInstallGiteaCLICompletions(t *testing.T) {
-	t.Parallel()
+	// Concurrent fork/exec can inherit a writable script descriptor; run this test serially.
 	directory := t.TempDir()
 	binaryPath := filepath.Join(directory, "gt-real")
 	require.NoError(t, os.WriteFile(binaryPath, []byte("#!/bin/sh\nprintf '%s\\n' \"$*\"\n"), 0o755))
