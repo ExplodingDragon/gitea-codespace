@@ -50,7 +50,6 @@ var platformEnvironmentNames = func() map[string]struct{} {
 
 var platformMountTargets = []string{
 	"/var/lib/gitea-codespace",
-	"/var/run/gitea-codespace",
 	"/usr/local/bin/gitea-codespace-endpoint",
 	"/usr/local/libexec/gitea-codespace-runtime",
 }

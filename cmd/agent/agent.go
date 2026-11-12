@@ -160,7 +160,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 }
 
 func prepareEndpointServer(ctx context.Context, runtime *agentpkg.Runtime) (net.Listener, *http.Server, error) {
-	if err := os.MkdirAll(filepath.Dir(runtimeendpoint.AgentSocketPath), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Dir(runtimeendpoint.AgentSocketPath), 0o755); err != nil {
 		return nil, nil, err
 	}
 	if info, err := os.Lstat(runtimeendpoint.AgentSocketPath); err == nil {

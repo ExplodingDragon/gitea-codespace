@@ -14,10 +14,11 @@ import (
 )
 
 // AgentSocketPath is the endpoint socket owned by Agent.
-const AgentSocketPath = "/run/codespace/endpoint.sock"
+const AgentSocketPath = "/run/codespace/control/endpoint.sock"
 
-// ContainerSocketPath is the socket's read-write bind mount in the Dev Container.
-const ContainerSocketPath = "/var/run/gitea-codespace/endpoint.sock"
+// ContainerSocketPath is reached through a directory bind mount outside /run,
+// which the Dev Container's init system may mount over during startup.
+const ContainerSocketPath = "/var/lib/gitea-codespace/control/endpoint.sock"
 
 // MaxEndpointCount includes the platform-managed workspace endpoint.
 const MaxEndpointCount = 64

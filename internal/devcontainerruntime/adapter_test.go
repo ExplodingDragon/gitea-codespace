@@ -5,9 +5,11 @@ package devcontainerruntime
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/runtimeplatform"
 	"gitea.dev/codespace/internal/webide"
 	"github.com/stretchr/testify/require"
@@ -36,6 +38,9 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: webide.ProgramRootPath, Target: webide.ContainerProgramPath, ReadOnly: true})
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: webide.ProviderDataPath("vscode"), Target: webide.ContainerDataPath})
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: "/opt/example", Target: "/opt/example", ReadOnly: true})
+	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
+		Type: "bind", Source: filepath.Dir(runtimeendpoint.AgentSocketPath), Target: filepath.Dir(runtimeendpoint.ContainerSocketPath), ReadOnly: true,
+	})
 	require.Equal(t, request.Native.CDIDeviceIDs, options.PlatformDevices.CDI)
 	require.Equal(t, "1", options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"])
 	require.Equal(t, containerCABundlePath, options.PlatformEnvironment["SSL_CERT_FILE"])

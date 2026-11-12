@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"gitea.dev/codespace/devcontainer"
@@ -49,7 +50,6 @@ var runtimeMounts = [...]struct {
 	{source: "/run/codespace/gitea-token", target: "/var/lib/gitea-codespace/gitea-token", readOnly: true},
 	{source: "/run/codespace/git", target: "/var/lib/gitea-codespace/git", readOnly: true},
 	{source: "/run/codespace/ca", target: "/var/lib/gitea-codespace/ca", readOnly: true},
-	{source: runtimeendpoint.AgentSocketPath, target: runtimeendpoint.ContainerSocketPath},
 	{source: "/usr/local/bin/gitea-codespace", target: ContainerRuntimeBinary, readOnly: true},
 }
 
@@ -62,6 +62,10 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 			return containerdocker.CreateOptions{}, fmt.Errorf("inspect runtime mount %s: %w", item.source, err)
 		}
 	}
+	// Mount the control directory so a recreated Agent socket stays visible.
+	mounts = append(mounts, devcontainer.Mount{
+		Type: "bind", Source: filepath.Dir(runtimeendpoint.AgentSocketPath), Target: filepath.Dir(runtimeendpoint.ContainerSocketPath), ReadOnly: true,
+	})
 	if request.DevContainer.WebIDE.Enabled() {
 		mounts = append(mounts,
 			devcontainer.Mount{Type: "bind", Source: webide.ProgramRootPath, Target: webide.ContainerProgramPath, ReadOnly: true},
