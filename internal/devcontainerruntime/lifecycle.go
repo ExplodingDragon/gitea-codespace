@@ -116,6 +116,10 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 }
 
 func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
+	// Login-shell probing can load the profile; keep credentials out of saved state.
+	for name := range request.Secrets {
+		delete(state.RemoteEnvironment, name)
+	}
 	if err := prepareRuntimeEnvironment(ctx, engine, state); err != nil {
 		return err
 	}

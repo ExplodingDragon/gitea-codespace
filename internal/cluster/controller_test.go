@@ -543,6 +543,49 @@ func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
 }
 
+func TestRuntimeDeletionAfterInitFailure(t *testing.T) {
+	cs := &api.Codespace{
+		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
+		Status: api.CodespaceStatus{
+			Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
+			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "starting"},
+		},
+	}
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+	require.NoError(t, err)
+	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodPending
+	pod.Spec.InitContainers = []corev1.Container{{Name: "prepare", Image: "example.invalid/prepare"}}
+	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}}}
+	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
+	r := &RuntimeReconciler{Client: c}
+	ctx := t.Context()
+
+	_, err = r.stopOrDelete(ctx, cs, false)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
+	require.False(t, pod.DeletionTimestamp.IsZero())
+	pod.Status.Phase = corev1.PodFailed
+	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "prepare", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}}}
+	require.NoError(t, c.Status().Update(ctx, pod))
+
+	_, err = r.stopOrDelete(ctx, cs, false)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
+	require.Equal(t, pod.UID, cs.Status.StoppedPodUID)
+	err = c.Get(ctx, client.ObjectKeyFromObject(pod), pod)
+	require.True(t, apierrors.IsNotFound(err))
+
+	_, err = r.stopOrDelete(ctx, cs, false)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
+	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+	require.Empty(t, cs.Status.Pod)
+	require.Nil(t, cs.Status.Target)
+	require.Nil(t, cs.Status.Boot)
+}
+
 func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
 	site := testSite("example", "site-uid")
 	site.Status.NamespaceUID = "namespace-uid"

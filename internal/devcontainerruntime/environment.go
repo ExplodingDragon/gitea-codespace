@@ -29,5 +29,12 @@ func prepareRuntimeEnvironment(ctx context.Context, engine *containerdocker.Engi
 	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, "/", []string{"/bin/sh", "-c", `test -r "$1"`, "sh", containerEnvironmentPath}, nil, nil); err != nil {
 		return fmt.Errorf("read runtime authorization environment as remote user: %w", err)
 	}
+	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/etc/profile.d"}, nil, nil); err != nil {
+		return fmt.Errorf("prepare runtime environment profile directory: %w", err)
+	}
+	profile := fmt.Sprintf("if [ -r %s ]; then\n  . %s\nfi\n", containerEnvironmentPath, containerEnvironmentPath)
+	if err := engine.CopyContent(ctx, state.PrimaryContainerID, "/etc/profile.d/gitea-codespace.sh", 0o644, []byte(profile)); err != nil {
+		return fmt.Errorf("install runtime environment profile: %w", err)
+	}
 	return nil
 }

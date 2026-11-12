@@ -512,15 +512,9 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 			}
 			return ctrl.Result{RequeueAfter: time.Second}, nil
 		}
-		// DeletionTimestamp alone does not prove that the Pod processes stopped.
-		// Hold the Pod until kubelet reports termination, then persist that fact.
-		stopped := pod.Spec.NodeName == ""
-		if pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed {
-			stopped = len(pod.Status.ContainerStatuses) == len(pod.Spec.Containers)
-			for _, status := range pod.Status.ContainerStatuses {
-				stopped = stopped && status.State.Terminated != nil
-			}
-		}
+		// A terminal phase is kubelet's confirmation that the Pod lifecycle ended.
+		// The regular container can remain Waiting when an init container fails.
+		stopped := pod.Spec.NodeName == "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 		if !stopped {
 			return r.condition(ctx, cs, "WriterUnconfirmed", fmt.Errorf("waiting for kubelet to confirm runtime process termination"))
 		}
