@@ -288,14 +288,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(operation.OperationRversion, state, outcome.WebIDEStarted)
-	if err != nil {
-		return err
-	}
-	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY, target)
-	r.setAccessState(target, secrets)
-	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, target)
-	return nil
+	return r.publishAccess(operation.OperationRversion, outcome, secrets, report)
 }
 
 func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, trust runtimeTrust, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget)) error {
@@ -326,7 +319,11 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	target, err := r.accessTarget(response.Operation.OperationRversion, outcome.Environment, outcome.WebIDEStarted)
+	return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report)
+}
+
+func (r *Runtime) publishAccess(version int64, outcome *devcontainerruntime.Outcome, secrets map[string]string, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget)) error {
+	target, err := r.accessTarget(version, outcome.Environment, outcome.WebIDEStarted)
 	if err != nil {
 		return err
 	}

@@ -178,3 +178,61 @@ func TestDockerRunDetached(t *testing.T) {
 	}
 	require.True(t, options.Detach)
 }
+
+func TestRemoteUserIDs(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		output string
+		uid    int
+		gid    int
+	}{
+		{name: "root", output: "0\n0\n"},
+		{name: "image user", output: "2001\n3001\n", uid: 2001, gid: 3001},
+		{name: "invalid", output: "4294967295\n3001\n", uid: -1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var execution container.ExecOptions
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case strings.HasSuffix(r.URL.Path, "/containers/container/exec"):
+					if err := json.NewDecoder(r.Body).Decode(&execution); err != nil {
+						t.Error(err)
+					}
+					_, _ = io.WriteString(w, `{"Id":"execution"}`)
+				case strings.HasSuffix(r.URL.Path, "/exec/execution/start"):
+					_, _ = io.Copy(io.Discard, r.Body)
+					conn, output, err := w.(http.Hijacker).Hijack()
+					if err != nil {
+						t.Error(err)
+						return
+					}
+					defer conn.Close()
+					_, _ = fmt.Fprint(output, "HTTP/1.1 101 UPGRADED\r\nConnection: Upgrade\r\nUpgrade: tcp\r\n\r\n")
+					_ = output.Flush()
+					_, _ = io.WriteString(stdcopy.NewStdWriter(conn, stdcopy.Stdout), test.output)
+				case strings.HasSuffix(r.URL.Path, "/exec/execution/json"):
+					_, _ = io.WriteString(w, `{"Running":false,"ExitCode":0}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			apiClient, err := client.NewClientWithOpts(client.WithHost("tcp://"+server.Listener.Addr().String()), client.WithVersion("1.51"))
+			require.NoError(t, err)
+			defer apiClient.Close()
+			engine := &Engine{client: apiClient, stdout: io.Discard, stderr: io.Discard}
+			uid, gid, err := engine.RemoteUserIDs(t.Context(), &devcontainer.State{PrimaryContainerID: "container", RemoteUser: "developer:developers"})
+			if test.uid < 0 {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, test.uid, uid)
+				require.Equal(t, test.gid, gid)
+			}
+			require.Equal(t, "developer:developers", execution.User)
+			require.Equal(t, "/", execution.WorkingDir)
+			require.Equal(t, []string{"/bin/sh", "-c", "id -u && id -g"}, execution.Cmd)
+		})
+	}
+}

@@ -81,7 +81,7 @@ After starting a Kata Codespace, verify the Runtime Pod before publishing the
 workflow to users:
 
 ```sh
-kubectl exec -n <site-namespace> <runtime-pod> -c runtime -- \
+kubectl exec -n '<site-namespace>' '<runtime-pod>' -c runtime -- \
   sh -c 'test -d /sys/devices/platform/vhci_hcd.0 && command -v usbip'
 ```
 
@@ -107,11 +107,9 @@ need their own security review. Protect the workstation's USB/IP endpoint from
 unintended clients.
 
 Validate the complete path with a disposable exported device before production
-use: follow the [USB connection guide](../../docs/usbip.md), run
-`gitea-codespace-usbip list` and `attach`, confirm the expected device appears
-under `/dev`, exchange data as the configured non-root user, then run `detach`.
-Stopping the Codespace or closing the SSH session must remove the forward; a
-later session attaches the device again by its current bus ID.
+use, following the [USB connection guide](../../docs/usbip.md). Verify device
+access as the configured non-root user, not only as root. For automated
+validation on a disposable worker, use the [Kata USB/IP E2E guide](../../tests/e2e/README.md#prepare-kata-usbip-tests).
 Stop hooks should tolerate a device already being offline, because the Gateway
 can revoke access before the hook runs.
 
@@ -123,8 +121,8 @@ can revoke access before the hook runs.
   without restarting the Dev Container.
 - udev or eudev rules in the development image receive hotplug events and set
   the expected non-root ownership and permissions.
-- Interactive terminals, `/dev/shm`, and POSIX message queues remain usable
-  while devices are attached and after a stop/start cycle.
+- Device access and ordinary terminal use remain functional after a stop/start
+  cycle and a new device attachment.
 - Multiple named USB/IP sources coexist with ordinary Dev Container reverse
   forwards. Source names are unique within one Codespace. Closing a source
   disconnects only its devices; closing an SSH session releases its forwards.
@@ -158,12 +156,14 @@ platform image built for that chart.
 
 ## Configure Web IDE storage and image access
 
-`webIDE.programVolumeSize` reserves temporary Pod storage for the selected Web
-IDE program. Increase it when the unpacked provider bundle exceeds the default
-capacity. Configure `image.pullSecrets` when platform or provider images are
-stored in a private registry; the same credentials are available to workspace
-Pods. See the [Web IDE provider guide](../../providers/README.md) for image
-selection and editor configuration.
+`webIDE.programVolumeSize` sets the size limit of the disk-backed `emptyDir`
+that holds the selected Web IDE program. It does not reserve disk space;
+nodes also need enough free storage for the unpacked bundle. Increase the limit
+when the bundle exceeds the default limit. Configure `image.pullSecrets` when
+platform or provider images are stored in a private registry; the same
+credentials are available to workspace Pods. See the
+[Web IDE provider guide](../../providers/README.md) for image selection and
+editor configuration.
 
 ## Connect Gitea
 
@@ -248,9 +248,11 @@ Runtime Pod configuration; an unset limit is displayed as unlimited.
 
 Filesystem usage combines Runtime observations with kubelet volume statistics
 when the cluster exposes them. Kata block volumes use the mounted filesystem
-observation. The displayed value represents available filesystem space rather
-than the PVC request, which is important because shared storage capacity is not
-an exclusive workspace quota.
+observation. The displayed total is the observed filesystem capacity; usage is
+that capacity minus the smallest available-space observation. This includes
+space reserved by the filesystem rather than only workspace file sizes. The
+PVC request is not a measurement of free space, and shared filesystem capacity
+is not an exclusive workspace quota.
 
 The chart grants `list` on `metrics.k8s.io/pods` for CPU and memory statistics
 and `get` on `nodes/proxy` for kubelet filesystem statistics. Kubernetes grants
@@ -263,7 +265,7 @@ lifecycle.
 
 - CPU and memory usage match the Runtime container in `kubectl top pod
   --containers`, allowing for different sample times.
-- Filesystem statistics report available space rather than the PVC request;
+- Filesystem usage is derived from observed capacity and available space;
   a valid zero available-space observation is shown as full.
 - A metrics outage falls back to Runtime observations without changing the
   workspace lifecycle.
@@ -276,7 +278,7 @@ accepts the new resource shape:
 
 ```sh
 CHART=oci://ghcr.io/explodingdragon/charts/gitea-codespace
-VERSION=<chart-version>
+VERSION='<chart-version>'
 
 helm show crds "$CHART" --version "$VERSION" |
   kubectl apply --server-side --force-conflicts \

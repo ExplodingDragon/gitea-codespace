@@ -4,9 +4,15 @@
 package agent
 
 import (
+	"bytes"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/devcontainer"
 	"github.com/stretchr/testify/require"
 )
 
@@ -22,4 +28,45 @@ func TestRuntimeAccessEnvironmentUsesPlatformIdentity(t *testing.T) {
 	require.Equal(t, "project", environment["PROJECT_KEY"])
 	require.Equal(t, "https://gitea.example.com", environment["GITEA_INSTANCE_URL"])
 	require.Equal(t, "scoped-token", environment["GITEA_TOKEN"])
+	_, err = runtimeAccessEnvironment(nil, "https://gitea.example.com", "token\x00value")
+	require.ErrorContains(t, err, "NUL")
+}
+
+func TestAccessEnvironmentFileRoundTripAndReplacement(t *testing.T) {
+	t.Parallel()
+	directory := t.TempDir()
+	path := filepath.Join(directory, "environment", "env.sh")
+	owner := devcontainer.HostUser{UID: uint32(os.Geteuid()), GID: uint32(os.Getegid())}
+	environment, err := runtimeAccessEnvironment([]*codespacev1.RuntimeSecretEnvironmentVariable{
+		{Name: "PROJECT_KEY", Value: "  quote'\"\\\n\r\t${HOME} $(touch injected) `touch injected`  "},
+		{Name: "EMPTY_VALUE", Value: ""},
+	}, "https://gitea.example.com", "first-token")
+	require.NoError(t, err)
+	var previous os.FileInfo
+	for _, token := range []string{"first-token", "replacement-token"} {
+		environment["GITEA_TOKEN"] = token
+		require.NoError(t, writeAccessEnvironment(path, environment, owner))
+		info, err := os.Stat(path)
+		require.NoError(t, err)
+		require.Equal(t, os.FileMode(0o600), info.Mode().Perm())
+		if previous != nil {
+			require.False(t, os.SameFile(previous, info))
+		}
+		previous = info
+		command := exec.CommandContext(t.Context(), "/bin/sh", "-c", `. "$1"; exec env -0`, "sh", path)
+		command.Dir = directory
+		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GITEA_TOKEN=stale"}
+		output, err := command.Output()
+		require.NoError(t, err)
+		values := map[string]string{}
+		for _, item := range bytes.Split(output, []byte{0}) {
+			if name, value, ok := strings.Cut(string(item), "="); ok {
+				values[name] = value
+			}
+		}
+		for name, value := range environment {
+			require.Equal(t, value, values[name], name)
+		}
+		require.NoFileExists(t, filepath.Join(directory, "injected"))
+	}
 }

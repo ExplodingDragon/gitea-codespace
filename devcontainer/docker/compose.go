@@ -273,16 +273,14 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		Create: api.CreateOptions{Services: services, RemoveOrphans: true, AssumeYes: true},
 		Start:  api.StartOptions{Project: project, Services: services, Wait: true, WaitTimeout: 2 * time.Minute},
 	}); err != nil {
-		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, nil, fmt.Errorf("start Docker Compose Dev Container: %w", err)
 	}
 	containers, err := e.compose.Ps(ctx, projectName, api.PsOptions{All: true})
 	if err != nil {
-		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, nil, fmt.Errorf("inspect Docker Compose Dev Container: %w", err)
 	}
 	var primary string
-	related := make([]string, 0, len(containers)-1)
+	related := make([]string, 0, len(containers))
 	composeContainers := make(map[string]string, len(containers))
 	for _, item := range containers {
 		composeContainers[item.Service] = item.ID
@@ -293,7 +291,6 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 	}
 	if primary == "" {
-		_ = e.downComposeProject(context.WithoutCancel(ctx), projectName)
 		return "", nil, nil, nil, fmt.Errorf("docker compose service %q did not create a container", resolved.Service)
 	}
 	slices.Sort(related)

@@ -57,21 +57,11 @@ func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
 func TestCustomizeImageRequiresDockerfileAndCleansContext(t *testing.T) {
 	t.Parallel()
 
-	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
-		response.Header().Set("Content-Type", "application/json")
-		_, _ = response.Write([]byte(`{"Id":"sha256:base","Os":"linux","Architecture":"amd64","Config":{"User":"developer"}}`))
-	}))
-	defer server.Close()
-	apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
-	if err != nil {
-		t.Fatalf("create Docker client: %v", err)
-	}
-	defer func() { _ = apiClient.Close() }()
 	var contextDir string
-	engine := &Engine{client: apiClient}
-	_, err = engine.customizeImage(t.Context(), "base", &devcontainer.ResolvedConfiguration{}, func(image ImageCustomization) error {
+	engine := &Engine{}
+	_, err := engine.customizeImage(t.Context(), "base", &devcontainer.ResolvedConfiguration{}, func(image ImageCustomization) error {
 		contextDir = image.ContextDir
-		if image.BaseImage != "base" || image.ContainerUser != "root" || image.Platform.OS != "linux" || image.Platform.Architecture != "amd64" {
+		if image.BaseImage != "base" || image.ContainerUser != "root" {
 			t.Fatalf("image customization = %#v", image)
 		}
 		return nil

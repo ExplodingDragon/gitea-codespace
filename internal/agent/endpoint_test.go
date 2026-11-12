@@ -8,15 +8,19 @@ import (
 	"net"
 	"net/http"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 )
 
 func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
@@ -26,8 +30,25 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.NoError(t, err)
 	runtime := &Runtime{Journal: journal}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
-	target := accessTargetForContainer(1, "container", "/workspaces/project", true, runtime.endpoints, nil)
-	runtime.setAccessState(target, nil)
+	state := &devcontainer.State{
+		Version: devcontainer.StateFormatVersion, ID: "environment", OwnerID: "runtime",
+		PrimaryContainerID: "container", ConfigurationPath: "/workspaces/project/.devcontainer.json", ConfigurationSHA256: strings.Repeat("a", 64),
+		Workspace: "/workspaces/project", WorkspaceFolder: "/workspaces/project", RemoteWorkdir: "/workspaces/project", RemoteUser: "developer",
+	}
+	var stages []codespacev1.RuntimeBootStage
+	require.NoError(t, runtime.publishAccess(1, &devcontainerruntime.Outcome{Environment: state, WebIDEStarted: true}, nil,
+		func(stage codespacev1.RuntimeBootStage, target *agentv1.AccessTarget) {
+			stages = append(stages, stage)
+			if stage == codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY {
+				require.Nil(t, runtime.CurrentAccessTarget())
+			} else {
+				require.True(t, proto.Equal(target, runtime.CurrentAccessTarget()))
+			}
+		}))
+	require.Equal(t, []codespacev1.RuntimeBootStage{
+		codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY, codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY,
+	}, stages)
+	target := runtime.CurrentAccessTarget()
 	accessCtx, release, err := runtime.networkAccessContext(t.Context(), target)
 	require.NoError(t, err)
 	defer release()

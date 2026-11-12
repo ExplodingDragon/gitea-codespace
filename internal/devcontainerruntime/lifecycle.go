@@ -4,7 +4,10 @@
 package devcontainerruntime
 
 import (
+	"bytes"
 	"context"
+	_ "embed"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,8 +19,15 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
+	"gitea.dev/codespace/internal/runtimeendpoint"
 	"gitea.dev/codespace/internal/webide"
 )
+
+//go:embed builtin/configure-git.sh
+var configureGitScript string
+
+//go:embed builtin/install-ca.sh
+var installCAScript string
 
 // Outcome records the Dev Container and the optional platform services that
 // were actually started for this lifecycle action.
@@ -51,20 +61,13 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	defer func() { returnErr = errors.Join(returnErr, engine.Close()) }()
 	switch request.Action {
 	case "create":
-		options, err := buildCreateOptions(request)
+		options, err := buildCreateOptions(request, platformGiteaCLIPath)
 		if err != nil {
 			return nil, err
 		}
-		options.CustomizeImage = imageCustomization(request.DevContainer, platformGiteaCLIPath, stdout)
+		options.CustomizeImage = imageCustomization(request.DevContainer.LifecycleScript)
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			if err := prepareUSBIPContainer(ctx, engine, state, request.USBIP); err != nil {
-				return err
-			}
-			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
-			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
-				return err
-			}
-			if err := configureCreate(ctx, engine, state, request); err != nil {
+			if err := prepareContainerStart(ctx, engine, state, request); err != nil {
 				return err
 			}
 			_, _, err := ConfiguredEndpoints(state)
@@ -78,27 +81,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "resume":
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			if err := prepareUSBIPContainer(ctx, engine, state, request.USBIP); err != nil {
-				return err
-			}
-			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
-			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
-				return err
-			}
-			if err := configureCA(ctx, engine, state); err != nil {
-				return err
-			}
-			if err := configureRuntimeCommands(ctx, engine, state, request.USBIP.Enabled); err != nil {
-				return err
-			}
-			values := map[string]string{
-				"GITEA_CONFIGURE_CA_ONLY": "true",
-				"GITEA_URL":               request.GiteaURL,
-			}
-			if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
-				return fmt.Errorf("configure Gitea CA for Git in Dev Container: %w", err)
-			}
-			return nil
+			return prepareContainerStart(ctx, engine, state, request)
 		}, request.RunLifecycle)
 		if err != nil {
 			// Start may have started some or all containers before preparing
@@ -132,12 +115,42 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	}
 }
 
+func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
+	if err := prepareRuntimeEnvironment(ctx, engine, state); err != nil {
+		return err
+	}
+	if err := prepareUSBIPContainer(ctx, engine, state, request.USBIP); err != nil {
+		return err
+	}
+	maps.Copy(state.RemoteEnvironment, request.Native.Environment)
+	if err := configureRuntimeCommands(ctx, engine, state, request); err != nil {
+		return err
+	}
+	if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
+		return err
+	}
+	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"/bin/sh", "-c", installCAScript}, nil, nil); err != nil {
+		return fmt.Errorf("configure platform CA in Dev Container: %w", err)
+	}
+	state.RemoteEnvironment["NODE_EXTRA_CA_CERTS"] = containerCABundlePath
+	state.RemoteEnvironment["SSL_CERT_FILE"] = containerCABundlePath
+	values := map[string]string{"GITEA_URL": request.GiteaURL}
+	if request.Action == "create" {
+		values["GITEA_GIT_USER_NAME"] = request.GitUserName
+		values["GITEA_GIT_USER_EMAIL"] = request.GitUserEmail
+		values["GITEA_WORKSPACE"] = state.RemoteWorkdir
+	} else {
+		values["GITEA_CONFIGURE_CA_ONLY"] = "true"
+	}
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
+		return fmt.Errorf("configure Git in Dev Container: %w", err)
+	}
+	return nil
+}
+
 func runTemplateLifecycle(ctx context.Context, request Request, engine *containerdocker.Engine, state *devcontainer.State, action string) error {
 	if strings.TrimSpace(request.DevContainer.LifecycleScript) == "" {
 		return nil
-	}
-	if action != "start" && action != "stop" {
-		return fmt.Errorf("invalid environment-template lifecycle action %q", action)
 	}
 	run := func(ctx context.Context) error {
 		if action == "stop" {
@@ -163,4 +176,50 @@ func runTemplateLifecycle(ctx context.Context, request Request, engine *containe
 		return request.RunTemplateLifecycle(ctx, action, run)
 	}
 	return run(ctx)
+}
+
+func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stderr io.Writer) bool {
+	if !configuration.WebIDE.Enabled() {
+		return false
+	}
+	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
+	values["CODESPACE_WEB_IDE_PROVIDER"] = string(configuration.WebIDE.Provider)
+	values["CODESPACE_WEB_IDE_PROGRAM_DIR"] = webide.ContainerProgramPath
+	values["CODESPACE_WEB_IDE_DATA_DIR"] = webide.ContainerDataPath
+	values["CODESPACE_WEB_IDE_WORKSPACE"] = state.RemoteWorkdir
+	values["CODESPACE_WEB_IDE_ADDRESS"] = fmt.Sprintf("127.0.0.1:%d", runtimeendpoint.WorkspaceEndpointPort)
+	templateOptions := json.RawMessage(configuration.WebIDE.Options.Raw)
+	if len(templateOptions) == 0 {
+		templateOptions = json.RawMessage(`{}`)
+	}
+	repositoryOptions := state.Configuration.Customizations[string(configuration.WebIDE.Provider)]
+	if len(repositoryOptions) == 0 {
+		repositoryOptions = json.RawMessage(`{}`)
+	}
+	payload, startErr := json.Marshal(struct {
+		ProtocolVersion   int             `json:"protocolVersion"`
+		Initialize        bool            `json:"initialize"`
+		TemplateOptions   json.RawMessage `json:"templateOptions"`
+		RepositoryOptions json.RawMessage `json:"repositoryOptions"`
+	}{1, initialize, templateOptions, repositoryOptions})
+	if startErr == nil {
+		prepare := webide.ContainerProgramPath + "/" + webide.PrepareProgram
+		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{prepare}, values, bytes.NewReader(payload)); err != nil {
+			startErr = fmt.Errorf("prepare %s Web IDE: %w", configuration.WebIDE.Provider, err)
+		}
+	}
+	if startErr == nil {
+		serve := webide.ContainerProgramPath + "/" + webide.ServeProgram
+		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{serve}, values); err != nil {
+			startErr = fmt.Errorf("start %s Web IDE Provider: %w", configuration.WebIDE.Provider, err)
+		}
+	}
+	if startErr != nil {
+		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE did not start and Codespace access remains available: %v\n", startErr)
+		return false
+	}
+	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
+		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE postAttachCommand failed without affecting Codespace access: %v\n", err)
+	}
+	return true
 }

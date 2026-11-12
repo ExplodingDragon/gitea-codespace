@@ -30,12 +30,7 @@ POSIX_SCRIPTS := \
 	tests/e2e/web-ide/export.sh \
 	tests/e2e/web-ide/prepare \
 	tests/e2e/web-ide/serve \
-	devcontainer/docker/builtin/resolve-user-shell.sh \
-	devcontainer/docker/builtin/update-user.sh \
-	internal/devcontainerruntime/builtin/configure-git.sh \
-	internal/devcontainerruntime/builtin/endpoint.sh \
-	internal/devcontainerruntime/builtin/install-ca.sh \
-	internal/devcontainerruntime/builtin/usbip.sh \
+	$(sort $(wildcard devcontainer/docker/builtin/*.sh internal/devcontainerruntime/builtin/*.sh)) \
 	internal/cluster/usbip-e2e.sh
 GO_FILES := $(shell find . -path './.git' -prune -o -path './.tmp' -prune -o -path './web/node_modules' -prune -o -type f -name '*.go' -print)
 

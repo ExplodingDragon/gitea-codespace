@@ -20,7 +20,7 @@ pnpm --dir web exec playwright install chromium
 The Makefile installs pinned development tools so local and CI checks use the
 same versions.
 
-## Repository layout and boundaries
+## Repository layout
 
 | Path               | Responsibility                                              |
 | ------------------ | ----------------------------------------------------------- |
@@ -32,23 +32,8 @@ same versions.
 | `charts`, `deploy` | Helm resources, CRDs, and platform image                    |
 | `tests/e2e`        | Kubernetes lifecycle tests and the fake Web IDE image       |
 
-Keep Dev Container specification fields in `devcontainer` and platform behavior
-in `internal`. This preserves repository portability while allowing Codespace
-to manage Kubernetes and runtime state independently. Provider-specific editor
-logic belongs in `providers`, which lets editor releases and dependencies change
-without expanding the platform binary or its build toolchain. Public
-Gitea-to-Manager messages live in `codespace-proto-go`; RPC used only inside one
-platform binary remains under `internal`.
-
-### Implementation acceptance criteria
-
-- Dev Container fields round-trip through parsing and resolution without
-  Codespace-specific loss.
-- Kubernetes APIs and internal RPC bindings are generated from their canonical
-  type or protocol sources.
-- A Web IDE provider can be built and validated without compiling the platform,
-  while platform builds do not require an editor toolchain.
-- Gitea and Manager consume the same released public protocol version.
+See the [implementation design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/implementation.md)
+for code ownership and interface boundaries.
 
 ## Validate
 
@@ -91,10 +76,17 @@ Service first. Add user-visible administration text to every catalog under
 editor release can be updated without rebuilding the platform services.
 
 Use `make -C providers/vscode check` or `make -C providers/dsh check` for
-focused provider validation. Each provider's `image` target builds an image for
-the current architecture. See the [provider development
-guide](providers/DEVELOPMENT.md) for the complete third-party integration
-workflow.
+focused provider validation. The DSH check fetches its pinned upstream sources
+and bundles the Codespace plugin against them. Each provider's `image` target
+builds an image for the current architecture. See the [provider development
+guide](providers/DEVELOPMENT.md) for the third-party integration contract and
+image verification steps.
+
+The [VS Code](.github/workflows/provider-vscode.yml) and
+[DSH](.github/workflows/provider-dsh.yml) workflows validate their own build
+inputs and publish amd64/arm64 images on matching pushes to `main`. Shared
+provider inputs trigger both workflows; the [platform workflow](.github/workflows/ci.yml)
+handles core changes separately. Workflow path filters define the exact scope.
 
 ## Kubernetes E2E
 

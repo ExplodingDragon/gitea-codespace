@@ -18,7 +18,6 @@ import (
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
 	dockerunits "github.com/docker/go-units"
-	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -365,10 +364,6 @@ func (e *Engine) customizeImage(ctx context.Context, baseImage string, resolved 
 		return "", fmt.Errorf("create image customization context: %w", err)
 	}
 	defer func() { _ = os.RemoveAll(directory) }()
-	inspect, err := e.inspectImage(ctx, baseImage)
-	if err != nil {
-		return "", fmt.Errorf("inspect image customization base: %w", err)
-	}
 	containerUser := strings.TrimSpace(resolved.ContainerUser)
 	if containerUser == "" {
 		containerUser = "root"
@@ -377,11 +372,6 @@ func (e *Engine) customizeImage(ctx context.Context, baseImage string, resolved 
 		ContextDir:    directory,
 		BaseImage:     baseImage,
 		ContainerUser: containerUser,
-		Platform: ocispec.Platform{
-			OS:           inspect.Os,
-			Architecture: inspect.Architecture,
-			Variant:      inspect.Variant,
-		},
 	}); err != nil {
 		return "", fmt.Errorf("customize Dev Container image: %w", err)
 	}

@@ -18,6 +18,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/docker/cli/cli/command"
@@ -62,7 +63,6 @@ type ImageCustomization struct {
 	ContextDir    string
 	BaseImage     string
 	ContainerUser string
-	Platform      ocispec.Platform
 }
 
 // CustomizeImageFunc writes caller-owned image contents into a temporary
@@ -194,7 +194,7 @@ func (e *Engine) ContainerProcess(ctx context.Context, containerID string) (int,
 }
 
 // Create resolves configuration, creates resources, and completes the first lifecycle.
-func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
+func (e *Engine) Create(ctx context.Context, options CreateOptions) (_ *devcontainer.State, returnErr error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
 		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
@@ -254,6 +254,19 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	labels[labelOwnerID] = options.OwnerID
 	labels[labelEnvironmentID] = environmentID
 
+	// All creation paths share cleanup, including resources created before an
+	// error prevents us from constructing the complete environment state.
+	defer func() {
+		if returnErr == nil {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		if err := e.cleanupIncompleteCreate(cleanupCtx, options.OwnerID, composeProject); err != nil {
+			returnErr = errors.Join(returnErr, fmt.Errorf("clean failed Dev Container creation: %w", err))
+		}
+	}()
+
 	var primaryID string
 	var related []string
 	var featureDigests map[string]string
@@ -295,11 +308,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 		LifecycleCommands:   resolved.LifecycleCommands,
 	}
 	if err := environment.Validate(); err != nil {
-		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
 	if err := e.initializeContainer(ctx, environment, options.Secrets, options.PrepareLifecycle, options.RunLifecycle, options.Ready); err != nil {
-		_ = e.Delete(context.WithoutCancel(ctx), environment)
 		return nil, err
 	}
 	return environment, nil
@@ -487,7 +498,6 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		return "", nil, fmt.Errorf("create Dev Container: %w", err)
 	}
 	if err := e.client.ContainerStart(ctx, response.ID, container.StartOptions{}); err != nil {
-		_ = e.client.ContainerRemove(context.WithoutCancel(ctx), response.ID, container.RemoveOptions{Force: true})
 		return "", nil, fmt.Errorf("start Dev Container: %w", err)
 	}
 	return response.ID, featureDigests, nil
@@ -552,7 +562,6 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 		return "", errors.New("create Dev Container with runArgs returned no container ID")
 	}
 	if err := e.client.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
-		_ = e.client.ContainerRemove(context.WithoutCancel(ctx), containerID, container.RemoveOptions{Force: true})
 		return "", fmt.Errorf("start Dev Container: %w", err)
 	}
 	return containerID, nil

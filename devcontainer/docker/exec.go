@@ -17,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -316,6 +317,24 @@ func (e *Engine) probeRemoteEnvironment(ctx context.Context, environment *devcon
 		}
 	}
 	return result, nil
+}
+
+// RemoteUserIDs resolves the effective UID and GID used for remote execution.
+func (e *Engine) RemoteUserIDs(ctx context.Context, environment *devcontainer.State) (int, int, error) {
+	stdout, _, err := e.exec(ctx, environment.PrimaryContainerID, environment.RemoteUser, "/", []string{"/bin/sh", "-c", "id -u && id -g"}, nil, nil, io.Discard, io.Discard, true)
+	if err != nil {
+		return 0, 0, fmt.Errorf("resolve Dev Container remote user IDs: %w", err)
+	}
+	fields := strings.Fields(string(stdout))
+	if len(fields) != 2 {
+		return 0, 0, fmt.Errorf("resolve Dev Container remote user IDs: expected UID and GID")
+	}
+	uid, uidErr := strconv.ParseUint(fields[0], 10, 32)
+	gid, gidErr := strconv.ParseUint(fields[1], 10, 32)
+	if uidErr != nil || gidErr != nil || uid == 1<<32-1 || gid == 1<<32-1 {
+		return 0, 0, fmt.Errorf("resolve Dev Container remote user IDs: invalid UID or GID")
+	}
+	return int(uid), int(gid), nil
 }
 
 // ResolveRemoteUserShell returns the current login shell configured for the

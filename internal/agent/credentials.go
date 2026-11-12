@@ -5,13 +5,17 @@ package agent
 
 import (
 	"fmt"
+	"maps"
 	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/controlplane"
+	"gitea.dev/codespace/internal/devcontainerruntime"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -24,6 +28,10 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	giteaURL, err := controlplane.CanonicalGiteaURL(access.GiteaServerUrl)
 	if err != nil {
 		return nil, fmt.Errorf("gitea server URL: %w", err)
+	}
+	secrets, err := runtimeAccessEnvironment(access.Secrets, giteaURL, access.GiteaToken)
+	if err != nil {
+		return nil, err
 	}
 	privateKey, err := r.Journal.GitSSHPrivateKey(keyType)
 	if err != nil {
@@ -71,14 +79,16 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 			return nil, err
 		}
 	}
-	secrets, err := runtimeAccessEnvironment(access.Secrets, giteaURL, access.GiteaToken)
-	if err != nil {
+	if err := writeAccessEnvironment(devcontainerruntime.RuntimeEnvironmentPath, secrets, owner); err != nil {
 		return nil, err
 	}
 	return secrets, nil
 }
 
 func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVariable, giteaURL, token string) (map[string]string, error) {
+	if strings.ContainsRune(giteaURL, 0) || strings.ContainsRune(token, 0) {
+		return nil, fmt.Errorf("runtime Gitea credentials contain NUL")
+	}
 	secrets := make(map[string]string, len(items)+2)
 	for _, item := range items {
 		if item == nil || !secretNamePattern.MatchString(item.Name) || strings.ContainsRune(item.Value, 0) {
@@ -92,6 +102,20 @@ func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVaria
 	secrets["GITEA_INSTANCE_URL"] = giteaURL
 	secrets["GITEA_TOKEN"] = token
 	return secrets, nil
+}
+
+func writeAccessEnvironment(path string, environment map[string]string, owner devcontainer.HostUser) error {
+	var content strings.Builder
+	for _, name := range slices.Sorted(maps.Keys(environment)) {
+		_, _ = fmt.Fprintf(&content, "export %s='%s'\n", name, strings.ReplaceAll(environment[name], "'", "'\\''"))
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o711); err != nil {
+		return fmt.Errorf("prepare runtime authorization environment: %w", err)
+	}
+	if err := replaceFileAtomically(path, []byte(content.String()), 0o600, &owner); err != nil {
+		return fmt.Errorf("write runtime authorization environment: %w", err)
+	}
+	return nil
 }
 
 func gitCredentialCommand(tokenPath string) string {

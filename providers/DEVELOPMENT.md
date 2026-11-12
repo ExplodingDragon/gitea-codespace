@@ -2,10 +2,7 @@
 
 A Web IDE provider packages an editor and the small adapter that starts it
 inside a Dev Container. The provider is an independent OCI image so editor
-releases can be updated without rebuilding Manager, Agent, or Gateway. Manager
-reads the image metadata when an administrator saves an environment template,
-then records the resolved image digest so later starts use the same reviewed
-content.
+releases can be updated without rebuilding Manager, Agent, or Gateway.
 
 This guide describes provider protocol version 1. The fake provider under
 [`tests/e2e/web-ide`](../tests/e2e/web-ide) is a compact working reference; the
@@ -76,8 +73,9 @@ Every supported platform manifest must contain these OCI configuration labels:
 | `org.opencontainers.image.revision`              | Source revision used to build the image                |
 | `dev.gitea.codespace.web-ide.metadata`           | Provider identity and environment option schema        |
 
-The Codespace label is a JSON object. This example exposes two administrator
-options and supplies defaults that Manager can place in a new environment:
+The Codespace label is a JSON object. Save this example as `metadata.json` for
+the image build below. It exposes two administrator options and supplies
+defaults that Manager can place in a new environment:
 
 ```json
 {
@@ -155,29 +153,11 @@ executable files. Everything else under the bundle is provider-owned.
 
 The entrypoint stages the complete bundle and finishes with one rename so an
 interrupted copy leaves the final path unpublished. The official images share
-[`export.sh`](export.sh), which checks that the manifest and executable programs
-are present before publishing. Agent then parses the manifest as JSON and
-checks its protocol, provider identity, architecture, and version. This keeps
-semantic validation in one implementation and accepts normal JSON whitespace.
-A third-party image can use the same export flow:
-
-```sh
-#!/bin/sh
-set -eu
-
-output=/output
-staging="$output/.provider-$$"
-
-test ! -e "$output/current"
-trap 'rm -rf "$staging"' EXIT INT TERM
-mkdir -p "$staging"
-cp -a /provider/. "$staging/"
-test -f "$staging/manifest.json"
-test -x "$staging/bin/prepare"
-test -x "$staging/bin/serve"
-mv "$staging" "$output/current"
-trap - EXIT INT TERM
-```
+[`export.sh`](export.sh); include that script in your image build context to use
+the same export flow. It checks that the manifest and executable programs are
+present before publishing. Agent then parses the manifest as JSON and checks
+its protocol, provider identity, architecture, and version. This keeps semantic
+validation in one implementation and accepts normal JSON whitespace.
 
 ### Implementation acceptance criteria
 
@@ -316,13 +296,7 @@ bundle per architecture:
 
 ```text
 dist/
-  amd64/
-    manifest.json
-    bin/prepare
-    bin/serve
-    program/bin/example-ide
-    program/bin/example-adapter
-  arm64/
+  <architecture>/
     manifest.json
     bin/prepare
     bin/serve
@@ -330,9 +304,11 @@ dist/
     program/bin/example-adapter
 Dockerfile
 export.sh
+metadata.json
 ```
 
-The carrier needs only file-copying tools. A small Dockerfile is sufficient:
+Use `amd64` and `arm64` as the architecture directory names. The carrier needs
+only file-copying tools. A small Dockerfile is sufficient:
 
 ```dockerfile
 FROM busybox:1.37.0
@@ -340,6 +316,7 @@ FROM busybox:1.37.0
 ARG TARGETARCH
 ARG PROVIDER_VERSION
 ARG PROVIDER_REVISION
+ARG PROVIDER_METADATA
 
 COPY --chmod=0555 export.sh /usr/local/bin/export-web-ide
 COPY dist/${TARGETARCH}/ /provider/
@@ -347,19 +324,21 @@ COPY dist/${TARGETARCH}/ /provider/
 LABEL org.opencontainers.image.version=$PROVIDER_VERSION \
       org.opencontainers.image.source="https://example.com/owner/provider" \
       org.opencontainers.image.revision=$PROVIDER_REVISION \
-      dev.gitea.codespace.web-ide.metadata='{"metadataVersion":1,"protocolVersion":1,"provider":{"id":"example","name":"Example IDE"},"optionsSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"extensions":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true,"default":[]},"settings":{"type":"object","additionalProperties":true,"default":{}}},"additionalProperties":false}}'
+      dev.gitea.codespace.web-ide.metadata="$PROVIDER_METADATA"
 
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/export-web-ide"]
 ```
 
-Publish a manifest that contains both supported Linux architectures:
+Publish a manifest that contains both supported Linux architectures, using the
+same metadata file for their labels:
 
 ```sh
 docker buildx build \
   --platform linux/amd64,linux/arm64 \
   --build-arg PROVIDER_VERSION=1.0.0 \
   --build-arg PROVIDER_REVISION="$(git rev-parse HEAD)" \
+  --build-arg PROVIDER_METADATA="$(cat metadata.json)" \
   --tag registry.example.com/tools/example-web-ide:1.0.0 \
   --push .
 ```
@@ -368,29 +347,6 @@ Manager accepts a single-platform image as well, but a codespace can then run
 only on nodes with that architecture. Private registries use the pull Secrets
 configured for the Codespace Helm installation; credentials are not stored in
 an environment template.
-
-## Validate and publish an official provider
-
-Each official provider has a focused `check` target that validates its scripts,
-adapter, and provider-owned client code without compiling the Codespace
-platform:
-
-```sh
-make -C providers/vscode check
-make -C providers/dsh check
-```
-
-The DSH check clones the pinned upstream release and compiles the Codespace
-plugin against those exact workspace packages. It stops after plugin bundling
-and tests, so pull-request validation catches upstream API drift without
-building the editor release or carrier image.
-
-Changes to an official provider's code or build inputs run its dedicated
-validation workflow. Matching pushes to `main` build native amd64 and arm64
-bundles and publish a multi-platform `main` image. Shared build inputs trigger
-both providers. The platform workflow ignores `providers/**`; changes that also
-touch platform files still run that workflow. See the workflow path filters
-under [`.github/workflows`](../.github/workflows) for documentation exclusions.
 
 ## Test the image locally
 
@@ -405,7 +361,6 @@ output=$(mktemp -d)
 
 docker run --rm \
   --platform "linux/$architecture" \
-  --env CODESPACE_WEB_IDE_EXPECTED_PROVIDER=example \
   --volume "$output:/output" \
   "$image"
 
@@ -431,7 +386,8 @@ failure from an editor preparation or serving failure.
 5. Create a codespace with that environment and open its browser workspace.
 
 When publishing an updated provider, publish a new image, resolve it again in
-the environment template, and save the template. Codespaces created after that
-save use the new digest. Existing codespaces keep the digest and options copied
-into their runtime snapshot for all later stop, resume, and Pod replacement
-operations.
+the environment template, and save the template. The [lifecycle](#lifecycle)
+snapshot rules determine which Codespaces use that update.
+
+For maintenance of the bundled VS Code and DSH projects, use the repository's
+[development workflows](../DEVELOPMENT.md#local-workflows).
