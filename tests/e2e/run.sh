@@ -350,6 +350,7 @@ echo "Deploying S3Mock"
 "$KUBECTL_BIN" rollout status deployment/s3mock -n "$MANAGEMENT_NAMESPACE" --timeout=5m
 
 port_forward_log="$ARTIFACTS/diagnostics/s3mock-port-forward.log"
+: >"$port_forward_log"
 "$KUBECTL_BIN" port-forward -n "$MANAGEMENT_NAMESPACE" service/s3mock :9090 >"$port_forward_log" 2>&1 &
 PORT_FORWARD_PID=$!
 for ((attempt = 0; attempt < 100; attempt++)); do

@@ -57,11 +57,8 @@ func (s *sshServer) serveWorkspaceSession(ctx context.Context, channel ssh.Chann
 }
 
 func (s *sshServer) proxyWorkspaceStream(ctx context.Context, channel ssh.Channel, requests <-chan *ssh.Request, conn io.ReadWriteCloser, activity chan<- struct{}) {
-	requestsDone := make(chan struct{})
-	go func() {
-		defer close(requestsDone)
-		s.rejectWorkspaceSessionRequests(requests, activity)
-	}()
+	// Request delivery can end while channel data is still buffered for copying.
+	go s.rejectWorkspaceSessionRequests(requests, activity)
 	copyDone := make(chan error, 2)
 	go func() {
 		err := copyGatewaySSHData(conn, channel, activity)
@@ -82,8 +79,6 @@ copying:
 	for remaining > 0 {
 		select {
 		case <-ctx.Done():
-			break copying
-		case <-requestsDone:
 			break copying
 		case err := <-copyDone:
 			remaining--

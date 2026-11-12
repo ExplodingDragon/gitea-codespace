@@ -929,8 +929,11 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 	}
 	output, readErr := io.ReadAll(probe)
 	_ = probe.Close()
-	if readErr != nil || string(output) != "codespace-reverse-ok" {
+	if readErr != nil {
 		return fmt.Errorf("Dev Container reverse forwarding returned %q: %w", output, readErr)
+	}
+	if string(output) != "codespace-reverse-ok" {
+		return fmt.Errorf("Dev Container reverse forwarding returned unexpected output %q", output)
 	}
 	if err := <-reverseResult; err != nil {
 		return fmt.Errorf("reverse channel: %w", err)

@@ -257,6 +257,38 @@ func TestSSHReverseForwardUsesRuntimeListener(t *testing.T) {
 	}
 }
 
+func TestSSHReverseForwardDrainsDataAfterPeerClose(t *testing.T) {
+	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection, 1), closed: make(chan struct{})}
+	client, serverDone := dialReverseTestSSH(t, gatewayTestBackend{reverse: reverse})
+	forwarded, err := client.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	backend, peer := net.Pipe()
+	defer peer.Close()
+	reverse.connections <- &workspaceReverseConnection{Connection: backend, OriginHost: "127.0.0.1", OriginPort: 41000}
+	connection, err := forwarded.Accept()
+	require.NoError(t, err)
+	defer connection.Close()
+	_, err = connection.Write([]byte("codespace-reverse-ok"))
+	require.NoError(t, err)
+	require.NoError(t, connection.Close())
+	// Let the SSH close arrive while the backend is blocked waiting for a reader.
+	time.Sleep(100 * time.Millisecond)
+	_ = peer.SetReadDeadline(time.Now().Add(3 * time.Second))
+	data := make([]byte, len("codespace-reverse-ok"))
+	_, err = io.ReadFull(peer, data)
+	require.NoError(t, err)
+	require.Equal(t, "codespace-reverse-ok", string(data))
+	require.NoError(t, peer.Close())
+	require.NoError(t, forwarded.Close())
+	require.NoError(t, client.Close())
+	select {
+	case err := <-serverDone:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH server did not stop")
+	}
+}
+
 func TestSSHReverseForwardAcceptFailureClosesSession(t *testing.T) {
 	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection), failures: make(chan error, 1), closed: make(chan struct{})}
 	client, serverDone := dialReverseTestSSH(t, gatewayTestBackend{reverse: reverse})
