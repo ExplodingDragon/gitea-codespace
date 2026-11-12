@@ -108,6 +108,8 @@ func (c *SiteCoordinator) Start(ctx context.Context) error {
 }
 
 func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UID) {
+	c.Logs.OpenSite(ctx, uid)
+	defer c.Logs.CloseSite(uid)
 	logger := log.FromContext(ctx).WithValues("site", name)
 	var recovered bool
 	var generation int64
@@ -183,6 +185,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 					return fmt.Errorf("site namespace contains a runtime owned by another site")
 				}
 			}
+			c.Logs.RetainSite(uid, rows.Items)
 			if c.Activity != nil {
 				current := make(map[string]bool, len(rows.Items))
 				for i := range rows.Items {

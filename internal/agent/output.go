@@ -7,9 +7,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
-	"errors"
-	"fmt"
 	"io"
+	"log/slog"
 	"net/url"
 	"regexp"
 	"slices"
@@ -18,30 +17,28 @@ import (
 	"time"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/logbuffer"
+	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 )
-
-const maxOutputLineBytes = 32 * 1024
 
 var (
 	logAuthorizationPattern  = regexp.MustCompile(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+`)
 	logURLCredentialsPattern = regexp.MustCompile(`([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
 )
 
-// Output spools redacted output independently of its upload connection. stdout
+// Output buffers redacted output independently of its upload connection. stdout
 // and stderr have separate partial-line buffers so their writes cannot interleave
 // a secret across two otherwise unrelated lines.
 type Output struct {
-	log            *OperationLog
+	version        int64
 	replacements   *strings.Replacer
 	stdout, stderr *outputWriter
 	mu             sync.Mutex
-	err            error
-	truncated      bool
-	pending        []*codespacev1.LogLine
-	pendingBytes   int
-	ready          chan struct{}
-	pendingChanged chan struct{}
+	buffer         logbuffer.Buffer
+	changed        chan struct{}
+	finishing      bool
+	closed         bool
 }
 
 type outputWriter struct {
@@ -51,15 +48,13 @@ type outputWriter struct {
 	discarding bool
 }
 
-func NewOutput(log *OperationLog, credentials []string) *Output {
+func NewOutput(version int64, credentials []string) *Output {
 	values := make(map[string]struct{})
 	for _, credential := range credentials {
 		for _, value := range strings.FieldsFunc(credential, func(r rune) bool { return r == '\r' || r == '\n' }) {
-			if value != "" {
-				values[value] = struct{}{}
-				values[url.QueryEscape(value)] = struct{}{}
-				values[base64.StdEncoding.EncodeToString([]byte(value))] = struct{}{}
-			}
+			values[value] = struct{}{}
+			values[url.QueryEscape(value)] = struct{}{}
+			values[base64.StdEncoding.EncodeToString([]byte(value))] = struct{}{}
 		}
 	}
 	ordered := make([]string, 0, len(values))
@@ -71,7 +66,7 @@ func NewOutput(log *OperationLog, credentials []string) *Output {
 	for _, value := range ordered {
 		pairs = append(pairs, value, "[redacted]")
 	}
-	output := &Output{log: log, replacements: strings.NewReplacer(pairs...), ready: make(chan struct{}, 1), pendingChanged: make(chan struct{}, 1)}
+	output := &Output{version: version, replacements: strings.NewReplacer(pairs...), changed: make(chan struct{}, 1)}
 	output.stdout, output.stderr = &outputWriter{output: output}, &outputWriter{output: output}
 	return output
 }
@@ -90,7 +85,7 @@ func (w *outputWriter) Write(data []byte) (int, error) {
 			part = data[:end]
 		}
 		if !w.discarding {
-			if len(w.pending)+len(part) > maxOutputLineBytes {
+			if len(w.pending)+len(part) > logbuffer.MaxLineBytes {
 				// Truncating a prefix could leak a secret split at the boundary.
 				w.pending = nil
 				w.discarding = true
@@ -103,70 +98,39 @@ func (w *outputWriter) Write(data []byte) (int, error) {
 			break
 		}
 		if !w.discarding {
-			w.output.append(strings.TrimSuffix(string(w.pending), "\r"))
+			w.output.append(string(w.pending))
 		}
 		w.pending = w.pending[:0]
 		w.discarding = false
 		data = data[end+1:]
 	}
-	// Logging failures must not close the child's output pipe or turn a
-	// successful build into a failed operation. They remain visible via Err.
+	// Logging failures must not close the child's output pipe.
 	return count, nil
 }
 
 func (o *Output) append(message string) {
+	message = strings.ReplaceAll(message, "\r", "")
 	message = o.replacements.Replace(message)
 	message = logAuthorizationPattern.ReplaceAllString(message, "${1}[redacted]")
 	message = logURLCredentialsPattern.ReplaceAllString(message, "${1}[redacted]@")
 	message = strings.ToValidUTF8(message, "\ufffd")
-	if len(message) > maxOutputLineBytes {
+	if len(message) > logbuffer.MaxLineBytes {
 		message = "[output line omitted: redacted line exceeds 32 KiB]"
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	if o.err != nil || o.truncated {
+	if o.closed {
 		return
 	}
-	o.pending = append(o.pending, &codespacev1.LogLine{TimestampUnixNano: time.Now().UnixNano(), Message: message})
-	o.pendingBytes += len(message)
+	o.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}}, logbuffer.MaxBytes)
 	select {
-	case o.pendingChanged <- struct{}{}:
+	case o.changed <- struct{}{}:
 	default:
 	}
-	if len(o.pending) >= 64 || o.pendingBytes >= 128*1024 {
-		o.flushPending()
-	}
-}
-
-// flushPending is called with mu held; batches keep fsync independent of the
-// number of progress lines emitted by a package manager or Docker build.
-func (o *Output) flushPending() {
-	if len(o.pending) == 0 || o.err != nil || o.truncated {
-		return
-	}
-	err := o.log.Append(o.pending)
-	o.pending, o.pendingBytes = nil, 0
-	switch {
-	case errors.Is(err, ErrLogFull):
-		o.truncated = true
-	case err != nil:
-		o.err = fmt.Errorf("persist operation output: %w", err)
-	default:
-		select {
-		case o.ready <- struct{}{}:
-		default:
-		}
-	}
-}
-
-func (o *Output) Err() error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	return o.err
 }
 
 // FlushLines is called only after all command writers have stopped. Uploads may
-// continue concurrently because they read only committed batches.
+// continue concurrently because partial lines are separate from queued batches.
 func (o *Output) FlushLines() {
 	for _, writer := range []*outputWriter{o.stdout, o.stderr} {
 		writer.mu.Lock()
@@ -177,41 +141,70 @@ func (o *Output) FlushLines() {
 		writer.mu.Unlock()
 	}
 	o.mu.Lock()
-	o.flushPending()
+	o.buffer.Add(nil, logbuffer.MaxBytes)
+	o.finishing = true
 	o.mu.Unlock()
+	select {
+	case o.changed <- struct{}{}:
+	default:
+	}
 }
 
-// Upload retries pending immutable batches until stopped. Callers join it before
-// closing the spool, then attempt a bounded final Flush before reporting results.
+// Upload submits each batch once: an interrupted reply may already have been
+// accepted by Manager. Later batches can proceed without replaying that output.
 func (o *Output) Upload(ctx context.Context, remote agentv1connect.AgentControlServiceClient) {
 	timer := time.NewTimer(time.Second)
 	defer timer.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-o.pendingChanged:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
-			timer.Reset(time.Second)
-			continue
-		case <-o.ready:
-		case <-timer.C:
-		}
+	timer.Stop()
+	var deadline <-chan time.Time
+	defer func() {
 		o.mu.Lock()
-		o.flushPending()
+		o.closed = true
+		o.buffer = logbuffer.Buffer{}
+		o.mu.Unlock()
+	}()
+	for {
+		o.mu.Lock()
+		pending, ready, finishing := o.buffer.Pending(), o.buffer.Ready(), o.finishing
+		o.mu.Unlock()
+		if finishing && !pending {
+			return
+		}
+		if pending && deadline == nil {
+			timer.Reset(time.Second)
+			deadline = timer.C
+		}
+		if !pending || (!ready && !finishing) {
+			select {
+			case <-ctx.Done():
+				return
+			case <-o.changed:
+				continue
+			case <-deadline:
+			}
+		}
+		if ctx.Err() != nil {
+			return
+		}
+		timer.Stop()
+		deadline = nil
+		o.mu.Lock()
+		lines, size := o.buffer.Take()
 		o.mu.Unlock()
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		err := o.log.Flush(attempt, remote)
+		response, err := remote.UploadLogs(attempt, &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: o.version, Lines: lines})
 		cancel()
-		delay := 30 * time.Second
+		o.mu.Lock()
+		o.buffer.Release(size)
 		if err != nil {
-			delay = time.Second
+			o.buffer.Drop(len(lines))
 		}
-		timer.Reset(delay)
+		o.mu.Unlock()
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("Upload Agent operation output", "operation", o.version, "error", err)
+		}
+		if response.GetClosed() {
+			return
+		}
 	}
 }

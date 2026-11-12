@@ -5,6 +5,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +28,7 @@ import (
 )
 
 const agentAccessSetupTimeout = 15 * time.Second
+const agentReverseCloseTimeout = 5 * time.Second
 
 // The Agent backend asks Manager for a fresh target-bound ticket before
 // adapting each Gateway data stream to the current Runtime Agent.
@@ -60,6 +62,7 @@ type agentAccessStream struct {
 	mu       sync.Mutex
 	once     sync.Once
 	closeErr error
+	ready    *agentv1.ReverseTCPReady
 }
 
 func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability agentv1.AccessCapability, endpointID string, open *agentv1.OpenAccess) (_ *agentAccessStream, resultErr error) {
@@ -108,7 +111,11 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 		return nil, wrapGatewayUpstreamTargetError("agent_open", target, err)
 	}
 	accepted, err := stream.Receive()
-	if err != nil || !accepted.GetAccepted() {
+	valid := accepted.GetAccepted()
+	if capability == agentv1.AccessCapability_ACCESS_CAPABILITY_REVERSE_TCP_LISTEN {
+		valid = accepted.GetReverseTcpReady().GetPort() > 0 && accepted.GetReverseTcpReady().GetPort() <= 65535
+	}
+	if err != nil || !valid {
 		if err == nil {
 			err = fmt.Errorf("agent rejected the access stream")
 		}
@@ -120,7 +127,7 @@ func (b *agentBackend) open(ctx context.Context, runtimeUUID string, capability 
 	established = true
 	gatewayLog(streamCtx, slog.LevelDebug, "gateway_agent_access_opened",
 		append(gatewayRuntimeLogAttrs(target), slog.String("capability", capability.String()), slog.String("endpoint_id", endpointID))...)
-	return &agentAccessStream{ctx: streamCtx, cancel: cancel, stream: stream}, nil
+	return &agentAccessStream{ctx: streamCtx, cancel: cancel, stream: stream, ready: accepted.GetReverseTcpReady()}, nil
 }
 
 func (b *agentBackend) clientFor(route *componentv1.GatewayRuntimeRoute) (*agentClient, error) {
@@ -424,6 +431,117 @@ func (b *agentBackend) OpenWorkspaceSFTP(ctx context.Context, request workspaceS
 
 func (b *agentBackend) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, port uint32) (net.Conn, error) {
 	return b.openStream(ctx, runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_LOOPBACK_TCP, "", &agentv1.OpenAccess{Capability: &agentv1.OpenAccess_Tcp{Tcp: &agentv1.LoopbackTCP{Port: port}}})
+}
+
+type agentReverseListener struct {
+	backend     *agentBackend
+	runtimeUUID string
+	id          string
+	access      *agentAccessStream
+	receiveMu   sync.Mutex
+	closeAck    chan error
+	once        sync.Once
+	closeErr    error
+}
+
+func (b *agentBackend) OpenWorkspaceReverseTCP(ctx context.Context, runtimeUUID, address string, port uint32) (workspaceReverseListener, error) {
+	id := rand.Text()
+	request := &agentv1.ReverseTCPListen{ListenerId: id, Target: &agentv1.ReverseTCPListen_Container{Container: &agentv1.ContainerTCPBind{Address: address, Port: port}}}
+	if source, ok := strings.CutPrefix(address, "usbip."); ok {
+		if port != usbIPReversePort {
+			return nil, fmt.Errorf("USB/IP binding requires port 3240")
+		}
+		request.Target = &agentv1.ReverseTCPListen_UsbipSource{UsbipSource: source}
+	}
+	access, err := b.open(ctx, runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_REVERSE_TCP_LISTEN, "", &agentv1.OpenAccess{
+		Capability: &agentv1.OpenAccess_ReverseTcpListen{ReverseTcpListen: request},
+	})
+	if err != nil {
+		return nil, err
+	}
+	return &agentReverseListener{backend: b, runtimeUUID: runtimeUUID, id: id, access: access, closeAck: make(chan error, 1)}, nil
+}
+
+func (l *agentReverseListener) Port() uint32 { return l.access.ready.Port }
+
+func (l *agentReverseListener) Accept(ctx context.Context) (*workspaceReverseConnection, error) {
+	l.receiveMu.Lock()
+	defer l.receiveMu.Unlock()
+	for {
+		response, err := l.access.stream.Receive()
+		if err != nil {
+			return nil, err
+		}
+		if frame, ok := response.Frame.(*agentv1.AccessResponse_ExitStatus); ok {
+			status := frame.ExitStatus
+			var statusErr error
+			if status != 0 {
+				statusErr = &workspaceCommandExitError{Status: int(status)}
+			}
+			l.closeAck <- statusErr
+			return nil, io.EOF
+		}
+		accepted := response.GetReverseTcpConnection()
+		if accepted == nil || accepted.ConnectionId == "" || accepted.OriginHost == "" || accepted.OriginPort == 0 {
+			return nil, fmt.Errorf("agent returned an invalid reverse TCP connection")
+		}
+		connection, err := l.backend.openStream(ctx, l.runtimeUUID, agentv1.AccessCapability_ACCESS_CAPABILITY_REVERSE_TCP_ACCEPT, "", &agentv1.OpenAccess{
+			Capability: &agentv1.OpenAccess_ReverseTcpAccept{ReverseTcpAccept: &agentv1.ReverseTCPAccept{ListenerId: l.id, ConnectionId: accepted.ConnectionId}},
+		})
+		if err != nil {
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			gatewayLog(ctx, slog.LevelWarn, "gateway_reverse_connection_failed", slog.String("codespace_uuid", l.runtimeUUID), slog.Any("error", err))
+			continue
+		}
+		return &workspaceReverseConnection{Connection: connection, OriginHost: accepted.OriginHost, OriginPort: accepted.OriginPort}, nil
+	}
+}
+
+func (l *agentReverseListener) Close() error {
+	l.once.Do(func() {
+		closeContext, cancel := context.WithTimeout(context.Background(), agentReverseCloseTimeout)
+		defer cancel()
+		stopCancel := context.AfterFunc(closeContext, l.access.cancel)
+		defer stopCancel()
+		requestErr := l.access.send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_StopListening{StopListening: true}})
+		var responseErr error
+		if requestErr == nil {
+			l.receiveMu.Lock()
+			select {
+			case responseErr = <-l.closeAck:
+			default:
+				responseErr = l.receiveCloseAck(closeContext)
+			}
+			l.receiveMu.Unlock()
+		}
+		closeErr := l.access.close()
+		if responseErr == nil && requestErr != nil {
+			responseErr = requestErr
+		}
+		l.closeErr = errors.Join(responseErr, closeErr)
+	})
+	return l.closeErr
+}
+
+func (l *agentReverseListener) receiveCloseAck(ctx context.Context) error {
+	for {
+		response, err := l.access.stream.Receive()
+		if err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return err
+		}
+		if frame, ok := response.Frame.(*agentv1.AccessResponse_ExitStatus); ok {
+			status := frame.ExitStatus
+			if status != 0 {
+				return &workspaceCommandExitError{Status: int(status)}
+			}
+			return nil
+		}
+	}
 }
 
 func (b *agentBackend) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {

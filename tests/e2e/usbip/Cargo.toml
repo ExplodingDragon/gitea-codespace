@@ -1,0 +1,11 @@
+[package]
+name = "codespace-usbip-echo"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+env_logger = "0.11.7"
+log = "0.4.27"
+tokio = { version = "1.44.2", features = ["macros", "rt-multi-thread", "time"] }
+usbip = { git = "https://github.com/jiegec/usbip", rev = "d5774284bfc2a63f2237b095fb9d118b1a08a720" }

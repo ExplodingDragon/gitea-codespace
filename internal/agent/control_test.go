@@ -46,7 +46,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	var executions, results, payloads atomic.Int32
 	resultReceived := make(chan struct{}, 8)
 	uploaded := make(chan *agentv1.UploadLogsRequest, 8)
-	operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, LogOffset: 120, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+	operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
 	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
 			request, err := stream.Receive()
@@ -81,7 +81,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	}}
 	service.upload = func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
 		uploaded <- request
-		return &agentv1.UploadLogsResponse{NextOffset: request.Offset + 100}, nil
+		return &agentv1.UploadLogsResponse{}, nil
 	}
 	rpcServer := connect.NewServer()
 	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
@@ -117,7 +117,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	require.EqualValues(t, 2, payloads.Load())
 	select {
 	case batch := <-uploaded:
-		require.EqualValues(t, 120, batch.Offset)
+		require.EqualValues(t, 1, batch.OperationRversion)
 		require.Len(t, batch.Lines, 1)
 		require.Equal(t, "build [redacted]", batch.Lines[0].Message)
 	default:

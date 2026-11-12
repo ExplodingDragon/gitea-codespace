@@ -1,4 +1,5 @@
 {
+  "Unidentified source": "Unidentified source",
   "Authenticated": "Authenticated",
   "Public": "Public",
   "Port number": "Port number",
@@ -10,5 +11,13 @@
   "Remove port": "Remove port",
   "Remove port {0}? This removes its Codespace publication and does not stop the application.": "Remove port {0}? This removes its Codespace publication and does not stop the application.",
   "Codespace port operation failed": "Codespace port operation failed",
-  "Enter a label between 1 and 128 bytes": "Enter a label between 1 and 128 bytes"
+  "Enter a label between 1 and 128 bytes": "Enter a label between 1 and 128 bytes",
+  "Attach USB device": "Attach USB device",
+  "Detach USB device": "Detach USB device",
+  "USB port {0}: {1}": "USB port {0}: {1}",
+  "USB operation failed: {0}": "USB operation failed: {0}",
+  "SSH USB forwarding is active": "SSH USB forwarding is active",
+  "SSH USB forwarding is not connected": "SSH USB forwarding is not connected",
+  "No exported USB devices": "No exported USB devices",
+  "Detach USB device {0}?": "Detach USB device {0}?"
 }

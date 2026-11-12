@@ -76,6 +76,10 @@ type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage)
 // nil when no external journal is used.
 type RunLifecycleFunc func(context.Context, devcontainer.LifecycleStage, func(context.Context) error) error
 
+// MutateContainerCreateFunc applies platform-owned settings after Docker CLI
+// and Compose parsing have produced the final container create request.
+type MutateContainerCreateFunc func(*container.Config, *container.HostConfig) error
+
 // CreateOptions contains caller identity, configuration input, and integration hooks.
 type CreateOptions struct {
 	OwnerID             string
@@ -97,6 +101,7 @@ type CreateOptions struct {
 	PrepareLifecycle    PrepareLifecycleFunc
 	RunLifecycle        RunLifecycleFunc
 	Ready               ReadyFunc
+	MutateContainer     MutateContainerCreateFunc
 }
 
 // PlatformDevices contains the device access selected by the environment
@@ -175,6 +180,19 @@ func (e *Engine) Close() error {
 	return e.client.Close()
 }
 
+// ContainerProcess returns the live process and IPC mode needed by
+// platform-owned namespace preparation.
+func (e *Engine) ContainerProcess(ctx context.Context, containerID string) (int, string, error) {
+	inspect, err := e.client.ContainerInspect(ctx, containerID)
+	if err != nil {
+		return 0, "", err
+	}
+	if inspect.State == nil || inspect.State.Pid <= 0 || inspect.HostConfig == nil {
+		return 0, "", fmt.Errorf("dev container process is not running")
+	}
+	return inspect.State.Pid, string(inspect.HostConfig.IpcMode), nil
+}
+
 // Create resolves configuration, creates resources, and completes the first lifecycle.
 func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontainer.State, error) {
 	if strings.TrimSpace(options.OwnerID) == "" {
@@ -243,9 +261,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (*devcontain
 	var composeContainers map[string]string
 	if len(resolved.DockerComposeFile) > 0 {
 		primaryService = resolved.Service
-		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage)
+		primaryID, related, composeContainers, featureDigests, err = e.createCompose(ctx, resolved, composeProject, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage, options.MutateContainer)
 	} else {
-		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage)
+		primaryID, featureDigests, err = e.createContainer(ctx, resolved, workspaceFolder, labels, options.HostUser, options.PlatformEnvironment, options.PlatformDevices, options.CustomizeImage, options.MutateContainer)
 	}
 	if err != nil {
 		return nil, err
@@ -376,7 +394,7 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 	return json.Marshal(merged)
 }
 
-func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc) (string, map[string]string, error) {
+func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc, mutate MutateContainerCreateFunc) (string, map[string]string, error) {
 	imageName, featureDigests, err := e.resolveImage(ctx, resolved, platformEnvironment)
 	if err != nil {
 		return "", nil, err
@@ -456,8 +474,13 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		hostConfig.DeviceRequests = append(hostConfig.DeviceRequests, container.DeviceRequest{Count: -1, Capabilities: [][]string{{"gpu"}}})
 	}
 	if len(resolved.RunArgs) > 0 {
-		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig, publishSpecs)
+		containerID, err := e.createContainerWithRunArgs(ctx, resolved, config, hostConfig, publishSpecs, mutate)
 		return containerID, featureDigests, err
+	}
+	if mutate != nil {
+		if err := mutate(config, hostConfig); err != nil {
+			return "", nil, err
+		}
 	}
 	response, err := e.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, "devcontainer-"+resolved.DevContainerID)
 	if err != nil {
@@ -492,7 +515,7 @@ func platformGPUArgs(arguments []string) ([]string, error) {
 	return result, nil
 }
 
-func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) (string, error) {
+func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string, mutate MutateContainerCreateFunc) (string, error) {
 	arguments, err := dockerCreateArguments(resolved, config, hostConfig, publishSpecs)
 	if err != nil {
 		return "", err
@@ -508,10 +531,13 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 	if err != nil {
 		return "", fmt.Errorf("create Docker command client: %w", err)
 	}
-	if err := cli.Initialize(flags.NewClientOptions()); err != nil {
+	apiClient := client.APIClient(e.client)
+	if mutate != nil {
+		apiClient = &mutatingAPIClient{APIClient: apiClient, mutate: mutate}
+	}
+	if err := cli.Initialize(flags.NewClientOptions(), command.WithAPIClient(apiClient)); err != nil {
 		return "", fmt.Errorf("initialize Docker command client: %w", err)
 	}
-	defer func() { _ = cli.Client().Close() }()
 	//lint:ignore SA1019 The Docker CLI parser is required to preserve docker create semantics for devcontainer runArgs.
 	createCommand := containercommand.NewCreateCommand(cli)
 	createCommand.SetArgs(arguments)
@@ -530,6 +556,22 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 		return "", fmt.Errorf("start Dev Container: %w", err)
 	}
 	return containerID, nil
+}
+
+type mutatingAPIClient struct {
+	client.APIClient
+	mutate MutateContainerCreateFunc
+}
+
+// Close is owned by Engine; temporary Docker CLI and Compose adapters must not
+// close the shared API client after one container create.
+func (*mutatingAPIClient) Close() error { return nil }
+
+func (c *mutatingAPIClient) ContainerCreate(ctx context.Context, config *container.Config, hostConfig *container.HostConfig, networkingConfig *network.NetworkingConfig, platform *ocispec.Platform, name string) (container.CreateResponse, error) {
+	if err := c.mutate(config, hostConfig); err != nil {
+		return container.CreateResponse{}, err
+	}
+	return c.APIClient.ContainerCreate(ctx, config, hostConfig, networkingConfig, platform, name)
 }
 
 func dockerCreateArguments(resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string) ([]string, error) {

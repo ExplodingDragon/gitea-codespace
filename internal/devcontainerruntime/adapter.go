@@ -30,10 +30,14 @@ var installCAScript string
 //go:embed builtin/endpoint.sh
 var endpointScript []byte
 
+//go:embed builtin/usbip.sh
+var usbIPScript []byte
+
 const (
-	// ContainerRuntimeBinary is the in-container path used by endpoint and TCP bridges.
+	// ContainerRuntimeBinary serves SFTP and the in-container platform commands.
 	ContainerRuntimeBinary  = "/usr/local/libexec/gitea-codespace-runtime"
 	containerEndpointBinary = "/usr/local/bin/gitea-codespace-endpoint"
+	containerUSBIPBinary    = "/usr/local/bin/gitea-codespace-usbip"
 	containerCABundlePath   = "/var/lib/gitea-codespace/ca/bundle.pem"
 )
 
@@ -78,14 +82,16 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		injected = append(injected, devcontainer.InjectedFeature{Reference: strings.TrimSpace(feature.Reference), Origin: "environment template", Options: options})
 	}
 	containerEnvironment := map[string]string{
-		"GITEA_INSTANCE_URL":  request.GiteaURL,
-		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
-		"SSL_CERT_FILE":       containerCABundlePath,
+		"GITEA_INSTANCE_URL": request.GiteaURL,
 	}
 	if request.DevContainer.GiteaCLI {
 		containerEnvironment["GITEA_CLI_NO_UPDATE_NOTIFIER"] = "1"
 	}
-	platformEnvironment := map[string]string{}
+	// The CA bundle is mounted at runtime, after Feature image builds finish.
+	platformEnvironment := map[string]string{
+		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
+		"SSL_CERT_FILE":       containerCABundlePath,
+	}
 	for _, name := range devcontainer.ProxyVariableNames() {
 		if value := request.LocalEnvironment[name]; value != "" {
 			platformEnvironment[name] = value
@@ -113,6 +119,7 @@ func buildCreateOptions(request Request) (containerdocker.CreateOptions, error) 
 		PlatformDevices: containerdocker.PlatformDevices{
 			CDI: request.Native.CDIDeviceIDs, Mappings: deviceMappings, Capabilities: request.Native.Capabilities, ProvidesGPU: request.Native.ProvidesGPU,
 		},
+		MutateContainer: usbIPContainerMutator(request.USBIP),
 	}, nil
 }
 
@@ -120,10 +127,7 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 	if err := configureCA(ctx, engine, state); err != nil {
 		return err
 	}
-	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
-		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
-	}
-	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
+	if err := configureRuntimeCommands(ctx, engine, state, request.USBIP.Enabled); err != nil {
 		return err
 	}
 	values := map[string]string{
@@ -136,6 +140,19 @@ func configureCreate(ctx context.Context, engine *containerdocker.Engine, state 
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
 	}
 	return nil
+}
+
+func configureRuntimeCommands(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, usbIPEnabled bool) error {
+	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
+		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
+	}
+	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
+		return err
+	}
+	if usbIPEnabled {
+		return engine.CopyContent(ctx, state.PrimaryContainerID, containerUSBIPBinary, 0o755, usbIPScript)
+	}
+	return engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"rm", "-f", containerUSBIPBinary}, nil, nil)
 }
 
 func configureCA(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {

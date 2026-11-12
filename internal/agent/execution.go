@@ -46,6 +46,10 @@ type Runtime struct {
 	Diagnostics                io.Writer
 	DevContainer               devcontainerruntime.Configuration
 	NativeDevices              *NativeDevices
+	USBIP                      *USBIPRuntime
+	forwards                   reverseForwards
+	networkCtx                 context.Context
+	cancelNetwork              context.CancelFunc
 	systemCABundlePath         string
 	proxyCABundlePath          string
 	outboundCABundlePath       string
@@ -64,16 +68,16 @@ type Runtime struct {
 func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse, update func(*agentv1.AgentReport), stdout, stderr io.Writer) (returnErr error) {
 	defer func() {
 		if ctx.Err() != nil {
-			r.mu.Lock()
-			r.target = nil
-			r.mu.Unlock()
-			// Closing attach does not terminate Docker exec; stop this writer before reporting cancellation.
-			returnErr = errors.Join(returnErr, ctx.Err(), r.Close())
+			// A cancelled operation must release its network streams and Docker
+			// client, but the Agent-owned Guest mounts stay available for the next
+			// operation in this worker.
+			returnErr = errors.Join(returnErr, ctx.Err(), r.closeOperation())
 		}
 	}()
 	if r.Journal == nil || r.PodUID == "" || response == nil || response.Operation == nil || response.Runtime == nil {
 		return fmt.Errorf("runtime execution input is incomplete")
 	}
+	_, _ = fmt.Fprintln(stdout, "Preparing runtime trust and container engine")
 	trust, err := r.prepareRuntimeTrust(response.Runtime)
 	if err != nil {
 		return err
@@ -95,6 +99,18 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 		return err
 	}
 	report := func(stage codespacev1.RuntimeBootStage, target *agentv1.AccessTarget) {
+		switch stage {
+		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM:
+			_, _ = fmt.Fprintln(stdout, "Initializing runtime system")
+		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE:
+			_, _ = fmt.Fprintln(stdout, "Preparing workspace")
+		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT:
+			_, _ = fmt.Fprintln(stdout, "Starting development environment")
+		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY:
+			_, _ = fmt.Fprintln(stdout, "Publishing workspace access")
+		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY:
+			_, _ = fmt.Fprintln(stdout, "Runtime is ready")
+		}
 		if update == nil {
 			return
 		}
@@ -116,12 +132,12 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, trust, report)
 	case operation.GetStop() != nil:
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	case operation.GetDelete() != nil:
 		// Kubernetes removes the Pod before deleting its PVC. If the control
 		// message arrives first, stopping Docker resources shortens shutdown.
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	default:
 		return fmt.Errorf("runtime operation is not executable by the Agent")
@@ -167,8 +183,8 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache,
 	return nil
 }
 
-// Close stops Docker before the caller releases the Runtime volume lock.
-func (r *Runtime) Close() error {
+func (r *Runtime) closeOperation() error {
+	r.closeNetworkAccess()
 	r.dockerMu.Lock()
 	docker := r.docker
 	r.docker = nil
@@ -177,6 +193,16 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	return docker.Close()
+}
+
+// Close stops the Runtime-owned Docker client and releases Agent-owned USB/IP
+// mounts before the worker exits.
+func (r *Runtime) Close() error {
+	operationErr := r.closeOperation()
+	if r.USBIP == nil {
+		return operationErr
+	}
+	return errors.Join(operationErr, r.USBIP.Close())
 }
 
 func (r *Runtime) create(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, trust runtimeTrust, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget), stdout, stderr io.Writer) error {
@@ -248,7 +274,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
-		GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(),
+		GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
 	})
 	cleanupErr := cleanupCredentials()
 	if applyErr != nil || cleanupErr != nil {
@@ -295,7 +321,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	outcome, err := executor.Apply(ctx, devcontainerruntime.Request{
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
-		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(),
+		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
 	})
 	if err != nil {
 		return err
@@ -317,9 +343,34 @@ func (r *Runtime) nativeContainerConfiguration() devcontainerruntime.NativeConta
 	return r.NativeDevices.DevContainer
 }
 
+func (r *Runtime) usbIPContainerConfiguration() devcontainerruntime.USBIPContainerConfiguration {
+	if r.USBIP == nil || !r.USBIP.Enabled() {
+		return devcontainerruntime.USBIPContainerConfiguration{}
+	}
+	return devcontainerruntime.USBIPContainerConfiguration{Enabled: true, DeviceRoot: USBIPDeviceRootPath, DevptsRoot: USBIPDevptsPath}
+}
+
+func (r *Runtime) closeNetworkAccess() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.target = nil
+	if r.cancelNetwork != nil {
+		r.cancelNetwork()
+		r.networkCtx, r.cancelNetwork = nil, nil
+	}
+	r.forwards.close()
+}
+
 func (r *Runtime) setAccessState(target *agentv1.AccessTarget, secrets map[string]string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.target != nil && (r.target.PrimaryContainerId != target.PrimaryContainerId || r.target.Version != target.Version) {
+		if r.cancelNetwork != nil {
+			r.cancelNetwork()
+			r.networkCtx, r.cancelNetwork = nil, nil
+		}
+		r.forwards.close()
+	}
 	r.target = proto.Clone(target).(*agentv1.AccessTarget)
 	r.secrets = maps.Clone(secrets)
 }

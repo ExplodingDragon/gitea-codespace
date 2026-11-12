@@ -35,14 +35,15 @@ type Operations struct {
 	Samples             *ResourceSamples
 	Activity            *RuntimeActivityTracker
 	Connections         *siteConnectionStore
+	Logs                *operationLogs
 	ManagementNamespace string
 	PlatformImage       string
 }
 
 // Accept persists identity and inputs before binding or granting execution.
 func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote codespacev1connect.ManagerServiceClient, payload *codespacev1.OperationPayload, sent time.Time) error {
-	if payload == nil || payload.CodespaceId <= 0 || payload.OperationRversion <= 0 || payload.LogOffset < 0 {
-		return fmt.Errorf("%w: invalid Gitea operation identity or offset", errOperationRejected)
+	if payload == nil || payload.CodespaceId <= 0 || payload.OperationRversion <= 0 {
+		return fmt.Errorf("%w: invalid Gitea operation identity", errOperationRejected)
 	}
 	var operationType string
 	var settings *codespacev1.EffectiveCodespaceRuntimeSettings
@@ -145,8 +146,9 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	}
 	input := proto.Clone(payload).(*codespacev1.OperationPayload)
 	input.RuntimeUuid = cs.Spec.RuntimeUUID
-	// Relative grants are valid only in this process; persisted input is not authority.
+	// Lease grants and the current log tail are observations, not execution inputs.
 	input.LeaseValidForMilliseconds = 0
+	input.LogOffset = 0
 	encoded, err := protojson.Marshal(input)
 	if err != nil {
 		return err
@@ -159,7 +161,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		if err := protojson.Unmarshal(cs.Spec.Operation.Payload.Raw, previous); err != nil {
 			return fmt.Errorf("%w: decode saved operation: %w", errOperationRejected, err)
 		}
-		previous.LogOffset = input.LogOffset
+		previous.LogOffset = 0
 		aborting := (operationType == "abort_create" && cs.Spec.Operation.Type == "create") || (operationType == "abort_resume" && cs.Spec.Operation.Type == "resume")
 		if !aborting && !proto.Equal(previous, input) {
 			return fmt.Errorf("%w: Gitea changed an already persisted operation", errOperationRejected)
@@ -225,6 +227,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	} else if payload.LeaseValidForMilliseconds > 0 && payload.LeaseValidForMilliseconds <= int64((24*time.Hour)/time.Millisecond) && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version {
 		o.Authority.Grant(cs.UID, cs.Spec.Operation.Version, sent.Add(time.Duration(payload.LeaseValidForMilliseconds)*time.Millisecond))
 	}
+	_ = o.Logs.Append(&cs, "", nil)
 	if o.Activity != nil && settings != nil {
 		return o.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, settings, time.Now())
 	}
@@ -402,6 +405,9 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 		}
 	}
 	if result == nil || result.Version != cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= result.Version {
+		return nil
+	}
+	if !o.Logs.Finish(cs) {
 		return nil
 	}
 	var finalOperationType codespacev1.OperationType

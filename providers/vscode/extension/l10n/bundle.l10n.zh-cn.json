@@ -1,4 +1,5 @@
 {
+  "Unidentified source": "来源未知",
   "Authenticated": "需要身份认证",
   "Public": "公开访问",
   "Port number": "端口号",
@@ -10,5 +11,13 @@
   "Remove port": "移除端口",
   "Remove port {0}? This removes its Codespace publication and does not stop the application.": "移除端口 {0}？这只会撤销 Codespace 发布，不会停止应用进程。",
   "Codespace port operation failed": "Codespace 端口操作失败",
-  "Enter a label between 1 and 128 bytes": "请输入 1 到 128 字节的端口名称"
+  "Enter a label between 1 and 128 bytes": "请输入 1 到 128 字节的端口名称",
+  "Attach USB device": "连接 USB 设备",
+  "Detach USB device": "断开 USB 设备",
+  "USB port {0}: {1}": "USB 端口 {0}：{1}",
+  "USB operation failed: {0}": "USB 操作失败：{0}",
+  "SSH USB forwarding is active": "SSH USB 转发已建立",
+  "SSH USB forwarding is not connected": "SSH USB 转发未连接",
+  "No exported USB devices": "没有可导出的 USB 设备",
+  "Detach USB device {0}?": "断开 USB 设备 {0}？"
 }

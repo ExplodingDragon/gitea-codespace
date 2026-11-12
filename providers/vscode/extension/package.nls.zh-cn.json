@@ -7,5 +7,10 @@
   "command.refresh": "Codespace：刷新端口",
   "command.rename": "Codespace：重命名端口",
   "command.visibility": "Codespace：更改端口可见性",
-  "command.remove": "Codespace：移除端口"
+  "command.remove": "Codespace：移除端口",
+  "usb.view": "USB 设备",
+  "usb.refresh": "刷新 USB 设备",
+  "usb.attach": "连接 USB 设备",
+  "usb.detach": "断开 USB 设备",
+  "usb.empty": "没有已导入的 USB 设备。"
 }

@@ -22,6 +22,7 @@ SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
 STATICCHECK_VERSION := v0.8.2
 BASH_SCRIPTS := \
+	tests/e2e/build-kata-kernel.sh \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
@@ -33,7 +34,9 @@ POSIX_SCRIPTS := \
 	devcontainer/docker/builtin/update-user.sh \
 	internal/devcontainerruntime/builtin/configure-git.sh \
 	internal/devcontainerruntime/builtin/endpoint.sh \
-	internal/devcontainerruntime/builtin/install-ca.sh
+	internal/devcontainerruntime/builtin/install-ca.sh \
+	internal/devcontainerruntime/builtin/usbip.sh \
+	internal/cluster/usbip-e2e.sh
 GO_FILES := $(shell find . -path './.git' -prune -o -path './.tmp' -prune -o -path './web/node_modules' -prune -o -type f -name '*.go' -print)
 
 define prepare-proto-workspace

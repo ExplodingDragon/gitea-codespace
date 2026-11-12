@@ -15,14 +15,15 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"gitea.dev/codespace/internal/logbuffer"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -94,6 +95,7 @@ type AgentControlServer struct {
 	Tickets             *AccessTickets
 	Caches              *ComponentServer
 	Connections         *siteConnectionStore
+	Logs                *operationLogs
 	Authority           ExecutionAuthority
 	Samples             ResourceSamples
 	mu                  sync.Mutex
@@ -301,7 +303,6 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			if err != nil {
 				return err
 			}
-			response.Operation = operation
 			response.Runtime = &agentv1.RuntimeOptions{GitSshKeyType: cs.Spec.Runtime.GitSSHKeyType, GiteaUrl: strings.TrimRight(site.Status.CanonicalURL, "/"), GiteaCaBundle: site.Spec.CABundle}
 			if s.Caches != nil && operation.GetCreate() != nil {
 				response.Runtime.Cache, err = s.Caches.runtimeCache(ctx, cs, operation)
@@ -309,6 +310,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 					return connect.Errorf(connect.CodeUnavailable, "prepare Runtime cache access: %v", err).WithCause(err)
 				}
 			}
+			response.Operation = operation
 		}
 		if (!currentReport || request.Report.Result == nil) && accessVersion != cs.Spec.Operation.Version && (cs.Spec.Operation.Type == "create" || cs.Spec.Operation.Type == "resume") {
 			if len(request.Report.GitSshPublicKey) == 0 {
@@ -437,36 +439,31 @@ func (s *AgentControlServer) UploadLogs(ctx context.Context, request *agentv1.Up
 	if err != nil {
 		return nil, err
 	}
-	message := request
-	if message.ProtocolVersion != 1 || message.OperationRversion != cs.Spec.Operation.Version || message.Offset < 0 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log operation or offset")
+	if request.ProtocolVersion != 1 || request.OperationRversion <= 0 || request.OperationRversion > cs.Spec.Operation.Version {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log operation")
 	}
-	remote, err := s.gitea(ctx, cs)
-	if err != nil {
-		return nil, err
+	if request.OperationRversion < cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= request.OperationRversion {
+		return &agentv1.UploadLogsResponse{Closed: true}, nil
 	}
-	forward := &codespacev1.UpdateLogRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: message.OperationRversion, Offset: message.Offset, Lines: message.Lines}
-	response, err := remote.UpdateLog(ctx, forward)
-	if err != nil {
-		var remoteError *connect.Error
-		if errors.As(err, &remoteError) {
-			for _, detail := range remoteError.Details() {
-				value, detailErr := connectproto.UnmarshalErrorDetail(detail)
-				if detailErr != nil {
-					continue
-				}
-				failure, ok := value.(*codespacev1.FailureDetail)
-				if !ok {
-					continue
-				}
-				switch failure.Category {
-				case "log_size_exceeded", "stale_operation", "codespace_not_found":
-					// Closing retires this batch without claiming its bytes were appended.
-					return &agentv1.UploadLogsResponse{NextOffset: message.Offset, Closed: true}, nil
-				}
-			}
+	if len(request.Lines) == 0 || len(request.Lines) > logbuffer.MaxBatchLines {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log batch size")
+	}
+	size := 0
+	for _, line := range request.Lines {
+		if line == nil || line.TimestampUnixNano <= 0 || len(line.Message) > logbuffer.MaxLineBytes || !utf8.ValidString(line.Message) || strings.ContainsAny(line.Message, "\r\n") {
+			return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log line")
 		}
+		size += len(line.Message) + logbuffer.LineOverheadBytes
+	}
+	if size > logbuffer.MaxBatchBytes {
+		return nil, connect.NewError(connect.CodeInvalidArgument, "Agent log batch is too large")
+	}
+	err = s.Logs.Append(cs, "", request.Lines)
+	if errors.Is(err, errOperationLogClosed) {
+		return &agentv1.UploadLogsResponse{Closed: true}, nil
+	}
+	if err != nil {
 		return nil, err
 	}
-	return &agentv1.UploadLogsResponse{NextOffset: response.NextOffset}, nil
+	return &agentv1.UploadLogsResponse{}, nil
 }

@@ -18,6 +18,8 @@ const (
 	AgentAccessServiceName = "agent.v1.AgentAccessService"
 	// RuntimeEndpointServiceName is the fully-qualified name of the RuntimeEndpointService service.
 	RuntimeEndpointServiceName = "agent.v1.RuntimeEndpointService"
+	// RuntimeUSBIPServiceName is the fully-qualified name of the RuntimeUSBIPService service.
+	RuntimeUSBIPServiceName = "agent.v1.RuntimeUSBIPService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -47,6 +49,8 @@ const (
 	// RuntimeEndpointServiceDeleteProcedure is the procedure name of the RuntimeEndpointService's
 	// Delete RPC.
 	RuntimeEndpointServiceDeleteProcedure = "/agent.v1.RuntimeEndpointService/Delete"
+	// RuntimeUSBIPServiceRunProcedure is the procedure name of the RuntimeUSBIPService's Run RPC.
+	RuntimeUSBIPServiceRunProcedure = "/agent.v1.RuntimeUSBIPService/Run"
 )
 
 var (
@@ -79,7 +83,7 @@ type AgentControlServiceClient interface {
 	PrepareVolume(context.Context, *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error)
 	// Control resumes a session by reporting facts before accepting new execution.
 	Control(context.Context) (AgentControlServiceControlClientStream, error)
-	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
+	// UploadLogs submits diagnostic output to Manager's bounded memory queue.
 	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
 }
 
@@ -132,7 +136,7 @@ type AgentControlServiceHandler interface {
 	PrepareVolume(context.Context, *v1.PrepareVolumeRequest) (*v1.PrepareVolumeResponse, error)
 	// Control resumes a session by reporting facts before accepting new execution.
 	Control(context.Context, AgentControlServiceControlServerStream) error
-	// UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
+	// UploadLogs submits diagnostic output to Manager's bounded memory queue.
 	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
 }
 
@@ -506,6 +510,76 @@ func (h runtimeEndpointServiceHandler) delete(ctx context.Context, _ connect.Spe
 		return err
 	}
 	res, err := h.svc.Delete(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	runtimeUSBIPServiceRunSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("RuntimeUSBIPService").Methods().ByName("Run"),
+			Procedure:  RuntimeUSBIPServiceRunProcedure,
+		}
+	})
+)
+
+// RuntimeUSBIPServiceClient is a client for the agent.v1.RuntimeUSBIPService service.
+type RuntimeUSBIPServiceClient interface {
+	// Run executes one bounded USB/IP client operation in the Runtime.
+	Run(context.Context, *v1.RuntimeUSBIPServiceRunRequest) (*v1.RuntimeUSBIPServiceRunResponse, error)
+}
+
+// NewRuntimeUSBIPServiceClient constructs a client for the agent.v1.RuntimeUSBIPService service.
+// Multiple service clients may share a single connect.Client.
+func NewRuntimeUSBIPServiceClient(client *connect.Client) RuntimeUSBIPServiceClient {
+	return &runtimeUSBIPServiceClient{client: client}
+}
+
+// RuntimeUSBIPServiceHandler is an implementation of the agent.v1.RuntimeUSBIPService service.
+type RuntimeUSBIPServiceHandler interface {
+	// Run executes one bounded USB/IP client operation in the Runtime.
+	Run(context.Context, *v1.RuntimeUSBIPServiceRunRequest) (*v1.RuntimeUSBIPServiceRunResponse, error)
+}
+
+// RegisterRuntimeUSBIPServiceHandler registers svc as the agent.v1.RuntimeUSBIPService
+// implementation on server.
+func RegisterRuntimeUSBIPServiceHandler(server *connect.Server, svc RuntimeUSBIPServiceHandler) {
+	adapter := runtimeUSBIPServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: runtimeUSBIPServiceRunSpec(), Handler: adapter.run},
+	)
+}
+
+// UnimplementedRuntimeUSBIPServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedRuntimeUSBIPServiceHandler struct{}
+
+func (UnimplementedRuntimeUSBIPServiceHandler) Run(context.Context, *v1.RuntimeUSBIPServiceRunRequest) (*v1.RuntimeUSBIPServiceRunResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.RuntimeUSBIPService.Run is not implemented")
+}
+
+type runtimeUSBIPServiceClient struct {
+	client *connect.Client
+}
+
+func (c *runtimeUSBIPServiceClient) Run(ctx context.Context, req *v1.RuntimeUSBIPServiceRunRequest) (*v1.RuntimeUSBIPServiceRunResponse, error) {
+	var res v1.RuntimeUSBIPServiceRunResponse
+	if err := c.client.CallUnary(ctx, runtimeUSBIPServiceRunSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type runtimeUSBIPServiceHandler struct{ svc RuntimeUSBIPServiceHandler }
+
+func (h runtimeUSBIPServiceHandler) run(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.RuntimeUSBIPServiceRunRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Run(ctx, &req)
 	if err != nil {
 		return err
 	}

@@ -53,10 +53,9 @@ func proxyGatewayEndpoint(
 	request *http.Request,
 	routes *routeStore,
 	route endpointRoute,
-	upstreamPath string,
 	proxyContext gatewayProxyRequestContext,
 ) {
-	logAttrs := gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext)
+	logAttrs := gatewayProxyLogAttrs(request, route, proxyContext)
 	upstreamHost := gatewayAgentEndpointHost
 	target := &url.URL{Scheme: "http", Host: upstreamHost}
 	proxy := &httputil.ReverseProxy{}
@@ -72,8 +71,6 @@ func proxyGatewayEndpoint(
 	proxy.Rewrite = func(proxyRequest *httputil.ProxyRequest) {
 		proxyRequest.Out.URL.Scheme = target.Scheme
 		proxyRequest.Out.URL.Host = target.Host
-		proxyRequest.Out.URL.Path = upstreamPath
-		proxyRequest.Out.URL.RawPath = ""
 		proxyRequest.Out.Host = firstNonEmpty(proxyContext.externalHost, proxyRequest.In.Host)
 		prepareGatewayProxyRequest(proxyRequest.Out, proxyContext)
 	}

@@ -147,7 +147,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 	require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(pod), &corev1.Pod{})))
 
 	environment := e2eRuntime.environmentConfiguration()
-	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name}, Spec: api.EnvironmentTemplateSpec{Runtime: environment}}
+	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: name, Labels: map[string]string{e2eRunLabel: cluster.runID}}, Spec: api.EnvironmentTemplateSpec{Runtime: environment}}
 	require.NoError(t, c.Create(ctx, template))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)

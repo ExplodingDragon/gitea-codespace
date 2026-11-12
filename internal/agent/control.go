@@ -62,7 +62,6 @@ func (c *ControlClient) startExecution(
 	response *agentv1.ControlResponse,
 	operation *codespacev1.OperationPayload,
 	runtimeOptions *agentv1.RuntimeOptions,
-	output *Output,
 	wake chan<- struct{},
 ) (context.CancelFunc, chan error) {
 	executionResponse := proto.Clone(response).(*agentv1.ControlResponse)
@@ -77,8 +76,14 @@ func (c *ControlClient) startExecution(
 			credentials = append(credentials, secret.GetValue())
 		}
 	}
-	output.replacements = NewOutput(output.log, credentials).replacements
+	output := NewOutput(operation.OperationRversion, credentials)
 	go func() {
+		uploadCtx, cancelUpload := context.WithCancel(context.WithoutCancel(ctx))
+		uploadDone := make(chan struct{})
+		go func() {
+			defer close(uploadDone)
+			output.Upload(uploadCtx, c.Remote)
+		}()
 		executionErr := c.Execute(executionCtx, executionResponse, func(update *agentv1.AgentReport) {
 			c.mu.Lock()
 			if update != nil && update.OperationRversion == c.report.OperationRversion {
@@ -103,13 +108,16 @@ func (c *ControlClient) startExecution(
 			_, _ = fmt.Fprintf(output.Stderr(), "Error: %v\n", executionErr)
 		}
 		output.FlushLines()
-		if err := output.Err(); err != nil {
-			slog.Warn("Persist Agent operation output", "error", err)
-		}
 		// Output transport is independent of the execution outcome.
-		drain, cancelDrain := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
-		_ = output.log.Flush(drain, c.Remote)
-		cancelDrain()
+		timer := time.NewTimer(5 * time.Second)
+		select {
+		case <-uploadDone:
+		case <-timer.C:
+			slog.Warn("Agent operation output drain timed out", "operation", operation.OperationRversion)
+		}
+		timer.Stop()
+		cancelUpload()
+		<-uploadDone
 		done <- executionErr
 		select {
 		case wake <- struct{}{}:
@@ -144,11 +152,6 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 	var finished chan error
 	var executionTimer *time.Timer
 	var lastStarted int64
-	var log *OperationLog
-	var logOffset int64
-	var output *Output
-	var stopUpload context.CancelFunc
-	var uploadDone chan struct{}
 	wake := make(chan struct{}, 1)
 	metrics := time.NewTicker(10 * time.Second)
 	defer metrics.Stop()
@@ -160,11 +163,6 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 		if cancelExecution != nil {
 			cancelExecution()
 			returnErr = errors.Join(returnErr, c.recordResult(<-finished))
-		}
-		if stopUpload != nil {
-			stopUpload()
-			<-uploadDone
-			returnErr = errors.Join(returnErr, log.Close())
 		}
 	}()
 	for ctx.Err() == nil {
@@ -207,33 +205,6 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 				}
 			}
 			report := c.snapshot()
-			if report.OperationRversion > 0 && (log == nil || log.version != report.OperationRversion) {
-				if stopUpload != nil {
-					stopUpload()
-					<-uploadDone
-					_ = log.Close()
-					stopUpload = nil
-				}
-				if err := c.Journal.PruneLogs(report.OperationRversion); err != nil {
-					cancelSession()
-					return err
-				}
-				// Reopen saved batches even when only a completed result remains.
-				// Their checkpoint, not the current Gitea offset, controls replay.
-				log, err = OpenOperationLog(c.Journal, report.OperationRversion, logOffset)
-				if err != nil {
-					cancelSession()
-					return err
-				}
-				uploadCtx, cancel := context.WithCancel(ctx)
-				stopUpload, uploadDone = cancel, make(chan struct{})
-				output = NewOutput(log, nil)
-				pending, done := output, uploadDone
-				go func() {
-					defer close(done)
-					pending.Upload(uploadCtx, c.Remote)
-				}()
-			}
 			session, sequence, err := permit.Request(report.OperationRversion, time.Now())
 			if err != nil {
 				cancelSession()
@@ -268,7 +239,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 			}
 			operation := acceptedOperation
 			if operation != nil {
-				if operation.RuntimeUuid != c.Journal.record.Identity.RuntimeUUID || operation.OperationRversion <= 0 || operation.OperationRversion < report.OperationRversion || operation.LogOffset < 0 {
+				if operation.RuntimeUuid != c.Journal.record.Identity.RuntimeUUID || operation.OperationRversion <= 0 || operation.OperationRversion < report.OperationRversion {
 					cancelSession()
 					return fmt.Errorf("manager operation does not match the runtime identity or history")
 				}
@@ -276,7 +247,6 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 					if cancelExecution != nil {
 						cancelExecution()
 					} else {
-						logOffset = operation.LogOffset
 						c.mu.Lock()
 						c.report = &agentv1.AgentReport{OperationRversion: operation.OperationRversion}
 						c.mu.Unlock()
@@ -307,7 +277,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 				return fmt.Errorf("manager did not provide the current operation")
 			case finished == nil && operation.OperationRversion != lastStarted && c.snapshot().Result == nil && ((operation.GetCreate() == nil && operation.GetResume() == nil) || response.Access != nil):
 				lastStarted = operation.OperationRversion
-				cancelExecution, finished = c.startExecution(ctx, response, operation, runtimeOptions, output, wake)
+				cancelExecution, finished = c.startExecution(ctx, response, operation, runtimeOptions, wake)
 			}
 			if permitErr == nil && cancelExecution != nil {
 				if executionTimer == nil {

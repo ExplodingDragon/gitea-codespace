@@ -6,90 +6,114 @@ package agent
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
-	"os"
 	"strings"
 	"testing"
+	"time"
 
+	"gitea.dev/codespace/internal/logbuffer"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	"github.com/stretchr/testify/require"
 )
 
-func TestOutputRedactsBeforePersistingAndPreservesStreams(t *testing.T) {
-	directory := t.TempDir()
-	journal, err := OpenJournal(directory, VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
-	require.NoError(t, err)
-	defer func() { require.NoError(t, journal.Close()) }()
-	log, err := OpenOperationLog(journal, 1, 0)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, log.Close()) }()
-	output := NewOutput(log, []string{"secret-token", "multi\nline-secret"})
-	_, err = fmt.Fprint(output.Stdout(), "prefix secret-")
+type logRemote struct {
+	agentv1connect.AgentControlServiceClient
+	upload func(context.Context, *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error)
+}
+
+func (r *logRemote) UploadLogs(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+	return r.upload(ctx, request)
+}
+
+func TestOutputRedactsStreamsAndBoundsLines(t *testing.T) {
+	output := NewOutput(1, []string{"secret-token", "multi\nline-secret", "secret-split-across-boundary"})
+	_, err := fmt.Fprint(output.Stdout(), "prefix secret-")
 	require.NoError(t, err)
 	_, err = fmt.Fprint(output.Stderr(), "separate error\n")
 	require.NoError(t, err)
-	_, err = fmt.Fprintln(output.Stdout(), "token suffix")
+	_, err = fmt.Fprintln(output.Stdout(), "to\rken suffix\r")
 	require.NoError(t, err)
 	_, err = fmt.Fprintln(output.Stdout(), base64.StdEncoding.EncodeToString([]byte("secret-token")))
 	require.NoError(t, err)
 	_, err = fmt.Fprintln(output.Stderr(), "Authorization: Bearer private-token https://user:pass@registry.example/path")
 	require.NoError(t, err)
-	_, err = fmt.Fprint(output.Stdout(), "line-secret")
-	require.NoError(t, err)
-	output.FlushLines()
-	require.NoError(t, output.Err())
-	var messages []string
-	remote := &logRemote{upload: func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
-		for _, line := range request.Lines {
-			messages = append(messages, line.Message)
-		}
-		return &agentv1.UploadLogsResponse{NextOffset: request.Offset + 100}, nil
-	}}
-	require.NoError(t, log.Flush(t.Context(), remote))
-	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[redacted]"}, messages)
-	spool, err := os.ReadFile(directory + "/logs/1.pb")
-	require.NoError(t, err)
-	// Check the actual stored spool, rather than only its rendered messages.
-	require.NotContains(t, string(spool), "secret-token")
-	require.NotContains(t, string(spool), "line-secret")
-}
-
-func TestOutputBoundsLongLinesAndSpool(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
-	require.NoError(t, err)
-	defer func() { require.NoError(t, journal.Close()) }()
-	log, err := OpenOperationLog(journal, 1, 0)
-	require.NoError(t, err)
-	defer func() { require.NoError(t, log.Close()) }()
-	output := NewOutput(log, []string{"secret-split-across-boundary"})
-	_, err = fmt.Fprint(output.Stdout(), strings.Repeat("x", maxOutputLineBytes-7)+"secret-")
+	_, err = fmt.Fprint(output.Stdout(), strings.Repeat("x", logbuffer.MaxLineBytes-7)+"secret-")
 	require.NoError(t, err)
 	_, err = fmt.Fprintln(output.Stdout(), "split-across-boundary")
 	require.NoError(t, err)
-	_, err = fmt.Fprintln(output.Stdout(), "next line")
+	_, err = fmt.Fprint(output.Stdout(), "line-secret")
 	require.NoError(t, err)
 	output.FlushLines()
 	var messages []string
-	require.NoError(t, log.Flush(t.Context(), &logRemote{upload: func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+	output.Upload(t.Context(), &logRemote{upload: func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
 		for _, line := range request.Lines {
 			messages = append(messages, line.Message)
 		}
-		return &agentv1.UploadLogsResponse{NextOffset: request.Offset + 100}, nil
-	}}))
-	require.Equal(t, []string{"[output line omitted: exceeds 32 KiB]", "next line"}, messages)
-	// A sparse file exercises the capacity boundary without generating 32 MiB
-	// of test logs or changing production limits for a test.
-	require.NoError(t, log.file.Truncate(maxLogFileBytes-1100))
-	log.size = maxLogFileBytes - 1100
-	_, err = fmt.Fprintln(output.Stdout(), strings.Repeat("y", 1000))
+		return &agentv1.UploadLogsResponse{}, nil
+	}})
+	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[output line omitted: exceeds 32 KiB]", "[redacted]"}, messages)
+}
+
+func TestOutputUploadsWhileLowRateOutputContinues(t *testing.T) {
+	output := NewOutput(1, nil)
+	uploaded := make(chan struct{}, 1)
+	remote := &logRemote{upload: func(_ context.Context, _ *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+		select {
+		case uploaded <- struct{}{}:
+		default:
+		}
+		return &agentv1.UploadLogsResponse{}, nil
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); output.Upload(ctx, remote) }()
+	defer func() { cancel(); <-done }()
+	for range 15 {
+		_, err := fmt.Fprintln(output.Stdout(), "still producing output")
+		require.NoError(t, err)
+		select {
+		case <-uploaded:
+			return
+		case <-time.After(150 * time.Millisecond):
+		}
+	}
+	t.Fatal("continuous output postponed the first upload")
+}
+
+func TestOutputContinuesAfterUncertainUpload(t *testing.T) {
+	output := NewOutput(1, nil)
+	_, err := fmt.Fprintln(output.Stdout(), "first batch")
+	require.NoError(t, err)
+	var messages []string
+	calls := 0
+	remote := &logRemote{upload: func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+		calls++
+		for _, line := range request.Lines {
+			messages = append(messages, line.Message)
+		}
+		if calls == 1 {
+			return nil, errors.New("reply lost")
+		}
+		return &agentv1.UploadLogsResponse{}, nil
+	}}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); output.Upload(ctx, remote) }()
+	defer func() { cancel(); <-done }()
+	require.Eventually(t, func() bool {
+		output.mu.Lock()
+		defer output.mu.Unlock()
+		return output.buffer.Bytes() == 0
+	}, 3*time.Second, 10*time.Millisecond)
+	_, err = fmt.Fprintln(output.Stdout(), "later batch")
 	require.NoError(t, err)
 	output.FlushLines()
-	require.True(t, output.truncated)
-	before := log.size
-	_, err = fmt.Fprintln(output.Stdout(), "further output")
-	require.NoError(t, err)
-	output.FlushLines()
-	require.Equal(t, before, log.size)
-	require.LessOrEqual(t, log.size, int64(maxLogFileBytes))
-	require.NoError(t, output.Err())
+	select {
+	case <-done:
+	case <-time.After(3 * time.Second):
+		t.Fatal("output did not drain")
+	}
+	require.Equal(t, []string{"first batch", "[operation output omitted: 1 lines lost]", "later batch"}, messages)
 }

@@ -10,3 +10,23 @@ export interface Endpoint {
   /** Whether Gateway access requires the Codespace user session. */
   visibility: EndpointVisibility
 }
+
+export interface USBDevice {
+  source: string
+  busId: string
+  description: string
+}
+
+export interface USBImportedDevice extends USBDevice {
+  port: number
+  state: string
+}
+
+export interface USBList {
+  sources: { name: string, error?: string }[]
+  devices: USBDevice[]
+}
+
+export interface USBStatus extends USBList {
+  devices: USBImportedDevice[]
+}

@@ -32,6 +32,18 @@ type workspaceSFTPRequest struct {
 	RuntimeUUID string
 }
 
+type workspaceReverseConnection struct {
+	Connection net.Conn
+	OriginHost string
+	OriginPort uint32
+}
+
+type workspaceReverseListener interface {
+	Port() uint32
+	Accept(context.Context) (*workspaceReverseConnection, error)
+	Close() error
+}
+
 // A command session presents a bidirectional Runtime process to SSH.
 type workspaceCommandSession interface {
 	Stdin() io.WriteCloser
@@ -59,4 +71,5 @@ type workspaceBackend interface {
 	OpenWorkspaceSFTP(context.Context, workspaceSFTPRequest) (io.ReadWriteCloser, error)
 	OpenWorkspaceEndpoint(context.Context, string, string) (net.Conn, error)
 	OpenWorkspaceTCP(context.Context, string, uint32) (net.Conn, error)
+	OpenWorkspaceReverseTCP(context.Context, string, string, uint32) (workspaceReverseListener, error)
 }

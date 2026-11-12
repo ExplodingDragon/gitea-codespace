@@ -53,6 +53,24 @@
         "command": "giteaCodespace.ports.remove",
         "title": "%command.remove%",
         "icon": "$(trash)"
+      },
+      {
+        "command": "giteaCodespace.usb.refresh",
+        "title": "%usb.refresh%",
+        "icon": "$(refresh)",
+        "enablement": "giteaCodespace.usbAvailable && !giteaCodespace.usbBusy"
+      },
+      {
+        "command": "giteaCodespace.usb.attach",
+        "title": "%usb.attach%",
+        "icon": "$(add)",
+        "enablement": "giteaCodespace.usbAvailable && !giteaCodespace.usbBusy"
+      },
+      {
+        "command": "giteaCodespace.usb.detach",
+        "title": "%usb.detach%",
+        "icon": "$(debug-disconnect)",
+        "enablement": "giteaCodespace.usbAvailable && !giteaCodespace.usbBusy"
       }
     ],
     "views": {
@@ -61,6 +79,12 @@
           "id": "giteaCodespace.ports",
           "name": "%portsView%",
           "contextualTitle": "%displayName%"
+        },
+        {
+          "id": "giteaCodespace.usb",
+          "name": "%usb.view%",
+          "contextualTitle": "%displayName%",
+          "when": "giteaCodespace.usbAvailable"
         }
       ]
     },
@@ -68,6 +92,11 @@
       {
         "view": "giteaCodespace.ports",
         "contents": "%portsWelcome%\n[%command.add%](command:giteaCodespace.ports.add)"
+      },
+      {
+        "view": "giteaCodespace.usb",
+        "contents": "%usb.empty%",
+        "when": "giteaCodespace.usbAvailable"
       }
     ],
     "menus": {
@@ -80,6 +109,16 @@
         {
           "command": "giteaCodespace.ports.refresh",
           "when": "view == giteaCodespace.ports",
+          "group": "navigation@2"
+        },
+        {
+          "command": "giteaCodespace.usb.attach",
+          "when": "view == giteaCodespace.usb && giteaCodespace.usbAvailable",
+          "group": "navigation@1"
+        },
+        {
+          "command": "giteaCodespace.usb.refresh",
+          "when": "view == giteaCodespace.usb && giteaCodespace.usbAvailable",
           "group": "navigation@2"
         }
       ],
@@ -98,6 +137,25 @@
           "command": "giteaCodespace.ports.remove",
           "when": "view == giteaCodespace.ports && viewItem == codespacePort",
           "group": "inline@3"
+        },
+        {
+          "command": "giteaCodespace.usb.detach",
+          "when": "view == giteaCodespace.usb && viewItem == codespaceUSBDevice",
+          "group": "inline@1"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "giteaCodespace.usb.refresh",
+          "when": "giteaCodespace.usbAvailable"
+        },
+        {
+          "command": "giteaCodespace.usb.attach",
+          "when": "giteaCodespace.usbAvailable"
+        },
+        {
+          "command": "giteaCodespace.usb.detach",
+          "when": "giteaCodespace.usbAvailable"
         }
       ]
     }
@@ -110,5 +168,8 @@
     "prettier": "3.6.2",
     "tsx": "^4.20.6",
     "typescript": "^5.9.3"
-  }
+  },
+  "activationEvents": [
+    "onStartupFinished"
+  ]
 }

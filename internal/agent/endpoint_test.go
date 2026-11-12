@@ -28,6 +28,10 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
 	target := accessTargetForContainer(1, "container", "/workspaces/project", true, runtime.endpoints, nil)
 	runtime.setAccessState(target, nil)
+	accessCtx, release, err := runtime.networkAccessContext(t.Context(), target)
+	require.NoError(t, err)
+	defer release()
+	t.Cleanup(runtime.closeNetworkAccess)
 
 	endpoints, err := runtime.setEndpoint(&codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Public: true, Port: 8080})
 	require.NoError(t, err)
@@ -38,6 +42,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	require.Len(t, updated.Endpoints, 3)
 	require.True(t, updated.Endpoints[2].Endpoint.Public)
 	require.Equal(t, runtimeendpoint.WorkspaceEndpointID, updated.Endpoints[0].Endpoint.EndpointId)
+	require.NoError(t, accessCtx.Err(), "endpoint publication preserves existing network streams")
 	require.Empty(t, accessTargetForContainer(1, "container", "/workspaces/project", false, nil, nil).Endpoints)
 
 	runtime.setAccessState(accessTargetForContainer(3, "container", "/workspaces/project", false, runtime.endpoints, nil), nil)

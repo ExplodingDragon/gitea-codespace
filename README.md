@@ -16,6 +16,8 @@ configuration and can be used from a browser, a desktop editor, SSH, or SFTP.
 - Provides Web IDE, SSH, SFTP, and forwarded application access through a
   shared Gateway.
 - Supports Kata Containers, Sysbox, and the cluster's native container runtime.
+- Connects remote USB devices to compatible Kata environments through the
+  existing authenticated SSH endpoint.
 - Supports persistent build caching and registry mirrors for repeated builds.
 - Supplies official VS Code and DeepSeek Harness Web IDE providers while
   allowing compatible third-party providers.
@@ -113,6 +115,13 @@ Authenticated ports require the current Gitea session. Use `--public` only for
 services that are intended to be reachable without that session. The Codespace
 page shows the resulting Gateway URL for every published port.
 
+## Connect a remote USB device
+
+Compatible Kata environments can connect remote USB devices through the
+Codespace SSH endpoint. Manage devices from the bundled IDE plugins or the
+Dev Container command line. See [Connect USB devices](docs/usbip.md) for setup,
+multiple device sources, and reconnecting after a stop.
+
 ## Web IDE providers
 
 Choose a Web IDE provider in the environment template when browser access is
@@ -131,6 +140,7 @@ moving an existing installation to another version.
 
 - [Install and operate with Helm](charts/gitea-codespace/README.md)
 - [Choose and configure a Web IDE provider](providers/README.md)
+- [Connect USB devices](docs/usbip.md)
 - [Develop and test Gitea Codespace](DEVELOPMENT.md)
 - [Review the architecture and design](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)
 

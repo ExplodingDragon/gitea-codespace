@@ -9,6 +9,8 @@
     "src/client/index.tsx",
     "src/client/locales.ts",
     "src/client/PortsPanel.tsx",
+    "src/client/USBPanel.tsx",
+    "src/client/usb-locales.ts",
     "src/client/css-modules.d.ts",
     "src/types.ts"
   ],

@@ -1,17 +1,7 @@
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
+import { runtimeCommand, type CommandRunner } from './cli.ts'
 import type { Endpoint, EndpointVisibility } from './types.ts'
 
-const execFileAsync = promisify(execFile)
 const ENDPOINT_CLI = '/usr/local/bin/gitea-codespace-endpoint'
-const MAX_OUTPUT_BYTES = 1024 * 1024
-const TIMEOUT_MS = 5000
-
-/** Subprocess boundary used by the endpoint client and its focused tests. */
-export type EndpointCommandRunner = (
-  args: readonly string[],
-  signal?: AbortSignal,
-) => Promise<{ stdout: string; stderr: string }>
 
 interface EndpointDocument {
   version?: unknown
@@ -51,7 +41,7 @@ export function parseEndpointList(output: string): Endpoint[] {
 
 /** Runtime endpoint operations shared by Remote, commands, and tools. */
 export class EndpointClient {
-  constructor(private readonly run: EndpointCommandRunner = runEndpointCommand) {}
+  constructor(private readonly run: CommandRunner = runtimeCommand(ENDPOINT_CLI, 5000)) {}
 
   /** Read the authoritative endpoint set. */
   async list(signal?: AbortSignal): Promise<Endpoint[]> {
@@ -93,14 +83,4 @@ function validatePort(port: unknown): asserts port is number {
 
 function isVisibility(value: unknown): value is EndpointVisibility {
   return value === 'authenticated' || value === 'public'
-}
-
-async function runEndpointCommand(args: readonly string[], signal?: AbortSignal): Promise<{ stdout: string; stderr: string }> {
-  const result = await execFileAsync(ENDPOINT_CLI, args, {
-    encoding: 'utf8',
-    maxBuffer: MAX_OUTPUT_BYTES,
-    signal,
-    timeout: TIMEOUT_MS,
-  })
-  return { stdout: result.stdout, stderr: result.stderr }
 }

@@ -5,10 +5,81 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"testing"
+	"testing/synctest"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
+
+func TestGatewaySharedAuthorizationHasIndependentWaiters(t *testing.T) {
+	for _, cached := range []bool{false, true} {
+		synctest.Test(t, func(t *testing.T) {
+			controller := newAccessController(accessConfig{ValidationMaxInflight: 1})
+			key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindEndpoint, siteUID: "site", userID: 1, codespaceUUID: "runtime", endpointID: "web"}
+			complete := make(chan struct{})
+			calls := 0
+			validate := func(ctx context.Context) (gatewayAccessDecision, error) {
+				calls++
+				select {
+				case <-complete:
+					return gatewayAccessDecision{Allowed: true}, nil
+				case <-ctx.Done():
+					return gatewayAccessDecision{}, ctx.Err()
+				}
+			}
+			lookup := func(ctx context.Context) error {
+				var decision gatewayAccessDecision
+				var full bool
+				var err error
+				if cached {
+					decision, full, err = controller.validateAccess(ctx, key, time.Now(), validate)
+				} else {
+					decision, full, err = controller.validateAccessUncached(ctx, key, validate)
+				}
+				if full || (err == nil && !decision.Allowed) {
+					return fmt.Errorf("unexpected authorization result: full=%t decision=%+v", full, decision)
+				}
+				return err
+			}
+			leader, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			leaderResult := make(chan error, 1)
+			go func() { leaderResult <- lookup(leader) }()
+			synctest.Wait()
+			followerResult := make(chan error, 1)
+			go func() { followerResult <- lookup(t.Context()) }()
+			synctest.Wait()
+			cancel()
+			require.ErrorIs(t, <-leaderResult, context.Canceled)
+			close(complete)
+			require.NoError(t, <-followerResult)
+			require.Equal(t, 1, calls)
+			require.Equal(t, cached, controller.cache.IsAllowed(key, time.Now()))
+		})
+	}
+}
+
+func TestGatewaySharedAuthorizationTimeoutReleasesCapacity(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		controller := newAccessController(accessConfig{ValidationMaxInflight: 1})
+		key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindPublic, siteUID: "site", codespaceUUID: "runtime", endpointID: "web"}
+		_, full, err := controller.validateAccessUncached(t.Context(), key, func(ctx context.Context) (gatewayAccessDecision, error) {
+			<-ctx.Done()
+			return gatewayAccessDecision{}, ctx.Err()
+		})
+		require.False(t, full)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		decision, full, err := controller.validateAccessUncached(t.Context(), key, func(context.Context) (gatewayAccessDecision, error) {
+			return gatewayAccessDecision{Allowed: true}, nil
+		})
+		require.NoError(t, err)
+		require.False(t, full)
+		require.True(t, decision.Allowed)
+	})
+}
 
 func TestGatewayAccessStateIsScopedBySite(t *testing.T) {
 	controller := newAccessController(accessConfig{

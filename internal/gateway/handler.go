@@ -29,33 +29,27 @@ func newHandler(
 	if routeStore == nil {
 		panic("gateway route store is required")
 	}
-	mux := http.NewServeMux()
-	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
-		if originPolicy.Domain == "" {
+	return http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.URL.Path == "/.gitea-codespace/open" {
+			handleGatewayOpen(writer, request, sessions, routeStore, access, controlPlane, originPolicy)
+			return
+		}
+		binding, ok := originPolicy.bindingForRequest(request)
+		if !ok {
 			writeGatewayNotFound(writer, request, "Codespace gateway")
 			return
 		}
-		if binding, ok := originPolicy.bindingForRequest(request); ok {
-			if route, found := routeStore.Get(binding.codespaceUUID, binding.endpointID); found && route.Public {
-				handleGatewayPublicEndpoint(writer, request, routeStore, access, controlPlane, originPolicy)
-				return
-			}
+		route, found := routeStore.Get(binding.codespaceUUID, binding.endpointID)
+		if !found {
+			writeGatewayNotFound(writer, request, "Codespace endpoint")
+			return
+		}
+		if route.Public {
+			handleGatewayPublicEndpoint(writer, request, routeStore, access, controlPlane, originPolicy)
+			return
 		}
 		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
 	})
-	mux.HandleFunc("/open", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayOpen(writer, request, sessions, routeStore, access, controlPlane, originPolicy)
-	})
-	mux.HandleFunc("/.gitea-codespace/open", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayOpen(writer, request, sessions, routeStore, access, controlPlane, originPolicy)
-	})
-	mux.HandleFunc("/w/", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayWorkspace(writer, request, sessions, routeStore, access, controlPlane, originPolicy, browserAuth)
-	})
-	mux.HandleFunc("/p/", func(writer http.ResponseWriter, request *http.Request) {
-		handleGatewayPublicEndpoint(writer, request, routeStore, access, controlPlane, originPolicy)
-	})
-	return mux
 }
 
 func handleGatewayOpen(
@@ -73,16 +67,12 @@ func handleGatewayOpen(
 		writeGatewayError(writer, request, http.StatusMethodNotAllowed, "Method not allowed", "This gateway endpoint only accepts GET requests.", "method_not_allowed")
 		return
 	}
-	if originPolicy.Domain != "" && request.URL.Path != "/.gitea-codespace/open" {
-		writeGatewayNotFound(writer, request, "Open codespace")
-		return
-	}
 	if sessions == nil || access == nil || controlPlane == nil {
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
 	hostBinding, hasHostBinding := originPolicy.bindingForRequest(request)
-	if originPolicy.Domain != "" && !hasHostBinding {
+	if !hasHostBinding {
 		writeGatewayNotFound(writer, request, "Open codespace")
 		return
 	}
@@ -120,9 +110,7 @@ func handleGatewayOpen(
 		writeGatewayError(writer, request, http.StatusForbidden, "Codespace cannot be opened", "Gitea rejected this open link because the codespace is not currently available for this request.", decision.deniedCategory)
 		return
 	}
-	if hasHostBinding &&
-		(hostBinding.codespaceUUID != decision.Binding.CodespaceUUID ||
-			hostBinding.endpointID != decision.Binding.EndpointID) {
+	if hostBinding.codespaceUUID != decision.Binding.CodespaceUUID || hostBinding.endpointID != decision.Binding.EndpointID {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		writeGatewayError(writer, request, http.StatusForbidden, "Open link does not match this host", "This open link belongs to a different codespace endpoint. Open the codespace again from Gitea.", "gateway host binding mismatch")
 		return
@@ -168,7 +156,10 @@ func handleGatewayOpen(
 	if hasReturnTo {
 		clearGatewayReturnToCookies(writer)
 	}
-	http.Redirect(writer, request, gatewayOpenRedirectPath(decision.Binding.CodespaceUUID, decision.Binding.EndpointID, originPolicy, returnTo), http.StatusSeeOther)
+	if returnTo == "" {
+		returnTo = "/"
+	}
+	http.Redirect(writer, request, returnTo, http.StatusSeeOther)
 }
 
 func gatewayOpenCode(request *http.Request) (string, bool) {
@@ -194,11 +185,12 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
-	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayWorkspaceBinding(request, originPolicy)
+	binding, ok := originPolicy.bindingForRequest(request)
 	if !ok {
 		writeGatewayNotFound(writer, request, "Codespace workspace")
 		return
 	}
+	codespaceUUID, endpointID := binding.codespaceUUID, binding.endpointID
 	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
 		attrs := gatewaySourceRejectionLogAttrs(request, originPolicy)
 		attrs = append(attrs,
@@ -331,10 +323,10 @@ func handleGatewayWorkspace(
 		return
 	}
 	defer releaseRoute()
-	revalidationAttrs := gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext)
+	revalidationAttrs := gatewayProxyLogAttrs(request, route, proxyContext)
 	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.Config.StreamRevalidateInterval, revalidationAttrs, revalidate)
 	defer cancelRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, proxyContext)
+	proxyGatewayEndpoint(writer, proxyRequest, routes, route, proxyContext)
 }
 
 func handleGatewayPublicEndpoint(
@@ -349,11 +341,12 @@ func handleGatewayPublicEndpoint(
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
-	codespaceUUID, endpointID, upstreamPath, ok := resolveGatewayPublicEndpointBinding(request, originPolicy)
-	if !ok {
+	binding, ok := originPolicy.bindingForRequest(request)
+	if !ok || binding.endpointID == runtimeendpoint.WorkspaceEndpointID {
 		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
+	codespaceUUID, endpointID := binding.codespaceUUID, binding.endpointID
 	clearGatewayReservedCookies(writer)
 	route, ok := routes.Get(codespaceUUID, endpointID)
 	if !ok || !route.Public {
@@ -419,7 +412,7 @@ func handleGatewayPublicEndpoint(
 	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
 		routeRequest,
 		access.Config.StreamRevalidateInterval,
-		gatewayProxyLogAttrs(request, route, upstreamPath, proxyContext),
+		gatewayProxyLogAttrs(request, route, proxyContext),
 		func(ctx context.Context) (gatewayAccessDecision, error) {
 			decision, validationFull, err := access.revalidatePublicEndpoint(
 				ctx,
@@ -437,88 +430,7 @@ func handleGatewayPublicEndpoint(
 		},
 	)
 	defer cancelProxyRevalidation()
-	proxyGatewayEndpoint(writer, proxyRequest, routes, route, upstreamPath, proxyContext)
-}
-
-func parseGatewayWorkspacePath(path string) (string, string, string, bool) {
-	withoutPrefix, ok := strings.CutPrefix(path, "/w/")
-	if !ok {
-		return "", "", "", false
-	}
-	trimmed := strings.Trim(withoutPrefix, "/")
-	if trimmed == "" {
-		return "", "", "", false
-	}
-	parts := strings.Split(trimmed, "/")
-	if len(parts) == 1 {
-		return parts[0], runtimeendpoint.WorkspaceEndpointID, "/", true
-	}
-	if len(parts) >= 3 && parts[1] == "e" && parts[2] != "" && parts[2] != runtimeendpoint.WorkspaceEndpointID {
-		return parts[0], parts[2], gatewayProxyPathFromParts(parts[3:]), true
-	}
-	return parts[0], runtimeendpoint.WorkspaceEndpointID, gatewayProxyPathFromParts(parts[1:]), true
-}
-
-func resolveGatewayWorkspaceBinding(request *http.Request, originPolicy originPolicy) (string, string, string, bool) {
-	if originPolicy.Domain == "" {
-		return parseGatewayWorkspacePath(request.URL.Path)
-	}
-	hostBinding, ok := originPolicy.bindingForRequest(request)
-	if !ok {
-		return "", "", "", false
-	}
-	pathUUID, pathEndpoint, upstreamPath, pathOK := parseGatewayWorkspacePath(request.URL.Path)
-	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
-		return "", "", "", false
-	}
-	if !pathOK {
-		if request.URL.Path == "/w/" {
-			return hostBinding.codespaceUUID, hostBinding.endpointID, "/", true
-		}
-		return hostBinding.codespaceUUID, hostBinding.endpointID, request.URL.Path, true
-	}
-	return hostBinding.codespaceUUID, hostBinding.endpointID, upstreamPath, true
-}
-
-func parseGatewayPublicEndpointPath(path string) (string, string, string, bool) {
-	withoutPrefix, ok := strings.CutPrefix(path, "/p/")
-	if !ok {
-		return "", "", "", false
-	}
-	trimmed := strings.Trim(withoutPrefix, "/")
-	if trimmed == "" {
-		return "", "", "", false
-	}
-	parts := strings.Split(trimmed, "/")
-	if len(parts) < 2 || parts[0] == "" || parts[1] == "" || parts[1] == runtimeendpoint.WorkspaceEndpointID {
-		return "", "", "", false
-	}
-	return parts[0], parts[1], gatewayProxyPathFromParts(parts[2:]), true
-}
-
-func resolveGatewayPublicEndpointBinding(request *http.Request, originPolicy originPolicy) (string, string, string, bool) {
-	if originPolicy.Domain == "" {
-		return parseGatewayPublicEndpointPath(request.URL.Path)
-	}
-	hostBinding, ok := originPolicy.bindingForRequest(request)
-	if !ok || hostBinding.endpointID == runtimeendpoint.WorkspaceEndpointID {
-		return "", "", "", false
-	}
-	pathUUID, pathEndpoint, upstreamPath, pathOK := parseGatewayPublicEndpointPath(request.URL.Path)
-	if pathOK && (pathUUID != hostBinding.codespaceUUID || pathEndpoint != hostBinding.endpointID) {
-		return "", "", "", false
-	}
-	if !pathOK {
-		upstreamPath = request.URL.Path
-	}
-	return hostBinding.codespaceUUID, hostBinding.endpointID, upstreamPath, true
-}
-
-func gatewayProxyPathFromParts(parts []string) string {
-	if len(parts) == 0 {
-		return "/"
-	}
-	return "/" + strings.Join(parts, "/")
+	proxyGatewayEndpoint(writer, proxyRequest, routes, route, proxyContext)
 }
 
 func withGatewayProxyRevalidation(
@@ -594,23 +506,6 @@ func gatewayPeerIP(request *http.Request) string {
 		return parsed.String()
 	}
 	return request.RemoteAddr
-}
-
-func gatewayWorkspacePath(codespaceUUID, endpointID string) string {
-	if endpointID == "" || endpointID == runtimeendpoint.WorkspaceEndpointID {
-		return "/w/" + codespaceUUID + "/"
-	}
-	return "/w/" + codespaceUUID + "/e/" + endpointID + "/"
-}
-
-func gatewayOpenRedirectPath(codespaceUUID, endpointID string, originPolicy originPolicy, returnTo string) string {
-	if returnTo != "" {
-		return returnTo
-	}
-	if originPolicy.Domain != "" {
-		return "/"
-	}
-	return gatewayWorkspacePath(codespaceUUID, endpointID)
 }
 
 func setGatewaySessionCookie(writer http.ResponseWriter, sessionID string, originPolicy originPolicy) {

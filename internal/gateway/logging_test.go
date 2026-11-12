@@ -28,7 +28,7 @@ func TestGatewayLogFieldsIdentifyRouteWithoutCredentials(t *testing.T) {
 		SiteUID: "site-1", ResourceUID: "resource-1", CodespaceUUID: "codespace-1",
 		EndpointID: "workspace", Label: "Web IDE", PodUID: "pod-1", AgentAddress: "agent:8444", TargetVersion: 9,
 	}
-	attrs := gatewayProxyLogAttrs(request, route, "/project/file", gatewayProxyRequestContext{access: "authenticated", userID: 42})
+	attrs := gatewayProxyLogAttrs(request, route, gatewayProxyRequestContext{access: "authenticated", userID: 42})
 
 	var output bytes.Buffer
 	handler := slog.NewJSONHandler(&output, nil)

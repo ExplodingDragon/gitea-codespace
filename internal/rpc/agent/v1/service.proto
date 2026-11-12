@@ -12,7 +12,7 @@ service AgentControlService {
   rpc PrepareVolume(PrepareVolumeRequest) returns (PrepareVolumeResponse);
   // Control resumes a session by reporting facts before accepting new execution.
   rpc Control(stream ControlRequest) returns (stream ControlResponse);
-  // UploadLogs forwards an immutable batch at Gitea's acknowledged byte offset.
+  // UploadLogs submits diagnostic output to Manager's bounded memory queue.
   rpc UploadLogs(UploadLogsRequest) returns (UploadLogsResponse);
 }
 
@@ -38,6 +38,42 @@ service RuntimeEndpointService {
   rpc Set(RuntimeEndpointServiceSetRequest) returns (RuntimeEndpointServiceSetResponse);
   // Delete removes one endpoint and durably publishes the new target.
   rpc Delete(RuntimeEndpointServiceDeleteRequest) returns (RuntimeEndpointServiceDeleteResponse);
+}
+
+// RuntimeUSBIPService runs on the Runtime Pod's private Unix socket.
+service RuntimeUSBIPService {
+  // Run executes one bounded USB/IP client operation in the Runtime.
+  rpc Run(RuntimeUSBIPServiceRunRequest) returns (RuntimeUSBIPServiceRunResponse);
+}
+
+enum RuntimeUSBIPOperation {
+  RUNTIME_USBIP_OPERATION_UNSPECIFIED = 0;
+  RUNTIME_USBIP_OPERATION_LIST = 1;
+  RUNTIME_USBIP_OPERATION_ATTACH = 2;
+  RUNTIME_USBIP_OPERATION_STATUS = 3;
+  RUNTIME_USBIP_OPERATION_DETACH = 4;
+  RUNTIME_USBIP_OPERATION_SOURCES = 5;
+}
+
+message RuntimeUSBIPServiceRunRequest {
+  uint32 protocol_version = 1;
+  RuntimeUSBIPOperation operation = 2;
+  string argument = 3;
+  string source = 4;
+}
+
+message RuntimeUSBIPServiceRunResponse {
+  string output = 1;
+  repeated USBIPSource sources = 2;
+}
+
+// Sources are live SSH registrations, not remote service health checks.
+message USBIPSource {
+  string name = 1;
+  uint32 port = 2;
+  string output = 3;
+  string error = 4;
+  string listener_id = 5;
 }
 
 message RuntimeEndpointServiceListRequest {
@@ -144,14 +180,13 @@ message EndpointTarget {
 message UploadLogsRequest {
   uint32 protocol_version = 1;
   int64 operation_rversion = 2;
-  int64 offset = 3;
+  reserved 3;
   repeated codespace.v1.LogLine lines = 4;
 }
 
 message UploadLogsResponse {
-  // When closed, this repeats the requested offset without acknowledging the batch.
-  int64 next_offset = 1;
-  // A closed or truncated Gitea operation no longer accepts additional logs.
+  reserved 1;
+  // A reply acknowledges handling, not durable storage. Closed ends this stream.
   bool closed = 2;
 }
 
@@ -163,6 +198,8 @@ message AccessRequest {
     TerminalSize resize = 4;
     int32 signal = 5;
     bool stdin_eof = 6;
+    // Stop accepting; existing ordinary TCP channels remain connected.
+    bool stop_listening = 7;
   }
 }
 
@@ -175,6 +212,8 @@ message OpenAccess {
     SFTP sftp = 4;
     Endpoint endpoint = 5;
     LoopbackTCP tcp = 6;
+    ReverseTCPListen reverse_tcp_listen = 7;
+    ReverseTCPAccept reverse_tcp_accept = 8;
   }
 }
 
@@ -186,6 +225,8 @@ enum AccessCapability {
   ACCESS_CAPABILITY_SFTP = 3;
   ACCESS_CAPABILITY_ENDPOINT = 4;
   ACCESS_CAPABILITY_LOOPBACK_TCP = 5;
+  ACCESS_CAPABILITY_REVERSE_TCP_LISTEN = 6;
+  ACCESS_CAPABILITY_REVERSE_TCP_ACCEPT = 7;
 }
 
 // AccessTicketClaims is signed by Manager and verified by the current Agent.
@@ -234,6 +275,34 @@ message LoopbackTCP {
   uint32 port = 1;
 }
 
+message ReverseTCPListen {
+  string listener_id = 1;
+  oneof target {
+    ContainerTCPBind container = 2;
+    string usbip_source = 3;
+  }
+}
+
+message ContainerTCPBind {
+  string address = 1;
+  uint32 port = 2;
+}
+
+message ReverseTCPReady {
+  uint32 port = 1;
+}
+
+message ReverseTCPAccept {
+  string listener_id = 1;
+  string connection_id = 2;
+}
+
+message ReverseTCPConnection {
+  string connection_id = 1;
+  string origin_host = 2;
+  uint32 origin_port = 3;
+}
+
 message AccessResponse {
   oneof frame {
     // Process attached, or TCP target connected. Sent before stdout.
@@ -243,5 +312,7 @@ message AccessResponse {
     int32 exit_status = 4;
     // TCP target finished sending. The input direction remains writable.
     bool stdout_eof = 5;
+    ReverseTCPConnection reverse_tcp_connection = 6;
+    ReverseTCPReady reverse_tcp_ready = 7;
   }
 }

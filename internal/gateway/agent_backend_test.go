@@ -4,7 +4,6 @@
 package gateway
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -22,9 +21,7 @@ import (
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
-	"gitea.dev/codespace/internal/runtimecmd"
 	"github.com/stretchr/testify/require"
-	"google.golang.org/protobuf/encoding/protodelim"
 )
 
 type backendTestServer struct {
@@ -48,56 +45,54 @@ func TestAgentHTTPReusesConnectionAndRedialsAfterTargetClose(t *testing.T) {
 	}
 	upstream.Start()
 	defer upstream.Close()
-	port := uint16(upstream.Listener.Addr().(*net.TCPAddr).Port)
 	var opened atomic.Int32
 	targetEOF := make(chan struct{}, 4)
-	backend, service := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+	backend, _ := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
 		opened.Add(1)
-		stdin, input := io.Pipe()
-		output, stdout := io.Pipe()
-		stop := context.AfterFunc(ctx, func() { _ = stdin.Close(); _ = output.Close() })
+		connection, err := (&net.Dialer{}).DialContext(ctx, "tcp4", upstream.Listener.Addr().String())
+		if err != nil {
+			return err
+		}
+		defer connection.Close()
+		stop := context.AfterFunc(ctx, func() { _ = connection.Close() })
 		defer stop()
-		defer func() { _ = stdin.Close(); _ = output.Close() }()
-		done := make(chan error, 1)
 		go func() {
-			err := runtimecmd.Connect(ctx, "127.0.0.1", port, stdin, stdout)
-			_ = stdout.CloseWithError(err)
-			done <- err
-		}()
-		go func() {
-			defer func() { _ = input.Close() }()
 			for {
 				frame, err := stream.Receive()
 				if err != nil {
+					_ = connection.Close()
 					return
 				}
-				if _, err := protodelim.MarshalTo(input, frame); err != nil {
+				if frame.GetStdinEof() {
+					_ = connection.(*net.TCPConn).CloseWrite()
+					return
+				}
+				if _, err := connection.Write(frame.GetStdin()); err != nil {
+					_ = connection.Close()
 					return
 				}
 			}
 		}()
-		reader := bufio.NewReader(output)
+		buffer := make([]byte, 32*1024)
 		for {
-			frame := &agentv1.AccessResponse{}
-			err := protodelim.UnmarshalFrom(reader, frame)
+			n, err := connection.Read(buffer)
+			if n > 0 {
+				if sendErr := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Stdout{Stdout: buffer[:n]}}); sendErr != nil {
+					return sendErr
+				}
+			}
 			if err != nil {
 				if errors.Is(err, io.EOF) {
-					if err := <-done; err != nil {
+					if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_StdoutEof{StdoutEof: true}}); err != nil {
 						return err
 					}
+					targetEOF <- struct{}{}
 					return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}})
 				}
 				return err
 			}
-			if err := stream.Send(frame); err != nil {
-				return err
-			}
-			if frame.GetStdoutEof() {
-				targetEOF <- struct{}{}
-			}
 		}
 	})
-	service.accept = false
 	routes := newRouteStore(backend)
 	defer routes.Close()
 	route := endpointRoute{SiteUID: "site", CodespaceUUID: "runtime", GiteaWebURL: "https://gitea.test", EndpointID: "app", Public: true}
@@ -196,6 +191,45 @@ func TestAgentOpenReportsTargetFailure(t *testing.T) {
 	require.ErrorContains(t, err, "connection refused")
 }
 
+func TestAgentReverseListenerClaimsIndependentConnection(t *testing.T) {
+	var calls atomic.Int32
+	backend, _ := newBackendTestClient(t, func(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream) error {
+		if calls.Add(1) == 1 {
+			if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ReverseTcpConnection{ReverseTcpConnection: &agentv1.ReverseTCPConnection{
+				ConnectionId: "connection", OriginHost: "127.0.0.1", OriginPort: 42000,
+			}}}); err != nil {
+				return err
+			}
+			if _, err := stream.Receive(); err != nil && !errors.Is(err, io.EOF) {
+				return err
+			}
+			return stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}})
+		}
+		for _, frame := range []*agentv1.AccessResponse{
+			{Frame: &agentv1.AccessResponse_Stdout{Stdout: []byte("usbip")}},
+			{Frame: &agentv1.AccessResponse_StdoutEof{StdoutEof: true}},
+			{Frame: &agentv1.AccessResponse_ExitStatus{ExitStatus: 0}},
+		} {
+			if err := stream.Send(frame); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	listener, err := backend.OpenWorkspaceReverseTCP(t.Context(), "runtime", "usbip.workstation", 3240)
+	require.NoError(t, err)
+	defer listener.Close()
+	accepted, err := listener.Accept(t.Context())
+	require.NoError(t, err)
+	defer accepted.Connection.Close()
+	require.Equal(t, "127.0.0.1", accepted.OriginHost)
+	require.EqualValues(t, 42000, accepted.OriginPort)
+	output, err := io.ReadAll(accepted.Connection)
+	require.NoError(t, err)
+	require.Equal(t, "usbip", string(output))
+	require.NoError(t, listener.Close())
+}
+
 func (s *backendTestServer) IssueAgentAccess(_ context.Context, request *componentv1.IssueAgentAccessRequest) (*componentv1.IssueAgentAccessResponse, error) {
 	s.capability <- request.Capability
 	return &componentv1.IssueAgentAccessResponse{Runtime: s.route, Ticket: "test-ticket"}, nil
@@ -208,7 +242,11 @@ func (s *backendTestServer) Access(ctx context.Context, stream agentv1connect.Ag
 	}
 	s.open <- request.GetOpen()
 	if s.accept {
-		if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
+		response := &agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}
+		if request.GetOpen().GetReverseTcpListen() != nil {
+			response.Frame = &agentv1.AccessResponse_ReverseTcpReady{ReverseTcpReady: &agentv1.ReverseTCPReady{Port: 43001}}
+		}
+		if err := stream.Send(response); err != nil {
 			return err
 		}
 	}

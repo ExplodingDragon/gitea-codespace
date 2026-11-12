@@ -38,8 +38,8 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: "/opt/example", Target: "/opt/example", ReadOnly: true})
 	require.Equal(t, request.Native.CDIDeviceIDs, options.PlatformDevices.CDI)
 	require.Equal(t, "1", options.ContainerEnv["GITEA_CLI_NO_UPDATE_NOTIFIER"])
-	require.Equal(t, containerCABundlePath, options.ContainerEnv["SSL_CERT_FILE"])
-	require.Equal(t, containerCABundlePath, options.ContainerEnv["NODE_EXTRA_CA_CERTS"])
+	require.Equal(t, containerCABundlePath, options.PlatformEnvironment["SSL_CERT_FILE"])
+	require.Equal(t, containerCABundlePath, options.PlatformEnvironment["NODE_EXTRA_CA_CERTS"])
 }
 
 func TestCreateOptionsSkipsWebIDEMountsWhenDisabled(t *testing.T) {

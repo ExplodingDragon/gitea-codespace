@@ -6,7 +6,6 @@ package gateway
 import (
 	"context"
 	"fmt"
-	"time"
 
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
@@ -22,7 +21,7 @@ func (c *componentControlPlane) authorize(ctx context.Context, payload *componen
 	if c == nil || c.Client == nil {
 		return nil, fmt.Errorf("gateway component control plane is unavailable")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	callCtx, cancel := context.WithTimeout(ctx, gatewayAuthorizationTimeout)
 	defer cancel()
 	payload.ProtocolVersion = 1
 	response, err := c.Client.AuthorizeGateway(callCtx, payload)

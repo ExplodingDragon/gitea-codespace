@@ -98,24 +98,11 @@ workflow.
 
 ## Kubernetes E2E
 
-The E2E suite uses a deterministic test provider and the Kubernetes cluster
-selected by an explicit `KUBECONFIG`. It validates the workspace lifecycle,
-Gateway access, storage, and the selected isolation runtime. Local runs clean up
-the resources created by the test but do not create or remove the cluster; CI
-provisions a fresh single-node k3s cluster for each runtime variant.
+CI runs the workspace lifecycle, Gateway, storage, and device integration tests
+on dedicated k3s workers for Kata, Sysbox, and Native runtimes. Ordinary local
+development uses the non-E2E commands above.
 
-```sh
-make images e2e-web-ide-image
-
-export KUBECONFIG=/path/to/test-kubeconfig
-export CODESPACE_E2E_GITEA_LISTEN=<host-and-port-reachable-from-the-cluster>
-export CODESPACE_E2E_NODE_ADDRESS=<worker-address-reachable-from-the-test-process>
-
-make test-e2e \
-  KUBERNETES_RUNTIME_ISOLATION=sysbox \
-  KUBERNETES_RUNTIME_CLASS=sysbox-runc \
-  KUBERNETES_STORAGE_CLASS=<storage-class>
-```
-
-The harness imports the locally built images and removes the resources it
-creates. CI runs Kata, Sysbox, and Native variants on fresh k3s clusters.
+For an explicit cluster run, follow the [E2E guide](tests/e2e/README.md). It
+covers worker preparation, image import, runtime selection, and diagnostics.
+The harness performs local worker operations as well as Kubernetes API calls,
+so choosing a kubeconfig alone is not enough to prepare a remote cluster.

@@ -8,10 +8,12 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"errors"
 	"io"
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -51,6 +53,33 @@ type streamTestSession struct{ io.WriteCloser }
 
 type gatewaySiteTargetStore struct {
 	siteUID string
+}
+
+type reverseTestListener struct {
+	connections chan *workspaceReverseConnection
+	failures    chan error
+	closed      chan struct{}
+	once        sync.Once
+}
+
+func (l *reverseTestListener) Port() uint32 { return 3240 }
+
+func (l *reverseTestListener) Accept(ctx context.Context) (*workspaceReverseConnection, error) {
+	select {
+	case connection := <-l.connections:
+		return connection, nil
+	case err := <-l.failures:
+		return nil, err
+	case <-l.closed:
+		return nil, net.ErrClosed
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (l *reverseTestListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
 }
 
 func (s gatewaySiteTargetStore) RuntimeTarget(runtimeUUID string) (runtimeSnapshot, bool) {
@@ -93,6 +122,202 @@ func TestGatewaySSHRuntimeRequiresAuthorizedSite(t *testing.T) {
 	require.True(t, available)
 	available = server.runtimeAvailable("runtime", "site-2")
 	require.False(t, available)
+}
+
+func TestGatewaySSHRevalidationPreservesSessionUntilDenied(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		var calls atomic.Int32
+		server := &sshServer{
+			revalidateInterval: time.Minute,
+			controlPlane: gatewayHandlerTestControlPlane{revalidateSSH: func(context.Context) (gatewayAccessDecision, error) {
+				if calls.Add(1) == 1 {
+					return gatewayAccessDecision{}, errors.New("temporary failure")
+				}
+				return gatewayAccessDecision{DeniedCategory: "permission_denied"}, nil
+			}},
+		}
+		go server.revalidateSession(ctx, gatewaySSHAuthContext{}, cancel)
+		synctest.Wait()
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		require.EqualValues(t, 1, calls.Load())
+		require.NoError(t, ctx.Err())
+		time.Sleep(time.Minute)
+		synctest.Wait()
+		require.EqualValues(t, 2, calls.Load())
+		require.ErrorIs(t, ctx.Err(), context.Canceled)
+	})
+}
+
+func TestGatewayReverseForwardCloseWaitsForOpenChannel(t *testing.T) {
+	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection), closed: make(chan struct{})}
+	forward := &gatewayReverseForward{listener: reverse}
+	require.True(t, forward.beginOpen())
+
+	closed := make(chan struct{})
+	go func() {
+		forward.close()
+		close(closed)
+	}()
+	select {
+	case <-reverse.closed:
+	case <-time.After(time.Second):
+		t.Fatal("Agent reverse listener was not closed")
+	}
+	select {
+	case <-closed:
+		t.Fatal("forward closed before the in-flight channel open finished")
+	default:
+	}
+	require.False(t, forward.beginOpen())
+	forward.endOpen()
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("forward did not close after the in-flight channel open finished")
+	}
+	select {
+	case <-reverse.closed:
+	default:
+		t.Fatal("Agent reverse listener was not closed")
+	}
+}
+
+func dialReverseTestSSH(t *testing.T, backend workspaceBackend) (*ssh.Client, <-chan error) {
+	t.Helper()
+	_, key, err := ed25519.GenerateKey(rand.Reader)
+	require.NoError(t, err)
+	signer, err := ssh.NewSignerFromKey(key)
+	require.NoError(t, err)
+	config := &ssh.ServerConfig{NoClientAuth: true}
+	config.AddHostKey(signer)
+	transport, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = transport.Close() })
+	server := &sshServer{state: gatewaySiteTargetStore{siteUID: "site"}, backend: backend, maxChannels: 4}
+	serverDone := make(chan error, 1)
+	go func() {
+		raw, err := transport.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		connection, channels, requests, err := ssh.NewServerConn(raw, config)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer connection.Close()
+		go func() {
+			for channel := range channels {
+				_ = channel.Reject(ssh.UnknownChannelType, "unsupported")
+			}
+		}()
+		server.handleGlobalRequests(t.Context(), gatewaySSHAuthContext{codespaceUUID: "runtime", siteUID: "site"}, connection, requests, make(chan struct{}, 1), make(chan struct{}, 4))
+		serverDone <- nil
+	}()
+	client, err := ssh.Dial("tcp", transport.Addr().String(), &ssh.ClientConfig{User: "test", HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 3 * time.Second})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = client.Close() })
+	return client, serverDone
+}
+
+func TestSSHReverseForwardUsesRuntimeListener(t *testing.T) {
+	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection, 1), closed: make(chan struct{})}
+	client, serverDone := dialReverseTestSSH(t, gatewayTestBackend{reverse: reverse})
+	forwarded, err := client.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	backend, peer := net.Pipe()
+	reverse.connections <- &workspaceReverseConnection{Connection: backend, OriginHost: "127.0.0.1", OriginPort: 41000}
+	connection, err := forwarded.Accept()
+	require.NoError(t, err)
+	defer connection.Close()
+	defer peer.Close()
+	_, err = connection.Write([]byte("usbip"))
+	require.NoError(t, err)
+	require.NoError(t, peer.SetReadDeadline(time.Now().Add(3*time.Second)))
+	buffer := make([]byte, 5)
+	_, err = io.ReadFull(peer, buffer)
+	require.NoError(t, err)
+	require.Equal(t, "usbip", string(buffer))
+	require.NoError(t, forwarded.Close())
+	select {
+	case <-reverse.closed:
+	case <-time.After(3 * time.Second):
+		t.Fatal("reverse listener was not canceled")
+	}
+	require.NoError(t, client.Close())
+	select {
+	case err := <-serverDone:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH server did not stop")
+	}
+}
+
+func TestSSHReverseForwardAcceptFailureClosesSession(t *testing.T) {
+	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection), failures: make(chan error, 1), closed: make(chan struct{})}
+	client, serverDone := dialReverseTestSSH(t, gatewayTestBackend{reverse: reverse})
+	defer client.Close()
+	_, err := client.Listen("tcp", "127.0.0.1:3240")
+	require.NoError(t, err)
+	reverse.failures <- errors.New("agent listener failed")
+	select {
+	case err := <-serverDone:
+		require.NoError(t, err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("SSH server did not close after reverse listener failure")
+	}
+	_, err = client.Listen("tcp", "127.0.0.1:3240")
+	require.Error(t, err)
+}
+
+func TestSSHReverseForwardNamedSources(t *testing.T) {
+	listeners := map[string]*reverseTestListener{}
+	client, _ := dialReverseTestSSH(t, gatewayTestBackend{reverseOpen: func(address string, port uint32) (workspaceReverseListener, error) {
+		listener := &reverseTestListener{connections: make(chan *workspaceReverseConnection, 1), closed: make(chan struct{})}
+		listeners[address] = listener
+		return listener, nil
+	}})
+	channels := client.HandleChannelOpen("forwarded-tcpip")
+	for _, address := range []string{"usbip.workstation", "usbip.lab"} {
+		ok, _, err := client.SendRequest("tcpip-forward", true, ssh.Marshal(gatewayTCPIPForwardRequest{Address: address, Port: 3240}))
+		require.NoError(t, err)
+		require.True(t, ok)
+		connection, peer := net.Pipe()
+		defer peer.Close()
+		listeners[address].connections <- &workspaceReverseConnection{Connection: connection, OriginHost: "127.0.0.1", OriginPort: 41000}
+		select {
+		case channel := <-channels:
+			var payload struct {
+				Address    string
+				Port       uint32
+				Origin     string
+				OriginPort uint32
+			}
+			require.NoError(t, ssh.Unmarshal(channel.ExtraData(), &payload))
+			require.Equal(t, address, payload.Address)
+			require.EqualValues(t, 3240, payload.Port)
+			require.NoError(t, channel.Reject(ssh.ConnectionFailed, "fixture"))
+		case <-time.After(3 * time.Second):
+			t.Fatal("missing named forwarded channel")
+		}
+	}
+	ok, _, err := client.SendRequest("cancel-tcpip-forward", true, ssh.Marshal(gatewayTCPIPForwardRequest{Address: "usbip.workstation", Port: 3240}))
+	require.NoError(t, err)
+	require.True(t, ok)
+	select {
+	case <-listeners["usbip.workstation"].closed:
+	default:
+		t.Fatal("source listener still open")
+	}
+	select {
+	case <-listeners["usbip.lab"].closed:
+		t.Fatal("unrelated source closed")
+	default:
+	}
 }
 
 func TestSSHForwardingHalfCloseAndChannelIsolation(t *testing.T) {

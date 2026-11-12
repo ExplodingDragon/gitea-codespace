@@ -7,7 +7,6 @@ package runtimecmd
 import (
 	"context"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -21,10 +20,7 @@ import (
 )
 
 func endpointClient() (agentv1connect.RuntimeEndpointServiceClient, *http.Client) {
-	transport := &http.Transport{DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-		return (&net.Dialer{}).DialContext(ctx, "unix", runtimeendpoint.ContainerSocketPath)
-	}}
-	client := &http.Client{Transport: transport}
+	client := runtimeHTTPClient()
 	return agentv1connect.NewRuntimeEndpointServiceClient(connect.NewClient(connecthttp.NewTransport(client, "http://runtime-agent"))), client
 }
 

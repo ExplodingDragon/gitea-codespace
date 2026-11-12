@@ -7,5 +7,10 @@
   "command.refresh": "Codespace: 포트 새로 고침",
   "command.rename": "Codespace: 포트 이름 변경",
   "command.visibility": "Codespace: 포트 공개 범위 변경",
-  "command.remove": "Codespace: 포트 제거"
+  "command.remove": "Codespace: 포트 제거",
+  "usb.view": "USB 장치",
+  "usb.refresh": "USB 장치 새로 고침",
+  "usb.attach": "USB 장치 연결",
+  "usb.detach": "USB 장치 연결 해제",
+  "usb.empty": "가져온 USB 장치가 없습니다."
 }

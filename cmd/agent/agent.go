@@ -132,7 +132,11 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err := os.Setenv("DOCKER_HOST", agentpkg.DockerHost); err != nil {
 		return err
 	}
-	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices}
+	usbIP, err := agentpkg.PrepareUSBIP(strings.TrimSpace(os.Getenv("CODESPACE_RUNTIME_ISOLATION")) == "kata")
+	if err != nil {
+		return fmt.Errorf("prepare Kata USB/IP: %w", err)
+	}
+	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices, USBIP: usbIP}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
 	if err != nil {
@@ -180,6 +184,7 @@ func prepareEndpointServer(ctx context.Context, runtime *agentpkg.Runtime) (net.
 	}
 	rpcServer := connect.NewServer()
 	agentv1connect.RegisterRuntimeEndpointServiceHandler(rpcServer, &agentpkg.RuntimeEndpointServer{Runtime: runtime})
+	agentv1connect.RegisterRuntimeUSBIPServiceHandler(rpcServer, &agentpkg.RuntimeUSBIPServer{Runtime: runtime})
 	mux := http.NewServeMux()
 	connecthttp.Mount(mux, rpcServer)
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 * 1024}

@@ -2,8 +2,8 @@ import { describe, expect, it, vi } from 'vitest'
 import {
   EndpointClient,
   parseEndpointList,
-  type EndpointCommandRunner,
 } from '../src/endpoint.ts'
+import type { CommandRunner } from '../src/cli.ts'
 
 describe('Codespace endpoint client', () => {
   it('parses, validates, sorts, and rejects duplicate versioned endpoints', () => {
@@ -26,7 +26,7 @@ describe('Codespace endpoint client', () => {
   })
 
   it('builds exact mutation arguments and forwards cancellation', async () => {
-    const runner = vi.fn<EndpointCommandRunner>(async () => ({
+    const runner = vi.fn<CommandRunner>(async () => ({
       stdout: JSON.stringify({ version: 1, endpoints: [] }), stderr: '',
     }))
     const client = new EndpointClient(runner)

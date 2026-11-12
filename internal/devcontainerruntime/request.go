@@ -28,6 +28,14 @@ type NativeContainerConfiguration struct {
 	ProvidesGPU  bool
 }
 
+// USBIPContainerConfiguration carries the Kata Guest device mounts prepared
+// by the outer Runtime into the primary Dev Container.
+type USBIPContainerConfiguration struct {
+	Enabled    bool
+	DeviceRoot string
+	DevptsRoot string
+}
+
 // Request supplies one Agent lifecycle action to the Dev Container executor.
 type Request struct {
 	Action               string
@@ -43,10 +51,12 @@ type Request struct {
 	Secrets              map[string]string
 	DevContainer         Configuration
 	Native               NativeContainerConfiguration
+	USBIP                USBIPContainerConfiguration
 	Cache                devcontainer.CacheOptions
 	Environment          *devcontainer.State
 	RunLifecycle         containerdocker.RunLifecycleFunc
 	RunTemplateLifecycle RunTemplateLifecycleFunc
+	BeforeContainerStop  func()
 }
 
 // Validate checks action-specific identity and state requirements.
@@ -55,6 +65,9 @@ func (r Request) Validate() error {
 		return fmt.Errorf("codespace uuid is empty")
 	}
 	if r.Action == "create" || r.Action == "resume" {
+		if r.USBIP.Enabled && (strings.TrimSpace(r.USBIP.DeviceRoot) == "" || strings.TrimSpace(r.USBIP.DevptsRoot) == "") {
+			return fmt.Errorf("USB/IP device mounts are incomplete")
+		}
 		giteaURL, err := url.Parse(strings.TrimSpace(r.GiteaURL))
 		if err != nil || (giteaURL.Scheme != "http" && giteaURL.Scheme != "https") || giteaURL.Host == "" || giteaURL.User != nil || giteaURL.RawQuery != "" || giteaURL.Fragment != "" {
 			return fmt.Errorf("invalid Gitea URL")

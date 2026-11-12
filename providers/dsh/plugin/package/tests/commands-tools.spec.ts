@@ -1,10 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
 import { executePortsCommand, parsePortsCommand } from '../src/commands.ts'
-import { EndpointClient, type EndpointCommandRunner } from '../src/endpoint.ts'
+import { EndpointClient } from '../src/endpoint.ts'
+import type { CommandRunner } from '../src/cli.ts'
 import { endpointTools } from '../src/tools.ts'
 
-function fixture(): { client: EndpointClient; runner: ReturnType<typeof vi.fn<EndpointCommandRunner>> } {
-  const runner = vi.fn<EndpointCommandRunner>(async args => ({
+function fixture(): { client: EndpointClient; runner: ReturnType<typeof vi.fn<CommandRunner>> } {
+  const runner = vi.fn<CommandRunner>(async args => ({
     stdout: args[0] === 'list'
       ? JSON.stringify({ version: 1, endpoints: [{ port: 3000, label: 'App', visibility: 'authenticated' }] })
       : '',

@@ -27,17 +27,14 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 	server := &AdminServer{Client: cluster.Client, Namespace: namespace}
 	suffix := uuid.NewV4().String()[:8]
 
-	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway-" + suffix}}
+	gateway := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "gateway-" + suffix, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	gatewaySpec := testGatewayComponent(gateway.Name, "").Spec
 	gatewaySpec.DisplayName = "E2E gateway"
 	gatewaySpec.Gateway.EndpointBaseURL = "https://gateway-" + suffix + ".example.test"
 	gatewaySpec.Gateway.SSHExternalAddress = "gateway-" + suffix + ".example.test:22"
-	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
-
-	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "cache-" + suffix}}
+	cache := &api.CodespaceComponent{ObjectMeta: metav1.ObjectMeta{Name: "cache-" + suffix, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	cacheSpec := testCacheComponent(cache.Name, "").Spec
 	cacheSpec.DisplayName, cacheSpec.Cache.MaxSize = "E2E cache", "512MiB"
-	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: cacheSpec}, true))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
@@ -63,6 +60,8 @@ func TestKubernetesE2EComponentWorkloads(t *testing.T) {
 			}, 30*time.Second, time.Second)
 		}
 	})
+	require.NoError(t, server.saveComponent(cluster.ctx, gateway, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: gateway.Name}, Spec: gatewaySpec}, true))
+	require.NoError(t, server.saveComponent(cluster.ctx, cache, adminComponentWrite{adminWriteIdentity: adminWriteIdentity{Name: cache.Name}, Spec: cacheSpec}, true))
 
 	for _, component := range []*api.CodespaceComponent{gateway, cache} {
 		desired := int32(1)

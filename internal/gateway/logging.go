@@ -90,10 +90,10 @@ func gatewayRequestLogAttrs(request *http.Request) []slog.Attr {
 	return attrs
 }
 
-func gatewayProxyLogAttrs(request *http.Request, route endpointRoute, upstreamPath string, proxyContext gatewayProxyRequestContext) []slog.Attr {
+func gatewayProxyLogAttrs(request *http.Request, route endpointRoute, proxyContext gatewayProxyRequestContext) []slog.Attr {
 	attrs := gatewayRequestLogAttrs(request)
 	attrs = append(attrs,
-		slog.String("upstream_path", boundedGatewayLogValue(upstreamPath, gatewayLogPathLimit)),
+		slog.String("upstream_path", boundedGatewayLogValue(request.URL.EscapedPath(), gatewayLogPathLimit)),
 		slog.String("access", proxyContext.access),
 	)
 	if proxyContext.userID > 0 {

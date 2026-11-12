@@ -20,6 +20,7 @@ const (
 	defaultGatewaySessionRevalidateInterval = 5 * time.Minute
 	defaultGatewayAccessAllowedTTL          = 30 * time.Second
 	defaultGatewayAccessCacheMaxKeys        = 65536
+	gatewayAuthorizationTimeout             = 10 * time.Second
 )
 
 type accessConfig struct {
@@ -286,25 +287,13 @@ func (c *accessController) validateAccess(
 	if c.cache.IsAllowed(key, now) {
 		return gatewayAccessDecision{Allowed: true}, false, nil
 	}
-	call, leader, ok := c.beginValidation(key)
-	if !ok {
-		return gatewayAccessDecision{}, true, errGatewayAccessLimitReached
-	}
-	if !leader {
-		select {
-		case <-call.done:
-			return call.decision, false, call.err
-		case <-ctx.Done():
-			return gatewayAccessDecision{}, false, ctx.Err()
+	return c.validateAccessUncached(ctx, key, func(ctx context.Context) (gatewayAccessDecision, error) {
+		decision, err := validate(ctx)
+		if err == nil && decision.Allowed {
+			c.cache.MarkAllowed(key, time.Now())
 		}
-	}
-
-	decision, err := validate(ctx)
-	if err == nil && decision.Allowed {
-		c.cache.MarkAllowed(key, time.Now())
-	}
-	c.finishValidation(key, call, decision, err)
-	return decision, false, err
+		return decision, err
+	})
 }
 
 func (c *accessController) validateAccessUncached(
@@ -316,18 +305,21 @@ func (c *accessController) validateAccessUncached(
 	if !ok {
 		return gatewayAccessDecision{}, true, errGatewayAccessLimitReached
 	}
-	if !leader {
-		select {
-		case <-call.done:
-			return call.decision, false, call.err
-		case <-ctx.Done():
-			return gatewayAccessDecision{}, false, ctx.Err()
-		}
+	if leader {
+		// A shared lookup outlives any individual request, but remains bounded.
+		validationCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), gatewayAuthorizationTimeout)
+		go func() {
+			defer cancel()
+			decision, err := validate(validationCtx)
+			c.finishValidation(key, call, decision, err)
+		}()
 	}
-
-	decision, err := validate(ctx)
-	c.finishValidation(key, call, decision, err)
-	return decision, false, err
+	select {
+	case <-call.done:
+		return call.decision, false, call.err
+	case <-ctx.Done():
+		return gatewayAccessDecision{}, false, ctx.Err()
+	}
 }
 
 func (c *accessController) beginValidation(key gatewayAuthorizationKey) (*gatewayValidationCall, bool, bool) {

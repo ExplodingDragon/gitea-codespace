@@ -57,6 +57,9 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		}
 		options.CustomizeImage = imageCustomization(request.DevContainer, platformGiteaCLIPath, stdout)
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			if err := prepareUSBIPContainer(ctx, engine, state, request.USBIP); err != nil {
+				return err
+			}
 			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
 			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
 				return err
@@ -74,14 +77,18 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stderr)
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "resume":
-		startFailed := false
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+			if err := prepareUSBIPContainer(ctx, engine, state, request.USBIP); err != nil {
+				return err
+			}
 			maps.Copy(state.RemoteEnvironment, request.Native.Environment)
 			if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
-				startFailed = true
 				return err
 			}
 			if err := configureCA(ctx, engine, state); err != nil {
+				return err
+			}
+			if err := configureRuntimeCommands(ctx, engine, state, request.USBIP.Enabled); err != nil {
 				return err
 			}
 			values := map[string]string{
@@ -94,23 +101,29 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			return nil
 		}, request.RunLifecycle)
 		if err != nil {
-			if startFailed {
-				stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
-				defer cancel()
-				_, stopErr := engine.Stop(stopContext, request.Environment)
-				return nil, errors.Join(err, stopErr)
-			}
-			return nil, err
+			// Start may have started some or all containers before preparing
+			// Runtime-owned mounts and lifecycle hooks. Always stop the saved
+			// environment on failure so a later resume sees a coherent state.
+			stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+			defer cancel()
+			_, stopErr := engine.Stop(stopContext, request.Environment)
+			return nil, errors.Join(err, stopErr)
 		}
 		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "stop":
 		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
+		if request.BeforeContainerStop != nil {
+			request.BeforeContainerStop()
+		}
 		stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
 		state, stopErr := engine.Stop(stopContext, request.Environment)
 		return &Outcome{Environment: state}, errors.Join(lifecycleErr, stopErr)
 	case "delete":
+		if request.BeforeContainerStop != nil {
+			request.BeforeContainerStop()
+		}
 		state, err := engine.Stop(ctx, request.Environment)
 		return &Outcome{Environment: state}, err
 	default:

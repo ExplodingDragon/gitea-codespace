@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -44,10 +45,20 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 		needsReport := false
 		for i := range observed.Items {
 			cs := &observed.Items[i]
+			if cs.Spec.Site.UID != uid {
+				continue
+			}
+			if c.Logs != nil {
+				stage, message, err := managerProgress(ctx, c.ObservationReader, cs)
+				if err != nil && ctx.Err() == nil {
+					logger.Error(err, "Observe runtime progress", "codespace", cs.Name)
+				} else if stage != "" {
+					_ = c.Logs.Append(cs, stage, []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}})
+				}
+			}
 			pending := cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (cs.Status.Result != nil || meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-			if cs.Spec.Site.UID == uid && cs.Status.Bound && (refresh || pending) {
+			if cs.Status.Bound && (refresh || pending) {
 				needsReport = true
-				break
 			}
 		}
 		if !needsReport {

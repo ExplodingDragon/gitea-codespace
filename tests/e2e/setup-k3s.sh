@@ -4,7 +4,9 @@ set -euo pipefail
 
 K3S_VERSION=v1.36.5+k3s1
 K3S_INSTALL_COMMIT=3461a87f36257bee62fafc980e43ef8b23514145
-KATA_VERSION=4.3.1
+source "$(dirname "${BASH_SOURCE[0]}")/kata-kernel.version"
+KATA_USBIP_RUNTIME_CLASS=kata-qemu-usbip-runtime-rs
+KATA_USBIP_KERNEL_PATH=/opt/kata/share/kernels/codespace-usbip-vmlinuz
 RAWFILE_VERSION=0.15.3
 SYSBOX_VERSION=0.7.1
 SYSBOX_SHA256=9d6d5484f980d0a17f86c492c1262015c2afb66280bdb97215b79fde6a0261c5
@@ -39,6 +41,10 @@ elif [[ $runtime == kata ]]; then
 	sudo chmod 0666 /dev/kvm
 	test -r /dev/kvm
 	test -w /dev/kvm
+	if [[ -z ${CODESPACE_E2E_KATA_KERNEL_DIR:-} || ! -r ${CODESPACE_E2E_KATA_KERNEL_DIR}/vmlinuz ]]; then
+		echo "CODESPACE_E2E_KATA_KERNEL_DIR must contain the CI-built USB/IP guest kernel" >&2
+		exit 1
+	fi
 fi
 
 echo "Installing k3s $K3S_VERSION"
@@ -86,6 +92,28 @@ if [[ $runtime == native ]]; then
 fi
 
 echo "Installing Kata Containers $KATA_VERSION"
+kata_values="$work/kata-usbip-values.yaml"
+cat >"$kata_values" <<EOF
+customRuntimes:
+  enabled: true
+  runtimes:
+    qemu-usbip-runtime-rs:
+      baseConfig: qemu-runtime-rs
+      dropIn: |
+        [hypervisor.qemu]
+        kernel = "$KATA_USBIP_KERNEL_PATH"
+      runtimeClass: |
+        apiVersion: node.k8s.io/v1
+        kind: RuntimeClass
+        metadata:
+          name: $KATA_USBIP_RUNTIME_CLASS
+          labels:
+            codespace.gitea.dev/isolation: kata
+        handler: $KATA_USBIP_RUNTIME_CLASS
+        scheduling:
+          nodeSelector:
+            katacontainers.io/kata-runtime: "true"
+EOF
 helm upgrade --install kata-deploy \
 	oci://ghcr.io/kata-containers/kata-deploy-charts/kata-deploy \
 	--version "$KATA_VERSION" \
@@ -93,10 +121,37 @@ helm upgrade --install kata-deploy \
 	--set k8sDistribution=k3s \
 	--set shims.disableAll=true \
 	--set shims.qemu-runtime-rs.enabled=true \
+	--values "$kata_values" \
 	--wait \
 	--timeout 10m
+containerd_kata_config=/var/lib/rancher/k3s/agent/etc/containerd/config-v3.toml.d/kata-deploy.toml
+if ! sudo awk -v handler="$KATA_USBIP_RUNTIME_CLASS" '
+	index($0, ".containerd.runtimes." handler "]") > 0 {
+		in_handler = 1
+		next
+	}
+	in_handler && /^\[/ {
+		in_handler = 0
+	}
+	in_handler {
+		line = $0
+		gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+		if (line == "privileged_without_host_devices = true") {
+			found = 1
+		}
+	}
+	END { exit !found }
+' "$containerd_kata_config"; then
+	echo "Kata handler $KATA_USBIP_RUNTIME_CLASS is missing privileged_without_host_devices=true" >&2
+	exit 1
+fi
 kubectl get runtimeclass/kata-qemu-runtime-rs >/dev/null
 kubectl label runtimeclass/kata-qemu-runtime-rs codespace.gitea.dev/isolation=kata --overwrite
+kubectl get "runtimeclass/$KATA_USBIP_RUNTIME_CLASS" >/dev/null
+kubectl label "runtimeclass/$KATA_USBIP_RUNTIME_CLASS" codespace.gitea.dev/isolation=kata --overwrite
+sudo install -D -m 0644 "$CODESPACE_E2E_KATA_KERNEL_DIR/vmlinuz" "$KATA_USBIP_KERNEL_PATH"
+sudo install -D -m 0644 "$CODESPACE_E2E_KATA_KERNEL_DIR/config" \
+	"${KATA_USBIP_KERNEL_PATH%/*}/codespace-usbip-config"
 
 echo "Installing RawFile LocalPV $RAWFILE_VERSION"
 helm repo add rawfile-localpv https://openebs.github.io/rawfile-localpv

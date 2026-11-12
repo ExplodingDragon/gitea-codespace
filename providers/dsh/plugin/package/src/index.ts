@@ -5,28 +5,32 @@ import type {} from '@deepseek-ai/dsh-tools'
 import { registerPortsCommand } from './commands.ts'
 import { EndpointClient } from './endpoint.ts'
 import { endpointTools } from './tools.ts'
-import type { Endpoint } from './types.ts'
+import { USBClient } from './usb.ts'
+import { registerUSBCommands } from './usb-commands.ts'
+import type { Endpoint, USBList, USBStatus } from './types.ts'
 
 export type * from './types.ts'
 
 declare module '@deepseek-ai/cordis' {
   interface Context {
-    /** Codespace runtime endpoint operations. */
+    /** Codespace runtime operations. */
     codespaceEndpoints: CodespaceEndpointService
   }
 }
 
-/** Host endpoint service shared by the browser, direct commands, and model tools. */
+/** Host runtime service shared by the browser, direct commands, and model tools. */
 export class CodespaceEndpointService extends TypertRemoteService {
   static inject = ['commands', 'tools']
 
   private readonly endpoints = new EndpointClient()
+  private readonly usb = new USBClient()
 
   /** Install the service and its non-browser entry points. */
   constructor(ctx: Context) {
     super(ctx, 'codespaceEndpoints', { namespace: 'codespace' })
     registerPortsCommand(ctx, this.endpoints)
     for (const tool of endpointTools(this.endpoints)) ctx.tools.register(tool)
+    registerUSBCommands(ctx, this.usb)
   }
 
   /** List the current runtime endpoint declarations. */
@@ -49,6 +53,32 @@ export class CodespaceEndpointService extends TypertRemoteService {
     const signal = this.ctx.invocation?.signal
     await this.endpoints.unpublish(port, signal)
     return this.endpoints.list(signal)
+  }
+
+  /** USB capability is fixed when the Runtime starts; tunnel state is separate. */
+  @Remote
+  usbAvailable(): boolean {
+    return this.usb.available
+  }
+
+  @Remote
+  usbList(): Promise<USBList> {
+    return this.usb.list(this.ctx.invocation?.signal)
+  }
+
+  @Remote
+  usbStatus(): Promise<USBStatus> {
+    return this.usb.status(this.ctx.invocation?.signal)
+  }
+
+  @Remote
+  usbAttach(busId: string, source: string): Promise<void> {
+    return this.usb.attach(busId, source, this.ctx.invocation?.signal)
+  }
+
+  @Remote
+  usbDetach(port: number): Promise<void> {
+    return this.usb.detach(port, this.ctx.invocation?.signal)
   }
 }
 

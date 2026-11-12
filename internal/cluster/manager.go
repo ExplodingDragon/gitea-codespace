@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/controlplane"
 	appsv1 "k8s.io/api/apps/v1"
@@ -315,7 +316,17 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		}
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges, Connections: connections}
-	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components, Connections: connections}
+	logs := &operationLogs{remote: func(ctx context.Context, ref api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
+		var site api.GiteaSite
+		if err := liveClient.Get(ctx, client.ObjectKey{Name: ref.Name}, &site); err != nil {
+			return nil, err
+		}
+		if site.UID != ref.UID || !site.Spec.Enabled || !site.DeletionTimestamp.IsZero() {
+			return nil, fmt.Errorf("operation log site is no longer active")
+		}
+		return connections.ForSite(ctx, &site)
+	}}
+	control := &AgentControlServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Caches: components, Connections: connections, Logs: logs}
 	resourceMetrics, err := metricsclient.NewForConfig(config)
 	if err != nil {
 		return nil, err
@@ -327,7 +338,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := mgr.Add(&ResourceCollector{Reader: mgr.GetClient(), Metrics: resourceMetrics, Nodes: coreClient.RESTClient(), Samples: &control.Samples}); err != nil {
 		return nil, err
 	}
-	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, Connections: connections, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
+	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, Connections: connections, Logs: logs, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {

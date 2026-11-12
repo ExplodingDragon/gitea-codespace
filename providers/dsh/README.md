@@ -113,6 +113,35 @@ The model can use `codespace_list_ports`, `codespace_publish_port`, and
 ports. Authenticated access is the default; public access must be selected
 explicitly because it allows requests without a Codespace user session.
 
+## USB devices
+
+Compatible Kata runtimes expose a **USB Devices** page with imported devices,
+source groups, remote device listing, attach and detach. First establish
+the workstation's [SSH reverse tunnel](../../docs/usbip.md#connect-a-source).
+The page and its commands appear when the runtime provides the USB CLI; the
+page remains available if the tunnel disconnects so you can inspect or detach
+imported devices.
+
+The conversation command uses the same CLI as the page:
+
+```text
+/usb status
+/usb sources
+/usb list
+/usb list --source workstation
+/usb attach 1-1 --source workstation
+/usb detach 0
+```
+
+`attach` takes a source name and remote bus ID from `list`; the source can be
+omitted when only one is registered. `detach` takes the VHCI port from
+`status`, which can be zero. The model receives `codespace_usb_sources`, `codespace_usb_list`,
+`codespace_usb_status`, `codespace_usb_attach`, and `codespace_usb_detach` only
+when USB is supported. Detaching interrupts applications using that device.
+Source registration reports an SSH listener, not remote USB/IP server health.
+Listing reports errors per source while preserving other sources' devices.
+After a timeout, check status before repeating an attach or detach.
+
 ## Development
 
 Run `make -C providers/dsh check` for focused validation. See the [provider

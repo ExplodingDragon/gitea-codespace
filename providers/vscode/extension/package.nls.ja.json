@@ -7,5 +7,10 @@
   "command.refresh": "Codespace: ポートを更新",
   "command.rename": "Codespace: ポート名を変更",
   "command.visibility": "Codespace: ポートの公開範囲を変更",
-  "command.remove": "Codespace: ポートを削除"
+  "command.remove": "Codespace: ポートを削除",
+  "usb.view": "USB デバイス",
+  "usb.refresh": "USB デバイスを更新",
+  "usb.attach": "USB デバイスを接続",
+  "usb.detach": "USB デバイスを切断",
+  "usb.empty": "インポート済みの USB デバイスはありません。"
 }

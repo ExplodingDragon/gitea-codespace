@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MIT
 
 import { execFile } from "node:child_process";
+import { constants } from "node:fs";
+import { access } from "node:fs/promises";
 import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
@@ -64,13 +66,54 @@ export function parseEndpointList(output: string): Endpoint[] {
   });
 }
 
-export class EndpointClient {
+export class RuntimeCommand {
   private readonly abortController = new AbortController();
 
-  constructor(private readonly log: (message: string) => void) {}
+  constructor(
+    private readonly file: string,
+    private readonly timeout: number,
+    private readonly log: (message: string) => void,
+  ) {}
+
+  async available(): Promise<boolean> {
+    try {
+      await access(this.file, constants.X_OK);
+      return true;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "EACCES") return false;
+      throw error;
+    }
+  }
 
   dispose(): void {
     this.abortController.abort();
+  }
+
+  protected async run(
+    arguments_: string[],
+  ): Promise<{ stdout: string; stderr: string }> {
+    this.log(`$ ${this.file} ${arguments_.map(shellQuote).join(" ")}`);
+    try {
+      const result = await execFileAsync(this.file, arguments_, {
+        encoding: "utf8",
+        signal: this.abortController.signal,
+        timeout: this.timeout,
+        maxBuffer: 1024 * 1024,
+      });
+      if (result.stderr.trim()) this.log(result.stderr.trimEnd());
+      return result;
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      this.log(detail);
+      throw error;
+    }
+  }
+}
+
+export class EndpointClient extends RuntimeCommand {
+  constructor(log: (message: string) => void) {
+    super(endpointCLI, 5000, log);
   }
 
   async list(): Promise<Endpoint[]> {
@@ -91,26 +134,6 @@ export class EndpointClient {
 
   async delete(port: number): Promise<void> {
     await this.run(["delete", String(port)]);
-  }
-
-  private async run(
-    arguments_: string[],
-  ): Promise<{ stdout: string; stderr: string }> {
-    this.log(`$ ${endpointCLI} ${arguments_.map(shellQuote).join(" ")}`);
-    try {
-      const result = await execFileAsync(endpointCLI, arguments_, {
-        encoding: "utf8",
-        signal: this.abortController.signal,
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-      });
-      if (result.stderr.trim()) this.log(result.stderr.trimEnd());
-      return result;
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.log(detail);
-      throw error;
-    }
   }
 }
 

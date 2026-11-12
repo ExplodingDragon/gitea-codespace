@@ -14,6 +14,7 @@ ARTIFACTS=${CODESPACE_E2E_ARTIFACTS:-".tmp/e2e/${RUN_ID}"}
 RUN_LABEL=codespace.gitea.dev/e2e-run
 PORT_FORWARD_PID=
 DEVICE_PLUGIN_PID=
+USBIP_FIXTURE_PID=
 DEVICE_PLUGIN_SOCKET=/var/lib/kubelet/device-plugins/codespace-e2e-fuse.sock
 DEVICE_PLUGIN_CDI_SPEC=/var/run/cdi/codespace-e2e-fuse.yaml
 
@@ -67,6 +68,13 @@ elif [[ -z ${CODESPACE_E2E_RUNTIME_CLASS:-} ]]; then
 	echo "CODESPACE_E2E_RUNTIME_CLASS is required for $CODESPACE_E2E_RUNTIME_ISOLATION" >&2
 	exit 1
 fi
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == kata ]]; then
+	if [[ -z ${CODESPACE_E2E_USBIP_RUNTIME_CLASS:-} || -z ${CODESPACE_E2E_USBIP_KERNEL_RELEASE:-} ]]; then
+		echo "CODESPACE_E2E_USBIP_RUNTIME_CLASS and CODESPACE_E2E_USBIP_KERNEL_RELEASE are required for the Kata USB/IP product E2E" >&2
+		exit 1
+	fi
+fi
+
 if ((${#MANAGER_NAME} > 63)); then
 	echo "CODESPACE_E2E_MANAGER_NAME must fit the Kubernetes 63-character name limit" >&2
 	exit 1
@@ -120,8 +128,12 @@ cleanup() {
 	if [[ -n $DEVICE_PLUGIN_PID ]]; then
 		sudo kill "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
 		wait "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
+		sudo rm -f "$DEVICE_PLUGIN_SOCKET" "$DEVICE_PLUGIN_CDI_SPEC"
 	fi
-	sudo rm -f "$DEVICE_PLUGIN_SOCKET" "$DEVICE_PLUGIN_CDI_SPEC"
+	if [[ -n $USBIP_FIXTURE_PID ]]; then
+		kill "$USBIP_FIXTURE_PID" >/dev/null 2>&1 || true
+		wait "$USBIP_FIXTURE_PID" >/dev/null 2>&1 || true
+	fi
 	if ! "$KUBECTL_BIN" delete codespacecomponents,giteasites,environmenttemplates -l "$RUN_LABEL=$RUN_ID" --wait=false >/dev/null 2>&1; then
 		cleanup_failed=1
 	fi
@@ -158,6 +170,49 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == kata ]]; then
+	if [[ -n ${CODESPACE_E2E_USBIP_FIXTURE:-} ]]; then
+		usbip_fixture=$CODESPACE_E2E_USBIP_FIXTURE
+		if [[ ! -x $usbip_fixture ]]; then
+			echo "CODESPACE_E2E_USBIP_FIXTURE must point to an executable fixture" >&2
+			exit 1
+		fi
+	else
+		if ! command -v cargo >/dev/null 2>&1; then
+			echo "cargo is required to build the Kata USB/IP product fixture" >&2
+			exit 1
+		fi
+		usbip_fixture="$ARTIFACTS/bin/codespace-usbip-echo"
+		echo "Building the pinned virtual CDC ACM USB/IP fixture"
+		CARGO_TARGET_DIR="$ARTIFACTS/usbip-target" cargo build --manifest-path tests/e2e/usbip/Cargo.toml --locked --release --bin codespace-usbip-echo
+		cp "$ARTIFACTS/usbip-target/release/codespace-usbip-echo" "$usbip_fixture"
+		chmod 0555 "$usbip_fixture"
+	fi
+	"$usbip_fixture" >"$ARTIFACTS/diagnostics/usbip-fixture.log" 2>&1 &
+	USBIP_FIXTURE_PID=$!
+	fixture_ready=0
+	for ((attempt = 0; attempt < 100; attempt++)); do
+		if ! kill -0 "$USBIP_FIXTURE_PID" 2>/dev/null; then
+			cat "$ARTIFACTS/diagnostics/usbip-fixture.log" >&2
+			exit 1
+		fi
+		if (exec 3<>/dev/tcp/127.0.0.1/3240) 2>/dev/null && (exec 3<>/dev/tcp/127.0.0.1/3241) 2>/dev/null; then
+			fixture_ready=1
+			break
+		fi
+		sleep 0.1
+	done
+	if ! kill -0 "$USBIP_FIXTURE_PID" 2>/dev/null; then
+		cat "$ARTIFACTS/diagnostics/usbip-fixture.log" >&2
+		exit 1
+	fi
+	if ((fixture_ready == 0)); then
+		echo "USB/IP fixture did not listen on 127.0.0.1 ports 3240 and 3241" >&2
+		exit 1
+	fi
+	export CODESPACE_E2E_USBIP=1
+fi
+
 echo "Checking Kubernetes prerequisites"
 "$KUBECTL_BIN" version >/dev/null
 "$KUBECTL_BIN" get "storageclass/$CODESPACE_E2E_STORAGE_CLASS" >/dev/null
@@ -165,6 +220,11 @@ if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
 	"$KUBECTL_BIN" get "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" >/dev/null
 	"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_RUNTIME_CLASS" \
 		"codespace.gitea.dev/isolation=$CODESPACE_E2E_RUNTIME_ISOLATION" --overwrite >/dev/null
+	if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == kata && $CODESPACE_E2E_USBIP_RUNTIME_CLASS != "$CODESPACE_E2E_RUNTIME_CLASS" ]]; then
+		"$KUBECTL_BIN" get "runtimeclass/$CODESPACE_E2E_USBIP_RUNTIME_CLASS" >/dev/null
+		"$KUBECTL_BIN" label "runtimeclass/$CODESPACE_E2E_USBIP_RUNTIME_CLASS" \
+			codespace.gitea.dev/isolation=kata --overwrite >/dev/null
+	fi
 fi
 
 if [[ -n ${CODESPACE_E2E_WEB_IDE_ARCHIVE:-} ]]; then
@@ -179,7 +239,7 @@ if [[ -n ${CODESPACE_E2E_WEB_IDE_ARCHIVE:-} ]]; then
 		;;
 	esac
 	web_ide_repository=${CODESPACE_E2E_WEB_IDE_IMAGE%:*}
-	sudo k3s ctr --namespace k8s.io images tag --local "$CODESPACE_E2E_WEB_IDE_IMAGE" "$web_ide_repository@$web_ide_digest"
+	sudo k3s ctr --namespace k8s.io images tag --local --force "$CODESPACE_E2E_WEB_IDE_IMAGE" "$web_ide_repository@$web_ide_digest"
 fi
 
 echo "Building Runtime test binaries"
@@ -213,7 +273,7 @@ devices:
           hostPath: /dev/fuse
           permissions: rwm
 EOF
-	sudo "$ARTIFACTS/bin/device-plugin" >"$ARTIFACTS/device-plugin.log" 2>&1 &
+	sudo "$ARTIFACTS/bin/device-plugin" >"$ARTIFACTS/diagnostics/device-plugin.log" 2>&1 &
 	DEVICE_PLUGIN_PID=$!
 	for ((attempt = 0; attempt < 120; attempt++)); do
 		allocatable=$("$KUBECTL_BIN" get node -o jsonpath='{.items[0].status.allocatable.e2e\.codespace\.gitea\.dev/fuse}' 2>/dev/null || true)
@@ -221,7 +281,7 @@ EOF
 			break
 		fi
 		if ! sudo kill -0 "$DEVICE_PLUGIN_PID" 2>/dev/null; then
-			cat "$ARTIFACTS/device-plugin.log" >&2
+			cat "$ARTIFACTS/diagnostics/device-plugin.log" >&2
 			exit 1
 		fi
 		sleep 1
@@ -289,7 +349,7 @@ echo "Deploying S3Mock"
 "$KUBECTL_BIN" expose deployment s3mock -n "$MANAGEMENT_NAMESPACE" --name=s3mock --port=9090 --target-port=9090
 "$KUBECTL_BIN" rollout status deployment/s3mock -n "$MANAGEMENT_NAMESPACE" --timeout=5m
 
-port_forward_log="$ARTIFACTS/s3mock-port-forward.log"
+port_forward_log="$ARTIFACTS/diagnostics/s3mock-port-forward.log"
 "$KUBECTL_BIN" port-forward -n "$MANAGEMENT_NAMESPACE" service/s3mock :9090 >"$port_forward_log" 2>&1 &
 PORT_FORWARD_PID=$!
 for ((attempt = 0; attempt < 100; attempt++)); do

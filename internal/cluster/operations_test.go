@@ -79,13 +79,14 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.ErrorContains(t, err, "invalid effective Runtime settings")
 	require.True(t, apierrors.IsNotFound(c.Get(t.Context(), types.NamespacedName{Namespace: "codespace-example", Name: "codespace-2"}, &api.Codespace{})))
 
-	input := &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard", RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}
+	input := &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000, LogOffset: 120, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: "standard", RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}
 	require.ErrorContains(t, o.Accept(t.Context(), site, remote, input, time.Now()), "binding response lost")
 	var cs api.Codespace
 	require.NoError(t, c.Get(t.Context(), key, &cs))
 	require.False(t, cs.Status.Bound)
 	require.Zero(t, o.Authority.Remaining(cs.UID, 1))
 	// Recovery uses the persisted UUID even if the original payload had none.
+	input.LogOffset = 256
 	require.NoError(t, o.Accept(t.Context(), site, remote, input, time.Now()))
 	require.NoError(t, c.Get(t.Context(), key, &cs))
 	require.True(t, cs.Status.Bound)
@@ -93,6 +94,8 @@ func TestOperationBindingRecovery(t *testing.T) {
 	saved := &codespacev1.OperationPayload{}
 	require.NoError(t, protojson.Unmarshal(cs.Spec.Operation.Payload.Raw, saved))
 	require.Zero(t, saved.LeaseValidForMilliseconds)
+	require.Zero(t, saved.LogOffset)
+	require.EqualValues(t, 256, input.LogOffset)
 	require.Empty(t, input.RuntimeUuid)
 	cs.Status.RecoveryAction = "stop"
 	require.NoError(t, c.Status().Update(t.Context(), &cs))

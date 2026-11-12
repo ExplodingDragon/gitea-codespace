@@ -67,7 +67,7 @@ func OpenJournal(directory string, identity VolumeIdentity) (_ *Journal, err err
 			_ = j.Close()
 		}
 	}()
-	for _, name := range []string{"state", "identity", "logs", "workspaces"} {
+	for _, name := range []string{"state", "identity", "workspaces"} {
 		if err := root.Mkdir(name, 0o700); err != nil && !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
@@ -90,7 +90,7 @@ func OpenJournal(directory string, identity VolumeIdentity) (_ *Journal, err err
 	if errors.Is(err, os.ErrNotExist) {
 		// Missing bookkeeping cannot turn an existing Docker volume into a fresh
 		// create: that would replay user commands whose completion is unknown.
-		for _, name := range []string{"state", "identity", "logs", "workspaces", "docker", "containerd"} {
+		for _, name := range []string{"state", "identity", "workspaces", "docker", "containerd"} {
 			directory, err := root.OpenFile(name, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
 			if errors.Is(err, os.ErrNotExist) {
 				continue

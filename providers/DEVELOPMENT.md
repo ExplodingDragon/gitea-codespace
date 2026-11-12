@@ -13,23 +13,38 @@ This guide describes provider protocol version 1. The fake provider under
 
 ## Lifecycle
 
-The selected provider participates in a codespace start as follows:
+When an environment template is saved, Manager validates the provider's OCI
+metadata and records its immutable `sha256` image reference. A new Codespace
+copies that configuration into its runtime snapshot; later template edits
+apply to subsequently created Codespaces.
 
-1. Manager resolves the configured image tag, validates its OCI metadata, and
-   stores an immutable `sha256` reference in the environment template.
-2. Kubernetes runs the image once as an init container. Its entrypoint copies
+Each start uses that snapshot:
+
+1. Kubernetes runs the image as an init container. Its entrypoint copies
    the provider bundle to `/output/current`.
-3. Agent validates the bundle manifest and mounts the bundle read-only in the
+2. Agent validates the bundle manifest and mounts the bundle read-only in the
    Dev Container.
-4. Agent invokes `bin/prepare` as the Dev Container remote user. The adapter
+3. Agent invokes `bin/prepare` as the Dev Container remote user. The adapter
    receives the template and repository settings on standard input.
-5. Agent starts `bin/serve` with a detached Docker execution and publishes the
+4. Agent starts `bin/serve` with a detached Docker execution and publishes the
    browser endpoint after Docker accepts that execution.
 
 The init image is a carrier rather than the editor process itself. The editor
 runs inside the Dev Container, so its executable must be compatible with the
 libraries available in the Dev Container images that the environment supports.
 A statically linked executable is the most portable choice.
+
+The failure stage determines which access remains available:
+
+| Stage | Effect |
+| --- | --- |
+| Init-container image pull or export | Runtime startup waits for Kubernetes to complete the init container; Dev Container access, including SSH, is not available yet |
+| Agent bundle validation, `bin/prepare`, or Docker execution submission | Agent records a warning and withholds the Web IDE endpoint; Dev Container startup and SSH proceed independently |
+| Editor startup or a later editor exit | The published endpoint remains present; Gateway returns a temporary `502 Workspace is unavailable` while the editor is not listening |
+
+This separates the files required to start the Runtime from the editor process
+running inside it. Provider process recovery is described under
+[`bin/serve`](#binserve).
 
 ### Implementation acceptance criteria
 
@@ -38,6 +53,8 @@ A statically linked executable is the most portable choice.
   user, starts `bin/serve`, and publishes one browser endpoint.
 - The editor process runs inside the Dev Container and can use the workspace,
   declared environment, and persistent provider data.
+- An init-container failure blocks Runtime startup; a later editor preparation
+  or launch failure only withholds Web IDE access.
 
 ## Provider identity and image metadata
 
@@ -136,29 +153,28 @@ program/...
 The manifest is limited to 64 KiB. `bin/prepare` and `bin/serve` must be regular
 executable files. Everything else under the bundle is provider-owned.
 
-The entrypoint should stage the complete bundle and finish with one rename. The
-rename prevents Agent from observing a partially copied editor when the init
-container is interrupted. The official images use the shared
-[`export.sh`](export.sh) implementation so every provider applies the same
-manifest, executable, and atomic-publication checks. A third-party image can
-use the same flow:
+The entrypoint stages the complete bundle and finishes with one rename so an
+interrupted copy leaves the final path unpublished. The official images share
+[`export.sh`](export.sh), which checks that the manifest and executable programs
+are present before publishing. Agent then parses the manifest as JSON and
+checks its protocol, provider identity, architecture, and version. This keeps
+semantic validation in one implementation and accepts normal JSON whitespace.
+A third-party image can use the same export flow:
 
 ```sh
 #!/bin/sh
 set -eu
 
 output=/output
-expected=${CODESPACE_WEB_IDE_EXPECTED_PROVIDER:?}
 staging="$output/.provider-$$"
 
-test "$expected" = example
 test ! -e "$output/current"
 trap 'rm -rf "$staging"' EXIT INT TERM
 mkdir -p "$staging"
 cp -a /provider/. "$staging/"
+test -f "$staging/manifest.json"
 test -x "$staging/bin/prepare"
 test -x "$staging/bin/serve"
-grep -Fq '"provider":"example"' "$staging/manifest.json"
 mv "$staging" "$output/current"
 trap - EXIT INT TERM
 ```
@@ -167,7 +183,8 @@ trap - EXIT INT TERM
 
 - Running the image with an empty `/output` creates one complete
   `/output/current` directory.
-- The manifest provider and architecture match the selected image manifest.
+- Agent accepts formatted JSON and verifies the provider and architecture
+  against the selected runtime configuration.
 - `bin/prepare` and `bin/serve` are executable, while program assets remain
   provider-owned and read-only after they enter the Dev Container.
 - Interrupting export leaves no partial `current` directory for Agent to mount.
@@ -187,7 +204,8 @@ following environment:
 
 The normal Dev Container remote environment and declared secrets are also
 available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`; the program
-bundle is read-only and is replaced when a template selects a new image digest.
+bundle is read-only and comes from the digest in the Codespace runtime snapshot,
+including after Pod replacement.
 Because the adapter intentionally receives the development environment and its
 secrets, selecting a provider image is equivalent to trusting another
 development tool. Digest pinning makes that reviewed input stable and
@@ -239,9 +257,9 @@ set -eu
 exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/program/bin/example-adapter" prepare
 ```
 
-A nonzero exit makes the Web IDE unavailable for that start, while SSH and the
-rest of the codespace remain available. Emit a concise error to standard error
-so it appears in the codespace operation log.
+A nonzero exit withholds the Web IDE endpoint for that start, as described in
+the [lifecycle table](#lifecycle). Emit a concise error to standard error so it
+appears in the codespace operation log.
 
 ### `bin/serve`
 
@@ -271,12 +289,9 @@ editor running. `HUP`, `INT`, and `TERM` are forwarded to the current editor
 process and end the Provider loop, which lets Docker stop the Dev Container
 without the Provider starting a replacement process.
 
-Docker accepting the detached execution completes the platform launch contract
-and publishes the browser endpoint. Provider readiness remains independent from
-the Dev Container, SSH, and other endpoints. Gateway returns `502 Workspace is
-unavailable` while the Provider is not listening, and later requests succeed as
-soon as the Provider is serving again without changing the Codespace lifecycle
-state.
+Docker accepting the detached execution completes the platform launch contract.
+Once the endpoint is published, later requests can reach a restarted editor
+without changing the Codespace lifecycle state.
 
 ### Implementation acceptance criteria
 
@@ -332,7 +347,7 @@ COPY dist/${TARGETARCH}/ /provider/
 LABEL org.opencontainers.image.version=$PROVIDER_VERSION \
       org.opencontainers.image.source="https://example.com/owner/provider" \
       org.opencontainers.image.revision=$PROVIDER_REVISION \
-      dev.gitea.codespace.web-ide.metadata='{"metadataVersion":1,"protocolVersion":1,"provider":{"id":"example","name":"Example IDE"},"optionsSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{},"additionalProperties":false}}'
+      dev.gitea.codespace.web-ide.metadata='{"metadataVersion":1,"protocolVersion":1,"provider":{"id":"example","name":"Example IDE"},"optionsSchema":{"$schema":"https://json-schema.org/draft/2020-12/schema","type":"object","properties":{"extensions":{"type":"array","items":{"type":"string","minLength":1},"uniqueItems":true,"default":[]},"settings":{"type":"object","additionalProperties":true,"default":{}}},"additionalProperties":false}}'
 
 USER 0:0
 ENTRYPOINT ["/usr/local/bin/export-web-ide"]
@@ -370,12 +385,12 @@ plugin against those exact workspace packages. It stops after plugin bundling
 and tests, so pull-request validation catches upstream API drift without
 building the editor release or carrier image.
 
-Pull requests that change an official provider run its dedicated validation
-workflow. A push to `main` builds native amd64 and arm64 bundles and publishes a
-multi-platform `main` image. The platform workflow ignores `providers/**`
-because provider images have independent dependencies and release lifecycles;
-changes that also touch platform files still run the platform workflow. This
-keeps provider-specific dependencies out of the platform build toolchain.
+Changes to an official provider's code or build inputs run its dedicated
+validation workflow. Matching pushes to `main` build native amd64 and arm64
+bundles and publish a multi-platform `main` image. Shared build inputs trigger
+both providers. The platform workflow ignores `providers/**`; changes that also
+touch platform files still run that workflow. See the workflow path filters
+under [`.github/workflows`](../.github/workflows) for documentation exclusions.
 
 ## Test the image locally
 
@@ -400,13 +415,10 @@ test -x "$output/current/bin/serve"
 cat "$output/current/manifest.json"
 ```
 
-An export failure prevents the runtime pod from starting because Kubernetes
-must complete the init container first. A later `prepare` or Docker execution
-failure is reported in the codespace operation log and only withholds browser
-access. Once Docker accepts `bin/serve`, the endpoint remains published even if
-the Provider later exits; Gateway then reports that the Workspace is
-unavailable. SSH and the rest of the Dev Container remain available in each
-case.
+This checks image export on the selected architecture. Create a Codespace to
+also validate Agent's manifest checks and the adapter inside a real Dev
+Container. Use the [lifecycle table](#lifecycle) to distinguish an init-container
+failure from an editor preparation or serving failure.
 
 ## Connect the provider to Codespace
 

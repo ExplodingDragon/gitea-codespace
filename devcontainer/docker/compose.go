@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"path/filepath"
@@ -16,7 +17,10 @@ import (
 
 	composecli "github.com/compose-spec/compose-go/v2/cli"
 	composetypes "github.com/compose-spec/compose-go/v2/types"
+	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/flags"
 	"github.com/docker/compose/v2/pkg/api"
+	compose "github.com/docker/compose/v2/pkg/compose"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
@@ -30,7 +34,7 @@ func composeProjectName(ownerID string) string {
 	return fmt.Sprintf("devcontainer-%x", digest[:12])
 }
 
-func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc) (string, []string, map[string]string, map[string]string, error) {
+func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, projectName string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc, mutate MutateContainerCreateFunc) (string, []string, map[string]string, map[string]string, error) {
 	files := make([]string, 0, len(resolved.DockerComposeFile))
 	for _, value := range resolved.DockerComposeFile {
 		var file string
@@ -242,7 +246,30 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		relatedService.Image = localImage
 		project.Services[name] = relatedService
 	}
-	if err := e.compose.Up(ctx, project, api.UpOptions{
+	composeService := e.compose
+	if mutate != nil {
+		primaryService := resolved.Service
+		mutatePrimary := func(config *container.Config, hostConfig *container.HostConfig) error {
+			if config.Labels[api.ServiceLabel] != primaryService {
+				return nil
+			}
+			return mutate(config, hostConfig)
+		}
+		cli, err := command.NewDockerCli(
+			command.WithBaseContext(ctx),
+			command.WithInputStream(io.NopCloser(strings.NewReader(""))),
+			command.WithOutputStream(e.stdout),
+			command.WithErrorStream(e.stderr),
+		)
+		if err != nil {
+			return "", nil, nil, nil, fmt.Errorf("create platform Docker Compose client: %w", err)
+		}
+		if err := cli.Initialize(flags.NewClientOptions(), command.WithAPIClient(&mutatingAPIClient{APIClient: e.client, mutate: mutatePrimary})); err != nil {
+			return "", nil, nil, nil, fmt.Errorf("initialize platform Docker Compose client: %w", err)
+		}
+		composeService = compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil }))
+	}
+	if err := composeService.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{Services: services, RemoveOrphans: true, AssumeYes: true},
 		Start:  api.StartOptions{Project: project, Services: services, Wait: true, WaitTimeout: 2 * time.Minute},
 	}); err != nil {

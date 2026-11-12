@@ -184,8 +184,6 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	}
 	_ = conn.SetDeadline(time.Time{})
 	defer func() { _ = sshConn.Close() }()
-	go ssh.DiscardRequests(requests)
-
 	auth, ok := gatewaySSHAuthFromPermissions(sshConn.Permissions)
 	if !ok {
 		return
@@ -223,6 +221,7 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	go s.revalidateSession(sessionCtx, auth, cancel)
 	go s.cancelIdleSession(sessionCtx, cancel, activity)
 	channelSlots := make(chan struct{}, s.maxChannels)
+	go s.handleGlobalRequests(sessionCtx, auth, sshConn, requests, activity, channelSlots)
 
 	for channel := range channels {
 		select {
@@ -237,6 +236,186 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 				<-channelSlots
 			}()
 			s.handleChannel(sessionCtx, auth, channel, activity)
+		}()
+	}
+}
+
+const usbIPReversePort uint32 = 3240
+
+type gatewayTCPIPForwardRequest struct {
+	Address string
+	Port    uint32
+}
+
+// gatewayReverseForward owns one SSH remote-forward request. The opening
+// counter closes the small race between cancel-tcpip-forward and a connection
+// that has already been accepted from the Agent but has not finished opening
+// its forwarded-tcpip channel yet.
+type gatewayReverseForward struct {
+	listener workspaceReverseListener
+	bind     gatewayTCPIPForwardRequest
+
+	mu       sync.Mutex
+	closing  bool
+	closeErr error
+	stopDone chan struct{}
+	opening  sync.WaitGroup
+}
+
+func (f *gatewayReverseForward) beginOpen() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.closing {
+		return false
+	}
+	f.opening.Add(1)
+	return true
+}
+
+func (f *gatewayReverseForward) endOpen() {
+	f.opening.Done()
+}
+
+func (f *gatewayReverseForward) stop() {
+	f.mu.Lock()
+	if f.closing {
+		stopDone := f.stopDone
+		f.mu.Unlock()
+		<-stopDone
+		return
+	}
+	f.closing = true
+	f.stopDone = make(chan struct{})
+	stopDone := f.stopDone
+	f.mu.Unlock()
+	closeErr := f.listener.Close()
+	f.mu.Lock()
+	f.closeErr = closeErr
+	f.mu.Unlock()
+	close(stopDone)
+}
+
+func (f *gatewayReverseForward) isStopping() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closing
+}
+
+func (f *gatewayReverseForward) close() error {
+	f.stop()
+	f.opening.Wait()
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.closeErr
+}
+
+func (s *sshServer) handleGlobalRequests(ctx context.Context, auth gatewaySSHAuthContext, connection *ssh.ServerConn, requests <-chan *ssh.Request, activity chan<- struct{}, channelSlots chan struct{}) {
+	forwards := make(map[gatewayTCPIPForwardRequest]*gatewayReverseForward)
+	defer func() {
+		for _, forward := range forwards {
+			_ = forward.close()
+		}
+	}()
+	for request := range requests {
+		notifyGatewaySSHActivity(activity)
+		switch request.Type {
+		case "tcpip-forward":
+			payload := gatewayTCPIPForwardRequest{}
+			if ssh.Unmarshal(request.Payload, &payload) != nil || payload.Port > 65535 || (payload.Port != 0 && forwards[payload] != nil) || len(forwards) >= s.maxChannels || !s.runtimeAvailable(auth.codespaceUUID, auth.siteUID) {
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			opened, err := s.backend.OpenWorkspaceReverseTCP(ctx, auth.codespaceUUID, payload.Address, payload.Port)
+			if err != nil {
+				s.logSSHBackendFailure(ctx, auth, "reverse_tcpip_listen", payload.Port, err)
+				if request.WantReply {
+					_ = request.Reply(false, nil)
+				}
+				continue
+			}
+			var reply []byte
+			if payload.Port == 0 {
+				payload.Port = opened.Port()
+				reply = ssh.Marshal(struct{ Port uint32 }{payload.Port})
+			}
+			forward := &gatewayReverseForward{listener: opened, bind: payload}
+			forwards[payload] = forward
+			if request.WantReply {
+				_ = request.Reply(true, reply)
+			}
+			go s.serveReverseConnections(ctx, auth, connection, forward, activity, channelSlots)
+		case "cancel-tcpip-forward":
+			payload := gatewayTCPIPForwardRequest{}
+			valid := ssh.Unmarshal(request.Payload, &payload) == nil && forwards[payload] != nil
+			if valid {
+				forward := forwards[payload]
+				closeErr := forward.close()
+				delete(forwards, payload)
+				if closeErr != nil {
+					_ = connection.Close()
+					if request.WantReply {
+						_ = request.Reply(false, nil)
+					}
+					return
+				}
+			}
+			if request.WantReply {
+				_ = request.Reply(valid, nil)
+			}
+		case "keepalive@openssh.com":
+			if request.WantReply {
+				_ = request.Reply(true, nil)
+			}
+		default:
+			if request.WantReply {
+				_ = request.Reply(false, nil)
+			}
+		}
+	}
+}
+
+func (s *sshServer) serveReverseConnections(ctx context.Context, auth gatewaySSHAuthContext, sshConnection *ssh.ServerConn, forward *gatewayReverseForward, activity chan<- struct{}, channelSlots chan struct{}) {
+	for {
+		connection, err := forward.listener.Accept(ctx)
+		if err != nil {
+			if ctx.Err() == nil && !forward.isStopping() {
+				s.logSSHBackendFailure(ctx, auth, "reverse_tcpip_accept", forward.bind.Port, err)
+				_ = sshConnection.Close()
+			}
+			forward.stop()
+			forward.opening.Wait()
+			return
+		}
+		select {
+		case channelSlots <- struct{}{}:
+		default:
+			_ = connection.Connection.Close()
+			continue
+		}
+		if !forward.beginOpen() {
+			<-channelSlots
+			_ = connection.Connection.Close()
+			continue
+		}
+		go func() {
+			defer func() { <-channelSlots }()
+			defer connection.Connection.Close()
+			payload := struct {
+				ConnectedHost  string
+				ConnectedPort  uint32
+				OriginatorHost string
+				OriginatorPort uint32
+			}{ConnectedHost: forward.bind.Address, ConnectedPort: forward.bind.Port, OriginatorHost: connection.OriginHost, OriginatorPort: connection.OriginPort}
+			channel, requests, err := sshConnection.OpenChannel("forwarded-tcpip", ssh.Marshal(payload))
+			forward.endOpen()
+			if err != nil {
+				return
+			}
+			defer channel.Close()
+			notifyGatewaySSHActivity(activity)
+			s.proxyWorkspaceStream(ctx, channel, requests, connection.Connection, activity)
 		}()
 	}
 }
@@ -476,12 +655,14 @@ func (s *sshServer) revalidateSession(ctx context.Context, auth gatewaySSHAuthCo
 			}
 			decision, err := s.controlPlane.RevalidateSSHSession(ctx, auth.siteUID, auth.userID, auth.codespaceUUID)
 			if err != nil {
+				if ctx.Err() != nil {
+					return
+				}
 				runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
 				attrs := gatewaySSHLogAttrs(auth, runtime)
 				attrs = append(attrs, slog.String("stage", "authorization"), slog.Any("error", err))
 				gatewayLog(ctx, slog.LevelWarn, "gateway_authorization_failed", attrs...)
-				cancel()
-				return
+				continue
 			}
 			if !decision.Allowed {
 				runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)

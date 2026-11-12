@@ -14,9 +14,9 @@ func NewCommand() *cobra.Command {
 		Args:   cobra.NoArgs,
 	}
 	command.AddCommand(
-		newConnectCommand(),
 		newSFTPCommand(),
 		newEndpointCommand(),
+		newUSBIPCommand(),
 	)
 	return command
 }

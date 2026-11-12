@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import * as vscode from "vscode";
+import { registerUSB } from "./usb-view.js";
 import {
   EndpointClient,
   type Endpoint,
@@ -54,7 +55,9 @@ class PortsProvider implements vscode.TreeDataProvider<PortItem> {
   }
 }
 
-export function activate(context: vscode.ExtensionContext): void {
+export async function activate(
+  context: vscode.ExtensionContext,
+): Promise<void> {
   const output = vscode.window.createOutputChannel("Gitea Codespace");
   const client = new EndpointClient((message) => output.appendLine(message));
   const reportError = (error: unknown) => {
@@ -145,6 +148,12 @@ export function activate(context: vscode.ExtensionContext): void {
       }),
     ),
   );
+
+  try {
+    await registerUSB(context, output);
+  } catch (error) {
+    output.appendLine(`USB initialization failed: ${String(error)}`);
+  }
 }
 
 async function readPort(): Promise<number | undefined> {

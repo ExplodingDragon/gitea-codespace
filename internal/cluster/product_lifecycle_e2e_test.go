@@ -241,7 +241,13 @@ func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *codespac
 func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.Offset != s.logOffsets[request.OperationRversion] || len(request.Lines) == 0 {
+	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID {
+		return nil, connect.NewError(connect.CodeFailedPrecondition, "log identity changed")
+	}
+	if len(request.Lines) == 0 {
+		return &codespacev1.UpdateLogResponse{NextOffset: s.logOffsets[request.OperationRversion]}, nil
+	}
+	if request.Offset != s.logOffsets[request.OperationRversion] {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "log offset changed")
 	}
 	s.logOffsets[request.OperationRversion] += int64(len(request.Lines))
@@ -388,6 +394,22 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	nodeAddress := requireE2EEnvironment(t, "CODESPACE_E2E_NODE_ADDRESS")
 	webIDEImage := requireE2EEnvironment(t, "CODESPACE_E2E_WEB_IDE_IMAGE")
 	webIDELayout := requireE2EEnvironment(t, "CODESPACE_E2E_WEB_IDE_LAYOUT")
+	usbIPE2E := runtime.isolation == api.IsolationKata
+	kernelRelease := ""
+	if usbIPE2E {
+		require.Equal(t, "1", os.Getenv("CODESPACE_E2E_USBIP"), "Kata E2E must enable the real USB/IP product test")
+		runtime.runtimeClass = requireE2EEnvironment(t, "CODESPACE_E2E_USBIP_RUNTIME_CLASS")
+		kernelRelease = requireE2EEnvironment(t, "CODESPACE_E2E_USBIP_KERNEL_RELEASE")
+	}
+	usbIPE2EDevContainerContent := ""
+	if usbIPE2E {
+		usbIPE2EDevContainerContent = fmt.Sprintf(`{
+				"build":{"dockerfile":"../Dockerfile","context":".."},
+				"containerUser":"root","remoteUser":"vscode","overrideCommand":false,"init":false,
+				"containerEnv":{"CODESPACE_E2E_USBIP_KERNEL_RELEASE":%q},
+				"customizations":{"e2e":{"text":"repository","enabled":false,"count":4,"ratio":3.5,"mode":"safe","items":["repository"],"nested":{"value":"repository-nested"}}}
+		}`, kernelRelease)
+	}
 	require.NotEmpty(t, net.ParseIP(nodeAddress), "CODESPACE_E2E_NODE_ADDRESS must be a Kubernetes node IP")
 
 	listener, err := net.Listen("tcp4", listenAddress)
@@ -403,7 +425,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	sshSigner, err := ssh.NewSignerFromKey(privateKey)
 	require.NoError(t, err)
 	remote.sshPublicKey = sshSigner.PublicKey().Marshal()
-	repositoryDirectory, commit := lifecycleGitRepository(t)
+	repositoryDirectory, commit := lifecycleGitRepository(t, usbIPE2E, usbIPE2EDevContainerContent)
 	rpcServer := connect.NewServer()
 	codespacev1connect.RegisterManagerServiceHandler(rpcServer, remote)
 	handler := http.NewServeMux()
@@ -538,16 +560,24 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		t.Fatal("site coordinator did not become online")
 	}
 
+	devContainerContent := `{
+				"image":"docker.io/library/debian:bookworm-slim","remoteUser":"root",
+				"customizations":{"e2e":{"text":"repository","enabled":false,"count":4,"ratio":3.5,"mode":"safe","items":["repository"],"nested":{"value":"repository-nested"}}}
+			}`
+	if usbIPE2E {
+		devContainerContent = usbIPE2EDevContainerContent
+	}
+	devContainer := &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: devContainerContent}}
+	if usbIPE2E {
+		devContainer.Source = &codespacev1.DevContainerConfiguration_RepositoryPath{RepositoryPath: ".devcontainer/devcontainer.json"}
+	}
 	remote.setOperation(&codespacev1.OperationPayload{
 		CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000,
 		Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{
-			EnvironmentTag: template.Name,
-			Repository:     &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
-			GitIdentity:    &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
-			DevContainer: &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: `{
-				"image":"docker.io/library/debian:bookworm-slim","remoteUser":"root",
-				"customizations":{"e2e":{"text":"repository","enabled":false,"count":4,"ratio":3.5,"mode":"safe","items":["repository"],"nested":{"value":"repository-nested"}}}
-			}`}},
+			EnvironmentTag:  template.Name,
+			Repository:      &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
+			GitIdentity:     &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
+			DevContainer:    devContainer,
 			RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 1},
 		}},
 	})
@@ -589,6 +619,9 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, webIDEClient.verifyWebSocket(ctx))
 	serveCount := initialWebIDEState.ServeCount
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
+	if usbIPE2E {
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey))
+	}
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
@@ -617,6 +650,9 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, serveCount+1, resumedWebIDEState.ServeCount)
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
+	if usbIPE2E {
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey))
+	}
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
 
 	remote.setRuntimeSettings(&codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 2, InteractionGeneration: 3})
@@ -633,7 +669,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	}, 2*time.Minute, time.Second)
 }
 
-func lifecycleGitRepository(t *testing.T) (string, string) {
+func lifecycleGitRepository(t *testing.T, usbIPE2E bool, devContainerContent string) (string, string) {
 	t.Helper()
 	root := t.TempDir()
 	worktree, bare := filepath.Join(root, "worktree"), filepath.Join(root, "repo.git")
@@ -648,7 +684,12 @@ func lifecycleGitRepository(t *testing.T) (string, string) {
 	run(worktree, "config", "user.name", "Lifecycle E2E")
 	run(worktree, "config", "user.email", "e2e@example.test")
 	require.NoError(t, os.WriteFile(filepath.Join(worktree, "README.md"), []byte("# Lifecycle E2E\n"), 0o644))
-	run(worktree, "add", "README.md")
+	if usbIPE2E {
+		require.NoError(t, os.WriteFile(filepath.Join(worktree, "Dockerfile"), usbIPE2EDevContainerDockerfile, 0o644))
+		require.NoError(t, os.Mkdir(filepath.Join(worktree, ".devcontainer"), 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(worktree, ".devcontainer", "devcontainer.json"), []byte(devContainerContent), 0o644))
+	}
+	run(worktree, "add", ".")
 	run(worktree, "commit", "-m", "initial")
 	commit := run(worktree, "rev-parse", "HEAD")
 	command := exec.Command("git", "clone", "--bare", worktree, bare)
@@ -856,6 +897,20 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 	}
 	client := ssh.NewClient(clientConnection, channels, requests)
 	defer func() { _ = client.Close() }()
+	reverse, err := client.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return fmt.Errorf("open Dev Container reverse listener: %w", err)
+	}
+	defer reverse.Close()
+	reverseResult := make(chan error, 1)
+	go func() {
+		connection, err := reverse.Accept()
+		if err == nil {
+			defer connection.Close()
+			_, err = connection.Write([]byte("codespace-reverse-ok"))
+		}
+		reverseResult <- err
+	}()
 
 	run := func(command string) ([]byte, error) {
 		if err := connection.SetDeadline(time.Now().Add(2 * time.Minute)); err != nil {
@@ -867,6 +922,21 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		}
 		defer func() { _ = session.Close() }()
 		return session.CombinedOutput(command)
+	}
+	probe, err := client.Dial("tcp", reverse.Addr().String())
+	if err != nil {
+		return fmt.Errorf("connect to reverse listener from Dev Container: %w", err)
+	}
+	output, readErr := io.ReadAll(probe)
+	_ = probe.Close()
+	if readErr != nil || string(output) != "codespace-reverse-ok" {
+		return fmt.Errorf("Dev Container reverse forwarding returned %q: %w", output, readErr)
+	}
+	if err := <-reverseResult; err != nil {
+		return fmt.Errorf("reverse channel: %w", err)
+	}
+	if err := reverse.Close(); err != nil {
+		return fmt.Errorf("cancel reverse listener: %w", err)
 	}
 	deviceCheck := ""
 	if verifyNativeDevice {
@@ -1014,7 +1084,7 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		}
 		return nil
 	}
-	output, err := run(deviceCheck + `test "$(cat .codespace-lifecycle)" = "lifecycle-persisted" && test "$(cat .codespace-sftp)" = "sftp-persisted" && printf resumed-ok`)
+	output, err = run(deviceCheck + `test "$(cat .codespace-lifecycle)" = "lifecycle-persisted" && test "$(cat .codespace-sftp)" = "sftp-persisted" && printf resumed-ok`)
 	if err != nil {
 		return fmt.Errorf("verify resumed Gateway SSH workspace: output %q: %w", output, err)
 	}
@@ -1034,11 +1104,7 @@ func verifyGatewayPublicEndpoint(ctx context.Context, node string, port int32, d
 	defer client.CloseIdleConnections()
 	var lastStatus string
 	for range 30 {
-		path := "/"
-		if !available {
-			path = "/p/" + runtimeUUID + "/port-13337/"
-		}
-		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d%s", node, port, path), nil)
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/", node, port), nil)
 		if err != nil {
 			return err
 		}

@@ -6,11 +6,14 @@
     "tsBuildInfoFile": "lib/tsconfig.host.tsbuildinfo"
   },
   "files": [
+    "src/cli.ts",
     "src/commands.ts",
     "src/endpoint.ts",
     "src/index.ts",
     "src/tools.ts",
-    "src/types.ts"
+    "src/types.ts",
+    "src/usb.ts",
+    "src/usb-commands.ts"
   ],
   "references": [
     { "path": "../../../vendor/cordis" },

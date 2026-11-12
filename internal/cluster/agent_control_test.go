@@ -18,7 +18,6 @@ import (
 
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
-	"connectrpc.com/connect/v2/connectproto"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -193,23 +192,23 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.Positive(t, response.PermitValidForMilliseconds)
 	require.False(t, response.CancelExecution)
 	require.NoError(t, startup.CloseSend())
-	for _, category := range []string{"ok", "log_size_exceeded", "stale_operation", "codespace_not_found", "offset_conflict", "unavailable"} {
-		t.Run(category, func(t *testing.T) {
-			reply, err := remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Offset: 10, Lines: []*codespacev1.LogLine{{Message: category}}})
-			switch category {
-			case "ok":
-				require.NoError(t, err)
-				require.EqualValues(t, 20, reply.NextOffset)
-				require.False(t, reply.Closed)
-			case "offset_conflict", "unavailable":
-				require.Error(t, err)
-			default:
-				require.NoError(t, err)
-				require.EqualValues(t, 10, reply.NextOffset)
-				require.True(t, reply.Closed)
-			}
-		})
-	}
+	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
+	require.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
+	logs, _ := testOperationLogs(t, &operationLogRemote{update: func(ctx context.Context, _ *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}})
+	logs.OpenSite(t.Context(), site.UID)
+	t.Cleanup(func() { logs.CloseSite(site.UID) })
+	server.Logs = logs
+	reply, err := remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
+	require.NoError(t, err)
+	require.False(t, reply.Closed)
+	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 5})
+	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	reply, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 3})
+	require.NoError(t, err)
+	require.True(t, reply.Closed)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	cs.Spec.Runtime.Isolation = api.IsolationKata
 	require.NoError(t, c.Update(t.Context(), cs))
@@ -251,18 +250,6 @@ func (s *runtimeAccessTestServer) RequestRuntimeAccess(ctx context.Context, requ
 	require.Equal(s.t, "test-manager-secret", info.RequestHeader().Get("x-codespace-manager-secret"))
 	require.Equal(s.t, []byte("public-key"), request.GitSshKey.PublicKey)
 	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{GiteaToken: "runtime-token"}}, nil
-}
-
-func (s *runtimeAccessTestServer) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
-	category := request.Lines[0].Message
-	if category == "ok" {
-		return &codespacev1.UpdateLogResponse{NextOffset: 20}, nil
-	}
-	err := connect.Errorf(connect.CodeFailedPrecondition, "%s", category)
-	detail, detailErr := connectproto.NewErrorDetail(&codespacev1.FailureDetail{Category: category})
-	require.NoError(s.t, detailErr)
-	err = err.WithDetail(detail)
-	return nil, err
 }
 
 func TestAgentStartupValidatesReadyTarget(t *testing.T) {

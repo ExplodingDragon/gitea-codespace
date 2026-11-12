@@ -11,14 +11,18 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"github.com/stretchr/testify/require"
 )
 
 type gatewayHandlerTestControlPlane struct {
-	openDecision gatewayOpenTokenDecision
+	openDecision     gatewayOpenTokenDecision
+	endpointDecision gatewayAccessDecision
+	revalidateSSH    func(context.Context) (gatewayAccessDecision, error)
 }
 
 func (c gatewayHandlerTestControlPlane) ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error) {
@@ -33,17 +37,22 @@ func (gatewayHandlerTestControlPlane) VerifySSHPublicKey(context.Context, string
 	return gatewaySSHAuthDecision{}, nil
 }
 
-func (gatewayHandlerTestControlPlane) RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error) {
-	return gatewayAccessDecision{}, nil
+func (c gatewayHandlerTestControlPlane) RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error) {
+	return c.endpointDecision, nil
 }
 
-func (gatewayHandlerTestControlPlane) RevalidateSSHSession(context.Context, string, int64, string) (gatewayAccessDecision, error) {
+func (c gatewayHandlerTestControlPlane) RevalidateSSHSession(ctx context.Context, _ string, _ int64, _ string) (gatewayAccessDecision, error) {
+	if c.revalidateSSH != nil {
+		return c.revalidateSSH(ctx)
+	}
 	return gatewayAccessDecision{}, nil
 }
 
 type gatewayTestBackend struct {
 	address       string
 	endpointError error
+	reverse       workspaceReverseListener
+	reverseOpen   func(string, uint32) (workspaceReverseListener, error)
 }
 
 func (gatewayTestBackend) OpenWorkspaceShell(context.Context, workspaceShellRequest) (workspaceCommandSession, error) {
@@ -60,6 +69,16 @@ func (gatewayTestBackend) OpenWorkspaceSFTP(context.Context, workspaceSFTPReques
 
 func (b gatewayTestBackend) OpenWorkspaceTCP(ctx context.Context, _ string, _ uint32) (net.Conn, error) {
 	return (&net.Dialer{}).DialContext(ctx, "tcp", b.address)
+}
+
+func (b gatewayTestBackend) OpenWorkspaceReverseTCP(_ context.Context, _, address string, port uint32) (workspaceReverseListener, error) {
+	if b.reverseOpen != nil {
+		return b.reverseOpen(address, port)
+	}
+	if b.reverse == nil {
+		return nil, fmt.Errorf("reverse TCP is not available")
+	}
+	return b.reverse, nil
 }
 
 func (b gatewayTestBackend) OpenWorkspaceEndpoint(ctx context.Context, _, _ string) (net.Conn, error) {
@@ -236,8 +255,8 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 		request.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: token})
 		response := httptest.NewRecorder()
 		newHandler(sessions.sessionRegistry, access, gatewayHandlerTestControlPlane{}, policy, nil, routes).ServeHTTP(response, request)
-		if response.Code != http.StatusServiceUnavailable {
-			t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 		}
 	})
 }
@@ -245,12 +264,12 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 func TestGatewayOpenCodeAllowsUnrelatedQueryParameters(t *testing.T) {
 	t.Parallel()
 
-	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/open?code=secret&utm_source=gitea", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://gateway.example.test/.gitea-codespace/open?code=secret&utm_source=gitea", nil)
 	code, ok := gatewayOpenCode(request)
 	if !ok || code != "secret" {
 		t.Fatalf("open code = %q, ok = %v", code, ok)
 	}
-	request = httptest.NewRequest(http.MethodGet, "https://gateway.example.test/open?code=first&code=second", nil)
+	request = httptest.NewRequest(http.MethodGet, "https://gateway.example.test/.gitea-codespace/open?code=first&code=second", nil)
 	if _, ok := gatewayOpenCode(request); ok {
 		t.Fatal("duplicate open code was accepted")
 	}
@@ -313,8 +332,72 @@ func TestGatewayProxyClientCancellationDoesNotWriteGatewayError(t *testing.T) {
 	cancel()
 	request := httptest.NewRequest(http.MethodGet, "https://app.gateway.example.test/", nil).WithContext(ctx)
 	response := httptest.NewRecorder()
-	proxyGatewayEndpoint(response, request, routes, route, "/", gatewayProxyRequestContext{externalScheme: "https", externalHost: request.Host})
+	proxyGatewayEndpoint(response, request, routes, route, gatewayProxyRequestContext{externalScheme: "https", externalHost: request.Host})
 	if response.Body.Len() != 0 || response.Header().Get("Content-Type") != "" {
 		t.Fatalf("client cancellation produced a gateway response: %q", response.Body.String())
+	}
+}
+
+func TestGatewayEndpointPreservesApplicationRequests(t *testing.T) {
+	t.Parallel()
+
+	const externalHost = "app-3000-11111111111141118111111111111111.gateway.example.test"
+	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil || r.Host != externalHost {
+			http.Error(w, "invalid request", http.StatusBadRequest)
+			return
+		}
+		_, _ = fmt.Fprintf(w, "%s %s\n%s", r.Method, r.RequestURI, body)
+	}))
+	defer upstream.Close()
+	policy, err := newOriginPolicy("http://gateway.example.test")
+	require.NoError(t, err)
+
+	for _, public := range []bool{false, true} {
+		t.Run(fmt.Sprintf("public=%t", public), func(t *testing.T) {
+			routes := newRouteStore(gatewayTestBackend{address: upstream.Listener.Addr().String()})
+			t.Cleanup(routes.Close)
+			require.NoError(t, routes.Put(endpointRoute{
+				SiteUID: "site", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: runtimeUUID,
+				EndpointID: "app-3000", Public: public,
+			}))
+			sessions := newGatewaySessionRegistry(t)
+			binding := openTokenBinding{SiteUID: "site", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "app-3000"}
+			token, err := sessions.Create(binding, time.Now())
+			require.NoError(t, err)
+			control := gatewayHandlerTestControlPlane{
+				endpointDecision: gatewayAccessDecision{Allowed: true},
+				openDecision:     gatewayOpenTokenDecision{Allowed: true, Binding: binding},
+			}
+			gateway := httptest.NewServer(newHandler(sessions.sessionRegistry, newAccessControllerFromConfig(validGatewayConfig()), control, policy, nil, routes))
+			t.Cleanup(gateway.Close)
+			client := &http.Client{Timeout: 5 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+			t.Cleanup(client.CloseIdleConnections)
+			for _, path := range []string{"/api/files/a%2Fb?x=1&x=2", "/open", "/w/example", "/p/example/other", "/api//files", "/api/../files", "/api/files/"} {
+				request, err := http.NewRequest(http.MethodPost, gateway.URL+path, strings.NewReader("payload"))
+				require.NoError(t, err)
+				request.Host = externalHost
+				request.Header.Set("Origin", "http://"+externalHost)
+				request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+				response, err := client.Do(request)
+				require.NoError(t, err)
+				body, err := io.ReadAll(response.Body)
+				require.NoError(t, response.Body.Close())
+				require.NoError(t, err)
+				require.Equal(t, http.StatusOK, response.StatusCode, path)
+				require.Equal(t, "POST "+path+"\npayload", string(body), path)
+			}
+
+			request, err := http.NewRequest(http.MethodGet, gateway.URL+"/.gitea-codespace/open?code=secret", nil)
+			require.NoError(t, err)
+			request.Host = externalHost
+			response, err := client.Do(request)
+			require.NoError(t, err)
+			require.NoError(t, response.Body.Close())
+			require.Equal(t, http.StatusSeeOther, response.StatusCode)
+			require.Equal(t, "/", response.Header.Get("Location"))
+		})
 	}
 }

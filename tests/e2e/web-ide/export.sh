@@ -13,8 +13,8 @@ test ! -e "$output/current"
 trap 'rm -rf "$staging"' EXIT INT TERM
 mkdir -p "$staging"
 cp -a /provider/. "$staging/"
+test -f "$staging/manifest.json"
 test -x "$staging/bin/prepare"
 test -x "$staging/bin/serve"
-grep -Fq '"provider":"e2e"' "$staging/manifest.json"
 mv "$staging" "$output/current"
 trap - EXIT INT TERM

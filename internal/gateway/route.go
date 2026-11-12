@@ -239,6 +239,10 @@ func (s *routeStore) OpenWorkspaceTCP(ctx context.Context, runtimeUUID string, p
 	return s.backend.OpenWorkspaceTCP(ctx, runtimeUUID, port)
 }
 
+func (s *routeStore) OpenWorkspaceReverseTCP(ctx context.Context, runtimeUUID, address string, port uint32) (workspaceReverseListener, error) {
+	return s.backend.OpenWorkspaceReverseTCP(ctx, runtimeUUID, address, port)
+}
+
 func (s *routeStore) OpenWorkspaceEndpoint(ctx context.Context, runtimeUUID, endpointID string) (net.Conn, error) {
 	return s.backend.OpenWorkspaceEndpoint(ctx, runtimeUUID, endpointID)
 }

@@ -34,7 +34,7 @@ func TestGatewayProxyUpstreamCancellationReturnsBadGateway(t *testing.T) {
 				require.NoError(t, routes.Put(route))
 			}
 			response := httptest.NewRecorder()
-			proxyGatewayEndpoint(response, request, routes, route, "/", gatewayProxyRequestContext{})
+			proxyGatewayEndpoint(response, request, routes, route, gatewayProxyRequestContext{})
 			require.Equal(t, http.StatusBadGateway, response.Code)
 			require.JSONEq(t, `{"error":"gateway upstream unavailable"}`, response.Body.String())
 		})

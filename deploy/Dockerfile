@@ -6,6 +6,7 @@ RUN apk add --no-cache \
     e2fsprogs \
     git \
     git-lfs \
+    linux-tools-usbip \
     openssh-client \
     shadow \
     util-linux
