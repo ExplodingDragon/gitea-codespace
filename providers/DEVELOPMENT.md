@@ -410,5 +410,27 @@ When publishing an updated provider, publish a new image, resolve it again in
 the environment template, and save the template. The [lifecycle](#lifecycle)
 snapshot rules determine which Codespaces use that update.
 
-For maintenance of the bundled VS Code and DSH projects, use the repository's
-[development workflows](../DEVELOPMENT.md#local-workflows).
+## Maintain the official providers
+
+The VS Code and DSH projects have independent toolchains because their editor
+and plugin builds follow different upstream dependencies. Select Node.js from
+the project's [VS Code](vscode/.node-version) or [DSH](dsh/.node-version) version
+file, and pnpm from its [VS Code](../.github/workflows/provider-vscode.yml) or
+[DSH](../.github/workflows/provider-dsh.yml) workflow.
+
+From the repository root, validate the provider being changed:
+
+```sh
+make -C providers/vscode check
+make -C providers/dsh check
+```
+
+The DSH check fetches its pinned upstream sources and bundles the Codespace
+plugin against them. Each provider's `image` target builds an image for the
+current architecture; use the [local image verification steps](#test-the-image-locally)
+to check its exported bundle.
+
+Each provider workflow validates its own build inputs and publishes
+amd64/arm64 images on matching pushes to `main`. Shared provider inputs trigger
+both workflows; the [platform workflow](../.github/workflows/ci.yml) handles
+core changes separately. Workflow path filters define the exact scope.

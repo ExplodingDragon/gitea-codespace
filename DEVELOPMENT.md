@@ -77,22 +77,9 @@ Service first. Add user-visible administration text to every catalog under
 editor release can be updated without rebuilding the platform services.
 
 Use `make -C providers/vscode check` or `make -C providers/dsh check` for
-focused provider validation. The DSH check fetches its pinned upstream sources
-and bundles the Codespace plugin against them. Each provider's `image` target
-builds an image for the current architecture. See the [provider development
-guide](providers/DEVELOPMENT.md) for the third-party integration contract and
-image verification steps.
-
-For provider work, select Node.js from its [VS Code](providers/vscode/.node-version)
-or [DSH](providers/dsh/.node-version) version file and pnpm from the corresponding
-workflow below. Providers have independent toolchains because their editor and
-plugin builds follow different upstream dependencies.
-
-The [VS Code](.github/workflows/provider-vscode.yml) and
-[DSH](.github/workflows/provider-dsh.yml) workflows validate their own build
-inputs and publish amd64/arm64 images on matching pushes to `main`. Shared
-provider inputs trigger both workflows; the [platform workflow](.github/workflows/ci.yml)
-handles core changes separately. Workflow path filters define the exact scope.
+focused provider validation. Follow the [official provider maintenance guide](providers/DEVELOPMENT.md#maintain-the-official-providers)
+for toolchain setup, image builds, and publishing. The same guide documents the
+[third-party integration contract](providers/DEVELOPMENT.md).
 
 ## Kubernetes E2E
 

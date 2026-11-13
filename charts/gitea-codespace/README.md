@@ -61,73 +61,6 @@ template available to users.
 - Native environments receive the selected extended resources, CDI devices,
   capabilities, and mounts.
 
-## Enable Kata USB/IP
-
-USB/IP is discovered from the running Kata guest rather than configured on an
-environment template. This keeps the template tied to its isolation boundary:
-an ordinary Kata kernel starts normally, while a kernel with an active VHCI
-controller also exposes the USB/IP workflow.
-
-Build or select a Kata guest kernel with `CONFIG_DEVTMPFS`, `CONFIG_USB`,
-`CONFIG_USBIP_CORE`, `CONFIG_USBIP_VHCI_HCD`, and the drivers for the intended
-devices. For example, CDC ACM serial devices require `CONFIG_USB_ACM`. Building
-these options into the kernel makes them available without maintaining a guest
-module installation. When either USB/IP option is a module, load it during guest
-startup so `/sys/devices/platform/vhci_hcd.*` exists before the Runtime Agent
-starts. The platform image already contains the `usbip` userspace
-client. A custom Kata root filesystem does not need that client.
-
-After starting a Kata Codespace, verify the Runtime Pod before publishing the
-workflow to users:
-
-```sh
-kubectl exec -n '<site-namespace>' '<runtime-pod>' -c runtime -- \
-  sh -c 'test -d /sys/devices/platform/vhci_hcd.0 && command -v usbip'
-```
-
-The primary Dev Container sees the guest's device nodes under `/dev`. Its image
-starts udev or eudev and supplies device rules, groups, and non-root permissions.
-The platform allows raw USB, USB serial, and CDC ACM device classes and adds
-`NET_ADMIN` for eudev's netlink events. Other device classes need the matching
-guest drivers and access configuration. Kernel support, device access rules,
-and userspace permissions must all be verified together.
-
-The isolation boundary is the Kata virtual machine assigned to one Codespace;
-processes in that workspace share its attached hardware. Configure the Kata
-handler with `privileged_without_host_devices=true` so privileged workloads
-receive guest capabilities without implicitly receiving Kubernetes node
-devices. Review explicit `privileged`, `devices`, `capAdd`, and network-sharing
-settings in development configurations because they can broaden access within
-the guest. The default USB device-class rules are not per-device restrictions.
-See the [Kata USB design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md#kata-usb-%E8%AE%BE%E5%A4%87)
-for the mount and forwarding implementation.
-
-SSH authenticates the connection; the device server and guest drivers still
-need their own security review. Protect the workstation's USB/IP endpoint from
-unintended clients.
-
-Validate the complete path with a disposable exported device before production
-use, following the [USB connection guide](../../docs/usbip.md). Verify device
-access as the configured non-root user, not only as root. For automated
-validation on a disposable worker, use the [Kata USB/IP E2E guide](../../tests/e2e/README.md#prepare-kata-usbip-tests).
-Stop hooks should tolerate a device already being offline, because the Gateway
-can revoke access before the hook runs.
-
-### Verify
-
-- USB/IP-capable environments expose the command and IDE controls; ordinary
-  Kata environments start normally with those optional controls hidden.
-- A compatible guest lists, attaches, uses, and detaches a remote device
-  without restarting the Dev Container.
-- udev or eudev rules in the development image receive hotplug events and set
-  the expected non-root ownership and permissions.
-- Device access and ordinary terminal use remain functional after a stop/start
-  cycle and a new device attachment.
-- Multiple named USB/IP sources coexist with ordinary Dev Container reverse
-  forwards. Source names are unique within one Codespace. Closing a source
-  disconnects only its devices; closing an SSH session releases its forwards.
-  Stopping the Codespace or replacing its Runtime releases all bridge connections.
-
 ## Install
 
 Store the administration token in a Secret so Helm values and release history
@@ -208,7 +141,9 @@ publicly trusted certificate.
 
 Each Runtime combines the system roots, the internal service root, the site
 CA, and the optional proxy CA before starting its Docker daemon. Git, image
-pulls, OCI Features, and the Dev Container therefore use the same trust set.
+pulls, OCI Feature package downloads, and the running Dev Container use this
+trust set. Dockerfile `RUN` commands and Feature installation scripts execute
+inside the build image and use that image's own certificate configuration.
 Component mTLS identities remain in separate Secrets and are not exposed to
 the Dev Container.
 
@@ -238,6 +173,73 @@ not require a data migration workflow.
   lifecycle operations.
 - Editing an existing Cache shows its actual StorageClass and does not report a
   changed class as successfully applied.
+
+## Enable Kata USB/IP
+
+USB/IP is discovered from the running Kata guest rather than configured on an
+environment template. This keeps the template tied to its isolation boundary:
+an ordinary Kata kernel starts normally, while a kernel with an active VHCI
+controller also exposes the USB/IP workflow.
+
+Build or select a Kata guest kernel with `CONFIG_DEVTMPFS`, `CONFIG_USB`,
+`CONFIG_USBIP_CORE`, `CONFIG_USBIP_VHCI_HCD`, and the drivers for the intended
+devices. For example, CDC ACM serial devices require `CONFIG_USB_ACM`. Building
+these options into the kernel makes them available without maintaining a guest
+module installation. When either USB/IP option is a module, load it during guest
+startup so `/sys/devices/platform/vhci_hcd.*` exists before the Runtime Agent
+starts. The platform image already contains the `usbip` userspace
+client. A custom Kata root filesystem does not need that client.
+
+After starting a Kata Codespace, verify the Runtime Pod before publishing the
+workflow to users:
+
+```sh
+kubectl exec -n '<site-namespace>' '<runtime-pod>' -c runtime -- \
+  sh -c 'test -d /sys/devices/platform/vhci_hcd.0 && command -v usbip'
+```
+
+The primary Dev Container sees the guest's device nodes under `/dev`. Its image
+starts udev or eudev and supplies device rules, groups, and non-root permissions.
+The platform allows raw USB, USB serial, and CDC ACM device classes and adds
+`NET_ADMIN` for eudev's netlink events. Other device classes need the matching
+guest drivers and access configuration. Kernel support, device access rules,
+and userspace permissions must all be verified together.
+
+The isolation boundary is the Kata virtual machine assigned to one Codespace;
+processes in that workspace share its attached hardware. Configure the Kata
+handler with `privileged_without_host_devices=true` so privileged workloads
+receive guest capabilities without implicitly receiving Kubernetes node
+devices. Review explicit `privileged`, `devices`, `capAdd`, and network-sharing
+settings in development configurations because they can broaden access within
+the guest. The default USB device-class rules are not per-device restrictions.
+See the [Kata USB design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md#kata-usb-%E8%AE%BE%E5%A4%87)
+for the mount and forwarding implementation.
+
+SSH authenticates the connection; the device server and guest drivers still
+need their own security review. Protect the workstation's USB/IP endpoint from
+unintended clients.
+
+Validate the complete path with a disposable exported device before production
+use, following the [USB connection guide](../../docs/usbip.md). Verify device
+access as the configured non-root user, not only as root. For automated
+validation on a disposable worker, use the [Kata USB/IP E2E guide](../../tests/e2e/README.md#prepare-kata-usbip-tests).
+Stop hooks should tolerate a device already being offline, because the Gateway
+can revoke access before the hook runs.
+
+### Verify
+
+- USB/IP-capable environments expose the command and IDE controls; ordinary
+  Kata environments start normally with those optional controls hidden.
+- A compatible guest lists, attaches, uses, and detaches a remote device
+  without restarting the Dev Container.
+- udev or eudev rules in the development image receive hotplug events and set
+  the expected non-root ownership and permissions.
+- Device access and ordinary terminal use remain functional after a stop/start
+  cycle and a new device attachment.
+- Multiple named USB/IP sources coexist with ordinary Dev Container reverse
+  forwards. Source names are unique within one Codespace. Closing a source
+  disconnects only its devices; closing an SSH session releases its forwards.
+  Stopping the Codespace or replacing its Runtime releases all bridge connections.
 
 ## Resource monitoring
 

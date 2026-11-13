@@ -15,6 +15,11 @@ installed. The harness imports images through local k3s containerd and, for
 Native tests, registers a local Device Plugin. `KUBECONFIG` selects Kubernetes
 API access; those host operations still run on the machine invoking the harness.
 
+Use a dedicated test cluster and stop other Codespace Manager installations
+before the run. The test's Manager must be the only active control plane:
+GiteaSite and EnvironmentTemplate are cluster-scoped, so a separate test
+namespace alone does not isolate them from another Manager installation.
+
 Complete the repository's development setup and install Docker, kubectl, and
 Helm. The test process needs sudo access to k3s and, for Native tests, the
 worker's device-plugin directories. Prepare runtime and storage according to
@@ -109,7 +114,7 @@ running guest. Artifact integrity and runtime behavior are separate checks.
 - A wrong kernel, ineffective device permissions, or broken forwarding fails
   the Kata product test with diagnostics.
 - Fresh kernel builds and cache hits pass the same artifact validation and
-  real device tests.
+  running Kata tests with the virtual USB/IP device.
 - Test resources carry the run label from creation so cleanup can find them
   after a partial test failure.
 
