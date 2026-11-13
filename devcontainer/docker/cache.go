@@ -10,15 +10,16 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"slices"
 	"strings"
 
 	"github.com/compose-spec/compose-go/v2/types"
+	cerrdefs "github.com/containerd/errdefs"
 	"github.com/distribution/reference"
 	"github.com/docker/cli/cli/command"
-	imagecommand "github.com/docker/cli/cli/command/image"
 	"github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/docker/api/types/image"
 
@@ -95,8 +96,13 @@ func mirroredReference(value string, mirrors map[string]string) (string, bool, e
 	return repository + ":" + named.(reference.Tagged).Tag(), true, nil
 }
 
-func buildCacheReference(cache devcontainer.CacheOptions, stage string) string {
-	return cacheReference(cache, "build", stage, "cache")
+func registryBuildCache(cache devcontainer.CacheOptions, stage string) (string, string) {
+	reference := cacheReference(cache, "build", stage, "cache")
+	if reference == "" {
+		return "", ""
+	}
+	return "type=registry,ref=" + reference,
+		"type=registry,ref=" + reference + ",mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true"
 }
 
 func cacheReference(cache devcontainer.CacheOptions, parts ...string) string {
@@ -132,11 +138,16 @@ func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bo
 	if strings.TrimSpace(imageName) == "" {
 		return false
 	}
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Checking %s image cache\n", stage)
 	if err := e.pullImageReference(ctx, imageName); err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "Dev Container %s image cache miss: %v\n", stage, err)
+		if cerrdefs.IsNotFound(err) {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] %s image cache not found; building locally\n", stage)
+		} else {
+			_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] %s image cache unavailable; building locally: %v\n", stage, err)
+		}
 		return false
 	}
-	_, _ = fmt.Fprintf(e.stdout, "Dev Container %s image cache hit\n", stage)
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using %s image cache\n", stage)
 	return true
 }
 
@@ -145,32 +156,33 @@ func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImag
 		return
 	}
 	if err := e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "Warning: tag %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot tag %s image cache; built image remains usable: %v\n", stage, err)
 		return
 	}
 	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), targetImage)
 	if err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "Warning: resolve %s image cache credentials: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot resolve %s image cache credentials; built image remains usable: %v\n", stage, err)
 		return
 	}
 	reader, err := e.client.ImagePush(ctx, targetImage, image.PushOptions{RegistryAuth: registryAuth})
 	if err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "Warning: push %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot push %s image cache; built image remains usable: %v\n", stage, err)
 		return
 	}
 	defer func() { _ = reader.Close() }()
 	if err := readDockerProgress(reader, nil); err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "Warning: publish %s image cache: %v\n", stage, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot publish %s image cache; built image remains usable: %v\n", stage, err)
 		return
 	}
-	_, _ = fmt.Fprintf(e.stdout, "Dev Container %s image cache published\n", stage)
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Published %s image cache\n", stage)
 }
 
 func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string, platformEnvironment map[string]string) error {
-	args = mergeBuildProxyArguments(args, platformEnvironment)
 	if len(options) > 0 {
-		// Docker CLI resolves --file against the process directory, unlike Compose.
-		arguments := []string{"--file", filepath.Join(contextPath, dockerfile), "--tag", imageName}
+		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Building %s image\n", stage)
+		args = mergeBuildProxyArguments(args, platformEnvironment)
+		// Buildx supports registry cache exports and loads the result for container creation.
+		arguments := []string{"buildx", "build", "--load", "--progress=plain", "--file", filepath.Join(contextPath, dockerfile), "--tag", imageName}
 		if target != "" {
 			arguments = append(arguments, "--target", target)
 		}
@@ -184,15 +196,15 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		for _, source := range cacheFrom {
 			arguments = append(arguments, "--cache-from", source)
 		}
+		if source, destination := registryBuildCache(cache, stage); source != "" {
+			arguments = append(arguments, "--cache-from", source, "--cache-to", destination)
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Import and export %s build cache (export failures are non-fatal)\n", stage)
+		}
 		arguments = append(arguments, options...)
 		arguments = append(arguments, contextPath)
-		//lint:ignore SA1019 The Docker CLI parser keeps BuildKit cache flags aligned with docker build behavior.
-		command := imagecommand.NewBuildCommand(e.cli)
-		command.SetArgs(arguments)
-		command.SetContext(ctx)
-		command.SilenceUsage = true
-		command.SilenceErrors = true
-		return command.Execute()
+		command := exec.CommandContext(ctx, "docker", arguments...)
+		command.Stdout, command.Stderr = e.stdout, e.stderr
+		return command.Run()
 	}
 	buildArgs := make(types.MappingWithEquals, len(args))
 	maps.Copy(buildArgs, args)
@@ -215,39 +227,21 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 	if !ok || service.Build == nil {
 		return nil
 	}
-	originalArgs := service.Build.Args
-	service.Build.Args = types.MappingWithEquals(mergeBuildProxyArguments(service.Build.Args, platformEnvironment))
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Building %s image (service %s)\n", stage, serviceName)
+	originalBuild := service.Build
+	build := *originalBuild
+	build.Args = types.MappingWithEquals(mergeBuildProxyArguments(build.Args, platformEnvironment))
+	if source, destination := registryBuildCache(cache, stage); source != "" {
+		build.CacheFrom = append(slices.Clone(build.CacheFrom), source)
+		build.CacheTo = append(slices.Clone(build.CacheTo), destination)
+		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Import and export %s build cache (export failures are non-fatal)\n", stage)
+	}
+	service.Build = &build
 	project.Services[serviceName] = service
 	defer func() {
-		service.Build.Args = originalArgs
+		service.Build = originalBuild
 		project.Services[serviceName] = service
 	}()
-	cacheReference := buildCacheReference(cache, stage)
-	originalCacheFrom := append(types.StringList(nil), service.Build.CacheFrom...)
-	originalCacheTo := append(types.StringList(nil), service.Build.CacheTo...)
-	if cacheReference != "" {
-		cacheFrom := "type=registry,ref=" + cacheReference
-		cacheTo := "type=registry,ref=" + cacheReference + ",mode=max,oci-mediatypes=true,image-manifest=true"
-		service.Build.CacheFrom = append(service.Build.CacheFrom, cacheFrom)
-		service.Build.CacheTo = append(service.Build.CacheTo, cacheTo)
-		project.Services[serviceName] = service
-		_, _ = fmt.Fprintf(e.stdout, "Restore and publish %s build cache\n", stage)
-	}
-	err := e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
-	if err == nil {
-		if cacheReference != "" {
-			_, _ = fmt.Fprintf(e.stdout, "Dev Container %s build cache published\n", stage)
-		}
-		return nil
-	}
-	if cacheReference == "" {
-		return err
-	}
-	_, _ = fmt.Fprintf(e.stderr, "Warning: %s BuildKit registry cache is unavailable, retrying with the local cache: %v\n", stage, err)
-	service.Build.CacheFrom = originalCacheFrom
-	service.Build.CacheTo = originalCacheTo
-	project.Services[serviceName] = service
-	_, _ = fmt.Fprintf(e.stdout, "Retry %s build with local cache\n", stage)
 	return e.compose.Build(ctx, project, api.BuildOptions{Services: []string{serviceName}, Progress: "plain", Out: e.stderr})
 }
 

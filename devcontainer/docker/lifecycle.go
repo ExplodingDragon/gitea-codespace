@@ -91,6 +91,7 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hos
 	}); err != nil {
 		return nil, fmt.Errorf("run initializeCommand: %w", err)
 	}
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Resuming Dev Container environment")
 	if environment.ComposeProject != "" {
 		if err := e.compose.Start(ctx, environment.ComposeProject, api.StartOptions{Wait: true, WaitTimeout: 2 * time.Minute}); err != nil {
 			return nil, fmt.Errorf("resume Docker Compose Dev Container: %w", err)
@@ -137,6 +138,7 @@ func (e *Engine) Stop(ctx context.Context, environment *devcontainer.State) (*de
 	if err := environment.Validate(); err != nil {
 		return nil, err
 	}
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Stopping Dev Container environment")
 	timeout := 20 * time.Second
 	if environment.ComposeProject != "" {
 		if err := e.compose.Stop(ctx, environment.ComposeProject, api.StopOptions{Timeout: &timeout}); err != nil {

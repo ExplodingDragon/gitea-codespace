@@ -50,18 +50,21 @@ func (c *creationCleanupClient) ContainerRemove(ctx context.Context, id string, 
 
 type creationCompose struct {
 	composeapi.Compose
-	client   client.APIClient
-	upErr    error
-	downCall int
+	client     client.APIClient
+	project    *composetypes.Project
+	containers []composeapi.ContainerSummary
+	upErr      error
+	downCall   int
 }
 
 func (c *creationCompose) Up(ctx context.Context, project *composetypes.Project, _ composeapi.UpOptions) error {
+	c.project = project
 	_, err := c.client.ContainerCreate(ctx, &container.Config{Labels: project.Services["workspace"].Labels}, nil, nil, nil, "workspace")
 	return errors.Join(err, c.upErr)
 }
 
-func (*creationCompose) Ps(context.Context, string, composeapi.PsOptions) ([]composeapi.ContainerSummary, error) {
-	return nil, nil
+func (c *creationCompose) Ps(context.Context, string, composeapi.PsOptions) ([]composeapi.ContainerSummary, error) {
+	return c.containers, nil
 }
 
 func (c *creationCompose) Down(ctx context.Context, _ string, options composeapi.DownOptions) error {
@@ -73,15 +76,26 @@ func (c *creationCompose) Down(ctx context.Context, _ string, options composeapi
 }
 
 func TestCreateResourceCleanup(t *testing.T) {
-	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "diagnostics unavailable", "logs unavailable", "compose start", "compose empty", "success"} {
+	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "diagnostics unavailable", "logs unavailable", "compose start", "compose empty", "compose service user", "compose repository user", "compose metadata user", "success"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			configuration := map[string]any{"image": "alpine:latest", "remoteUser": "root", "userEnvProbe": "none"}
 			useCompose := strings.HasPrefix(scenario, "compose")
+			success := scenario == "success" || strings.HasSuffix(scenario, " user")
+			wantUser := "image-user"
 			if useCompose {
 				delete(configuration, "image")
 				configuration["dockerComposeFile"], configuration["service"] = "compose.yaml", "workspace"
-				require.NoError(t, os.WriteFile(filepath.Join(workspace, "compose.yaml"), []byte("services:\n  workspace:\n    image: alpine:latest\n"), 0o600))
+				composeFile := "services:\n  workspace:\n    image: alpine:latest\n"
+				if scenario == "compose service user" || scenario == "compose repository user" {
+					composeFile += "    user: service-user\n"
+					wantUser = "service-user"
+				}
+				if scenario == "compose repository user" {
+					configuration["containerUser"] = "repository-user"
+					wantUser = "repository-user"
+				}
+				require.NoError(t, os.WriteFile(filepath.Join(workspace, "compose.yaml"), []byte(composeFile), 0o600))
 			} else if scenario == "runArgs" {
 				configuration["runArgs"] = []string{"--hostname", "workspace"}
 			}
@@ -115,7 +129,7 @@ func TestCreateResourceCleanup(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/images/create"):
 					_, _ = io.WriteString(w, `{}`)
 				case strings.Contains(r.URL.Path, "/images/") && strings.HasSuffix(r.URL.Path, "/json"):
-					_, _ = io.WriteString(w, `{"Id":"image","Os":"linux","Architecture":"amd64","Config":{"User":"root"}}`)
+					_, _ = io.WriteString(w, `{"Id":"image","Os":"linux","Architecture":"amd64","Config":{"User":"root","Labels":{"devcontainer.metadata":"{\"containerUser\":\"image-user\"}"}}}`)
 				case strings.HasSuffix(r.URL.Path, "/containers/create"):
 					exists = true
 					_, _ = io.WriteString(w, `{"Id":"container"}`)
@@ -160,6 +174,9 @@ func TestCreateResourceCleanup(t *testing.T) {
 			cleanup := &creationCleanupClient{APIClient: engine.client, t: t}
 			engine.client = cleanup
 			compose := &creationCompose{client: cleanup}
+			if useCompose && success {
+				compose.containers = []composeapi.ContainerSummary{{ID: "container", Service: "workspace"}}
+			}
 			engine.compose = compose
 			failure, cleanupFailure := errors.New("preparation failed"), errors.New("cleanup failed")
 			if scenario == "compose start" {
@@ -177,7 +194,7 @@ func TestCreateResourceCleanup(t *testing.T) {
 					mu.Lock()
 					prepared = true
 					mu.Unlock()
-					if scenario == "success" {
+					if success {
 						return nil
 					}
 					if scenario == "cancel" {
@@ -186,10 +203,14 @@ func TestCreateResourceCleanup(t *testing.T) {
 					return failure
 				},
 			})
-			if scenario == "success" {
+			if success {
 				require.NoError(t, err)
 				require.NotNil(t, state)
 				require.Zero(t, cleanup.removeCall)
+				require.Equal(t, wantUser, state.Configuration.ContainerUser)
+				if useCompose {
+					require.Equal(t, wantUser, compose.project.Services["workspace"].User)
+				}
 				return
 			}
 			require.Nil(t, state)

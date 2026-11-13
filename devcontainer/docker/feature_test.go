@@ -9,14 +9,79 @@ import (
 	"context"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/moby/buildkit/frontend/dockerfile/parser"
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestFeatureBuildContext(t *testing.T) {
+	t.Parallel()
+
+	featureDirectory := t.TempDir()
+	installer := []byte("#!/bin/sh\nprintf '%s\\n' \"$MESSAGE\"\n")
+	if err := os.WriteFile(filepath.Join(featureDirectory, "install.sh"), installer, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	features := []*resolvedFeature{
+		{directory: featureDirectory, options: map[string]string{"MESSAGE": "it's a message"}},
+		{directory: featureDirectory, options: map[string]string{"MESSAGE": "second"}},
+	}
+	directory := t.TempDir()
+	if err := writeFeatureBuildContext(directory, "example:base", features, "developer", "remote", map[string]string{"EXAMPLE": "value"}); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(filepath.Join(directory, "Dockerfile.features"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := parser.Parse(bytes.NewReader(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := parsed.AST.Children
+	if len(steps) != 7 || !strings.EqualFold(steps[0].Value, "FROM") || steps[0].Next.Value != "example:base" {
+		t.Fatalf("Feature build instructions = %s", parsed.AST.Dump())
+	}
+	if !strings.EqualFold(steps[1].Value, "USER") || steps[1].Next.Value != "root" {
+		t.Fatalf("Feature installation user = %s", steps[1].Dump())
+	}
+	for index, feature := range features {
+		run := steps[index+4]
+		if !strings.EqualFold(run.Value, "RUN") || len(run.Flags) != 1 || run.Flags[0] != fmt.Sprintf("--mount=type=bind,source=feature/%d,target=/tmp/dev-container-feature-source", index) {
+			t.Fatalf("Feature instruction = %s", run.Dump())
+		}
+		command := run.Next.Value
+		for _, step := range []string{
+			fmt.Sprintf("cp -R /tmp/dev-container-feature-source /tmp/dev-container-feature/%d", index),
+			fmt.Sprintf("cd /tmp/dev-container-feature/%d && chmod +x ./install.sh", index),
+			". ../devcontainer-features.builtin.env && . ./devcontainer-features.env",
+			fmt.Sprintf("./install.sh && rm -rf /tmp/dev-container-feature/%d", index),
+		} {
+			if !strings.Contains(command, step) {
+				t.Fatalf("Feature RUN missing %q: %s", step, command)
+			}
+		}
+		environment, err := os.ReadFile(filepath.Join(directory, "feature", fmt.Sprint(index), "devcontainer-features.env"))
+		if err != nil || string(environment) != "MESSAGE="+shellQuote(feature.options["MESSAGE"])+"\n" {
+			t.Fatalf("Feature environment = %q, %v", environment, err)
+		}
+		copiedInstaller, err := os.ReadFile(filepath.Join(directory, "feature", fmt.Sprint(index), "install.sh"))
+		if err != nil || !bytes.Equal(copiedInstaller, installer) {
+			t.Fatalf("Feature installer = %q, %v", copiedInstaller, err)
+		}
+	}
+	if !strings.EqualFold(steps[6].Value, "USER") || steps[6].Next.Value != "developer" {
+		t.Fatalf("final container user = %s", steps[6].Dump())
+	}
+}
 
 func TestFeatureRegistryClientUsesConfiguredRootCA(t *testing.T) {
 	t.Parallel()

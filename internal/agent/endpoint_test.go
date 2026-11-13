@@ -5,6 +5,7 @@ package agent
 
 import (
 	"context"
+	"io"
 	"net"
 	"net/http"
 	"path/filepath"
@@ -44,7 +45,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 			} else {
 				require.True(t, proto.Equal(target, runtime.CurrentAccessTarget()))
 			}
-		}))
+		}, io.Discard))
 	require.Equal(t, []codespacev1.RuntimeBootStage{
 		codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY, codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY,
 	}, stages)

@@ -6,6 +6,8 @@ package cluster
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -37,7 +39,7 @@ type operationLogSender struct {
 	site        api.ResourceReference
 	version     int64
 	runtimeUUID string
-	stage       string
+	progress    string
 	buffer      logbuffer.Buffer
 	closed      bool
 	finishAt    time.Time
@@ -104,8 +106,8 @@ func (l *operationLogs) RetainSite(uid types.UID, rows []api.Codespace) {
 	}
 }
 
-// Append accepts both infrastructure progress and Agent output. A stage dedups
-// repeated observations in this process only; Agent batches use an empty stage.
+// Append deduplicates infrastructure progress independently of diagnostics.
+// Agent batches use an empty stage; diagnostic captures own their deduplication.
 func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespacev1.LogLine) error {
 	if l == nil {
 		return connect.NewError(connect.CodeUnavailable, "operation log sender is not ready")
@@ -134,18 +136,18 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 			sender.cancel()
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
-		sender = &operationLogSender{site: cs.Spec.Site, runtimeUUID: cs.Spec.RuntimeUUID, version: cs.Spec.Operation.Version, stage: "accepted", cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+		sender = &operationLogSender{site: cs.Spec.Site, runtimeUUID: cs.Spec.RuntimeUUID, version: cs.Spec.Operation.Version, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
 		l.senders[cs.UID] = sender
-		l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Manager accepted the runtime operation"}}, maxManagerLogBytes-l.bytes)
+		l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[INFO] [operation] Accepted %s #%d", strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version)}}, maxManagerLogBytes-l.bytes)
 		go l.send(workerCtx, sender)
 	}
 	if sender.closed || !sender.finishAt.IsZero() {
 		return errOperationLogClosed
 	}
-	if stage == "" || stage != sender.stage {
+	if stage == "" || stage == diagnosticLogStage || stage != sender.progress {
 		l.bytes += sender.buffer.Add(lines, maxManagerLogBytes-l.bytes)
-		if stage != "" {
-			sender.stage = stage
+		if stage != "" && stage != diagnosticLogStage {
+			sender.progress = stage
 		}
 	}
 	select {
@@ -168,6 +170,18 @@ func (l *operationLogs) Finish(cs *api.Codespace) bool {
 		return true
 	}
 	if sender.finishAt.IsZero() {
+		if result := cs.Status.Result; result != nil && result.Version == sender.version {
+			level, outcome := "INFO", "completed"
+			if !result.Succeeded {
+				level, outcome = "ERROR", "failed; see preceding output"
+			} else if cs.Spec.Operation.Type == "stop" {
+				outcome = "completed; workspace volume retained"
+			} else if cs.Spec.Operation.Type == "delete" {
+				outcome = "completed; runtime resources removed"
+			}
+			message := fmt.Sprintf("[%s] [operation] %s #%d %s", level, strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version, outcome)
+			l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}}, maxManagerLogBytes-l.bytes)
+		}
 		sender.finishAt = time.Now().Add(5 * time.Second)
 	}
 	if sender.buffer.Bytes() == 0 || !time.Now().Before(sender.finishAt) {

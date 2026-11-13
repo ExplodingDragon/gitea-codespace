@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"context"
+	"fmt"
 	"regexp"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
@@ -27,12 +28,12 @@ func managerProgress(ctx context.Context, reader client.Reader, cs *api.Codespac
 	switch cs.Spec.Operation.Type {
 	case "stop", "delete", "abort_create", "abort_resume":
 		if cs.Status.Pod.Name != "" {
-			return "stopping", "Stopping runtime Pod", nil
+			return "stopping", "[INFO] [kubernetes] Stopping runtime Pod", nil
 		}
 		if cs.Spec.Operation.Type == "delete" {
-			return "deleting", "Removing runtime resources", nil
+			return "deleting", "[INFO] [kubernetes] Removing runtime resources", nil
 		}
-		return "stopped", "Runtime process has stopped", nil
+		return "stopped", "[INFO] [kubernetes] Runtime process has stopped", nil
 	}
 	if (cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version) || (cs.Status.Boot != nil && cs.Status.Boot.OperationVersion == cs.Spec.Operation.Version) {
 		return "", "", nil
@@ -40,7 +41,7 @@ func managerProgress(ctx context.Context, reader client.Reader, cs *api.Codespac
 	if condition := meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady"); condition != nil && condition.Status == metav1.ConditionFalse && condition.ObservedGeneration == cs.Generation {
 		switch condition.Reason {
 		case "InvalidConfiguration", "SiteUnavailable", "NamespaceUnavailable", "OwnershipConflict", "ProxyUnavailable", "VolumeUnavailable", "InvalidRuntimeConfiguration", "PodUnavailable", "PodTerminating", "IdentityUnavailable":
-			return "infrastructure-" + condition.Reason, "Waiting for runtime infrastructure: " + condition.Reason, nil
+			return "infrastructure-" + condition.Reason, "[INFO] [kubernetes] Waiting for runtime infrastructure: " + condition.Reason, nil
 		}
 	}
 	if cs.Status.Pod.Name != "" {
@@ -52,22 +53,22 @@ func managerProgress(ctx context.Context, reader client.Reader, cs *api.Codespac
 		if err == nil && pod.Labels[RuntimeUIDLabel] == string(cs.UID) {
 			for _, condition := range pod.Status.Conditions {
 				if condition.Type == corev1.PodScheduled && condition.Status == corev1.ConditionFalse && podWaitingReasonPattern.MatchString(condition.Reason) {
-					return "scheduling-" + condition.Reason, "Waiting for Pod scheduling: " + condition.Reason, nil
+					return "scheduling-" + condition.Reason, "[INFO] [kubernetes] Waiting for Pod scheduling: " + condition.Reason, nil
 				}
 			}
 			for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
 				for _, status := range statuses {
 					if waiting := status.State.Waiting; waiting != nil && podWaitingReasonPattern.MatchString(waiting.Reason) {
-						return "container-" + waiting.Reason, "Waiting for runtime container: " + waiting.Reason, nil
+						return "container-" + status.Name + "-" + waiting.Reason, fmt.Sprintf("[INFO] [kubernetes] Waiting for container %s: %s", status.Name, waiting.Reason), nil
 					}
 				}
 			}
 			if pod.Status.Phase == corev1.PodRunning {
-				return "pod-running", "Runtime Pod is running; starting Agent", nil
+				return "pod-running", "[INFO] [kubernetes] Runtime Pod is running; waiting for Agent", nil
 			}
-			return "pod-created", "Runtime Pod has been created", nil
+			return "pod-created", "[INFO] [kubernetes] Runtime Pod has been created", nil
 		}
-		return "pod-creating", "Creating runtime Pod", nil
+		return "pod-creating", "[INFO] [kubernetes] Creating runtime Pod", nil
 	}
 	if cs.Status.Volume.Name != "" {
 		var volume corev1.PersistentVolumeClaim
@@ -77,11 +78,11 @@ func managerProgress(ctx context.Context, reader client.Reader, cs *api.Codespac
 		}
 		if err == nil {
 			if volume.Status.Phase == corev1.ClaimBound {
-				return "volume-bound", "Workspace volume is bound", nil
+				return "volume-bound", "[INFO] [kubernetes] Workspace volume is bound", nil
 			}
-			return "volume-created", "Workspace volume has been created", nil
+			return "volume-created", "[INFO] [kubernetes] Workspace volume has been created", nil
 		}
-		return "volume-creating", "Creating workspace volume", nil
+		return "volume-creating", "[INFO] [kubernetes] Creating workspace volume", nil
 	}
-	return "accepted", "Manager accepted the runtime operation", nil
+	return "", "", nil
 }

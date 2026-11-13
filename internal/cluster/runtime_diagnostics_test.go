@@ -13,8 +13,11 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
+	"connectrpc.com/connect/v2"
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/internal/logbuffer"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -31,6 +34,9 @@ func TestRuntimeDiagnosticsUploadContainerLogsAndResourceFacts(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		for _, line := range request.Lines {
+			if strings.ContainsAny(line.Message, "\r\n") || !utf8.ValidString(line.Message) || len(line.Message) > logbuffer.MaxLineBytes {
+				return nil, connect.NewError(connect.CodeInvalidArgument, "invalid log line")
+			}
 			received = append(received, line.Message)
 		}
 		return &codespacev1.UpdateLogResponse{NextOffset: int64(len(received))}, nil
@@ -54,7 +60,7 @@ func TestRuntimeDiagnosticsUploadContainerLogsAndResourceFacts(t *testing.T) {
 	}
 	pvc := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}, Status: corev1.PersistentVolumeClaimStatus{Phase: corev1.ClaimBound}}
 	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: "worker"}, Status: corev1.NodeStatus{Conditions: []corev1.NodeCondition{{Type: corev1.NodeMemoryPressure, Status: corev1.ConditionFalse}}}}
-	event := &corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "scheduled", Namespace: cs.Namespace}, InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: pod.Name, UID: pod.UID}, Reason: "Scheduled", Message: "placed on worker", LastTimestamp: metav1.Now()}
+	event := &corev1.Event{ObjectMeta: metav1.ObjectMeta{Name: "scheduled", Namespace: cs.Namespace}, InvolvedObject: corev1.ObjectReference{Kind: "Pod", Name: pod.Name, UID: pod.UID}, Reason: "Scheduled", Message: "placed on worker\r\n" + credential + "\n" + strings.Repeat("x", logbuffer.MaxLineBytes) + "\nremaining event detail", LastTimestamp: metav1.Now()}
 	reader := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pod, pvc, node, event).WithIndex(&corev1.Event{}, "involvedObject.uid", func(object client.Object) []string {
 		return []string{string(object.(*corev1.Event).InvolvedObject.UID)}
 	}).Build()
@@ -88,11 +94,12 @@ func TestRuntimeDiagnosticsUploadContainerLogsAndResourceFacts(t *testing.T) {
 	pod.Status.Phase = corev1.PodFailed
 	d.capture(t.Context(), cs, pod, "state")
 	require.EqualValues(t, 8, calls.Load())
+	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "output after diagnostics"}}))
 	require.Eventually(t, func() bool { return logs.Finish(cs) }, 5*time.Second, 10*time.Millisecond)
 	mu.Lock()
 	output := strings.Join(received, "\n")
 	mu.Unlock()
-	for _, expected := range []string{"prepare actual output [redacted]", "runtime actual output [redacted]", "previous=true", "log byte limit reached", "Scheduled", "MemoryPressure", "Bound", `"phase":"Failed"`, `"message":"[redacted]"`, "complete-before-disconnect", "logs incomplete"} {
+	for _, expected := range []string{"prepare actual output [redacted]", "runtime actual output [redacted]", "previous=true", "log byte limit reached", "Scheduled", "MemoryPressure", "Bound", `"phase":"Failed"`, `"message":"[redacted]"`, "complete-before-disconnect", "logs incomplete", "remaining event detail", "output after diagnostics", "line omitted"} {
 		require.Contains(t, output, expected)
 	}
 	require.NotContains(t, output, "secret-value")

@@ -31,15 +31,21 @@ import (
 //go:embed builtin/resolve-user-shell.sh
 var resolveUserShellScript string
 
+type lifecycleCommand struct {
+	name      string
+	arguments []string
+}
+
 func runInitializeCommand(ctx context.Context, command devcontainer.Command, user devcontainer.HostUser, workdir string, environment map[string]string, stdout, stderr io.Writer) error {
-	commands, err := decodeCommand(command)
+	commands, err := decodeCommand("initializeCommand", command)
 	if err != nil || len(commands) == 0 {
 		return err
 	}
-	_, _ = fmt.Fprintln(stdout, "initializeCommand")
 	group, groupCtx := errgroup.WithContext(ctx)
-	for _, arguments := range commands {
+	for _, command := range commands {
+		_, _ = fmt.Fprintf(stdout, "[INFO] [lifecycle] Running %s in the runtime workspace\n", command.name)
 		group.Go(func() error {
+			arguments := command.arguments
 			process := exec.CommandContext(groupCtx, arguments[0], arguments[1:]...)
 			process.Dir = workdir
 			process.Stdout = stdout
@@ -61,7 +67,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 				process.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: user.UID, Gid: user.GID}}
 			}
 			if err := process.Run(); err != nil {
-				return fmt.Errorf("command %q: %w", arguments[0], err)
+				return fmt.Errorf("run %s: %w", command.name, err)
 			}
 			return nil
 		})
@@ -69,7 +75,7 @@ func runInitializeCommand(ctx context.Context, command devcontainer.Command, use
 	return group.Wait()
 }
 
-func decodeCommand(command devcontainer.Command) ([][]string, error) {
+func decodeCommand(stage string, command devcontainer.Command) ([]lifecycleCommand, error) {
 	if len(command.Value) == 0 || bytes.Equal(bytes.TrimSpace(command.Value), []byte("null")) {
 		return nil, nil
 	}
@@ -95,13 +101,13 @@ func decodeCommand(command devcontainer.Command) ([][]string, error) {
 		}
 	}
 	if object, ok := value.(map[string]any); ok {
-		result := make([][]string, 0, len(object))
+		result := make([]lifecycleCommand, 0, len(object))
 		for _, name := range slices.Sorted(maps.Keys(object)) {
 			arguments, err := toArguments(object[name])
 			if err != nil {
 				return nil, fmt.Errorf("lifecycle command %s: %w", name, err)
 			}
-			result = append(result, arguments)
+			result = append(result, lifecycleCommand{name: stage + "." + name, arguments: arguments})
 		}
 		return result, nil
 	}
@@ -109,24 +115,24 @@ func decodeCommand(command devcontainer.Command) ([][]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	return [][]string{arguments}, nil
+	return []lifecycleCommand{{name: stage, arguments: arguments}}, nil
 }
 
 func (e *Engine) executeLifecycleCommand(ctx context.Context, environment *devcontainer.State, name string, command devcontainer.Command, secrets map[string]string) error {
-	commands, err := decodeCommand(command)
+	commands, err := decodeCommand(name, command)
 	if err != nil {
 		return fmt.Errorf("decode %s: %w", name, err)
 	}
 	if len(commands) == 0 {
 		return nil
 	}
-	_, _ = fmt.Fprintf(e.stdout, "%s\n", name)
 	group, groupCtx := errgroup.WithContext(ctx)
-	for _, arguments := range commands {
+	for _, command := range commands {
+		_, _ = fmt.Fprintf(e.stdout, "[INFO] [lifecycle] Running %s in the Dev Container\n", command.name)
 		group.Go(func() error {
 			environmentValues := devcontainer.ProcessEnvironment(environment.RemoteEnvironment, secrets)
-			if err := e.Run(groupCtx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, arguments, environmentValues, nil); err != nil {
-				return fmt.Errorf("run %s: %w", name, err)
+			if err := e.Run(groupCtx, environment.PrimaryContainerID, environment.RemoteUser, environment.RemoteWorkdir, command.arguments, environmentValues, nil); err != nil {
+				return fmt.Errorf("run %s: %w", command.name, err)
 			}
 			return nil
 		})
@@ -270,22 +276,19 @@ func (e *Engine) exec(ctx context.Context, containerID, user, workdir string, co
 
 // CopyContent copies in-memory content into a container with the requested mode.
 func (e *Engine) CopyContent(ctx context.Context, containerID, target string, mode int64, content []byte) error {
-	reader, writer := io.Pipe()
-	go func() {
-		archive := tar.NewWriter(writer)
-		err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: int64(len(content))})
-		if err == nil {
-			_, err = io.Copy(archive, bytes.NewReader(content))
-		}
-		err = errors.Join(err, archive.Close())
-		_ = writer.CloseWithError(err)
-	}()
-	if err := e.client.CopyToContainer(ctx, containerID, filepath.Dir(target), reader, container.CopyToContainerOptions{}); err != nil {
-		_ = reader.CloseWithError(err)
-		return fmt.Errorf("install runtime helper in Dev Container: %w", err)
+	var buffer bytes.Buffer
+	archive := tar.NewWriter(&buffer)
+	if err := archive.WriteHeader(&tar.Header{Name: filepath.Base(target), Mode: mode, Size: int64(len(content))}); err != nil {
+		return fmt.Errorf("archive runtime helper: %w", err)
 	}
-	if err := reader.Close(); err != nil {
-		return fmt.Errorf("stream runtime helper: %w", err)
+	if _, err := archive.Write(content); err != nil {
+		return fmt.Errorf("archive runtime helper: %w", err)
+	}
+	if err := archive.Close(); err != nil {
+		return fmt.Errorf("archive runtime helper: %w", err)
+	}
+	if err := e.client.CopyToContainer(ctx, containerID, filepath.Dir(target), &buffer, container.CopyToContainerOptions{}); err != nil {
+		return fmt.Errorf("install runtime helper in Dev Container: %w", err)
 	}
 	return nil
 }

@@ -4,6 +4,8 @@
 package docker
 
 import (
+	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +25,62 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestCopyContent(t *testing.T) {
+	t.Parallel()
+	for _, scenario := range []string{"copy", "api error", "archive error"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Parallel()
+			archives := make(chan []byte, 1)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPut || !strings.HasSuffix(r.URL.Path, "/containers/container/archive") || r.URL.Query().Get("path") != "/usr/local/bin" {
+					t.Errorf("unexpected copy request: %s %s", r.Method, r.URL)
+				}
+				content, err := io.ReadAll(r.Body)
+				if err != nil {
+					t.Error(err)
+				}
+				archives <- content
+				if scenario == "api error" {
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusForbidden)
+					_, _ = io.WriteString(w, `{"message":"read-only destination"}`)
+				}
+			}))
+			defer server.Close()
+			apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
+			require.NoError(t, err)
+			defer apiClient.Close()
+			engine := &Engine{client: apiClient}
+			target, content := "/usr/local/bin/helper", []byte("#!/bin/sh\nprintf '%s\\n' \"$VALUE\"\n")
+			if scenario == "archive error" {
+				target += "\x00"
+			}
+			err = engine.CopyContent(t.Context(), "container", target, 0o755, content)
+			close(archives)
+			if scenario == "archive error" {
+				require.ErrorContains(t, err, "archive runtime helper")
+				require.Empty(t, archives)
+				return
+			}
+			if scenario == "api error" {
+				require.ErrorContains(t, err, "read-only destination")
+			} else {
+				require.NoError(t, err)
+			}
+			archive := tar.NewReader(bytes.NewReader(<-archives))
+			header, err := archive.Next()
+			require.NoError(t, err)
+			require.Equal(t, "helper", header.Name)
+			require.Equal(t, int64(0o755), header.Mode)
+			copied, err := io.ReadAll(archive)
+			require.NoError(t, err)
+			require.Equal(t, content, copied)
+			_, err = archive.Next()
+			require.ErrorIs(t, err, io.EOF)
+		})
+	}
+}
 
 func TestInitializeCommandCanRunForCreateAndResume(t *testing.T) {
 	t.Parallel()
@@ -59,6 +117,22 @@ func TestInitializeCommandUsesOnlyExplicitEnvironment(t *testing.T) {
 	if err != nil || string(content) != "unset:available" {
 		t.Fatalf("initializeCommand environment = %q, %v", content, err)
 	}
+}
+
+func TestNamedLifecycleCommands(t *testing.T) {
+	command := devcontainer.Command{Value: []byte(`{"install":"exit 17","configure":["/bin/sh","-c","exit 17"]}`)}
+	commands, err := decodeCommand("postCreateCommand", command)
+	require.NoError(t, err)
+	require.Equal(t, []lifecycleCommand{
+		{name: "postCreateCommand.configure", arguments: []string{"/bin/sh", "-c", "exit 17"}},
+		{name: "postCreateCommand.install", arguments: []string{"/bin/sh", "-c", "exit 17"}},
+	}, commands)
+	var output bytes.Buffer
+	user := devcontainer.HostUser{UID: uint32(os.Geteuid()), GID: uint32(os.Getegid())}
+	err = runInitializeCommand(t.Context(), command, user, t.TempDir(), nil, &output, io.Discard)
+	require.ErrorContains(t, err, "run initializeCommand.")
+	require.Contains(t, output.String(), "[INFO] [lifecycle] Running initializeCommand.configure")
+	require.Contains(t, output.String(), "[INFO] [lifecycle] Running initializeCommand.install")
 }
 
 func execForTest(engine *Engine, ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string) ([]byte, []byte, error) {

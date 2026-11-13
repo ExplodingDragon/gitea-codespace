@@ -84,7 +84,7 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	if r.Journal == nil || r.PodUID == "" || response == nil || response.Operation == nil || response.Runtime == nil {
 		return fmt.Errorf("runtime execution input is incomplete")
 	}
-	_, _ = fmt.Fprintln(stdout, "Preparing runtime trust and container engine")
+	_, _ = fmt.Fprintln(stdout, "[INFO] [runtime] Preparing trust and container engine")
 	trust, err := r.prepareRuntimeTrust(response.Runtime)
 	if err != nil {
 		return err
@@ -106,18 +106,6 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 		return err
 	}
 	report := func(stage codespacev1.RuntimeBootStage, target *agentv1.AccessTarget) {
-		switch stage {
-		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_INITIALIZE_SYSTEM:
-			_, _ = fmt.Fprintln(stdout, "Initializing runtime system")
-		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE:
-			_, _ = fmt.Fprintln(stdout, "Preparing workspace")
-		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT:
-			_, _ = fmt.Fprintln(stdout, "Starting development environment")
-		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PUBLISH_READY:
-			_, _ = fmt.Fprintln(stdout, "Publishing workspace access")
-		case codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY:
-			_, _ = fmt.Fprintln(stdout, "Runtime is ready")
-		}
 		if update == nil {
 			return
 		}
@@ -221,6 +209,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		return fmt.Errorf("create repository identity is invalid")
 	}
 	username := runtimeUserName(payload.GitIdentity.GiteaUsername)
+	_, _ = fmt.Fprintln(stdout, "[INFO] [runtime] Preparing runtime user and repository access")
 	hostUser, err := ensureRuntimeUser(username, nil)
 	if err != nil {
 		return err
@@ -240,6 +229,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintln(stdout, "[INFO] [repository] Preparing repository workspace")
 	if err := ensureWorkspace(ctx, operation, payload.Repository, hostUser, trust, stdout, stderr); err != nil {
 		return err
 	}
@@ -296,13 +286,14 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	return r.publishAccess(operation.OperationRversion, outcome, secrets, report)
+	return r.publishAccess(operation.OperationRversion, outcome, secrets, report, stdout)
 }
 
 func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, trust runtimeTrust, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget)) error {
 	if response.Access == nil {
 		return fmt.Errorf("resume access material is missing")
 	}
+	_, _ = fmt.Fprintln(executor.Stdout, "[INFO] [runtime] Restoring runtime user and repository access")
 	hostUser, err := r.loadHostUser()
 	if err != nil {
 		return err
@@ -328,10 +319,11 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report)
+	return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report, executor.Stdout)
 }
 
-func (r *Runtime) publishAccess(version int64, outcome *devcontainerruntime.Outcome, secrets map[string]string, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget)) error {
+func (r *Runtime) publishAccess(version int64, outcome *devcontainerruntime.Outcome, secrets map[string]string, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget), stdout io.Writer) error {
+	_, _ = fmt.Fprintln(stdout, "[INFO] [runtime] Publishing workspace access")
 	target, err := r.accessTarget(version, outcome.Environment, outcome.WebIDEStarted)
 	if err != nil {
 		return err

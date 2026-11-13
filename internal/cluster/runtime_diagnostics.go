@@ -28,6 +28,7 @@ import (
 )
 
 const diagnosticLogBytes = 64 * 1024
+const diagnosticLogStage = "diagnostic"
 
 // Diagnostics are process-local observations, not lifecycle state. Losing a
 // snapshot or its deduplication cache never changes resource cleanup.
@@ -85,14 +86,24 @@ func (d *runtimeDiagnostics) emit(ctx context.Context, cs *api.Codespace, stage 
 	d.mu.Unlock()
 	logger := log.FromContext(ctx).WithValues("codespace", cs.Name, "namespace", cs.Namespace, "runtime", cs.Spec.RuntimeUUID, "operation", cs.Spec.Operation.Type, "version", cs.Spec.Operation.Version, "stage", stage)
 	batch := make([]*codespacev1.LogLine, 0, len(lines))
+	prefix := "[DEBUG] [kubernetes] " + stage + ": "
+	switch stage {
+	case "failure":
+		prefix = "[ERROR] [kubernetes] "
+	case "cleanup":
+		prefix = "[WARN] [kubernetes] "
+	}
 	for _, line := range lines {
-		message := redactor.Redact(line)
-		logger.Info("Runtime diagnostic", "detail", message)
-		batch = append(batch, &codespacev1.LogLine{TimestampUnixNano: time.Now().UnixNano(), Message: "[" + stage + "] " + message})
+		timestamp := time.Now().UnixNano()
+		for _, part := range strings.Split(strings.TrimSuffix(line, "\n"), "\n") {
+			message := redactor.Redact(prefix + part)
+			logger.Info("Runtime diagnostic", "detail", message)
+			batch = append(batch, &codespacev1.LogLine{TimestampUnixNano: timestamp, Message: message})
+		}
 	}
 	// Append only supplements the existing operation sender; a diagnostic must
 	// never reopen an operation that Gitea has already completed.
-	_ = d.Logs.Append(cs, fmt.Sprintf("diagnostic-%s-%x", stage, sha256.Sum256([]byte(strings.Join(lines, "\n")))), batch)
+	_ = d.Logs.Append(cs, diagnosticLogStage, batch)
 }
 
 func (d *runtimeDiagnostics) capture(ctx context.Context, cs *api.Codespace, pod *corev1.Pod, stage string) {
@@ -112,7 +123,7 @@ func (d *runtimeDiagnostics) capture(ctx context.Context, cs *api.Codespace, pod
 	if pod != nil && (!metav1.IsControlledBy(pod, cs) || (cs.Status.Pod.UID != "" && pod.UID != cs.Status.Pod.UID)) {
 		pod, podError = nil, fmt.Errorf("pod identity no longer matches the runtime")
 	}
-	lines := []string{fmt.Sprintf("operation=%s version=%d recovery=%s", cs.Spec.Operation.Type, cs.Spec.Operation.Version, cs.Status.RecoveryAction)}
+	lines := []string{fmt.Sprintf("Snapshot for %s #%d; namespace=%s pod=%s recovery=%q", cs.Spec.Operation.Type, cs.Spec.Operation.Version, cs.Namespace, cs.Status.Pod.Name, cs.Status.RecoveryAction)}
 	add := func(name string, value any) {
 		data, err := json.Marshal(value)
 		if err == nil {

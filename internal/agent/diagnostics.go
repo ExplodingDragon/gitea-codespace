@@ -19,9 +19,9 @@ func writeFailureDiagnostics(output io.Writer, reader cgroup.Reader, kata bool) 
 	for _, name := range []string{"cgroup.type", "cgroup.subtree_control", "memory.events", "memory.current", "memory.max", "memory.peak"} {
 		data, err := reader.Read(name)
 		if err != nil {
-			_, _ = fmt.Fprintf(output, "[debug] Runtime cgroup %s unavailable: %v\n", name, err)
+			_, _ = fmt.Fprintf(output, "[DEBUG] [runtime] Cgroup %s unavailable: %v\n", name, err)
 		} else {
-			_, _ = fmt.Fprintf(output, "[debug] Runtime cgroup %s: %s\n", name, strings.Join(strings.Fields(string(data)), " "))
+			_, _ = fmt.Fprintf(output, "[DEBUG] [runtime] Cgroup %s: %s\n", name, strings.Join(strings.Fields(string(data)), " "))
 		}
 	}
 	// Only Kata has a dedicated guest kernel. Host kernel logs from Native or
@@ -32,7 +32,7 @@ func writeFailureDiagnostics(output io.Writer, reader cgroup.Reader, kata bool) 
 	data := make([]byte, 64*1024)
 	n, err := unix.Klogctl(unix.SYSLOG_ACTION_READ_ALL, data)
 	if err != nil {
-		_, _ = fmt.Fprintf(output, "[debug] Guest OOM messages unavailable: %v\n", err)
+		_, _ = fmt.Fprintf(output, "[DEBUG] [runtime] Guest OOM messages unavailable: %v\n", err)
 		return
 	}
 	lines := strings.Split(string(data[:n]), "\n")
@@ -46,7 +46,7 @@ func writeFailureDiagnostics(output io.Writer, reader cgroup.Reader, kata bool) 
 	if len(messages) > 20 {
 		messages = messages[len(messages)-20:]
 	}
-	_, _ = fmt.Fprintln(output, "[debug] Guest OOM messages (latest 20 matches in kernel log tail):")
+	_, _ = fmt.Fprintln(output, "[DEBUG] [runtime] Guest OOM messages (latest 20 matches in kernel log tail):")
 	for _, message := range messages {
 		_, _ = fmt.Fprintln(output, message)
 	}

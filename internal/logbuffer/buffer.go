@@ -56,7 +56,7 @@ func (b *Buffer) Add(lines []*codespacev1.LogLine, available int) int {
 		added += size
 		return true
 	}
-	if b.dropped > 0 && appendLine(&codespacev1.LogLine{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[operation output omitted: %d lines lost]", b.dropped)}) {
+	if b.dropped > 0 && appendLine(&codespacev1.LogLine{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[WARN] [logging] Operation output omitted: %d lines lost", b.dropped)}) {
 		b.dropped = 0
 	}
 	for _, line := range lines {

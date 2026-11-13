@@ -98,26 +98,10 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 			return "", nil, nil, nil, err
 		}
 	}
-	repositoryConfiguration := resolved.Configuration
-	metadata, err := e.readImageMetadata(ctx, baseImage)
-	if err != nil {
-		return "", nil, nil, nil, err
+	if strings.TrimSpace(resolved.ContainerUser) == "" && strings.TrimSpace(service.User) != "" {
+		resolved.ContainerUser = service.User
 	}
-	imageConfiguration := metadata.Configuration
-	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
-	if strings.TrimSpace(repositoryConfiguration.ContainerUser) == "" && strings.TrimSpace(service.User) != "" {
-		repositoryConfiguration.ContainerUser = service.User
-	}
-	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	featureImage, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration, platformEnvironment)
-	if err != nil {
-		return "", nil, nil, nil, err
-	}
-	featureImage, err = e.prepareUserImage(ctx, featureImage, resolved, hostUser)
-	if err != nil {
-		return "", nil, nil, nil, err
-	}
-	featureImage, err = e.customizeImage(ctx, featureImage, resolved, customizeImage, platformEnvironment)
+	imageName, featureDigests, err := e.prepareImage(ctx, baseImage, resolved, hostUser, customizeImage, platformEnvironment)
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
@@ -125,7 +109,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 	if err != nil {
 		return "", nil, nil, nil, err
 	}
-	service.Image = featureImage
+	service.Image = imageName
 	service.Build = nil
 	configuredMounts := slices.Clone(resolved.Mounts)
 	overriddenVolumeTargets := map[string]struct{}{}
@@ -269,6 +253,7 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		}
 		composeService = compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil }))
 	}
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Creating and starting Docker Compose services")
 	if err := composeService.Up(ctx, project, api.UpOptions{
 		Create: api.CreateOptions{Services: services, RemoveOrphans: true, AssumeYes: true},
 		Start:  api.StartOptions{Project: project, Services: services, Wait: true, WaitTimeout: 2 * time.Minute},

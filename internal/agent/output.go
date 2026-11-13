@@ -62,7 +62,7 @@ func (w *outputWriter) Write(data []byte) (int, error) {
 				// Truncating a prefix could leak a secret split at the boundary.
 				w.pending = nil
 				w.discarding = true
-				w.output.append("[output line omitted: exceeds 32 KiB]")
+				w.output.append("[WARN] [logging] Output line omitted: exceeds 32 KiB")
 			} else {
 				w.pending = append(w.pending, part...)
 			}

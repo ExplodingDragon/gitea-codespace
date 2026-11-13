@@ -7,18 +7,142 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/docker/docker/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/require"
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+func TestResolveAndPullImage(t *testing.T) {
+	for _, scenario := range []string{"mirror", "fallback", "unavailable"} {
+		t.Run(scenario, func(t *testing.T) {
+			pulls := make(chan string, 2)
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case r.URL.Path == "/_ping":
+					w.Header().Set("OSType", "linux")
+				case strings.HasSuffix(r.URL.Path, "/version"):
+					_, _ = io.WriteString(w, `{"Os":"linux","Arch":"amd64","ApiVersion":"1.51"}`)
+				case strings.HasSuffix(r.URL.Path, "/images/create"):
+					reference := r.URL.Query().Get("fromImage")
+					pulls <- reference
+					if reference == "cache.example.com/proxy/app" && scenario != "mirror" {
+						w.WriteHeader(http.StatusServiceUnavailable)
+						_, _ = io.WriteString(w, `{"message":"mirror unavailable"}`)
+					} else if scenario == "unavailable" {
+						w.WriteHeader(http.StatusForbidden)
+						_, _ = io.WriteString(w, `{"message":"upstream denied"}`)
+					} else {
+						_, _ = io.WriteString(w, `{}`)
+					}
+				default:
+					t.Errorf("unexpected Docker request: %s %s", r.Method, r.URL.Path)
+					http.NotFound(w, r)
+				}
+			}))
+			defer server.Close()
+			t.Setenv("DOCKER_HOST", "tcp://"+server.Listener.Addr().String())
+			t.Setenv("DOCKER_API_VERSION", "1.51")
+			t.Setenv("DOCKER_CONFIG", t.TempDir())
+			t.Setenv("DOCKER_CONTEXT", "")
+			var output bytes.Buffer
+			engine, err := New(t.Context(), &output, &output)
+			require.NoError(t, err)
+			defer engine.Close()
+			result, err := engine.resolveAndPullImage(t.Context(), "registry.example.com/app:latest", devcontainer.CacheOptions{
+				Mirrors: map[string]string{"registry.example.com": "https://cache.example.com/proxy"},
+			})
+			close(pulls)
+			var requests []string
+			for reference := range pulls {
+				requests = append(requests, reference)
+			}
+			if scenario == "mirror" {
+				require.NoError(t, err)
+				require.Equal(t, "cache.example.com/proxy/app:latest", result)
+				require.Equal(t, []string{"cache.example.com/proxy/app"}, requests)
+				require.Equal(t, "[INFO] [build] Pulling image registry.example.com/app:latest through mirror cache.example.com/proxy/app:latest\n"+
+					"[INFO] [build] Pulled image registry.example.com/app:latest through mirror cache.example.com/proxy/app:latest\n", output.String())
+				return
+			}
+			require.Equal(t, []string{"cache.example.com/proxy/app", "registry.example.com/app"}, requests)
+			require.Contains(t, output.String(), "falling back to the original registry: pull Dev Container image cache.example.com/proxy/app:latest:")
+			require.Contains(t, output.String(), "mirror unavailable")
+			if scenario == "unavailable" {
+				require.ErrorContains(t, err, "upstream denied")
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, "registry.example.com/app:latest", result)
+			}
+		})
+	}
+}
+
+func TestPrepareImage(t *testing.T) {
+	t.Parallel()
+	workspace := t.TempDir()
+	featureDir := filepath.Join(workspace, "feature")
+	require.NoError(t, os.Mkdir(featureDir, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(featureDir, "devcontainer-feature.json"), []byte(`{
+		"id":"example","version":"1.0.0","name":"Example",
+		"containerEnv":{"FROM_FEATURE":"true"},"entrypoint":"/feature.sh","onCreateCommand":"echo feature"
+	}`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o700))
+	resolved := &devcontainer.ResolvedConfiguration{
+		Configuration: devcontainer.Configuration{
+			Image: "base", ContainerUser: "developer", RemoteUser: "remote",
+			Features:        map[string]json.RawMessage{"./feature": json.RawMessage(`{}`)},
+			ContainerEnv:    map[string]string{"ORDER": "repository"},
+			OnCreateCommand: devcontainer.Command{Value: json.RawMessage(`"echo repository"`)},
+		},
+		Workspace: workspace, ConfigurationDir: workspace, ConfigurationPath: filepath.Join(workspace, "devcontainer.json"),
+		AllowedPathRoot: workspace, DevContainerID: "test", Synthetic: true,
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasSuffix(r.URL.Path, "/images/base/json") {
+			t.Errorf("unexpected Docker request: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"Id":"base","Os":"linux","Architecture":"amd64","Config":{"User":"image-user","Labels":{
+			"devcontainer.metadata":"[{\"containerEnv\":{\"ORDER\":\"image\"},\"entrypoint\":\"/image.sh\",\"onCreateCommand\":\"echo image\"}]"
+		}}}`)
+	}))
+	defer server.Close()
+	apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
+	require.NoError(t, err)
+	defer apiClient.Close()
+	compose := &recordingBuildCompose{}
+	engine := &Engine{client: apiClient, compose: compose, stdout: io.Discard, stderr: io.Discard}
+	image, digests, err := engine.prepareImage(t.Context(), "base", resolved, devcontainer.HostUser{UID: 1001, GID: 1001}, func(image ImageCustomization) error {
+		require.Equal(t, "devcontainer-user:test", image.BaseImage)
+		require.Equal(t, "developer", image.ContainerUser)
+		return os.WriteFile(filepath.Join(image.ContextDir, "Dockerfile"), []byte("FROM "+image.BaseImage+"\n"), 0o600)
+	}, nil)
+	require.NoError(t, err)
+	require.Equal(t, "devcontainer-customized:test", image)
+	require.Contains(t, digests, "./feature")
+	require.Len(t, compose.builds, 3)
+	require.Equal(t, "Dockerfile.features", compose.builds[0].Dockerfile)
+	require.Contains(t, filepath.Base(compose.builds[1].Context), "devcontainer-user-")
+	require.Contains(t, filepath.Base(compose.builds[2].Context), "devcontainer-customization-")
+	require.Equal(t, "repository", resolved.ContainerEnv["ORDER"])
+	require.Equal(t, "true", resolved.ContainerEnv["FROM_FEATURE"])
+	require.Equal(t, []string{"/image.sh", "/feature.sh"}, resolved.FeatureEntrypoints)
+	require.Equal(t, []devcontainer.Command{
+		{Value: json.RawMessage(`"echo image"`)}, {Value: json.RawMessage(`"echo feature"`)}, {Value: json.RawMessage(`"echo repository"`)},
+	}, resolved.LifecycleCommands.OnCreate)
+}
 
 func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
 	t.Parallel()
@@ -160,19 +284,21 @@ func TestParseImageMetadataPreservesEntrypointOrder(t *testing.T) {
 	}
 }
 
-func TestDockerProgressStreams(t *testing.T) {
+func TestReadDockerProgress(t *testing.T) {
 	t.Parallel()
 
-	var output bytes.Buffer
-	frames := strings.Repeat("{\"id\":\"layer\",\"status\":\"Downloading\",\"progress\":\"[====]\",\"progressDetail\":{\"current\":1,\"total\":2}}\n", 100)
-	if err := streamDockerPullProgress(strings.NewReader(frames), &output); err != nil {
-		t.Fatalf("stream pull progress: %v", err)
-	}
-	if output.Len() != 0 {
-		t.Fatalf("pull progress output = %q", output.String())
-	}
+	var messages []dockerProgressMessage
+	require.NoError(t, readDockerProgress(strings.NewReader(`
+{"id":"layer","status":"Downloading","progressDetail":{"current":1,"total":2}}
+{"id":"layer","status":"Pull complete"}
+`), func(message dockerProgressMessage) { messages = append(messages, message) }))
+	require.Len(t, messages, 2)
+	require.Equal(t, "layer", messages[0].ID)
+	require.EqualValues(t, 1, messages[0].ProgressDetail.Current)
+	require.EqualValues(t, 2, messages[0].ProgressDetail.Total)
+	require.Equal(t, "Pull complete", messages[1].Status)
 
-	if err := streamDockerPullProgress(strings.NewReader("{\"errorDetail\":{\"message\":\"pull denied\"}}\n"), &output); err == nil || err.Error() != "pull denied" {
-		t.Fatalf("pull error = %v", err)
+	for _, frame := range []string{`{"errorDetail":{"message":"pull denied"}}`, `{"error":"pull denied"}`} {
+		require.EqualError(t, readDockerProgress(strings.NewReader(frame), nil), "pull denied")
 	}
 }

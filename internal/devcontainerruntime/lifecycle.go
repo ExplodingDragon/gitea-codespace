@@ -48,9 +48,10 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		stderr = io.Discard
 	}
 	if request.DevContainer.WebIDE.Enabled() && (request.Action == "create" || request.Action == "resume") {
+		_, _ = fmt.Fprintf(stdout, "[INFO] [webide] Validating %s Provider bundle\n", request.DevContainer.WebIDE.Provider)
 		err := webide.Prepare(string(request.DevContainer.WebIDE.Provider), request.HostUser.UID, request.HostUser.GID)
 		if err != nil {
-			_, _ = fmt.Fprintf(stderr, "Warning: Web IDE did not start and Codespace access remains available: prepare Provider bundle: %v\n", err)
+			_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider bundle preparation failed; continuing without Web IDE: %v\n", err)
 			request.DevContainer.WebIDE = WebIDEConfiguration{}
 		}
 	}
@@ -69,7 +70,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		options.Debug = request.Debug
 		options.HostCgroup = request.HostCgroup
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			if err := prepareContainerStart(ctx, engine, state, request); err != nil {
+			if err := prepareContainerStart(ctx, engine, state, request, stdout); err != nil {
 				return err
 			}
 			_, _, err := ConfiguredEndpoints(state)
@@ -79,11 +80,11 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		if err != nil {
 			return nil, err
 		}
-		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stderr)
+		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "resume":
 		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
-			return prepareContainerStart(ctx, engine, state, request)
+			return prepareContainerStart(ctx, engine, state, request, stdout)
 		}, request.RunLifecycle)
 		if err != nil {
 			// Start may have started some or all containers before preparing
@@ -97,15 +98,15 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			_, stopErr := engine.Stop(stopContext, request.Environment)
 			return nil, errors.Join(err, stopErr)
 		}
-		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
+		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "stop", "delete":
 		var lifecycleErr error
 		if request.Action == "stop" {
-			lifecycleErr = runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
+			lifecycleErr = runTemplateLifecycle(ctx, request, engine, request.Environment, "stop", stdout)
 		}
 		if lifecycleErr != nil {
-			_, _ = fmt.Fprintf(stderr, "Warning: stop lifecycle failed; continuing container cleanup: %v\n", lifecycleErr)
+			_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Template stop command failed; continuing container cleanup: %v\n", lifecycleErr)
 			if request.Debug {
 				engine.WriteDiagnostics(ctx, request.CodespaceUUID)
 			}
@@ -126,7 +127,8 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	}
 }
 
-func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request) error {
+func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request, stdout io.Writer) error {
+	_, _ = fmt.Fprintln(stdout, "[INFO] [container] Configuring runtime environment and commands")
 	// Login-shell probing can load the profile; keep credentials out of saved state.
 	for name := range request.Secrets {
 		delete(state.RemoteEnvironment, name)
@@ -141,9 +143,10 @@ func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, 
 	if err := configureRuntimeCommands(ctx, engine, state, request); err != nil {
 		return err
 	}
-	if err := runTemplateLifecycle(ctx, request, engine, state, "start"); err != nil {
+	if err := runTemplateLifecycle(ctx, request, engine, state, "start", stdout); err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintln(stdout, "[INFO] [container] Configuring CA certificates")
 	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"/bin/sh", "-c", installCAScript}, nil, nil); err != nil {
 		return fmt.Errorf("configure platform CA in Dev Container: %w", err)
 	}
@@ -157,13 +160,14 @@ func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, 
 	} else {
 		values["GITEA_CONFIGURE_CA_ONLY"] = "true"
 	}
+	_, _ = fmt.Fprintln(stdout, "[INFO] [container] Configuring Git access")
 	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{"/bin/sh", "-c", configureGitScript}, values, nil); err != nil {
 		return fmt.Errorf("configure Git in Dev Container: %w", err)
 	}
 	return nil
 }
 
-func runTemplateLifecycle(ctx context.Context, request Request, engine *containerdocker.Engine, state *devcontainer.State, action string) error {
+func runTemplateLifecycle(ctx context.Context, request Request, engine *containerdocker.Engine, state *devcontainer.State, action string, stdout io.Writer) error {
 	if strings.TrimSpace(request.DevContainer.LifecycleScript) == "" {
 		return nil
 	}
@@ -182,6 +186,7 @@ func runTemplateLifecycle(ctx context.Context, request Request, engine *containe
 		}
 		lifecycleContext, cancel := context.WithTimeout(ctx, 5*time.Minute)
 		defer cancel()
+		_, _ = fmt.Fprintf(stdout, "[INFO] [lifecycle] Running environment-template %s command\n", action)
 		if err := engine.Run(lifecycleContext, state.PrimaryContainerID, "0", state.RemoteWorkdir, []string{"/bin/sh", templateLifecycleScriptPath, action}, nil, nil); err != nil {
 			return fmt.Errorf("run environment-template lifecycle %s: %w", action, err)
 		}
@@ -193,10 +198,11 @@ func runTemplateLifecycle(ctx context.Context, request Request, engine *containe
 	return run(ctx)
 }
 
-func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stderr io.Writer) bool {
+func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stdout, stderr io.Writer) bool {
 	if !configuration.WebIDE.Enabled() {
 		return false
 	}
+	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] Preparing %s settings and extensions\n", configuration.WebIDE.Provider)
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
 	values["CODESPACE_WEB_IDE_PROVIDER"] = string(configuration.WebIDE.Provider)
 	values["CODESPACE_WEB_IDE_PROGRAM_DIR"] = webide.ContainerProgramPath
@@ -230,11 +236,12 @@ func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *dev
 		}
 	}
 	if startErr != nil {
-		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE did not start and Codespace access remains available: %v\n", startErr)
+		_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider startup failed; continuing without Web IDE: %v\n", startErr)
 		return false
 	}
+	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] %s preparation completed; start request accepted\n", configuration.WebIDE.Provider)
 	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
-		_, _ = fmt.Fprintf(stderr, "Warning: Web IDE postAttachCommand failed without affecting Codespace access: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Web IDE postAttachCommand failed; Codespace access is unaffected: %v\n", err)
 	}
 	return true
 }

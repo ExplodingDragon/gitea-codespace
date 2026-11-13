@@ -18,6 +18,7 @@ require (
 	github.com/docker/go-units v0.5.0
 	github.com/go-logr/logr v1.4.4
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
+	github.com/moby/buildkit v0.25.1
 	github.com/moby/sys/mountinfo v0.7.2
 	github.com/opencontainers/go-digest v1.0.0
 	github.com/opencontainers/image-spec v1.1.1
@@ -149,7 +150,6 @@ require (
 	github.com/mattn/go-shellwords v1.0.12 // indirect
 	github.com/miekg/pkcs11 v1.1.1 // indirect
 	github.com/mitchellh/hashstructure/v2 v2.0.2 // indirect
-	github.com/moby/buildkit v0.25.1 // indirect
 	github.com/moby/docker-image-spec v1.3.1 // indirect
 	github.com/moby/go-archive v0.1.0 // indirect
 	github.com/moby/locker v1.0.1 // indirect

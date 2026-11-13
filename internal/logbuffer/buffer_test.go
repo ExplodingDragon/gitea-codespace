@@ -39,6 +39,6 @@ func TestBufferBoundsInflightAndReportsLoss(t *testing.T) {
 		}
 		buffer.Release(size)
 	}
-	require.Contains(t, messages[len(messages)-1], "lines lost]")
+	require.Contains(t, messages[len(messages)-1], "lines lost")
 	require.Zero(t, buffer.Bytes())
 }

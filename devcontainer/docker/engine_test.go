@@ -165,16 +165,21 @@ func TestCacheReferences(t *testing.T) {
 		t.Fatalf("GHCR mirror = %q, %v, %v", image, mirrored, err)
 	}
 	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
-	first := buildCacheReference(cache, "features")
-	if first == "" || first == buildCacheReference(cache, "remote-user") || first != buildCacheReference(cache, "features") {
+	first, export := registryBuildCache(cache, "features")
+	other, _ := registryBuildCache(cache, "remote-user")
+	repeated, _ := registryBuildCache(cache, "features")
+	if first == "" || first == other || first != repeated {
 		t.Fatalf("BuildKit cache references are not stable and stage-specific: %q", first)
+	}
+	if export != first+",mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true" {
+		t.Fatalf("BuildKit cache export = %q", export)
 	}
 	featureImage := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
 		reference: "ghcr.io/devcontainers/features/git:1",
 		digest:    "sha256:feature",
 		options:   map[string]string{"version": "latest"},
 	}}, "root", "root", map[string]string{"PATH": "/usr/bin"})
-	if featureImage == "" || featureImage == first {
+	if featureImage == "" || featureImage == strings.TrimPrefix(first, "type=registry,ref=") {
 		t.Fatalf("Feature image cache reference = %q", featureImage)
 	}
 	changedFeature := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{

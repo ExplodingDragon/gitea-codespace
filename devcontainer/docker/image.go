@@ -7,6 +7,7 @@ import (
 	"context"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -25,49 +26,46 @@ import (
 //go:embed builtin/update-user.sh
 var updateUserScript string
 
-func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, platformEnvironment map[string]string) (string, map[string]string, error) {
-	var baseImage string
+func (e *Engine) resolveBaseImage(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, platformEnvironment map[string]string) (string, error) {
 	if resolved.Image != "" {
-		var err error
-		baseImage, err = e.resolveAndPullImage(ctx, resolved.Image, resolved.Cache)
-		if err != nil {
-			return "", nil, err
-		}
-	} else {
-		buildConfig := resolved.Build
-		contextPath := buildConfig.Context
-		if contextPath == "" {
-			contextPath = "."
-		}
-		if !filepath.IsAbs(contextPath) {
-			contextPath = filepath.Join(resolved.ConfigurationDir, contextPath)
-		}
-		contextPath, err := resolvePathInsideRoot(resolved.AllowedPathRoot, contextPath)
-		if err != nil {
-			return "", nil, fmt.Errorf("resolve Dev Container build context: %w", err)
-		}
-		dockerfile := buildConfig.Dockerfile
-		if !filepath.IsAbs(dockerfile) {
-			dockerfile = filepath.Join(resolved.ConfigurationDir, dockerfile)
-		}
-		dockerfile, err = resolvePathInsideRoot(resolved.AllowedPathRoot, dockerfile)
-		if err != nil {
-			return "", nil, fmt.Errorf("resolve Dev Container Dockerfile: %w", err)
-		}
-		relativeDockerfile, err := filepath.Rel(contextPath, dockerfile)
-		if err != nil || relativeDockerfile == ".." || strings.HasPrefix(relativeDockerfile, ".."+string(filepath.Separator)) {
-			return "", nil, fmt.Errorf("dev container Dockerfile must be inside its build context")
-		}
-		imageName := "devcontainer-build:" + resolved.DevContainerID
-		args := make(map[string]*string, len(buildConfig.Args))
-		for name, value := range buildConfig.Args {
-			args[name] = &value
-		}
-		if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, buildConfig.Options, resolved.Cache, "repository", platformEnvironment); err != nil {
-			return "", nil, fmt.Errorf("build Dev Container image: %w", err)
-		}
-		baseImage = imageName
+		return e.resolveAndPullImage(ctx, resolved.Image, resolved.Cache)
 	}
+	buildConfig := resolved.Build
+	contextPath := buildConfig.Context
+	if contextPath == "" {
+		contextPath = "."
+	}
+	if !filepath.IsAbs(contextPath) {
+		contextPath = filepath.Join(resolved.ConfigurationDir, contextPath)
+	}
+	contextPath, err := resolvePathInsideRoot(resolved.AllowedPathRoot, contextPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve Dev Container build context: %w", err)
+	}
+	dockerfile := buildConfig.Dockerfile
+	if !filepath.IsAbs(dockerfile) {
+		dockerfile = filepath.Join(resolved.ConfigurationDir, dockerfile)
+	}
+	dockerfile, err = resolvePathInsideRoot(resolved.AllowedPathRoot, dockerfile)
+	if err != nil {
+		return "", fmt.Errorf("resolve Dev Container Dockerfile: %w", err)
+	}
+	relativeDockerfile, err := filepath.Rel(contextPath, dockerfile)
+	if err != nil || relativeDockerfile == ".." || strings.HasPrefix(relativeDockerfile, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("dev container Dockerfile must be inside its build context")
+	}
+	imageName := "devcontainer-build:" + resolved.DevContainerID
+	args := make(map[string]*string, len(buildConfig.Args))
+	for name, value := range buildConfig.Args {
+		args[name] = &value
+	}
+	if err := e.buildImage(ctx, contextPath, relativeDockerfile, imageName, buildConfig.Target, args, buildConfig.CacheFrom, buildConfig.Options, resolved.Cache, "repository", platformEnvironment); err != nil {
+		return "", fmt.Errorf("build Dev Container image: %w", err)
+	}
+	return imageName, nil
+}
+
+func (e *Engine) prepareImage(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, hostUser devcontainer.HostUser, customize CustomizeImageFunc, platformEnvironment map[string]string) (string, map[string]string, error) {
 	repositoryConfiguration := resolved.Configuration
 	metadata, err := e.readImageMetadata(ctx, baseImage)
 	if err != nil {
@@ -76,7 +74,19 @@ func (e *Engine) resolveImage(ctx context.Context, resolved *devcontainer.Resolv
 	imageConfiguration := metadata.Configuration
 	resolved.FeatureEntrypoints = append(resolved.FeatureEntrypoints, metadata.Entrypoints...)
 	resolved.Configuration = devcontainer.Merge(imageConfiguration, repositoryConfiguration)
-	return e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration, platformEnvironment)
+	imageName, featureDigests, err := e.applyFeatures(ctx, baseImage, resolved, imageConfiguration, metadata.Sources, repositoryConfiguration, platformEnvironment)
+	if err != nil {
+		return "", nil, err
+	}
+	imageName, err = e.prepareUserImage(ctx, imageName, resolved, hostUser)
+	if err != nil {
+		return "", nil, err
+	}
+	imageName, err = e.customizeImage(ctx, imageName, resolved, customize, platformEnvironment)
+	if err != nil {
+		return "", nil, err
+	}
+	return imageName, featureDigests, nil
 }
 
 func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cache devcontainer.CacheOptions) (string, error) {
@@ -85,15 +95,19 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 		return "", fmt.Errorf("resolve OCI mirror for %s: %w", imageName, err)
 	}
 	if mirrored {
-		if err := e.pullImageReference(ctx, fetchReference); err == nil {
-			_, _ = fmt.Fprintf(e.stderr, "Pulled image %s through mirror %s\n", imageName, fetchReference)
+		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulling image %s through mirror %s\n", imageName, fetchReference)
+		pullErr := e.pullImageReference(ctx, fetchReference)
+		if pullErr == nil {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulled image %s through mirror %s\n", imageName, fetchReference)
 			return fetchReference, nil
 		}
-		_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for %s is unavailable, falling back to the original registry: %v\n", imageName, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] OCI mirror for %s is unavailable; falling back to the original registry: %v\n", imageName, pullErr)
 	}
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulling image %s\n", imageName)
 	if err := e.pullImageReference(ctx, imageName); err != nil {
 		return "", err
 	}
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulled image %s\n", imageName)
 	return imageName, nil
 }
 
@@ -110,12 +124,50 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 		return fmt.Errorf("pull Dev Container image %s: %w", imageName, err)
 	}
 	defer func() { _ = reader.Close() }()
-	_, _ = fmt.Fprintf(e.stderr, "Pulling image %s\n", imageName)
-	if err := streamDockerPullProgress(reader, e.stderr); err != nil {
+	progress := dockerPullProgress{}
+	if err := readDockerProgress(reader, func(message dockerProgressMessage) {
+		if summary := progress.observe(message, time.Now()); summary != "" {
+			_, _ = fmt.Fprintln(e.stdout, "[INFO] [build]", summary)
+		}
+	}); err != nil {
 		return fmt.Errorf("read image pull progress: %w", err)
 	}
-	_, _ = fmt.Fprintf(e.stderr, "Pulled image %s\n", imageName)
 	return nil
+}
+
+type dockerProgressMessage struct {
+	ID             string `json:"id"`
+	Status         string `json:"status"`
+	Error          string `json:"error"`
+	ProgressDetail struct {
+		Current int64 `json:"current"`
+		Total   int64 `json:"total"`
+	} `json:"progressDetail"`
+	ErrorDetail struct {
+		Message string `json:"message"`
+	} `json:"errorDetail"`
+}
+
+func readDockerProgress(reader io.Reader, observe func(dockerProgressMessage)) error {
+	decoder := json.NewDecoder(reader)
+	for {
+		var message dockerProgressMessage
+		if err := decoder.Decode(&message); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+		if message.ErrorDetail.Message != "" {
+			return errors.New(message.ErrorDetail.Message)
+		}
+		if message.Error != "" {
+			return errors.New(message.Error)
+		}
+		if observe != nil {
+			observe(message)
+		}
+	}
 }
 
 const dockerPullProgressInterval = 10 * time.Second
@@ -183,15 +235,6 @@ func (p *dockerPullProgress) observe(message dockerProgressMessage, now time.Tim
 	}
 	p.lastSummary = summary
 	return summary
-}
-
-func streamDockerPullProgress(reader io.Reader, output io.Writer) error {
-	progress := dockerPullProgress{}
-	return readDockerProgress(reader, func(message dockerProgressMessage) {
-		if summary := progress.observe(message, time.Now()); summary != "" {
-			_, _ = fmt.Fprintln(output, summary)
-		}
-	})
 }
 
 type imageMetadata struct {

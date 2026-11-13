@@ -27,7 +27,7 @@ func TestRuntimeWritesFirstProgressBeforeTrustPreparation(t *testing.T) {
 	var output bytes.Buffer
 	err = runtime.Execute(t.Context(), &agentv1.ControlResponse{Operation: &codespacev1.OperationPayload{OperationRversion: 1}, Runtime: &agentv1.RuntimeOptions{GiteaUrl: "invalid"}}, nil, &output, io.Discard)
 	require.Error(t, err)
-	require.Contains(t, output.String(), "Preparing runtime trust and container engine")
+	require.Contains(t, output.String(), "[INFO] [runtime] Preparing trust and container engine")
 }
 
 func testRootCA(t *testing.T) string {

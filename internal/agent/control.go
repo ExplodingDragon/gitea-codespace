@@ -10,6 +10,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -105,7 +106,9 @@ func (c *ControlClient) startExecution(
 		}, output.Stdout(), output.Stderr())
 		executionErr = errors.Join(executionErr, executionCtx.Err())
 		if executionErr != nil {
-			_, _ = fmt.Fprintf(output.Stderr(), "Error: %v\n", executionErr)
+			for line := range strings.Lines(executionErr.Error()) {
+				_, _ = fmt.Fprintf(output.Stderr(), "[ERROR] [runtime] %s\n", strings.TrimSuffix(line, "\n"))
+			}
 		}
 		output.FlushLines()
 		// Output transport is independent of the execution outcome.

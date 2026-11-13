@@ -126,7 +126,7 @@ func StartDocker(ctx context.Context, directory, cdiSpecDirectory, isolation str
 	}
 	arguments := []string{"--host=" + DockerHost, "--data-root=" + directory + "/docker",
 		"--exec-root=/run/codespace/docker", "--pidfile=/run/codespace/docker.pid",
-		"--feature=containerd-snapshotter=true", "--live-restore=false", "--shutdown-timeout=30", fmt.Sprintf("--mtu=%d", mtu)}
+		"--feature=containerd-snapshotter=true", "--log-driver=local", "--live-restore=false", "--shutdown-timeout=30", fmt.Sprintf("--mtu=%d", mtu)}
 	if cdiSpecDirectory != "" {
 		arguments = append(arguments, "--cdi-spec-dir="+cdiSpecDirectory)
 	}

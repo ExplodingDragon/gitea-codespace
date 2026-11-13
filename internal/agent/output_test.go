@@ -55,7 +55,7 @@ func TestOutputRedactsStreamsAndBoundsLines(t *testing.T) {
 		}
 		return &agentv1.UploadLogsResponse{}, nil
 	}})
-	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[output line omitted: exceeds 32 KiB]", "[redacted]"}, messages)
+	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[WARN] [logging] Output line omitted: exceeds 32 KiB", "[redacted]"}, messages)
 }
 
 func TestOutputUploadsWhileLowRateOutputContinues(t *testing.T) {
@@ -117,5 +117,5 @@ func TestOutputContinuesAfterUncertainUpload(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("output did not drain")
 	}
-	require.Equal(t, []string{"first batch", "[operation output omitted: 1 lines lost]", "later batch"}, messages)
+	require.Equal(t, []string{"first batch", "[WARN] [logging] Operation output omitted: 1 lines lost", "later batch"}, messages)
 }

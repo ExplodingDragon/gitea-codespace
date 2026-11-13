@@ -26,14 +26,14 @@ func (e *Engine) WriteDiagnostics(ctx context.Context, ownerID string) {
 	query := filters.NewArgs(filters.Arg("label", labelOwnerID+"="+ownerID))
 	containers, err := e.client.ContainerList(ctx, container.ListOptions{All: true, Filters: query})
 	if err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "[debug] Dev Container diagnostics unavailable: %v\n", err)
+		_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] Dev Container diagnostics unavailable: %v\n", err)
 		return
 	}
 	remaining := 64 * 1024
 	for _, item := range containers {
 		inspect, err := e.client.ContainerInspect(ctx, item.ID)
 		if err != nil || inspect.State == nil {
-			_, _ = fmt.Fprintf(e.stderr, "[debug] container=%s state unavailable: %v\n", item.ID, err)
+			_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] container=%s state unavailable: %v\n", item.ID, err)
 			continue
 		}
 		data, err := json.Marshal(struct {
@@ -47,7 +47,7 @@ func (e *Engine) WriteDiagnostics(ctx context.Context, ownerID string) {
 			FinishedAt string `json:"finishedAt"`
 		}{ID: item.ID, Status: inspect.State.Status, Running: inspect.State.Running, OOMKilled: inspect.State.OOMKilled, ExitCode: inspect.State.ExitCode, Error: inspect.State.Error, StartedAt: inspect.State.StartedAt, FinishedAt: inspect.State.FinishedAt})
 		if err == nil {
-			_, _ = fmt.Fprintf(e.stderr, "[debug] Dev Container %s\n", data)
+			_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] Dev Container %s\n", data)
 		}
 		if ctx.Err() != nil {
 			break
@@ -57,7 +57,7 @@ func (e *Engine) WriteDiagnostics(ctx context.Context, ownerID string) {
 		}
 		logs, err := e.client.ContainerLogs(ctx, item.ID, container.LogsOptions{ShowStdout: true, ShowStderr: true, Tail: "200"})
 		if err != nil {
-			_, _ = fmt.Fprintf(e.stderr, "[debug] container=%s logs unavailable: %v\n", item.ID, err)
+			_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] container=%s logs unavailable: %v\n", item.ID, err)
 			continue
 		}
 		captured := diagnosticLogBuffer{limit: remaining + 1}
@@ -80,13 +80,13 @@ func (e *Engine) WriteDiagnostics(ctx context.Context, ownerID string) {
 				data = data[:bytes.LastIndexByte(data, '\n')+1]
 			}
 		}
-		_, _ = fmt.Fprintf(e.stderr, "[debug] container=%s log tail:\n", item.ID)
+		_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] container=%s log tail:\n", item.ID)
 		_, _ = e.stderr.Write(data)
 		_, _ = fmt.Fprintln(e.stderr)
 		if truncated {
-			_, _ = fmt.Fprintln(e.stderr, "[debug] container log output reached the 64 KiB diagnostic limit")
+			_, _ = fmt.Fprintln(e.stderr, "[DEBUG] [container] Log output reached the 64 KiB diagnostic limit")
 		} else if err != nil {
-			_, _ = fmt.Fprintf(e.stderr, "[debug] container=%s read logs: %v\n", item.ID, err)
+			_, _ = fmt.Fprintf(e.stderr, "[DEBUG] [container] container=%s read logs: %v\n", item.ID, err)
 		}
 	}
 }

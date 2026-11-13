@@ -205,6 +205,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (_ *devconta
 		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
 	e.hostCgroup = options.HostCgroup
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Resolving Dev Container configuration")
 	environmentID := devContainerID(options.OwnerID)
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
 		Workspace:       options.Workspace,
@@ -416,15 +417,11 @@ func mergeFeatureOptions(base, override json.RawMessage) (json.RawMessage, error
 }
 
 func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, workspaceFolder string, labels map[string]string, hostUser devcontainer.HostUser, platformEnvironment map[string]string, platformDevices PlatformDevices, customizeImage CustomizeImageFunc, mutate MutateContainerCreateFunc) (string, map[string]string, error) {
-	imageName, featureDigests, err := e.resolveImage(ctx, resolved, platformEnvironment)
+	baseImage, err := e.resolveBaseImage(ctx, resolved, platformEnvironment)
 	if err != nil {
 		return "", nil, err
 	}
-	imageName, err = e.prepareUserImage(ctx, imageName, resolved, hostUser)
-	if err != nil {
-		return "", nil, err
-	}
-	imageName, err = e.customizeImage(ctx, imageName, resolved, customizeImage, platformEnvironment)
+	imageName, featureDigests, err := e.prepareImage(ctx, baseImage, resolved, hostUser, customizeImage, platformEnvironment)
 	if err != nil {
 		return "", nil, err
 	}
@@ -503,6 +500,7 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 			return "", nil, err
 		}
 	}
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Creating and starting Dev Container")
 	response, err := e.client.ContainerCreate(ctx, config, hostConfig, &network.NetworkingConfig{}, nil, "devcontainer-"+resolved.DevContainerID)
 	if err != nil {
 		return "", nil, fmt.Errorf("create Dev Container: %w", err)
@@ -536,6 +534,7 @@ func platformGPUArgs(arguments []string) ([]string, error) {
 }
 
 func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, config *container.Config, hostConfig *container.HostConfig, publishSpecs []string, mutate MutateContainerCreateFunc) (string, error) {
+	_, _ = fmt.Fprintln(e.stdout, "[INFO] [container] Creating and starting Dev Container with runArgs")
 	arguments, err := dockerCreateArguments(resolved, config, hostConfig, publishSpecs)
 	if err != nil {
 		return "", err
@@ -817,41 +816,4 @@ func devContainerMounts(workspace, workspaceFolder, workspaceMount string, value
 		resolved = append(resolved, value)
 	}
 	return resolved, nil
-}
-
-type dockerProgressMessage struct {
-	ID             string `json:"id"`
-	Status         string `json:"status"`
-	Progress       string `json:"progress"`
-	Stream         string `json:"stream"`
-	Error          string `json:"error"`
-	ProgressDetail struct {
-		Current int64 `json:"current"`
-		Total   int64 `json:"total"`
-	} `json:"progressDetail"`
-	ErrorDetail struct {
-		Message string `json:"message"`
-	} `json:"errorDetail"`
-}
-
-func readDockerProgress(reader io.Reader, observe func(dockerProgressMessage)) error {
-	decoder := json.NewDecoder(reader)
-	for {
-		var message dockerProgressMessage
-		if err := decoder.Decode(&message); err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return err
-		}
-		if message.ErrorDetail.Message != "" {
-			return errors.New(message.ErrorDetail.Message)
-		}
-		if message.Error != "" {
-			return errors.New(message.Error)
-		}
-		if observe != nil {
-			observe(message)
-		}
-	}
 }

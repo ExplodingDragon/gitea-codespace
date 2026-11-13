@@ -435,10 +435,23 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 			require.NoError(t, err)
 			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodFailed
-			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1}}}}
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, Signal: 9}}}}
 			volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(site.UID)}}}
 			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(site, ns, cs, pod, volume).Build()
 			r := &RuntimeReconciler{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: "codespace-system"}
+			var messages []string
+			logs, _ := testOperationLogs(t, &operationLogRemote{update: func(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
+				for _, line := range request.Lines {
+					messages = append(messages, line.Message)
+				}
+				return &codespacev1.UpdateLogResponse{NextOffset: int64(len(messages))}, nil
+			}})
+			logs.OpenSite(t.Context(), site.UID)
+			t.Cleanup(func() { logs.CloseSite(site.UID) })
+			r.Diagnostics = &runtimeDiagnostics{Reader: c, Logs: logs}
+			if !settled {
+				require.NoError(t, logs.Append(cs, "", nil))
+			}
 			r.Authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
 			for range 4 {
 				_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)})
@@ -452,6 +465,10 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			} else {
 				require.NotNil(t, cs.Status.Result)
 				require.False(t, cs.Status.Result.Succeeded)
+				require.Eventually(t, func() bool { return logs.Finish(cs) }, time.Second, time.Millisecond)
+				logs.CloseSite(site.UID)
+				require.Contains(t, messages, "[ERROR] [kubernetes] Container runtime terminated: reason=OOMKilled exitCode=137 signal=9")
+				require.Contains(t, messages, "[ERROR] [operation] resume #3 failed; see preceding output")
 			}
 		})
 	}

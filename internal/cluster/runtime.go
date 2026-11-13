@@ -157,6 +157,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 			if err != nil {
 				return reconcileStatusError(err)
 			}
+			r.Diagnostics.emit(ctx, &cs, "failure", []string{"Runtime Pod disappeared unexpectedly: " + cs.Status.Pod.Name})
 			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
 		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets, r.WebIDEProgramSize)
@@ -197,6 +198,15 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		if err != nil {
 			return reconcileStatusError(err)
 		}
+		lines := []string{"Runtime Pod exited unexpectedly: " + pod.Name}
+		for _, statuses := range [][]corev1.ContainerStatus{pod.Status.InitContainerStatuses, pod.Status.ContainerStatuses} {
+			for _, status := range statuses {
+				if terminated := status.State.Terminated; terminated != nil {
+					lines = append(lines, fmt.Sprintf("Container %s terminated: reason=%s exitCode=%d signal=%d", status.Name, terminated.Reason, terminated.ExitCode, terminated.Signal))
+				}
+			}
+		}
+		r.Diagnostics.emit(ctx, &cs, "failure", lines)
 		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
 	err = updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
@@ -259,6 +269,9 @@ func (r *RuntimeReconciler) condition(ctx context.Context, cs *api.Codespace, re
 	})
 	if err != nil {
 		return reconcileStatusError(err)
+	}
+	if problem != nil && cs.Status.Result != nil && cs.Status.Result.Version == operationVersion && !cs.Status.Result.Succeeded {
+		r.Diagnostics.emit(ctx, cs, "failure", []string{"Runtime infrastructure preparation failed: " + reason})
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }

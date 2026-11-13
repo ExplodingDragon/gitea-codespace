@@ -19,20 +19,19 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
-type cacheFallbackCompose struct {
+type recordingBuildCompose struct {
 	composeapi.Compose
-	cacheFrom []composetypes.StringList
-	cacheTo   []composetypes.StringList
+	builds []composetypes.BuildConfig
+	err    error
 }
 
-func (c *cacheFallbackCompose) Build(_ context.Context, project *composetypes.Project, _ composeapi.BuildOptions) error {
-	service := project.Services["image"]
-	c.cacheFrom = append(c.cacheFrom, slices.Clone(service.Build.CacheFrom))
-	c.cacheTo = append(c.cacheTo, slices.Clone(service.Build.CacheTo))
-	if len(c.cacheFrom) == 1 {
-		return errors.New("cache manifest is absent")
-	}
-	return nil
+func (c *recordingBuildCompose) Build(_ context.Context, project *composetypes.Project, _ composeapi.BuildOptions) error {
+	build := *project.Services["image"].Build
+	build.Args = maps.Clone(build.Args)
+	build.CacheFrom = slices.Clone(build.CacheFrom)
+	build.CacheTo = slices.Clone(build.CacheTo)
+	c.builds = append(c.builds, build)
+	return c.err
 }
 
 func TestComposeProjectNameSeparatesOwnerIDs(t *testing.T) {
@@ -113,29 +112,49 @@ func TestComposeProxyEnvironment(t *testing.T) {
 	}
 }
 
-func TestBuildCacheFallbackPreservesLocalCache(t *testing.T) {
+func TestBuildServiceCacheOptions(t *testing.T) {
 	t.Parallel()
 
-	compose := &cacheFallbackCompose{}
-	engine := &Engine{compose: compose, stdout: io.Discard, stderr: io.Discard}
-	project := &composetypes.Project{Services: composetypes.Services{"image": {
-		Name: "image",
-		Build: &composetypes.BuildConfig{
-			CacheFrom: composetypes.StringList{"type=local,src=/cache/import"},
-			CacheTo:   composetypes.StringList{"type=local,dest=/cache/export"},
-		},
-	}}}
 	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
-	reference := buildCacheReference(cache, "repository")
-	if err := engine.buildService(t.Context(), project, "image", cache, "repository", nil); err != nil {
-		t.Fatal(err)
-	}
-	registryImport := "type=registry,ref=" + reference
-	if len(compose.cacheFrom) != 2 || !slices.Contains(compose.cacheFrom[0], registryImport) || slices.Contains(compose.cacheFrom[1], registryImport) {
-		t.Fatalf("cache import attempts = %#v", compose.cacheFrom)
-	}
-	registryExport := "type=registry,ref=" + reference + ",mode=max,oci-mediatypes=true,image-manifest=true"
-	if len(compose.cacheTo) != 2 || !slices.Contains(compose.cacheTo[0], registryExport) || slices.Contains(compose.cacheTo[1], registryExport) || !slices.Contains(compose.cacheTo[1], "type=local,dest=/cache/export") {
-		t.Fatalf("cache export attempts = %#v", compose.cacheTo)
+	for _, test := range []struct {
+		name  string
+		cache devcontainer.CacheOptions
+		err   error
+	}{
+		{name: "registry cache", cache: cache},
+		{name: "build failure", cache: cache, err: errors.New("RUN install.sh failed")},
+		{name: "canceled build", cache: cache, err: context.Canceled},
+		{name: "user cache only"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
+			compose := &recordingBuildCompose{err: test.err}
+			engine := &Engine{compose: compose, stdout: io.Discard, stderr: io.Discard}
+			userArgument := "user-value"
+			original := &composetypes.BuildConfig{
+				Args:      composetypes.MappingWithEquals{"USER_ARGUMENT": &userArgument},
+				CacheFrom: composetypes.StringList{"type=local,src=/cache/import"},
+				CacheTo:   composetypes.StringList{"type=local,dest=/cache/export"},
+			}
+			project := &composetypes.Project{Services: composetypes.Services{"image": {Name: "image", Build: original}}}
+			err := engine.buildService(t.Context(), project, "image", test.cache, "repository", map[string]string{"HTTPS_PROXY": "http://proxy.example:3128"})
+			if !errors.Is(err, test.err) || len(compose.builds) != 1 {
+				t.Fatalf("build result = %v, calls = %d", err, len(compose.builds))
+			}
+			build := compose.builds[0]
+			wantFrom, wantTo := slices.Clone(original.CacheFrom), slices.Clone(original.CacheTo)
+			if source, destination := registryBuildCache(test.cache, "repository"); source != "" {
+				wantFrom, wantTo = append(wantFrom, source), append(wantTo, destination)
+			}
+			if !slices.Equal(build.CacheFrom, wantFrom) || !slices.Equal(build.CacheTo, wantTo) {
+				t.Fatalf("build cache = %#v / %#v", build.CacheFrom, build.CacheTo)
+			}
+			if build.Args["HTTPS_PROXY"] == nil || *build.Args["HTTPS_PROXY"] != "http://proxy.example:3128" || build.Args["USER_ARGUMENT"] != &userArgument {
+				t.Fatalf("build arguments = %#v", build.Args)
+			}
+			if project.Services["image"].Build != original || len(original.Args) != 1 || len(original.CacheFrom) != 1 || len(original.CacheTo) != 1 {
+				t.Fatalf("project build configuration changed: %#v", original)
+			}
+		})
 	}
 }

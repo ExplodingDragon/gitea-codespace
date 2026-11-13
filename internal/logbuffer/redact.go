@@ -58,7 +58,7 @@ func (r *Redactor) Redact(message string) string {
 	message = urlCredentialsPattern.ReplaceAllString(message, "${1}[redacted]@")
 	message = strings.ToValidUTF8(message, "\ufffd")
 	if len(message) > MaxLineBytes {
-		return "[output line omitted: redacted line exceeds 32 KiB]"
+		return "[WARN] [logging] Output line omitted: redacted line exceeds 32 KiB"
 	}
 	return message
 }

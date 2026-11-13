@@ -79,22 +79,27 @@ func TestOperationLogsReplayAndRestart(t *testing.T) {
 	logs, cs := testOperationLogs(t, remote)
 	require.NoError(t, logs.Append(cs, "", nil))
 	require.NoError(t, logs.Append(cs, "pod", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "Creating Pod"}}))
+	require.NoError(t, logs.Append(cs, diagnosticLogStage, []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "Pod snapshot"}}))
+	require.NoError(t, logs.Append(cs, "pod", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "Creating Pod"}}))
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 2, Message: "Agent started"}}))
+	cs.Status.Result = &api.OperationResult{Version: 2, Succeeded: true}
 	require.Eventually(t, func() bool { return logs.Finish(cs) }, 4*time.Second, 10*time.Millisecond)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
-	require.Equal(t, []string{"Manager accepted the runtime operation", "Creating Pod", "Agent started"}, messages)
+	require.Equal(t, []string{"[INFO] [operation] Accepted create #2", "Creating Pod", "Pod snapshot", "Agent started", "[INFO] [operation] create #2 completed"}, messages)
 	require.True(t, proto.Equal(requests[0], requests[1]))
 	restartOffset := offset
 	mu.Unlock()
 	logs.OpenSite(t.Context(), cs.Spec.Site.UID)
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 3, Message: "After restart"}}))
+	cs.Status.Result.Succeeded = false
 	require.Eventually(t, func() bool { return logs.Finish(cs) }, time.Second, 10*time.Millisecond)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
 	defer mu.Unlock()
 	require.Equal(t, []int64{10, restartOffset}, starts)
-	require.Equal(t, "After restart", messages[len(messages)-1])
+	require.Equal(t, "After restart", messages[len(messages)-2])
+	require.Equal(t, "[ERROR] [operation] create #2 failed; see preceding output", messages[len(messages)-1])
 }
 
 func TestOperationLogsResynchronizeConflictingOffset(t *testing.T) {
@@ -135,7 +140,7 @@ func TestOperationLogsResynchronizeConflictingOffset(t *testing.T) {
 	require.Eventually(t, func() bool { return logs.Finish(cs) }, 4*time.Second, 10*time.Millisecond)
 	logs.CloseSite(cs.Spec.Site.UID)
 	require.Equal(t, 2, queries)
-	require.Equal(t, []string{"later output", "[operation output omitted: 1 lines lost]"}, received)
+	require.Equal(t, []string{"later output", "[WARN] [logging] Operation output omitted: 1 lines lost"}, received)
 }
 
 func TestOperationLogsCloseOnPermanentFailure(t *testing.T) {
@@ -193,13 +198,13 @@ func TestOperationLogsBoundMemoryAndFinalDrain(t *testing.T) {
 
 func TestManagerProgressUsesResourceFacts(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Namespace: "site", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: "pod"}}}
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: cs.Namespace, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}, Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "credentials omitted"}}}}}}
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: cs.Namespace, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}, Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "credentials omitted"}}}}}}
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pod).Build()
 	_, message, err := managerProgress(t.Context(), kube, cs)
 	require.NoError(t, err)
-	require.Equal(t, "Waiting for runtime container: ErrImagePull", message)
+	require.Equal(t, "[INFO] [kubernetes] Waiting for container runtime: ErrImagePull", message)
 	cs.Spec.Operation.Type = "stop"
 	_, message, err = managerProgress(t.Context(), kube, cs)
 	require.NoError(t, err)
-	require.Equal(t, "Stopping runtime Pod", message)
+	require.Equal(t, "[INFO] [kubernetes] Stopping runtime Pod", message)
 }

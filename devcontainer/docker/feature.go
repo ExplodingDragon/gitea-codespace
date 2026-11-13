@@ -174,7 +174,11 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, err
 	}
 	for _, feature := range orderedFeatures {
-		_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
+		if feature.digest == "" {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using local Dev Container Feature %s\n", feature.reference)
+		} else {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
+		}
 	}
 	imageConfiguration, err = devcontainer.ResolveLocalVariables(imageConfiguration, resolved.Workspace, resolved.LocalEnvironment, resolved.DevContainerID)
 	if err != nil {
@@ -328,6 +332,7 @@ func writeResolvedFeatureLockfile(resolved *devcontainer.ResolvedConfiguration, 
 
 func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseImageID string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) string {
 	parts := []string{
+		"recipe", "bind-mount-v1",
 		"base", strings.TrimSpace(baseImageID),
 		"container-user", strings.TrimSpace(containerUser),
 		"remote-user", strings.TrimSpace(remoteUser),
@@ -400,10 +405,10 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 	if mirrored {
 		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, registryClient)
 		if err == nil {
-			_, _ = fmt.Fprintf(e.stdout, "Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
 		}
-		_, _ = fmt.Fprintf(e.stderr, "Warning: OCI mirror for Dev Container Feature %s is unavailable, falling back to the original registry: %v\n", featureReference, err)
+		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] OCI mirror for Dev Container Feature %s is unavailable; falling back to the original registry: %v\n", featureReference, err)
 		if err := os.RemoveAll(directory); err != nil {
 			return nil, err
 		}
@@ -877,8 +882,13 @@ func writeFeatureBuildContext(root, baseImage string, features []*resolvedFeatur
 		if err := os.WriteFile(filepath.Join(target, "devcontainer-features.env"), []byte(featureEnvironment.String()), 0o600); err != nil {
 			return err
 		}
-		_, _ = fmt.Fprintf(&dockerfile, "COPY feature/%d /tmp/dev-container-feature/%d\n", index, index)
-		_, _ = fmt.Fprintf(&dockerfile, "RUN cd /tmp/dev-container-feature/%d && chmod +x ./install.sh && set -a && . ../devcontainer-features.builtin.env && . ./devcontainer-features.env && set +a && ./install.sh && rm -rf /tmp/dev-container-feature/%d\n", index, index)
+		// Keep writable installation inputs in this RUN rather than a separate image layer.
+		_, _ = fmt.Fprintf(&dockerfile, `RUN --mount=type=bind,source=feature/%[1]d,target=/tmp/dev-container-feature-source \
+    cp -R /tmp/dev-container-feature-source /tmp/dev-container-feature/%[1]d && \
+    cd /tmp/dev-container-feature/%[1]d && chmod +x ./install.sh && \
+    set -a && . ../devcontainer-features.builtin.env && . ./devcontainer-features.env && set +a && \
+    ./install.sh && rm -rf /tmp/dev-container-feature/%[1]d
+`, index)
 	}
 	if containerUser != "" {
 		_, _ = fmt.Fprintf(&dockerfile, "USER %s\n", containerUser)
