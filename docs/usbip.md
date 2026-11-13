@@ -2,8 +2,8 @@
 
 Compatible Kata environments let a Codespace use USB devices exported by a
 workstation or device server. The connection uses the Codespace's authenticated
-SSH endpoint. Attached devices appear at their normal `/dev` paths and are
-shared by processes in that workspace.
+SSH endpoint. Attached devices appear at their normal `/dev` paths in the main
+Dev Container and can be used by processes with the required device permissions.
 
 ## Before you connect
 
@@ -13,23 +13,38 @@ shared by processes in that workspace.
   intended device using that server's tools.
 - Use a development image with the drivers' userspace tools and, when needed,
   udev or eudev rules for non-root device access.
-- Obtain the SSH user, host, and port from the Codespace page in Gitea.
+- Obtain the SSH user, host, and port from the Codespace page in Gitea, or use
+  the bundled IDE's **Copy USB tunnel command** action.
 
 The bundled IDEs show **USB Devices** when the runtime provides USB/IP support.
 The Dev Container also receives `gitea-codespace-usbip` for command-line use.
 
 ## Connect a source
 
-Run this command on the workstation and keep it running:
+In the IDE's USB view, choose **Copy USB tunnel command** and a source name
+(default: `workstation`). The command includes the current workspace's actual
+SSH connection details. Run it on the workstation and keep it running. In DSH,
+the generated command remains available for manual copying if the browser
+cannot access the clipboard.
+
+To enter the connection details yourself:
 
 ```sh
 ssh -NT -o ExitOnForwardFailure=yes \
-  -R usbip.workstation:3240:127.0.0.1:3240 <user>@<host>
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=3 \
+  -R usbip.workstation:3240:127.0.0.1:3240 -p <port> -l <user> <host>
 ```
 
-Add `-p <port>` when the Codespace SSH endpoint uses a port other than 22.
 The final `127.0.0.1:3240` is the USB/IP server as reached from your SSH client;
 replace it with the device server's address and port when necessary.
+The [SSH guide](ssh.md) describes the connection variables, their refresh timing,
+and other SSH uses. The tunnel command belongs on the workstation because its
+SSH client must reach that USB/IP server.
+
+The keepalive options maintain SSH activity while USB devices are idle and let
+the client detect an unresponsive Gateway after about 90 seconds. They do not
+reconnect a closed tunnel; run the command again to reconnect. The Gateway's
+configured SSH idle timeout must exceed the 30-second keepalive interval.
 
 `workstation` is a source name unique within this Codespace. Use 1-32 lowercase
 letters, digits or hyphens, starting and ending with a letter or digit. The
@@ -56,6 +71,12 @@ gitea-codespace-usbip list
 gitea-codespace-usbip list --source workstation
 ```
 
+`list` queries remote exports, while `status` reads local imports. A listed
+device can become occupied or disconnected before you attach it. JSON output
+(`--format json`) keeps each source's error in `sources[].error` alongside
+successful results, so an empty device array alone does not mean every source
+was queried successfully.
+
 Attach a bus ID from the list, then inspect the imported device:
 
 ```sh
@@ -65,20 +86,24 @@ gitea-codespace-usbip status
 
 The source can be omitted when exactly one is connected. With multiple sources,
 select both the source and bus ID because different servers can export the
-same bus ID. To detach, use the local VHCI port reported by `status`, which can
-be zero:
+same bus ID. Successful import hands the device to the guest kernel; device
+enumeration and application setup may still be pending. To detach, use the
+local VHCI port reported by `status`, which can be zero and is not a TCP port:
 
 ```sh
 gitea-codespace-usbip detach <port>
 ```
 
-Detaching interrupts applications using the device. After a timeout, inspect
-`status` before repeating an attach or detach because the action may already
-have completed.
+Detaching interrupts applications using the device; unmount disks first. After
+a timeout, inspect `status` before repeating an attach or detach because the
+action may already have completed.
 
 The bundled [VS Code](../providers/vscode/README.md#usb-devices) and
 [DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins provide the
-same operations. DSH also exposes conversation commands and tools.
+same operations. Both confirm a UI detach and refresh status after an operation.
+If status cannot be refreshed, the previous data remains visible but device
+actions wait for a successful refresh. DSH also exposes conversation commands
+and tools through the same non-interactive CLI.
 
 ## Use an attached device
 

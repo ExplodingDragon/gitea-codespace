@@ -18,6 +18,14 @@
   "USB operation failed: {0}": "USB operation failed: {0}",
   "SSH USB forwarding is active": "SSH USB forwarding is active",
   "SSH USB forwarding is not connected": "SSH USB forwarding is not connected",
-  "No exported USB devices": "No exported USB devices",
-  "Detach USB device {0}?": "Detach USB device {0}?"
+  "VHCI port {0}": "VHCI port {0}",
+  "USB status is out of date. Refresh to continue.": "USB status is out of date. Refresh to continue.",
+  "USB status refresh failed: {0}": "USB status refresh failed: {0}",
+  "No USB devices to attach": "No USB devices to attach",
+  "Detach USB device {0} from {1} (VHCI port {2})? This interrupts applications using it. Unmount disks first.": "Detach USB device {0} from {1} (VHCI port {2})? This interrupts applications using it. Unmount disks first.",
+  "SSH connection information is unavailable. Use the Codespace page in Gitea.": "SSH connection information is unavailable. Use the Codespace page in Gitea.",
+  "Command copied. Run it on your local computer.": "Command copied. Run it on your local computer.",
+  "Copy USB tunnel command": "Copy USB tunnel command",
+  "USB source name": "USB source name",
+  "Use 1-32 lowercase letters, digits or hyphens, starting and ending with a letter or digit.": "Use 1-32 lowercase letters, digits or hyphens, starting and ending with a letter or digit."
 }

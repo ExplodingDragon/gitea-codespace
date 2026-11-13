@@ -11,6 +11,13 @@ export interface Endpoint {
   visibility: EndpointVisibility
 }
 
+/** Public Gateway connection for the current Codespace. */
+export interface SSHConnection {
+  user: string
+  host: string
+  port: number
+}
+
 export interface USBDevice {
   source: string
   busId: string

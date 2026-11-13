@@ -8,6 +8,7 @@
   "files": [
     "src/cli.ts",
     "src/commands.ts",
+    "src/connection.ts",
     "src/endpoint.ts",
     "src/index.ts",
     "src/tools.ts",

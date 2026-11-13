@@ -12,7 +12,9 @@ test ! -e "$output/current" || {
   exit 1
 }
 
-trap 'rm -rf "$staging"' EXIT INT TERM
+trap 'rm -rf "$staging"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 mkdir -p "$staging"
 cp -a /provider/. "$staging/"
 test -f "$staging/manifest.json"

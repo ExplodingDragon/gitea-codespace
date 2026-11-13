@@ -24,7 +24,9 @@ command -v curl >/dev/null 2>&1 || fail "curl is required"
 command -v tar >/dev/null 2>&1 || fail "tar is required"
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT INT TERM
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 asset="code-server-$version-$os-$arch.tar.gz"
 curl -fsSL --proto '=https' --proto-redir '=https' --connect-timeout 30 --max-time 600 \
   --retry 8 --retry-all-errors --retry-max-time 900 \

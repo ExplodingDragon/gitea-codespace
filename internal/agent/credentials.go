@@ -17,6 +17,7 @@ import (
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/controlplane"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -30,7 +31,7 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	if err != nil {
 		return nil, fmt.Errorf("gitea server URL: %w", err)
 	}
-	secrets, err := runtimeAccessEnvironment(access.Secrets, giteaURL, access.GiteaToken)
+	secrets, err := runtimeAccessEnvironment(access.Secrets, giteaURL, access.GiteaToken, r.SSHEnvironment)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +87,7 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	return secrets, nil
 }
 
-func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVariable, giteaURL, token string) (map[string]string, error) {
+func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVariable, giteaURL, token string, sshEnvironment map[string]string) (map[string]string, error) {
 	if strings.ContainsRune(giteaURL, 0) || strings.ContainsRune(token, 0) {
 		return nil, fmt.Errorf("runtime Gitea credentials contain NUL")
 	}
@@ -102,6 +103,9 @@ func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVaria
 	}
 	secrets["GITEA_INSTANCE_URL"] = giteaURL
 	secrets["GITEA_TOKEN"] = token
+	for _, name := range runtimeplatform.SSHEnvironmentNames {
+		secrets[name] = sshEnvironment[name]
+	}
 	return secrets, nil
 }
 

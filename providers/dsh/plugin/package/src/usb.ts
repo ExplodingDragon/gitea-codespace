@@ -1,11 +1,12 @@
 import { z } from 'zod'
 import { commandAvailable, runtimeCommand, type CommandRunner } from './cli.ts'
+import { usbSourcePattern } from './connection.ts'
 import type { USBList, USBStatus } from './types.ts'
 
 const USB_CLI = '/usr/local/bin/gitea-codespace-usbip'
 const busID = z.string().regex(/^[0-9]+-[0-9]+(?:\.[0-9]+)*$/u)
 const port = z.number().int().min(0).max(65535)
-const source = z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/u)
+const source = z.string().regex(usbSourcePattern)
 const device = z.object({ source: source.or(z.literal('')), busId: z.string(), description: z.string() })
 const listResponse = z.object({
   version: z.literal(1), sources: z.array(z.object({ name: source, error: z.string().optional() }).transform(({ name, error }) => ({ name, ...(error === undefined ? {} : { error }) }))),

@@ -13,7 +13,7 @@ describe('Codespace USB commands and tools', () => {
     const client = new USBClient(runner, true)
     expect((await client.status()).devices[0]?.port).toBe(0)
     expect(await client.list()).toEqual({ sources: [{ name: 'lab' }], devices: [{ source: 'lab', busId: '1-1', description: 'CDC ACM' }] })
-    expect((await executeUSBCommand(client, 'attach 1-1 --source lab')).kind).toBe('success')
+    expect(await executeUSBCommand(client, 'attach 1-1 --source lab')).toMatchObject({ kind: 'success', text: expect.stringContaining('USB/IP import completed for lab/1-1') })
     const commands = { register: vi.fn() }
     const tools = { register: vi.fn<(tool: ToolDefinition) => void>() }
     registerUSBCommands({ commands, tools } as unknown as Context, client)
@@ -24,6 +24,9 @@ describe('Codespace USB commands and tools', () => {
       ['status', '--format', 'json'], ['list', '--format', 'json'], ['attach', '1-1', '--source', 'lab'], ['detach', '0'],
     ])
     expect(runner.mock.calls[3]?.[1]).toBe(signal)
+    const list = tools.register.mock.calls.find(([tool]) => tool.name === 'codespace_usb_list')![0]
+    await list.execute({ source: 'lab' }, { signal } as never)
+    expect(runner.mock.lastCall).toEqual([['list', '--format', 'json', '--source', 'lab'], signal])
     expect((await executeUSBCommand(client, 'attach 1-1 extra')).kind).toBe('error')
     runner.mockResolvedValueOnce({ stdout: JSON.stringify({ version: 1, sources: [{ name: 'lab' }],
       devices: [{ source: 'lab', busId: '1-1', description: 'CDC ACM' }],

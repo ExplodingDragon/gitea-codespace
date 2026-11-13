@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { RuntimeCommand } from "./cli.js";
+import { usbSourcePattern } from "./connection.js";
 
 export interface USBDevice {
   source: string;
@@ -24,7 +25,6 @@ export interface USBStatus extends USBList {
 }
 
 const busIDPattern = /^[0-9]+-[0-9]+(?:\.[0-9]+)*$/;
-const sourcePattern = /^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$/;
 
 export function parseUSBResponse(output: string, imported: true): USBStatus;
 export function parseUSBResponse(output: string, imported: false): USBList;
@@ -38,7 +38,7 @@ export function parseUSBResponse(output: string, imported: boolean): USBList {
       (source) =>
         !source ||
         typeof source.name !== "string" ||
-        !sourcePattern.test(source.name) ||
+        !usbSourcePattern.test(source.name) ||
         (source.error !== undefined && typeof source.error !== "string"),
     ) ||
     !Array.isArray(document.devices)
@@ -51,7 +51,7 @@ export function parseUSBResponse(output: string, imported: boolean): USBList {
     if (
       !device ||
       typeof device.source !== "string" ||
-      (device.source !== "" && !sourcePattern.test(device.source)) ||
+      (device.source !== "" && !usbSourcePattern.test(device.source)) ||
       typeof device.busId !== "string" ||
       typeof device.description !== "string" ||
       (imported
@@ -60,7 +60,7 @@ export function parseUSBResponse(output: string, imported: boolean): USBList {
           device.port > 65535 ||
           typeof device.state !== "string"
         : !busIDPattern.test(device.busId) ||
-          !sourcePattern.test(device.source))
+          !usbSourcePattern.test(device.source))
     ) {
       throw new Error("The Codespace USB command returned an invalid device");
     }
@@ -89,7 +89,7 @@ export class USBClient extends RuntimeCommand {
 
   async attach(busId: string, source: string): Promise<void> {
     if (!busIDPattern.test(busId)) throw new Error("Invalid USB bus ID");
-    if (!sourcePattern.test(source)) throw new Error("Invalid USB source");
+    if (!usbSourcePattern.test(source)) throw new Error("Invalid USB source");
     await this.run(["attach", busId, "--source", source]);
   }
 

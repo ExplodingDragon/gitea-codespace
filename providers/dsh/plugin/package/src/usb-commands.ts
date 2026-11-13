@@ -17,7 +17,7 @@ export async function executeUSBCommand(client: USBClient, input: string, signal
     }
     if (action === 'attach' && (args.length === 2 || (args.length === 4 && args[2] === '--source'))) {
       await client.attach(args[1]!, args[3], signal)
-      return { kind: 'success', text: `Attached USB device ${args[1]}.` }
+      return { kind: 'success', text: `USB/IP import completed for ${args[3] ? `${args[3]}/` : ''}${args[1]}. Device enumeration and application setup may still be pending.` }
     }
     if (args.length === 2 && action === 'detach' && /^\d+$/u.test(args[1]!)) {
       await client.detach(Number(args[1]), signal)
@@ -56,11 +56,9 @@ export function registerUSBCommands(ctx: Context, client: USBClient): void {
     handler: invocation => executeUSBCommand(client, invocation.rawInput, invocation.signal),
   })
   const tools: ToolDefinition[] = [
-    ...(['sources', 'list', 'status'] as const).map(action => defineTool({
+    ...(['sources', 'status'] as const).map(action => defineTool({
       name: `codespace_usb_${action}`,
-      description: action === 'list'
-        ? 'List exported USB devices grouped by registered SSH source, including individual source errors.'
-        : action === 'sources' ? 'List registered SSH USB sources. Registration does not indicate remote usbipd health.'
+      description: action === 'sources' ? 'List registered SSH USB sources. Registration does not indicate remote usbipd health.'
         : 'Read imported USB devices with their source names and VHCI port numbers.',
       parameters: {},
       output: { schema: statusSchema, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
@@ -68,13 +66,20 @@ export function registerUSBCommands(ctx: Context, client: USBClient): void {
       execute: (_args, exec) => client[action](exec.signal),
     })),
     defineTool({
+      name: 'codespace_usb_list', description: 'Query remote exported USB devices, optionally from one SSH source. Check source errors separately from empty device lists; a listed device is not reserved for this Codespace.',
+      parameters: { source: { type: 'string', description: 'Optional registered SSH source name.' } },
+      output: { schema: statusSchema, render: (_args, result) => [{ type: 'text', text: JSON.stringify(result) }] },
+      isConcurrencySafe: () => true,
+      execute: (args, exec) => client.list(exec.signal, args.source),
+    }),
+    defineTool({
       name: 'codespace_usb_attach', description: 'Attach an exported USB device by source and bus ID. Query list first; after a timeout query status to determine the outcome.',
       parameters: { busId: { type: 'string', required: true, description: 'Remote USB bus ID from codespace_usb_list.' }, source: { type: 'string', required: true, description: 'Registered source name from codespace_usb_list.' } },
       output: { schema: { type: 'string' }, render: (_args, result) => [{ type: 'text', text: result }] },
-      execute: async (args, exec) => { await client.attach(args.busId, args.source, exec.signal); return `Attached USB device ${args.source}/${args.busId}.` },
+      execute: async (args, exec) => { await client.attach(args.busId, args.source, exec.signal); return `USB/IP import completed for ${args.source}/${args.busId}. Device enumeration and application setup may still be pending.` },
     }),
     defineTool({
-      name: 'codespace_usb_detach', description: 'Detach an imported USB device by its VHCI port from status. This disconnects applications using it. Query status after a timeout instead of retrying.',
+      name: 'codespace_usb_detach', description: 'Detach an imported USB device by its VHCI port from status. This disconnects applications using it; unmount disks first. Query status after a timeout instead of retrying.',
       parameters: { port: { type: 'integer', required: true, description: 'VHCI port from codespace_usb_status, including zero.' } },
       output: { schema: { type: 'string' }, render: (_args, result) => [{ type: 'text', text: result }] },
       execute: async (args, exec) => { await client.detach(args.port, exec.signal); return `Detached USB port ${args.port}.` },

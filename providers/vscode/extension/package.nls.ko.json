@@ -12,5 +12,7 @@
   "usb.refresh": "USB 장치 새로 고침",
   "usb.attach": "USB 장치 연결",
   "usb.detach": "USB 장치 연결 해제",
-  "usb.empty": "가져온 USB 장치가 없습니다."
+  "usb.empty": "가져온 USB 장치가 없습니다.",
+  "ssh.copy": "Codespace: SSH 명령 복사",
+  "usb.copyTunnel": "USB 터널 명령 복사"
 }

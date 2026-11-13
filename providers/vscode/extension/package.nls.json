@@ -12,5 +12,7 @@
   "usb.refresh": "Refresh USB devices",
   "usb.attach": "Attach USB device",
   "usb.detach": "Detach USB device",
-  "usb.empty": "No imported USB devices."
+  "usb.empty": "No imported USB devices.",
+  "ssh.copy": "Codespace: Copy SSH Command",
+  "usb.copyTunnel": "Copy USB tunnel command"
 }

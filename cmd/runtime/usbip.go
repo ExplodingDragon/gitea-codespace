@@ -14,12 +14,16 @@ import (
 )
 
 func newUSBIPCommand() *cobra.Command {
-	command := &cobra.Command{Use: "usbip", Args: cobra.NoArgs}
-	add := func(use string, operation agentv1.RuntimeUSBIPOperation, arguments cobra.PositionalArgs) {
+	command := &cobra.Command{
+		Use: "usbip", Short: "Manage USB devices through registered SSH sources", Args: cobra.NoArgs,
+		Long:    "Manage USB devices through registered SSH sources. Bus IDs identify remote devices; VHCI ports identify local imports and are not TCP ports.",
+		Example: "  gitea-codespace-usbip list --source workstation\n  gitea-codespace-usbip attach 1-3 --source workstation\n  gitea-codespace-usbip status --format json\n  gitea-codespace-usbip detach 0",
+	}
+	add := func(use, description string, operation agentv1.RuntimeUSBIPOperation, arguments cobra.PositionalArgs) {
 		format := "text"
 		source := ""
 		subcommand := &cobra.Command{
-			Use: use, Args: arguments,
+			Use: use, Short: description, Args: arguments,
 			PreRunE: func(_ *cobra.Command, _ []string) error {
 				if format != "text" && format != "json" {
 					return fmt.Errorf("USB/IP format must be text or json")
@@ -73,10 +77,10 @@ func newUSBIPCommand() *cobra.Command {
 		}
 		command.AddCommand(subcommand)
 	}
-	add("list", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_LIST, cobra.NoArgs)
-	add("sources", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_SOURCES, cobra.NoArgs)
-	add("attach <bus-id>", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_ATTACH, cobra.ExactArgs(1))
-	add("status", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_STATUS, cobra.NoArgs)
-	add("detach <port>", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_DETACH, cobra.ExactArgs(1))
+	add("list", "Query remote exported devices; source errors are reported alongside successful results", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_LIST, cobra.NoArgs)
+	add("sources", "List registered SSH sources, independently of remote USB/IP server health", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_SOURCES, cobra.NoArgs)
+	add("attach <bus-id>", "Import a remote bus ID; --source is required when multiple sources are registered", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_ATTACH, cobra.ExactArgs(1))
+	add("status", "Read local VHCI imports, including devices whose source has disconnected", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_STATUS, cobra.NoArgs)
+	add("detach <port>", "Disconnect a local VHCI port (including 0); unmount disks first", agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_DETACH, cobra.ExactArgs(1))
 	return command
 }

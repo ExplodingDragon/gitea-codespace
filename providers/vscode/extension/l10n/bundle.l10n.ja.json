@@ -18,6 +18,14 @@
   "USB operation failed: {0}": "USB 操作に失敗しました: {0}",
   "SSH USB forwarding is active": "SSH USB 転送が有効です",
   "SSH USB forwarding is not connected": "SSH USB 転送が接続されていません",
-  "No exported USB devices": "エクスポートされた USB デバイスはありません",
-  "Detach USB device {0}?": "USB デバイス {0} を切断しますか？"
+  "VHCI port {0}": "VHCI ポート {0}",
+  "USB status is out of date. Refresh to continue.": "USB 状態が更新されていません。更新してから操作してください。",
+  "USB status refresh failed: {0}": "USB 状態の更新に失敗しました: {0}",
+  "No USB devices to attach": "接続できる USB デバイスはありません",
+  "Detach USB device {0} from {1} (VHCI port {2})? This interrupts applications using it. Unmount disks first.": "{1} の USB デバイス {0}（VHCI ポート {2}）を切断しますか？使用中のアプリケーションが中断されます。先にディスクをアンマウントしてください。",
+  "SSH connection information is unavailable. Use the Codespace page in Gitea.": "SSH 接続情報を取得できません。Gitea の Codespace ページを確認してください。",
+  "Command copied. Run it on your local computer.": "コマンドをコピーしました。手元のコンピューターで実行してください。",
+  "Copy USB tunnel command": "USB トンネルコマンドをコピー",
+  "USB source name": "USB ソース名",
+  "Use 1-32 lowercase letters, digits or hyphens, starting and ending with a letter or digit.": "小文字、数字、ハイフンを 1～32 文字で入力し、先頭と末尾は英数字にしてください。"
 }

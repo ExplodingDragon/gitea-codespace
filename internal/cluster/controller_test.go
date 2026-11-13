@@ -237,88 +237,115 @@ func TestSiteOwnershipAndCleanup(t *testing.T) {
 }
 
 func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
-	ctx := t.Context()
-	site := testSite("example", "site-uid")
-	site.Status.NamespaceUID = "namespace-uid"
-	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: "namespace-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
-	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: ns.Name, UID: "codespace-uid", Finalizers: []string{RuntimeFinalizer}},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "create", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
-		Status:     api.CodespaceStatus{Bound: true},
+	for _, isolation := range []string{api.IsolationSysbox, api.IsolationKata, api.IsolationNative} {
+		t.Run(isolation, func(t *testing.T) {
+			ctx := t.Context()
+			site := testSite("example", "site-uid")
+			site.Status.NamespaceUID = "namespace-uid"
+			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: "namespace-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
+			cs := &api.Codespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: ns.Name, UID: "codespace-uid", Finalizers: []string{RuntimeFinalizer}},
+				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "create", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
+				Status:     api.CodespaceStatus{Bound: true},
+			}
+			cs.Spec.Runtime.Isolation = isolation
+			if isolation == api.IsolationNative {
+				cs.Spec.Runtime.RuntimeClassName = ""
+				cs.Spec.Runtime.Native = &runtimeplatform.NativeConfiguration{}
+			}
+			unusable := cs.DeepCopy()
+			unusable.Spec.Runtime.Image = "invalid-platform-image"
+			require.Error(t, unusable.Validate("codespace-system"))
+			unusable.Spec.Operation.Type = "delete"
+			require.NoError(t, unusable.Validate("codespace-system"))
+			gateway := testGatewayComponent(site.Spec.Gateway.Name, site.Spec.Gateway.UID)
+			gateway.Spec.Gateway.SSHExternalAddress = "SSH.Example.com:02222"
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}, &api.Codespace{}).WithObjects(site, ns, cs, gateway).Build()
+			r := &RuntimeReconciler{Client: c, Identity: newTestIdentityAuthority(t), ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", ManagerIdentity: "spiffe://codespace/manager/namespace-uid", ImagePullSecrets: []string{"registry"}}
+			r.Authority = &ExecutionAuthority{}
+			r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
+			request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)}
+			_, err := r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			require.NotEmpty(t, cs.Status.Pod.Name)
+			_, err = r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			var pod corev1.Pod
+			require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Pod.Name, Namespace: cs.Namespace}, &pod))
+			require.False(t, *pod.Spec.AutomountServiceAccountToken)
+			if isolation == api.IsolationSysbox {
+				require.False(t, *pod.Spec.HostUsers)
+			}
+			require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, pod.Spec.ImagePullSecrets)
+			require.Equal(t, corev1.StorageMediumMemory, pod.Spec.Volumes[1].EmptyDir.Medium)
+			require.Equal(t, "agent", pod.Spec.Containers[0].Command[1])
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_HOST", Value: "ssh.example.com"})
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_PORT", Value: "2222"})
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: "cs-" + cs.Spec.RuntimeUUID})
+			var volume corev1.PersistentVolumeClaim
+			require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Volume.Name, Namespace: cs.Namespace}, &volume))
+			require.Empty(t, volume.OwnerReferences)
+			require.Equal(t, cs.Spec.Runtime.StorageVolumeMode(), *volume.Spec.VolumeMode)
+			// The consumer is created even while the real provisioner may be waiting for it.
+			require.NotEmpty(t, pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			cs.Spec.Operation = api.Operation{Version: 2, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}
+			require.NoError(t, c.Update(ctx, cs))
+			cs.Status.Result = &api.OperationResult{Version: 2, Succeeded: true}
+			require.NoError(t, c.Status().Update(ctx, cs))
+			for range 3 {
+				_, err = r.Reconcile(ctx, request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+			require.Equal(t, &api.OperationResult{Version: 2, Succeeded: true}, cs.Status.Result)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&volume), &volume))
+			previousPod := pod.Name
+			gateway.Spec.Gateway.SSHExternalAddress = "new.example.com:22"
+			require.NoError(t, c.Update(ctx, gateway))
+			cs.Spec.Operation = api.Operation{Version: 3, Type: "resume", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}
+			require.NoError(t, c.Update(ctx, cs))
+			_, err = r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			require.Empty(t, cs.Status.Pod.Name)
+			require.Equal(t, "AwaitingExecutionLease", meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady").Reason)
+			r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
+			_, err = r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			require.NotEmpty(t, cs.Status.Pod.Name)
+			require.NotEqual(t, previousPod, cs.Status.Pod.Name)
+			require.Equal(t, volume.Name, cs.Status.Volume.Name)
+			_, err = r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Pod.Name, Namespace: cs.Namespace}, &pod))
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_HOST", Value: "new.example.com"})
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_PORT", Value: "22"})
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			cs.Status.Result = &api.OperationResult{Version: 3, Message: "postStartCommand failed"}
+			require.NoError(t, c.Status().Update(ctx, cs))
+			require.NoError(t, c.Delete(ctx, gateway))
+			for range 3 {
+				_, err = r.Reconcile(ctx, request)
+				require.NoError(t, err)
+			}
+			require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
+			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+			operations := Operations{Client: c, Authority: r.Authority}
+			remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
+				require.Equal(t, codespacev1.OperationType_OPERATION_TYPE_RESUME, request.OperationType)
+				require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
+				return &codespacev1.FinalizeOperationResponse{}, nil
+			}}
+			require.NoError(t, operations.Flush(ctx, cs, remote))
+			_, err = r.Reconcile(ctx, request)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&volume), &volume))
+		})
 	}
-	unusable := cs.DeepCopy()
-	unusable.Spec.Runtime.Image = "invalid-platform-image"
-	require.Error(t, unusable.Validate("codespace-system"))
-	unusable.Spec.Operation.Type = "delete"
-	require.NoError(t, unusable.Validate("codespace-system"))
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}, &api.Codespace{}).WithObjects(site, ns, cs).Build()
-	r := &RuntimeReconciler{Client: c, Identity: newTestIdentityAuthority(t), ManagementNamespace: "codespace-system", ManagerURL: "https://manager.codespace-system.svc:8443", ManagerIdentity: "spiffe://codespace/manager/namespace-uid", ImagePullSecrets: []string{"registry"}}
-	r.Authority = &ExecutionAuthority{}
-	r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
-	request := ctrl.Request{NamespacedName: client.ObjectKeyFromObject(cs)}
-	_, err := r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	require.NotEmpty(t, cs.Status.Pod.Name)
-	_, err = r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	var pod corev1.Pod
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Pod.Name, Namespace: cs.Namespace}, &pod))
-	require.False(t, *pod.Spec.AutomountServiceAccountToken)
-	require.False(t, *pod.Spec.HostUsers)
-	require.Equal(t, []corev1.LocalObjectReference{{Name: "registry"}}, pod.Spec.ImagePullSecrets)
-	require.Equal(t, corev1.StorageMediumMemory, pod.Spec.Volumes[1].EmptyDir.Medium)
-	require.Equal(t, "agent", pod.Spec.Containers[0].Command[1])
-	var volume corev1.PersistentVolumeClaim
-	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Volume.Name, Namespace: cs.Namespace}, &volume))
-	require.Empty(t, volume.OwnerReferences)
-	require.Equal(t, corev1.PersistentVolumeFilesystem, *volume.Spec.VolumeMode)
-	// The consumer is created even while the real provisioner may be waiting for it.
-	require.NotEmpty(t, pod.Spec.Volumes[0].PersistentVolumeClaim.ClaimName)
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	cs.Spec.Operation = api.Operation{Version: 2, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}
-	require.NoError(t, c.Update(ctx, cs))
-	cs.Status.Result = &api.OperationResult{Version: 2, Succeeded: true}
-	require.NoError(t, c.Status().Update(ctx, cs))
-	for range 3 {
-		_, err = r.Reconcile(ctx, request)
-		require.NoError(t, err)
-	}
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-	require.Equal(t, &api.OperationResult{Version: 2, Succeeded: true}, cs.Status.Result)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&volume), &volume))
-	previousPod := pod.Name
-	cs.Spec.Operation = api.Operation{Version: 3, Type: "resume", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}
-	require.NoError(t, c.Update(ctx, cs))
-	_, err = r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	require.Empty(t, cs.Status.Pod.Name)
-	require.Equal(t, "AwaitingExecutionLease", meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady").Reason)
-	r.Authority.Grant(cs.UID, cs.Spec.Operation.Version, time.Now().Add(time.Minute))
-	_, err = r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	require.NotEmpty(t, cs.Status.Pod.Name)
-	require.NotEqual(t, previousPod, cs.Status.Pod.Name)
-	require.Equal(t, volume.Name, cs.Status.Volume.Name)
-	cs.Status.Result = &api.OperationResult{Version: 3, Message: "postStartCommand failed"}
-	require.NoError(t, c.Status().Update(ctx, cs))
-	_, err = r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, request.NamespacedName, cs))
-	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-	operations := Operations{Client: c, Authority: r.Authority}
-	remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
-		require.Equal(t, codespacev1.OperationType_OPERATION_TYPE_RESUME, request.OperationType)
-		require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
-		return &codespacev1.FinalizeOperationResponse{}, nil
-	}}
-	require.NoError(t, operations.Flush(ctx, cs, remote))
-	_, err = r.Reconcile(ctx, request)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&volume), &volume))
 }
 
 func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {

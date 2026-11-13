@@ -9,6 +9,7 @@ import (
 	"strings"
 	"syscall"
 
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -153,7 +154,7 @@ func gatewaySSHAuthFromPermissions(permissions *ssh.Permissions) (gatewaySSHAuth
 }
 
 func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {
-	codespaceUUID, ok := strings.CutPrefix(user, gatewaySSHUserPrefix)
+	codespaceUUID, ok := strings.CutPrefix(user, runtimeplatform.SSHUserPrefix)
 	if !ok {
 		return "", false
 	}

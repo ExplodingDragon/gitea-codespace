@@ -12,5 +12,7 @@
   "usb.refresh": "USB デバイスを更新",
   "usb.attach": "USB デバイスを接続",
   "usb.detach": "USB デバイスを切断",
-  "usb.empty": "インポート済みの USB デバイスはありません。"
+  "usb.empty": "インポート済みの USB デバイスはありません。",
+  "ssh.copy": "Codespace: SSH コマンドをコピー",
+  "usb.copyTunnel": "USB トンネルコマンドをコピー"
 }

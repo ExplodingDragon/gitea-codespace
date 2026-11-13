@@ -43,7 +43,9 @@ for command in curl git node npm pnpm sha256sum tar; do command -v "$command" >/
 [ "$(node -p process.arch)" = "$node_arch" ] || fail "DeepSeek Harness must be built on the target $node_arch architecture"
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT INT TERM
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 dsh_ref="dsh-v$dsh_version"
 dsh_commit=66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
 git clone --branch "$dsh_ref" --depth 1 https://github.com/deepseek-ai/DeepSeek-Harness.git "$work/source" || fail "cannot clone DeepSeek Harness $dsh_ref"

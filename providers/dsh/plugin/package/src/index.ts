@@ -7,7 +7,8 @@ import { EndpointClient } from './endpoint.ts'
 import { endpointTools } from './tools.ts'
 import { USBClient } from './usb.ts'
 import { registerUSBCommands } from './usb-commands.ts'
-import type { Endpoint, USBList, USBStatus } from './types.ts'
+import type { Endpoint, SSHConnection, USBList, USBStatus } from './types.ts'
+import { readSSHConnection } from './connection.ts'
 
 export type * from './types.ts'
 
@@ -53,6 +54,11 @@ export class CodespaceEndpointService extends TypertRemoteService {
     const signal = this.ctx.invocation?.signal
     await this.endpoints.unpublish(port, signal)
     return this.endpoints.list(signal)
+  }
+
+  @Remote
+  sshConnection(): SSHConnection | null {
+    return readSSHConnection(process.env)
   }
 
   /** USB capability is fixed when the Runtime starts; tunnel state is separate. */

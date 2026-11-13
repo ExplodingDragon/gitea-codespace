@@ -8,8 +8,10 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"strings"
 	"sync"
@@ -151,6 +153,46 @@ func TestGatewaySSHRevalidationPreservesSessionUntilDenied(t *testing.T) {
 	})
 }
 
+func TestGatewaySSHKeepaliveResetsIdleTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		var output bytes.Buffer
+		previousLogger := slog.Default()
+		slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+		t.Cleanup(func() { slog.SetDefault(previousLogger) })
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		server := &sshServer{sessionIdleTimeout: time.Minute}
+		auth := gatewaySSHAuthContext{siteUID: "site-1", codespaceUUID: "runtime-1", userID: 42, clientIP: "192.0.2.1"}
+		activity := make(chan struct{}, 1)
+		requests := make(chan *ssh.Request)
+		defer close(requests)
+		go server.cancelIdleSession(ctx, auth, cancel, activity)
+		go server.handleGlobalRequests(ctx, auth, nil, requests, activity, nil)
+		synctest.Wait()
+		for range 4 {
+			time.Sleep(30 * time.Second)
+			requests <- &ssh.Request{Type: "keepalive@openssh.com"}
+			synctest.Wait()
+			require.NoError(t, ctx.Err())
+		}
+		time.Sleep(59 * time.Second)
+		synctest.Wait()
+		require.NoError(t, ctx.Err())
+		time.Sleep(time.Second)
+		synctest.Wait()
+		require.ErrorIs(t, ctx.Err(), context.Canceled)
+		var event map[string]any
+		require.NoError(t, json.Unmarshal(output.Bytes(), &event))
+		require.Equal(t, "gateway_ssh_session_idle_timeout", event["event"])
+		require.Equal(t, "idle_timeout", event["reason"])
+		require.EqualValues(t, 60000, event["idle_timeout_ms"])
+		require.Equal(t, auth.clientIP, event["client_ip"])
+		require.Equal(t, auth.siteUID, event["site_uid"])
+		require.Equal(t, auth.codespaceUUID, event["codespace_uuid"])
+		require.EqualValues(t, auth.userID, event["user_id"])
+	})
+}
+
 func TestGatewayReverseForwardCloseWaitsForOpenChannel(t *testing.T) {
 	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection), closed: make(chan struct{})}
 	forward := &gatewayReverseForward{listener: reverse}
@@ -227,6 +269,9 @@ func dialReverseTestSSH(t *testing.T, backend workspaceBackend) (*ssh.Client, <-
 func TestSSHReverseForwardUsesRuntimeListener(t *testing.T) {
 	reverse := &reverseTestListener{connections: make(chan *workspaceReverseConnection, 1), closed: make(chan struct{})}
 	client, serverDone := dialReverseTestSSH(t, gatewayTestBackend{reverse: reverse})
+	accepted, _, err := client.SendRequest("keepalive@openssh.com", true, nil)
+	require.NoError(t, err)
+	require.True(t, accepted)
 	forwarded, err := client.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	backend, peer := net.Pipe()

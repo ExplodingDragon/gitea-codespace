@@ -17,7 +17,6 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-const gatewaySSHUserPrefix = "cs-"
 const (
 	defaultGatewaySSHCols = 120
 	defaultGatewaySSHRows = 40
@@ -191,7 +190,10 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	auth.clientIP = clientIP
 	sessionCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	go closeGatewaySSHConnOnDone(sessionCtx, sshConn)
+	go func() {
+		<-sessionCtx.Done()
+		_ = sshConn.Close()
+	}()
 	release := func() {}
 	if s.sessions != nil {
 		var ok bool
@@ -219,7 +221,7 @@ func (s *sshServer) serveConn(ctx context.Context, conn net.Conn) {
 	}()
 	activity := make(chan struct{}, 1)
 	go s.revalidateSession(sessionCtx, auth, cancel)
-	go s.cancelIdleSession(sessionCtx, cancel, activity)
+	go s.cancelIdleSession(sessionCtx, auth, cancel, activity)
 	channelSlots := make(chan struct{}, s.maxChannels)
 	go s.handleGlobalRequests(sessionCtx, auth, sshConn, requests, activity, channelSlots)
 
@@ -431,12 +433,7 @@ func (s *sshServer) reserveTransport() (func(), bool) {
 	return reservation.Release, true
 }
 
-func closeGatewaySSHConnOnDone(ctx context.Context, conn ssh.Conn) {
-	<-ctx.Done()
-	_ = conn.Close()
-}
-
-func (s *sshServer) cancelIdleSession(ctx context.Context, cancel context.CancelFunc, activity <-chan struct{}) {
+func (s *sshServer) cancelIdleSession(ctx context.Context, auth gatewaySSHAuthContext, cancel context.CancelFunc, activity <-chan struct{}) {
 	timer := time.NewTimer(s.sessionIdleTimeout)
 	defer timer.Stop()
 	for {
@@ -444,14 +441,15 @@ func (s *sshServer) cancelIdleSession(ctx context.Context, cancel context.Cancel
 		case <-ctx.Done():
 			return
 		case <-activity:
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
 			timer.Reset(s.sessionIdleTimeout)
 		case <-timer.C:
+			if ctx.Err() != nil {
+				return
+			}
+			runtime, _ := s.runtimeTarget(auth.codespaceUUID, auth.siteUID)
+			attrs := gatewaySSHLogAttrs(auth, runtime)
+			attrs = append(attrs, slog.String("reason", "idle_timeout"), slog.Int64("idle_timeout_ms", s.sessionIdleTimeout.Milliseconds()))
+			gatewayLog(ctx, slog.LevelInfo, "gateway_ssh_session_idle_timeout", attrs...)
 			cancel()
 			return
 		}

@@ -115,14 +115,29 @@ The model can use `codespace_list_ports`, `codespace_publish_port`, and
 ports. Authenticated access is the default; public access must be selected
 explicitly because it allows requests without a Codespace user session.
 
+## SSH access
+
+Use **Copy SSH command** in the Ports page to get the current workspace's SSH
+command. Run it on your local computer. The generated command remains visible
+for manual copying when the browser cannot access the clipboard. This action
+is available independently of USB support; see the [SSH guide](../../docs/ssh.md)
+for connection variables, SFTP, desktop editors, and port forwarding.
+
 ## USB devices
 
 Compatible Kata runtimes expose a **USB Devices** page with imported devices,
 source groups, remote device listing, attach and detach. First establish
-the workstation's [SSH reverse tunnel](../../docs/usbip.md#connect-a-source).
+the workstation's [SSH reverse tunnel](../../docs/usbip.md#connect-a-source)
+using **Copy USB tunnel command** and a source name (default: `workstation`).
 The page and its commands appear when the runtime provides the USB CLI; the
 page remains available if the tunnel disconnects so you can inspect or detach
 imported devices.
+
+**Refresh** updates local imports and the remote device list once that list is
+displayed. Devices already imported from a source are marked **Imported**.
+The page confirms detach; unmount disks first. See the
+[USB guide](../../docs/usbip.md#attach-and-detach-devices) for device status,
+refresh failures, and reconnecting a source.
 
 The conversation command uses the same CLI as the page:
 
@@ -137,12 +152,10 @@ The conversation command uses the same CLI as the page:
 
 `attach` takes a source name and remote bus ID from `list`; the source can be
 omitted when only one is registered. `detach` takes the VHCI port from
-`status`, which can be zero. The model receives `codespace_usb_sources`, `codespace_usb_list`,
-`codespace_usb_status`, `codespace_usb_attach`, and `codespace_usb_detach` only
-when USB is supported. Detaching interrupts applications using that device.
-Source registration reports an SSH listener, not remote USB/IP server health.
-Listing reports errors per source while preserving other sources' devices.
-After a timeout, check status before repeating an attach or detach.
+`status`, which can be zero. Supported runtimes also provide the model tools
+`codespace_usb_sources`, `codespace_usb_list`, `codespace_usb_status`,
+`codespace_usb_attach`, and `codespace_usb_detach`. The list tool accepts an
+optional `source` to query one server.
 
 ## Development
 

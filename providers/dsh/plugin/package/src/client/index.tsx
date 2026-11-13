@@ -9,6 +9,8 @@ import { PortsPanel, PortsPanelIcon, type PortsPanelInjected } from './PortsPane
 import { de, en, es, fr, ja, NS, pt, ru, zh } from './locales.ts'
 import { USBPanel, USBPanelIcon, type USBPanelInjected } from './USBPanel.tsx'
 import { USB_NS, usbLocales } from './usb-locales.ts'
+import type { SSHConnection } from '../types.ts'
+import { CONNECTION_NS, connectionLocales } from './connection-locales.ts'
 
 const PANEL_ID = 'codespace-ports' as MainPanelId
 
@@ -26,7 +28,16 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       if (!result.ok) throw new Error(result.error.message)
       return result.value
     }
+    scope.effect(() => scope.locale.register(CONNECTION_NS, connectionLocales), 'codespace: connection dictionaries')
+    let connection: SSHConnection | null = null
+    try {
+      connection = await unwrap(() => scope.remote.codespace.sshConnection())
+    } catch (error) {
+      console.warn('Codespace SSH connection query failed', error)
+    }
+    const connectionT = scope.locale.bind(CONNECTION_NS)
     const injected: PortsPanelInjected = {
+      connection, connectionT,
       list: () => unwrap(() => scope.remote.codespace.list()),
       publish: endpoint => unwrap(() => scope.remote.codespace.publish(endpoint)),
       unpublish: port => unwrap(() => scope.remote.codespace.unpublish(port)),
@@ -49,6 +60,7 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
       const usbT = scope.locale.bind(USB_NS)
       const usbPanel = 'codespace-usb' as MainPanelId
       const usb: USBPanelInjected = {
+        connection, connectionT,
         status: () => unwrap(() => scope.remote.codespace.usbStatus()),
         list: () => unwrap(() => scope.remote.codespace.usbList()),
         attach: (busId, source) => unwrap(() => scope.remote.codespace.usbAttach(busId, source)),

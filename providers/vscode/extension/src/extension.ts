@@ -3,6 +3,7 @@
 
 import * as vscode from "vscode";
 import { registerUSB } from "./usb-view.js";
+import { readSSHConnection, sshCommand } from "./connection.js";
 import {
   EndpointClient,
   type Endpoint,
@@ -59,6 +60,23 @@ export async function activate(
   context: vscode.ExtensionContext,
 ): Promise<void> {
   const output = vscode.window.createOutputChannel("Gitea Codespace");
+  const connection = readSSHConnection(process.env);
+  context.subscriptions.push(
+    vscode.commands.registerCommand("giteaCodespace.ssh.copy", async () => {
+      if (!connection) {
+        void vscode.window.showWarningMessage(
+          vscode.l10n.t(
+            "SSH connection information is unavailable. Use the Codespace page in Gitea.",
+          ),
+        );
+        return;
+      }
+      await vscode.env.clipboard.writeText(sshCommand(connection));
+      void vscode.window.showInformationMessage(
+        vscode.l10n.t("Command copied. Run it on your local computer."),
+      );
+    }),
+  );
   const client = new EndpointClient((message) => output.appendLine(message));
   const reportError = (error: unknown) => {
     output.appendLine(

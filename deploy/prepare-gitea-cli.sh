@@ -31,7 +31,9 @@ command -v sha256sum >/dev/null 2>&1 || fail "sha256sum is required"
 command -v xz >/dev/null 2>&1 || fail "xz is required"
 
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT INT TERM
+trap 'rm -rf "$work"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 version=${GITEA_CLI_VERSION:-}
 if [ -z "$version" ]; then

@@ -12,5 +12,7 @@
   "usb.refresh": "刷新 USB 设备",
   "usb.attach": "连接 USB 设备",
   "usb.detach": "断开 USB 设备",
-  "usb.empty": "没有已导入的 USB 设备。"
+  "usb.empty": "没有已导入的 USB 设备。",
+  "ssh.copy": "Codespace：复制 SSH 连接命令",
+  "usb.copyTunnel": "复制 USB 隧道命令"
 }

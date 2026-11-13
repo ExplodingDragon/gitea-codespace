@@ -41,6 +41,7 @@ var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 type Runtime struct {
 	Debug                      bool
 	Isolation                  string
+	SSHEnvironment             map[string]string
 	Cgroup                     cgroup.Reader
 	Journal                    *Journal
 	PodUID                     string

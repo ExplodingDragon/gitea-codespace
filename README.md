@@ -139,6 +139,7 @@ for an existing installation.
 
 - [Install and operate with Helm](charts/gitea-codespace/README.md)
 - [Choose and configure a Web IDE provider](providers/README.md)
+- [Connect over SSH and SFTP](docs/ssh.md)
 - [Connect USB devices](docs/usbip.md)
 - [Develop and test Gitea Codespace](DEVELOPMENT.md)
 - [Review the architecture and design](https://github.com/ExplodingDragon/gitea-dev/tree/main/src/codespace)

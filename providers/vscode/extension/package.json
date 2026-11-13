@@ -64,13 +64,24 @@
         "command": "giteaCodespace.usb.attach",
         "title": "%usb.attach%",
         "icon": "$(add)",
-        "enablement": "giteaCodespace.usbAvailable && !giteaCodespace.usbBusy"
+        "enablement": "giteaCodespace.usbAvailable && giteaCodespace.usbStatusReady && !giteaCodespace.usbBusy"
       },
       {
         "command": "giteaCodespace.usb.detach",
         "title": "%usb.detach%",
         "icon": "$(debug-disconnect)",
-        "enablement": "giteaCodespace.usbAvailable && !giteaCodespace.usbBusy"
+        "enablement": "giteaCodespace.usbAvailable && giteaCodespace.usbStatusReady && !giteaCodespace.usbBusy"
+      },
+      {
+        "command": "giteaCodespace.ssh.copy",
+        "title": "%ssh.copy%",
+        "icon": "$(copy)"
+      },
+      {
+        "command": "giteaCodespace.usb.copyTunnel",
+        "title": "%usb.copyTunnel%",
+        "icon": "$(copy)",
+        "enablement": "giteaCodespace.usbAvailable"
       }
     ],
     "views": {
@@ -120,6 +131,16 @@
           "command": "giteaCodespace.usb.refresh",
           "when": "view == giteaCodespace.usb && giteaCodespace.usbAvailable",
           "group": "navigation@2"
+        },
+        {
+          "command": "giteaCodespace.ssh.copy",
+          "when": "view == giteaCodespace.ports",
+          "group": "navigation@3"
+        },
+        {
+          "command": "giteaCodespace.usb.copyTunnel",
+          "when": "view == giteaCodespace.usb && giteaCodespace.usbAvailable",
+          "group": "navigation@3"
         }
       ],
       "view/item/context": [
@@ -155,6 +176,10 @@
         },
         {
           "command": "giteaCodespace.usb.detach",
+          "when": "giteaCodespace.usbAvailable"
+        },
+        {
+          "command": "giteaCodespace.usb.copyTunnel",
           "when": "giteaCodespace.usbAvailable"
         }
       ]

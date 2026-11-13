@@ -24,12 +24,18 @@ func TestRuntimeAccessEnvironmentUsesPlatformIdentity(t *testing.T) {
 		{Name: "PROJECT_KEY", Value: "project"},
 		{Name: "GITEA_INSTANCE_URL", Value: "https://untrusted.example"},
 		{Name: "GITEA_TOKEN", Value: "untrusted"},
-	}, "https://gitea.example.com", "scoped-token")
+		{Name: "CODESPACE_SSH_HOST", Value: "untrusted.example"},
+	}, "https://gitea.example.com", "scoped-token", map[string]string{
+		"CODESPACE_SSH_HOST": "ssh.example.com", "CODESPACE_SSH_PORT": "2222", "CODESPACE_SSH_USER": "cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986",
+	})
 	require.NoError(t, err)
 	require.Equal(t, "project", environment["PROJECT_KEY"])
 	require.Equal(t, "https://gitea.example.com", environment["GITEA_INSTANCE_URL"])
 	require.Equal(t, "scoped-token", environment["GITEA_TOKEN"])
-	_, err = runtimeAccessEnvironment(nil, "https://gitea.example.com", "token\x00value")
+	require.Equal(t, "ssh.example.com", environment["CODESPACE_SSH_HOST"])
+	require.Equal(t, "2222", environment["CODESPACE_SSH_PORT"])
+	require.Equal(t, "cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986", environment["CODESPACE_SSH_USER"])
+	_, err = runtimeAccessEnvironment(nil, "https://gitea.example.com", "token\x00value", nil)
 	require.ErrorContains(t, err, "NUL")
 }
 
@@ -43,7 +49,9 @@ func TestAccessEnvironmentFileRoundTripAndReplacement(t *testing.T) {
 		{Name: "EMPTY_VALUE", Value: ""},
 		{Name: "MULTILINE", Value: "first\\\nsecond\n"},
 		{Name: "UNICODE", Value: "\u4e2d\u6587"},
-	}, "https://gitea.example.com", "first-token")
+	}, "https://gitea.example.com", "first-token", map[string]string{
+		"CODESPACE_SSH_HOST": "ssh.example.com", "CODESPACE_SSH_PORT": "2222", "CODESPACE_SSH_USER": "cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986",
+	})
 	require.NoError(t, err)
 	previous := map[string]os.FileInfo{}
 	for _, token := range []string{"first-token", "replacement-token"} {
@@ -52,6 +60,7 @@ func TestAccessEnvironmentFileRoundTripAndReplacement(t *testing.T) {
 			environment["REMOVED_SECRET"] = "old-value"
 		} else {
 			delete(environment, "REMOVED_SECRET")
+			environment["CODESPACE_SSH_HOST"] = "new.example.com"
 		}
 		require.NoError(t, writeAccessEnvironment(path, environment, owner))
 		for _, name := range []string{"env.sh", "systemd.env", "systemd.conf"} {
@@ -69,7 +78,10 @@ func TestAccessEnvironmentFileRoundTripAndReplacement(t *testing.T) {
 		}
 		systemd, err := os.ReadFile(filepath.Join(filepath.Dir(path), "systemd.env"))
 		require.NoError(t, err)
-		expected := "EMPTY_VALUE=\"\"\n" +
+		expected := "CODESPACE_SSH_HOST=\"" + environment["CODESPACE_SSH_HOST"] + "\"\n" +
+			"CODESPACE_SSH_PORT=\"2222\"\n" +
+			"CODESPACE_SSH_USER=\"cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986\"\n" +
+			"EMPTY_VALUE=\"\"\n" +
 			"GITEA_INSTANCE_URL=\"https://gitea.example.com\"\n" +
 			"GITEA_TOKEN=\"" + token + "\"\n" +
 			"MULTILINE=\"first\\\\\nsecond\n\"\n" +

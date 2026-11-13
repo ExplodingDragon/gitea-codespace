@@ -1,5 +1,5 @@
 import { runtimeCommand, type CommandRunner } from './cli.ts'
-import type { Endpoint, EndpointVisibility } from './types.ts'
+import type { Endpoint } from './types.ts'
 
 const ENDPOINT_CLI = '/usr/local/bin/gitea-codespace-endpoint'
 
@@ -16,7 +16,7 @@ export function parseEndpointList(output: string): Endpoint[] {
   } catch {
     throw new Error('The Codespace endpoint command returned invalid JSON')
   }
-  if (document.version !== 1 || !Array.isArray(document.endpoints)) {
+  if (!document || document.version !== 1 || !Array.isArray(document.endpoints)) {
     throw new Error('The Codespace endpoint command returned an unsupported response')
   }
   const ports = new Set<number>()
@@ -24,12 +24,7 @@ export function parseEndpointList(output: string): Endpoint[] {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       throw new Error('The Codespace endpoint command returned an invalid endpoint')
     }
-    const endpoint = value as Partial<Endpoint>
-    validatePort(endpoint.port)
-    if (typeof endpoint.label !== 'string' || !isVisibility(endpoint.visibility)) {
-      throw new Error('The Codespace endpoint command returned an invalid endpoint')
-    }
-    const normalized = validateEndpoint({ port: endpoint.port, label: endpoint.label, visibility: endpoint.visibility })
+    const normalized = validateEndpoint(value as Endpoint)
     if (ports.has(normalized.port)) {
       throw new Error(`The Codespace endpoint command returned duplicate port ${normalized.port}`)
     }
@@ -68,10 +63,11 @@ export class EndpointClient {
 
 function validateEndpoint(endpoint: Endpoint): Endpoint {
   validatePort(endpoint.port)
+  if (typeof endpoint.label !== 'string') throw new Error('Endpoint label must be a string')
   const label = endpoint.label.trim()
   const labelBytes = new TextEncoder().encode(label).length
   if (labelBytes < 1 || labelBytes > 128) throw new Error('Endpoint label must contain between 1 and 128 UTF-8 bytes')
-  if (!isVisibility(endpoint.visibility)) throw new Error('Endpoint visibility must be authenticated or public')
+  if (endpoint.visibility !== 'authenticated' && endpoint.visibility !== 'public') throw new Error('Endpoint visibility must be authenticated or public')
   return { port: endpoint.port, label, visibility: endpoint.visibility }
 }
 
@@ -79,8 +75,4 @@ function validatePort(port: unknown): asserts port is number {
   if (typeof port !== 'number' || !Number.isSafeInteger(port) || port < 1 || port > 65535) {
     throw new Error('Endpoint port must be an integer between 1 and 65535')
   }
-}
-
-function isVisibility(value: unknown): value is EndpointVisibility {
-  return value === 'authenticated' || value === 'public'
 }

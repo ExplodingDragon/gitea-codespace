@@ -8,8 +8,10 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"fmt"
+	"net"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 	"uuid"
 
@@ -160,10 +162,28 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 			r.Diagnostics.emit(ctx, &cs, "failure", []string{"Runtime Pod disappeared unexpectedly: " + cs.Status.Pod.Name})
 			return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 		}
+		var gateway api.CodespaceComponent
+		if err := r.Client.Get(ctx, types.NamespacedName{Name: site.Spec.Gateway.Name}, &gateway); err != nil {
+			return r.condition(ctx, &cs, "GatewayUnavailable", err)
+		}
+		if gateway.UID != site.Spec.Gateway.UID || !gateway.DeletionTimestamp.IsZero() {
+			return r.condition(ctx, &cs, "GatewayUnavailable", fmt.Errorf("gateway identity changed"))
+		}
+		gatewayConfig, err := gatewayComponentConfig(&gateway)
+		if err != nil {
+			return r.condition(ctx, &cs, "GatewayUnavailable", err)
+		}
+		host, port, _ := net.SplitHostPort(strings.TrimSpace(gatewayConfig.SSH.PublicAddr))
+		portNumber, _ := strconv.Atoi(port)
 		created, err := runtimePod(&cs, r.ManagerURL, r.ManagerIdentity, r.ImagePullSecrets, r.WebIDEProgramSize)
 		if err != nil {
 			return r.condition(ctx, &cs, "InvalidRuntimeConfiguration", err)
 		}
+		created.Spec.Containers[0].Env = append(created.Spec.Containers[0].Env,
+			corev1.EnvVar{Name: "CODESPACE_SSH_HOST", Value: strings.ToLower(strings.TrimSpace(host))},
+			corev1.EnvVar{Name: "CODESPACE_SSH_PORT", Value: strconv.Itoa(portNumber)},
+			corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: runtimeplatform.SSHUserPrefix + cs.Spec.RuntimeUUID},
+		)
 		pod = *created
 		if err := r.Client.Create(ctx, &pod); err != nil {
 			return r.condition(ctx, &cs, "PodUnavailable", err)

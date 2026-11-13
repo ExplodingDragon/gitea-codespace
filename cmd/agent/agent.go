@@ -143,6 +143,10 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		slog.Warn("Discover Runtime cgroup", "error", err)
 	}
 	runtime := &agentpkg.Runtime{Debug: os.Getenv("CODESPACE_DEBUG") == "true", Isolation: os.Getenv("CODESPACE_RUNTIME_ISOLATION"), Cgroup: hierarchy, Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices, USBIP: usbIP}
+	runtime.SSHEnvironment = make(map[string]string, len(runtimeplatform.SSHEnvironmentNames))
+	for _, name := range runtimeplatform.SSHEnvironmentNames {
+		runtime.SSHEnvironment[name] = os.Getenv(name)
+	}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
 	if err != nil {

@@ -16,6 +16,7 @@ describe('Codespace Ports panel', () => {
       publish,
       unpublish: async () => [],
       t: (key: string) => key,
+      connection: null, connectionT: (key: string) => key,
     } as unknown as PortsPanelProps)} />)
 
     expect(await screen.findByText('Application')).toBeDefined()

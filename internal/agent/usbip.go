@@ -225,6 +225,13 @@ func (r *USBIPRuntime) run(ctx context.Context, args ...string) (string, error) 
 		if text == "" {
 			text = err.Error()
 		}
+		if ctx.Err() != nil {
+			code := connect.CodeCanceled
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				code = connect.CodeDeadlineExceeded
+			}
+			return "", connect.NewError(code, fmt.Sprintf("USB/IP operation interrupted: %s; %s", ctx.Err(), text)).WithCause(ctx.Err())
+		}
 		return "", connect.NewError(connect.CodeFailedPrecondition, text).WithCause(err)
 	}
 	return text, nil

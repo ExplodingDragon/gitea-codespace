@@ -29,7 +29,11 @@ export function parseEndpointList(output: string): Endpoint[] {
   } catch {
     throw new Error("The Codespace endpoint command returned invalid JSON");
   }
-  if (document.version !== 1 || !Array.isArray(document.endpoints)) {
+  if (
+    !document ||
+    document.version !== 1 ||
+    !Array.isArray(document.endpoints)
+  ) {
     throw new Error(
       "The Codespace endpoint command returned an unsupported response",
     );
@@ -104,9 +108,16 @@ export class RuntimeCommand {
       if (result.stderr.trim()) this.log(result.stderr.trimEnd());
       return result;
     } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      this.log(detail);
-      throw error;
+      const stderr = (error as { stderr?: unknown } | null)?.stderr;
+      const detail =
+        typeof stderr === "string" && stderr.trim()
+          ? stderr.trim()
+          : error instanceof Error
+            ? error.message
+            : String(error);
+      const message = `${arguments_.map(shellQuote).join(" ")}: ${detail}`;
+      this.log(message);
+      throw new Error(message, { cause: error });
     }
   }
 }

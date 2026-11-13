@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 // Package runtimeplatform defines configuration shared by the Manager and the
-// Runtime Pod Agent for host-native environments.
+// Runtime Pod Agent.
 package runtimeplatform
 
 import corev1 "k8s.io/api/core/v1"

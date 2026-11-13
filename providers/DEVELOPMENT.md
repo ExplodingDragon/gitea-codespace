@@ -197,11 +197,18 @@ following environment:
 | `CODESPACE_WEB_IDE_DATA_DIR`     | Persistent, writable provider data directory            |
 | `CODESPACE_WEB_IDE_WORKSPACE`    | Repository workspace inside the Dev Container           |
 | `CODESPACE_WEB_IDE_ADDRESS`      | Required loopback listen address in `host:port` form     |
+| `CODESPACE_SSH_HOST`            | Public Gateway DNS name for this Runtime Pod             |
+| `CODESPACE_SSH_PORT`            | Public SSH port as a decimal number                      |
+| `CODESPACE_SSH_USER`            | Gateway login for the workspace: `cs-<runtime UUID>`      |
 
 The normal Dev Container remote environment and declared secrets are also
 available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`; the program
 bundle is read-only and comes from the digest in the Codespace runtime snapshot,
 including after Pod replacement.
+The SSH variables let providers generate local connection instructions; their
+refresh behavior and usage examples are documented in the [SSH guide](../docs/ssh.md).
+Expose only these public fields to a browser interface; the complete process
+environment also contains credentials.
 Because the adapter intentionally receives the development environment and its
 secrets, selecting a provider image is equivalent to trusting another
 development tool. Digest pinning makes that reviewed input stable and
@@ -278,13 +285,6 @@ and WebSocket traffic from the same address. A simple Provider can use `exec` as
 shown above. A Provider that needs automatic restart owns that behavior in a
 foreground process manager behind `bin/serve`.
 
-The official VS Code and DeepSeek Harness Providers restart their editor after
-every exit, with a one-second delay to avoid a tight failure loop. Exit status
-does not control availability because these Providers are expected to keep the
-editor running. `HUP`, `INT`, and `TERM` are forwarded to the current editor
-process and end the Provider loop, which lets Docker stop the Dev Container
-without the Provider starting a replacement process.
-
 Docker accepting the detached execution completes the platform launch contract.
 Once the endpoint is published, later requests can reach a restarted editor
 without changing the Codespace lifecycle state.
@@ -294,6 +294,8 @@ without changing the Codespace lifecycle state.
 - `bin/prepare` accepts both initialization values, combines template and
   repository options deterministically, and stores writable state only in the
   provider data directory.
+- Adapter processes receive the current Pod's SSH connection information;
+  browser connection APIs return only the public user, host, and port.
 - A valid bundle whose `prepare` program succeeds receives a browser endpoint
   as soon as Docker accepts its detached `bin/serve` execution; editor listen
   timing does not determine Endpoint publication or Codespace lifecycle state.
@@ -302,8 +304,6 @@ without changing the Codespace lifecycle state.
 - Exiting `bin/serve` does not stop SSH, the Dev Container, or other endpoints.
 - A Provider that needs automatic restart keeps its own process manager in the
   foreground behind `bin/serve`.
-- The official Providers restart after every editor exit and stop only after a
-  termination signal.
 
 ## Build the carrier image
 
@@ -412,6 +412,13 @@ snapshot rules determine which Codespaces use that update.
 
 ## Maintain the official providers
 
+The official VS Code and DeepSeek Harness providers restart their editor after
+every exit, with a one-second delay to avoid a tight failure loop. They restart
+after both successful and failed exits because their role is to keep the editor
+running. `HUP`, `INT`, and `TERM` are forwarded to the current editor process and
+end the provider loop, which lets Docker stop the Dev Container without the
+provider starting a replacement process.
+
 The VS Code and DSH projects have independent toolchains because their editor
 and plugin builds follow different upstream dependencies. Select Node.js from
 the project's [VS Code](vscode/.node-version) or [DSH](dsh/.node-version) version
@@ -434,3 +441,11 @@ Each provider workflow validates its own build inputs and publishes
 amd64/arm64 images on matching pushes to `main`. Shared provider inputs trigger
 both workflows; the [platform workflow](../.github/workflows/ci.yml) handles
 core changes separately. Workflow path filters define the exact scope.
+
+### Implementation acceptance criteria
+
+- Both official providers restart the editor after a successful or failed exit,
+  with a one-second delay between attempts.
+- `HUP`, `INT`, and `TERM` reach the running editor and end its restart loop.
+- Each provider passes its own `check` target and exports a valid bundle for
+  every published architecture.

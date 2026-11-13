@@ -14,6 +14,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-layout/client'
 import type { Endpoint, EndpointVisibility } from '../types.ts'
 import type { CodespacePortsKey } from './locales.ts'
 import css from './PortsPanel.module.css'
+import { ConnectionActions, type ConnectionInjected } from './ConnectionActions.tsx'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -23,7 +24,7 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
 }
 
 /** Browser operations injected into the Ports panel. */
-export interface PortsPanelInjected {
+export interface PortsPanelInjected extends ConnectionInjected {
   list: () => Promise<Endpoint[]>
   publish: (endpoint: Endpoint) => Promise<Endpoint[]>
   unpublish: (port: number) => Promise<Endpoint[]>
@@ -41,7 +42,7 @@ interface EditorState {
 const EMPTY_EDITOR: EditorState = { port: '', label: '', visibility: 'authenticated' }
 
 /** Render the current endpoint set and its direct management controls. */
-export function PortsPanel({ list, publish, unpublish, t }: PortsPanelProps) {
+export function PortsPanel({ list, publish, unpublish, connection, connectionT, t }: PortsPanelProps) {
   const [endpoints, setEndpoints] = useState<Endpoint[]>([])
   const [editor, setEditor] = useState<EditorState | null>(null)
   const [status, setStatus] = useState<'loading' | 'ready' | 'error'>('loading')
@@ -119,6 +120,8 @@ export function PortsPanel({ list, publish, unpublish, t }: PortsPanelProps) {
           </Button>
         </div>
       </header>
+
+      <ConnectionActions connection={connection} connectionT={connectionT} />
 
       {editor !== null && <div className={css.editor}>
         <label>

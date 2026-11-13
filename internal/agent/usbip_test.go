@@ -4,6 +4,7 @@
 package agent
 
 import (
+	"context"
 	"io"
 	"net"
 	"testing"
@@ -13,6 +14,41 @@ import (
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"github.com/stretchr/testify/require"
 )
+
+func TestUSBIPCommandErrors(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		code connect.Code
+	}{
+		{name: "command failure", code: connect.CodeFailedPrecondition},
+		{name: "deadline", code: connect.CodeDeadlineExceeded},
+		{name: "cancellation", code: connect.CodeCanceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			if test.code == connect.CodeDeadlineExceeded {
+				ctx, cancel = context.WithTimeout(ctx, 100*time.Millisecond)
+				defer cancel()
+			}
+			script := "printf 'usbip: info: using port 4000\\n'; exec sleep 30"
+			if test.code == connect.CodeCanceled {
+				cancel()
+			} else if test.code == connect.CodeFailedPrecondition {
+				script = "printf 'device busy\\n'; exit 1"
+			}
+			runtime := &USBIPRuntime{enabled: true, command: "/bin/sh"}
+			_, err := runtime.run(ctx, "-c", script)
+			require.Equal(t, test.code, connect.CodeOf(err))
+			if test.code == connect.CodeFailedPrecondition {
+				require.Contains(t, err.Error(), "device busy")
+			} else {
+				require.ErrorIs(t, err, ctx.Err())
+				require.Contains(t, err.Error(), "USB/IP operation interrupted")
+			}
+		})
+	}
+}
 
 func TestUSBIPRuntimeCommands(t *testing.T) {
 	runtime := &Runtime{USBIP: &USBIPRuntime{enabled: true, command: "/bin/echo"}}

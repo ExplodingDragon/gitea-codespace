@@ -18,6 +18,14 @@
   "USB operation failed: {0}": "USB 작업 실패: {0}",
   "SSH USB forwarding is active": "SSH USB 전달이 활성화되었습니다",
   "SSH USB forwarding is not connected": "SSH USB 전달이 연결되지 않았습니다",
-  "No exported USB devices": "내보낸 USB 장치가 없습니다",
-  "Detach USB device {0}?": "USB 장치 {0}의 연결을 해제하시겠습니까?"
+  "VHCI port {0}": "VHCI 포트 {0}",
+  "USB status is out of date. Refresh to continue.": "USB 상태가 최신이 아닙니다. 새로 고친 후 계속하세요.",
+  "USB status refresh failed: {0}": "USB 상태 새로 고침 실패: {0}",
+  "No USB devices to attach": "연결할 USB 장치가 없습니다",
+  "Detach USB device {0} from {1} (VHCI port {2})? This interrupts applications using it. Unmount disks first.": "{1}의 USB 장치 {0}(VHCI 포트 {2})을(를) 연결 해제하시겠습니까? 사용 중인 애플리케이션이 중단됩니다. 먼저 디스크를 마운트 해제하세요.",
+  "SSH connection information is unavailable. Use the Codespace page in Gitea.": "SSH 연결 정보를 사용할 수 없습니다. Gitea의 Codespace 페이지를 확인하세요.",
+  "Command copied. Run it on your local computer.": "명령을 복사했습니다. 로컬 컴퓨터에서 실행하세요.",
+  "Copy USB tunnel command": "USB 터널 명령 복사",
+  "USB source name": "USB 소스 이름",
+  "Use 1-32 lowercase letters, digits or hyphens, starting and ending with a letter or digit.": "소문자, 숫자, 하이픈 1~32자로 입력하고 영숫자로 시작하고 끝내세요."
 }
