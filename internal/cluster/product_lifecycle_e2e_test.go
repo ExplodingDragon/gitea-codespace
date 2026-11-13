@@ -620,7 +620,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	serveCount := initialWebIDEState.ServeCount
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
 	if usbIPE2E {
-		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey))
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
 	}
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 
@@ -651,7 +651,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
 	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
 	if usbIPE2E {
-		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey))
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
 	}
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
 

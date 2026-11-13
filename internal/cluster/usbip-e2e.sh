@@ -47,15 +47,23 @@ import subprocess
 import time
 
 deadline = time.monotonic() + 30
-while time.monotonic() < deadline:
-    status = json.loads(subprocess.check_output(["gitea-codespace-usbip", "status", "--format", "json"]))
-    device = next((device for device in status["devices"] if device["source"] == "lab" and device["busId"] == "1-1"), None)
-    if device is not None:
-        subprocess.run(["gitea-codespace-usbip", "detach", str(device["port"])], check=True)
-        break
-    time.sleep(0.2)
+last_status = "No status query completed"
+while (remaining := deadline - time.monotonic()) > 0:
+    try:
+        result = subprocess.run(["gitea-codespace-usbip", "status", "--format", "json"], capture_output=True, text=True, timeout=remaining)
+    except subprocess.TimeoutExpired as error:
+        raise SystemExit(f"USB/IP status query timed out; last status: {last_status}") from error
+    last_status = f"exit {result.returncode}: {result.stderr.strip() or result.stdout.strip()}"
+    # usbip port can fail while VHCI reports a device whose sysfs entry is not ready.
+    if result.returncode == 0:
+        status = json.loads(result.stdout)
+        device = next((device for device in status["devices"] if device["source"] == "lab" and device["busId"] == "1-1"), None)
+        if device is not None:
+            subprocess.run(["gitea-codespace-usbip", "detach", str(device["port"])], check=True)
+            break
+    time.sleep(min(0.2, max(0, deadline - time.monotonic())))
 else:
-    raise SystemExit("USB/IP device from lab was not enumerated")
+    raise SystemExit(f"USB/IP device from lab was not enumerated within 30 seconds; last status: {last_status}")
 PY
 for i in $(seq 1 30); do
   present=false

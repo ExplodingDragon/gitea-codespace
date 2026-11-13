@@ -21,6 +21,7 @@ import (
 	_ "embed"
 
 	"golang.org/x/crypto/ssh"
+	"k8s.io/apimachinery/pkg/types"
 )
 
 //go:embed usbip-e2e.sh
@@ -29,7 +30,7 @@ var usbIPE2EScript []byte
 //go:embed usbip-devcontainer.Dockerfile
 var usbIPE2EDevContainerDockerfile []byte
 
-func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int32, runtimeUUID string, privateKey ed25519.PrivateKey) error {
+func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int32, runtimeUUID string, privateKey ed25519.PrivateKey, runtimePod types.NamespacedName) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -110,6 +111,19 @@ func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int
 		command.Stdin = bytes.NewReader(usbIPE2EScript)
 		output, err := command.CombinedOutput()
 		if err != nil {
+			// Capture the Guest state before closing SSH forwarding or deleting the Pod.
+			diagnosticCtx, diagnosticCancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
+			defer diagnosticCancel()
+			diagnostic, diagnosticErr := exec.CommandContext(diagnosticCtx, "kubectl", "exec", "-n", runtimePod.Namespace, runtimePod.Name, "-c", "runtime", "--", "sh", "-c", `
+set -x
+usbip --debug port
+for status in /sys/devices/platform/vhci_hcd.*/status*; do
+  printf '\n%s\n' "$status"
+  cat "$status"
+done
+dmesg | tail -n 100
+`).CombinedOutput()
+			t.Logf("USB/IP Runtime diagnostics (%s, exec error: %v):\n%s", runtimePod, diagnosticErr, diagnostic)
 			return fmt.Errorf("run USB/IP product script: %s: %w", strings.TrimSpace(string(output)), err)
 		}
 		return nil
