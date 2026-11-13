@@ -80,6 +80,34 @@ The bundled [VS Code](../providers/vscode/README.md#usb-devices) and
 [DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins provide the
 same operations. DSH also exposes conversation commands and tools.
 
+## Use an attached device
+
+The guest kernel supplies drivers; your development image supplies application
+tools and device permissions. Common paths are:
+
+| Use | Device path and preparation |
+| --- | --- |
+| ADB, DFU, libusb debug probes | `/dev/bus/usb`; install the application in your image and grant the remote user access through device rules |
+| Serial console | `/dev/ttyACM*` or `/dev/ttyUSB*`; configure the user's serial-device group or udev rules |
+| HID debug probe | `/dev/hidraw*`; use the matching application and device rules |
+| USB disk | `/dev/sd*` and partition nodes; the container configuration must grant block-device access and mount capability |
+| I2C, SPI, GPIO bridge | `/dev/i2c-*`, `/dev/spidev*`, `/dev/gpiochip*`; paths depend on the bridge driver and child-device binding |
+| USBTMC instrument | `/dev/usbtmc*`; use an application that supports the instrument protocol |
+
+Mount filesystems inside the Dev Container so they are visible in its mount
+namespace. Check the operator guide for the supplied filesystem drivers;
+filesystem repair tools belong in your development image. Identify the disk
+and unmount it before detaching to protect its data.
+
+CH341 SPI support registers an SPI controller. A `/dev/spidev*` node also needs
+the intended child device to bind to spidev, using the standard Linux SPI
+binding procedure for that hardware.
+
+An ADB device also needs debugging enabled and authorization on the device.
+The Runtime's USB database supplies device names when the vendor/product ID is
+known; device access depends on drivers and permissions, rather than the
+display name.
+
 ## Disconnect and reconnect
 
 Closing a source's SSH forward disconnects its devices while other sources

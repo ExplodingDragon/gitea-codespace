@@ -103,8 +103,17 @@ Dev Container. These checks distinguish device visibility from usable access.
 
 The kernel cache key includes the runner OS, architecture, version file,
 USB/IP configuration, and build script. Fresh and cached artifacts pass the
-same checksum and configuration checks, while the product tests validate the
-running guest. Artifact integrity and runtime behavior are separate checks.
+same checksum and configuration checks for enabled and disabled options.
+The shared configuration includes
+the non-network device drivers described in the
+[operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip).
+
+Driver compilation and the virtual serial fixture cover different behavior
+from physical hardware. Before publishing hardware support, validate a
+disposable disk's mount/read/write cycle and the intended UART, HID, bridge,
+or instrument with its actual application. Repeat attachment and removal,
+and check access as the configured user. Verify character-device access in
+a non-privileged container so the test exercises its device cgroup rules.
 
 ### Implementation acceptance criteria
 

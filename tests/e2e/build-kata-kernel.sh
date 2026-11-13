@@ -5,10 +5,14 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 
 verify_kernel_config() {
-	local config=$1 setting
+	local config=$1 setting expected
 	while IFS= read -r setting; do
 		[[ -z "$setting" || $setting == \#* ]] && continue
-		if ! grep -Fxq -- "$setting" "$config"; then
+		expected=$setting
+		if [[ $setting == *=n ]]; then
+			expected="# ${setting%=n} is not set"
+		fi
+		if ! grep -Fxq -- "$expected" "$config"; then
 			echo "required kernel config is missing: $setting" >&2
 			exit 1
 		fi

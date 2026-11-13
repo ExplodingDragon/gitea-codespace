@@ -6,9 +6,11 @@ RUN apk add --no-cache \
     e2fsprogs \
     git \
     git-lfs \
+    hwdata-usb \
     linux-tools-usbip \
     openssh-client \
     shadow \
+    usbutils \
     util-linux
 
 COPY --chmod=0555 bin/gitea-codespace /usr/local/bin/gitea-codespace

@@ -4,11 +4,15 @@
 package devcontainerruntime
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -49,6 +53,15 @@ func usbIPContainerMutator(configuration USBIPContainerConfiguration) containerd
 				return fmt.Errorf("kata USB/IP requires platform ownership of %s", target)
 			}
 		}
+		devices, err := os.Open("/proc/devices")
+		if err != nil {
+			return fmt.Errorf("read Kata guest device classes: %w", err)
+		}
+		defer devices.Close()
+		rules, err := usbIPDeviceCgroupRules(devices)
+		if err != nil {
+			return fmt.Errorf("read Kata guest device classes: %w", err)
+		}
 		host.Mounts = append(host.Mounts,
 			mount.Mount{Type: mount.TypeBind, Source: configuration.DeviceRoot, Target: "/dev", BindOptions: &mount.BindOptions{NonRecursive: true}},
 			mount.Mount{Type: mount.TypeBind, Source: configuration.DevptsRoot, Target: "/dev/pts", BindOptions: &mount.BindOptions{NonRecursive: true}},
@@ -63,20 +76,44 @@ func usbIPContainerMutator(configuration USBIPContainerConfiguration) containerd
 		// eudev needs netlink send permission for worker notifications and
 		// processed device events, beyond receiving kernel uevents.
 		host.CapAdd = appendUniqueStrings(host.CapAdd, "NET_ADMIN")
-		host.DeviceCgroupRules = appendUniqueStrings(host.DeviceCgroupRules, "c 189:* rwm", "c 188:* rwm", "c 166:* rwm")
+		host.DeviceCgroupRules = appendUniqueStrings(host.DeviceCgroupRules, rules...)
 		return nil
 	}
 }
 
-func appendUniqueStrings(values []string, additions ...string) []string {
-	seen := make(map[string]struct{}, len(values)+len(additions))
-	for _, value := range values {
-		seen[value] = struct{}{}
+func usbIPDeviceCgroupRules(devices io.Reader) ([]string, error) {
+	// USB bus, USB serial, ACM, I2C, SPI and USB miscellaneous devices use
+	// fixed majors. HIDRAW and GPIO majors are allocated by the guest kernel.
+	rules := []string{"c 189:* rwm", "c 188:* rwm", "c 166:* rwm", "c 89:* rwm", "c 153:* rwm", "c 180:* rwm"}
+	characters := false
+	scanner := bufio.NewScanner(devices)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		switch line {
+		case "Character devices:":
+			characters = true
+			continue
+		case "Block devices:":
+			characters = false
+			continue
+		}
+		fields := strings.Fields(line)
+		if !characters || len(fields) != 2 || (fields[1] != "hidraw" && fields[1] != "gpiochip") {
+			continue
+		}
+		major, err := strconv.ParseUint(fields[0], 10, 32)
+		if err != nil {
+			return nil, fmt.Errorf("parse %s major: %w", fields[1], err)
+		}
+		rules = append(rules, fmt.Sprintf("c %d:* rwm", major))
 	}
+	return rules, scanner.Err()
+}
+
+func appendUniqueStrings(values []string, additions ...string) []string {
 	for _, value := range additions {
-		if _, exists := seen[value]; !exists {
+		if !slices.Contains(values, value) {
 			values = append(values, value)
-			seen[value] = struct{}{}
 		}
 	}
 	return values

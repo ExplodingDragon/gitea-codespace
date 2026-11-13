@@ -187,8 +187,27 @@ devices. For example, CDC ACM serial devices require `CONFIG_USB_ACM`. Building
 these options into the kernel makes them available without maintaining a guest
 module installation. When either USB/IP option is a module, load it during guest
 startup so `/sys/devices/platform/vhci_hcd.*` exists before the Runtime Agent
-starts. The platform image already contains the `usbip` userspace
-client. A custom Kata root filesystem does not need that client.
+starts. The platform image supplies the `usbip` client, `lsusb`, and the USB
+vendor/product database; the guest root filesystem supplies the kernel's
+startup environment.
+
+The supplied [kernel configuration](../../tests/e2e/kata-usbip.config) also
+includes these device drivers:
+
+| Devices | Guest support |
+| --- | --- |
+| USB disks | SCSI disk, USB Storage/UAS, MBR/GPT, ext4, FAT, exFAT, NTFS3 |
+| Serial adapters | CDC ACM, FTDI, CP210x, CH341, PL2303 |
+| HID debug probes | USB HID, generic HID, HIDRAW |
+| I2C/GPIO bridges | CP2112, MCP2221, MCP2200 with their supported interfaces |
+| SPI bridges | CH341 controller and spidev; child device binding depends on the hardware |
+| Test instruments | USBTMC |
+
+USB networking and CAN are disabled in this configuration so imported devices
+do not add interfaces to the Pod's network namespace. The existing virtio,
+veth, bridge, and IP networking remains available to the Runtime and Docker.
+Use the [kernel build guide](../../tests/e2e/README.md#prepare-kata-usbip-tests)
+to produce and validate the kernel for the selected Kata runtime.
 
 After starting a Kata Codespace, verify the Runtime Pod before publishing the
 workflow to users:
@@ -200,10 +219,16 @@ kubectl exec -n '<site-namespace>' '<runtime-pod>' -c runtime -- \
 
 The primary Dev Container sees the guest's device nodes under `/dev`. Its image
 starts udev or eudev and supplies device rules, groups, and non-root permissions.
-The platform allows raw USB, USB serial, and CDC ACM device classes and adds
-`NET_ADMIN` for eudev's netlink events. Other device classes need the matching
-guest drivers and access configuration. Kernel support, device access rules,
-and userspace permissions must all be verified together.
+The platform allows raw USB, USB serial, CDC ACM, I2C, SPI, USB miscellaneous
+devices (including USBTMC), and the guest's registered HIDRAW and GPIO character
+device classes. HIDRAW and GPIO major numbers are discovered at container
+creation because the kernel allocates them dynamically. Load those drivers
+before creating the Dev Container; the supplied configuration builds them in.
+Existing containers retain their creation-time device rules. The `NET_ADMIN`
+capability supports eudev's netlink events. Block-device access and
+filesystem mounting use the permissions explicitly declared by the development
+configuration. Kernel support, device access rules, and userspace permissions
+must all be verified together.
 
 The isolation boundary is the Kata virtual machine assigned to one Codespace;
 processes in that workspace share its attached hardware. Configure the Kata
@@ -221,8 +246,8 @@ unintended clients.
 
 Validate the complete path with a disposable exported device before production
 use, following the [USB connection guide](../../docs/usbip.md). Verify device
-access as the configured non-root user, not only as root. For automated
-validation on a disposable worker, use the [Kata USB/IP E2E guide](../../tests/e2e/README.md#prepare-kata-usbip-tests).
+access as the configured non-root user. The kernel build guide above also
+covers automated USB/IP validation on a disposable worker.
 Stop hooks should tolerate a device already being offline, because the Gateway
 can revoke access before the hook runs.
 
@@ -236,6 +261,12 @@ can revoke access before the hook runs.
   the expected non-root ownership and permissions.
 - Device access and ordinary terminal use remain functional after a stop/start
   cycle and a new device attachment.
+- The selected kernel provides the intended drivers and filesystems; test
+  hardware is usable with the declared container permissions. A storage test
+  uses a disposable disk and explicitly granted block-device and mount access.
+- HIDRAW and GPIO access rules use the running guest's major numbers. The
+  supplied kernel keeps USB networking and CAN disabled while normal Pod and
+  Docker networking works.
 - Multiple named USB/IP sources coexist with ordinary Dev Container reverse
   forwards. Source names are unique within one Codespace. Closing a source
   disconnects only its devices; closing an SSH session releases its forwards.

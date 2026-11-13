@@ -4,6 +4,7 @@
 package devcontainerruntime
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/docker/docker/api/types/container"
@@ -22,11 +23,23 @@ func TestRequestRejectsIncompleteUSBIPMounts(t *testing.T) {
 
 func TestUSBIPContainerMutatorPreservesRuntimeSettings(t *testing.T) {
 	mutate := usbIPContainerMutator(USBIPContainerConfiguration{Enabled: true, DeviceRoot: "/runtime/dev", DevptsRoot: "/runtime/devpts"})
-	host := &container.HostConfig{IpcMode: "private", ShmSize: 128 * 1024 * 1024, CapDrop: []string{"ALL"}}
+	host := &container.HostConfig{
+		IpcMode:           "private",
+		ShmSize:           128 * 1024 * 1024,
+		CapAdd:            []string{"SYS_PTRACE"},
+		CapDrop:           []string{"ALL"},
+		DeviceCgroupRules: []string{"c 189:* rwm", "b 8:* rw"},
+		NetworkMode:       "bridge",
+	}
 	require.NoError(t, mutate(&container.Config{}, host))
 	require.Equal(t, []string{"ALL"}, []string(host.CapDrop))
-	require.Contains(t, []string(host.CapAdd), "NET_ADMIN")
-	require.ElementsMatch(t, []string{"c 189:* rwm", "c 188:* rwm", "c 166:* rwm"}, host.DeviceCgroupRules)
+	require.Equal(t, []string{"SYS_PTRACE", "NET_ADMIN"}, []string(host.CapAdd))
+	require.Contains(t, host.DeviceCgroupRules, "b 8:* rw")
+	require.Contains(t, host.DeviceCgroupRules, "c 89:* rwm")
+	require.Equal(t, "c 189:* rwm", host.DeviceCgroupRules[0])
+	require.NotContains(t, host.DeviceCgroupRules[1:], "c 189:* rwm")
+	require.Equal(t, container.NetworkMode("bridge"), host.NetworkMode)
+	require.False(t, host.Privileged)
 	require.Len(t, host.Mounts, 3)
 	require.Equal(t, mount.TypeBind, host.Mounts[0].Type)
 	require.Equal(t, "/dev", host.Mounts[0].Target)
@@ -34,6 +47,24 @@ func TestUSBIPContainerMutatorPreservesRuntimeSettings(t *testing.T) {
 	require.Equal(t, "/dev/pts", host.Mounts[1].Target)
 	require.Equal(t, "/dev/shm", host.Mounts[2].Target)
 	require.EqualValues(t, 128*1024*1024, host.Mounts[2].TmpfsOptions.SizeBytes)
+}
+
+func TestUSBIPDeviceCgroupRules(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		devices string
+		dynamic []string
+	}{
+		{name: "fixed classes", devices: "Character devices:\n  1 mem\nBlock devices:\n 240 hidraw\n 241 gpiochip\n"},
+		{name: "registered dynamic classes", devices: "Character devices:\n 243 hidraw\n 254 gpiochip\nBlock devices:\n  8 sd\n", dynamic: []string{"c 243:* rwm", "c 254:* rwm"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			rules, err := usbIPDeviceCgroupRules(strings.NewReader(test.devices))
+			require.NoError(t, err)
+			expected := append([]string{"c 189:* rwm", "c 188:* rwm", "c 166:* rwm", "c 89:* rwm", "c 153:* rwm", "c 180:* rwm"}, test.dynamic...)
+			require.ElementsMatch(t, expected, rules)
+		})
+	}
 }
 
 func TestUSBIPContainerMutatorRejectsDeviceMountConflict(t *testing.T) {
