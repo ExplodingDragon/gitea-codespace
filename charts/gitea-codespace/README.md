@@ -99,7 +99,7 @@ receive guest capabilities without implicitly receiving Kubernetes node
 devices. Review explicit `privileged`, `devices`, `capAdd`, and network-sharing
 settings in development configurations because they can broaden access within
 the guest. The default USB device-class rules are not per-device restrictions.
-See the [runtime design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md)
+See the [Kata USB design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md#kata-usb-%E8%AE%BE%E5%A4%87)
 for the mount and forwarding implementation.
 
 SSH authenticates the connection; the device server and guest drivers still

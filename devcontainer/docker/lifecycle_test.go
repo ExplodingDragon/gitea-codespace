@@ -4,6 +4,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,7 @@ import (
 	composeapi "github.com/docker/compose/v2/pkg/api"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/client"
+	"github.com/docker/docker/pkg/stdcopy"
 	"github.com/stretchr/testify/require"
 
 	"gitea.dev/codespace/devcontainer"
@@ -71,7 +73,7 @@ func (c *creationCompose) Down(ctx context.Context, _ string, options composeapi
 }
 
 func TestCreateResourceCleanup(t *testing.T) {
-	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "compose start", "compose empty", "success"} {
+	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "diagnostics unavailable", "logs unavailable", "compose start", "compose empty", "success"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			configuration := map[string]any{"image": "alpine:latest", "remoteUser": "root", "userEnvProbe": "none"}
@@ -89,6 +91,7 @@ func TestCreateResourceCleanup(t *testing.T) {
 
 			var mu sync.Mutex
 			var exists bool
+			var prepared bool
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				mu.Lock()
 				defer mu.Unlock()
@@ -122,7 +125,21 @@ func TestCreateResourceCleanup(t *testing.T) {
 						_, _ = io.WriteString(w, `{"message":"start failed"}`)
 					}
 				case strings.HasSuffix(r.URL.Path, "/containers/container/json"):
-					_, _ = io.WriteString(w, `{"Id":"container","State":{"Running":true},"Config":{"User":"root"}}`)
+					if prepared && scenario == "diagnostics unavailable" {
+						w.WriteHeader(http.StatusInternalServerError)
+						_, _ = io.WriteString(w, `{"message":"inspect failed"}`)
+						return
+					}
+					_, _ = io.WriteString(w, `{"Id":"container","State":{"Running":true,"OOMKilled":false,"ExitCode":137},"Config":{"User":"root","Env":["SECRET=not-a-diagnostic"]}}`)
+				case strings.HasSuffix(r.URL.Path, "/containers/container/logs"):
+					require.Equal(t, "200", r.URL.Query().Get("tail"))
+					require.True(t, exists, "diagnostics must precede container cleanup")
+					if scenario == "logs unavailable" {
+						w.WriteHeader(http.StatusInternalServerError)
+						_, _ = io.WriteString(w, `{"message":"log driver does not support reading"}`)
+						return
+					}
+					_, _ = io.WriteString(stdcopy.NewStdWriter(w, stdcopy.Stderr), "systemd: Failed to create /init.scope control group\n")
 				case r.Method == http.MethodDelete && strings.HasSuffix(r.URL.Path, "/containers/container"):
 					exists = false
 					w.WriteHeader(http.StatusNoContent)
@@ -136,7 +153,8 @@ func TestCreateResourceCleanup(t *testing.T) {
 			t.Setenv("DOCKER_API_VERSION", "1.51")
 			t.Setenv("DOCKER_CONFIG", t.TempDir())
 			t.Setenv("DOCKER_CONTEXT", "")
-			engine, err := New(t.Context(), io.Discard, io.Discard)
+			var output bytes.Buffer
+			engine, err := New(t.Context(), io.Discard, &output)
 			require.NoError(t, err)
 			defer engine.Close()
 			cleanup := &creationCleanupClient{APIClient: engine.client, t: t}
@@ -153,8 +171,12 @@ func TestCreateResourceCleanup(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			state, err := engine.Create(ctx, CreateOptions{
+				Debug:   true,
 				OwnerID: "owner", Workspace: workspace, Source: devcontainer.Source{Path: "devcontainer.json"},
 				PrepareLifecycle: func(context.Context, *Engine, *devcontainer.State) error {
+					mu.Lock()
+					prepared = true
+					mu.Unlock()
 					if scenario == "success" {
 						return nil
 					}
@@ -183,6 +205,18 @@ func TestCreateResourceCleanup(t *testing.T) {
 				require.ErrorIs(t, err, cleanupFailure)
 			}
 			require.Equal(t, 1, cleanup.removeCall)
+			if scenario == "diagnostics unavailable" {
+				require.Contains(t, output.String(), "state unavailable")
+			} else {
+				require.Contains(t, output.String(), `"exitCode":137`)
+				require.Contains(t, output.String(), `"oomKilled":false`)
+				if scenario == "logs unavailable" {
+					require.Contains(t, output.String(), "logs unavailable")
+				} else {
+					require.Contains(t, output.String(), "systemd: Failed to create /init.scope control group")
+				}
+			}
+			require.NotContains(t, output.String(), "not-a-diagnostic")
 			if useCompose {
 				require.Equal(t, 1, compose.downCall)
 			}

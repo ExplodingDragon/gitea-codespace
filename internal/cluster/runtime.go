@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strconv"
 	"time"
 	"uuid"
 
@@ -49,11 +50,15 @@ type RuntimeReconciler struct {
 	ManagerIdentity     string
 	ImagePullSecrets    []string
 	WebIDEProgramSize   resource.Quantity
+	Diagnostics         *runtimeDiagnostics
 }
 
 func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
 	var cs api.Codespace
 	if err := r.Client.Get(ctx, request.NamespacedName, &cs); err != nil {
+		if apierrors.IsNotFound(err) && r.Diagnostics != nil {
+			r.Diagnostics.forget(request.NamespacedName)
+		}
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 	if err := cs.Validate(r.ManagementNamespace); err != nil {
@@ -92,6 +97,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 	if runtimeStopRequested(&cs) {
 		return r.stopOrDelete(ctx, &cs, false)
 	}
+	defer func() { r.Diagnostics.capture(ctx, &cs, nil, "state") }()
 	if cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (r.Authority == nil || r.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) <= 0) {
 		return r.condition(ctx, &cs, "AwaitingExecutionLease", fmt.Errorf("current Leader has not renewed this operation with Gitea"))
 	}
@@ -330,6 +336,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 				Ports:     []corev1.ContainerPort{{Name: "agent-access", ContainerPort: 8444, Protocol: corev1.ProtocolTCP}},
 				Resources: runtime.Resources,
 				Env: []corev1.EnvVar{
+					{Name: "CODESPACE_DEBUG", Value: strconv.FormatBool(runtime.Debug)},
 					{Name: "CODESPACE_MANAGER_URL", Value: managerURL},
 					{Name: "CODESPACE_MANAGER_IDENTITY", Value: managerIdentity},
 					{Name: "CODESPACE_RUNTIME_UUID", Value: cs.Spec.RuntimeUUID},
@@ -507,6 +514,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 				}
 				return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 			}
+			r.Diagnostics.capture(ctx, cs, pod, "before-pod-delete")
 			if err := r.Client.Delete(ctx, pod, client.Preconditions{UID: &pod.UID}); err != nil {
 				return ctrl.Result{}, err
 			}
@@ -516,8 +524,10 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		// The regular container can remain Waiting when an init container fails.
 		stopped := pod.Spec.NodeName == "" || pod.Status.Phase == corev1.PodSucceeded || pod.Status.Phase == corev1.PodFailed
 		if !stopped {
+			r.Diagnostics.capture(ctx, cs, pod, "terminating")
 			return r.condition(ctx, cs, "WriterUnconfirmed", fmt.Errorf("waiting for kubelet to confirm runtime process termination"))
 		}
+		r.Diagnostics.capture(ctx, cs, pod, "pod-terminated")
 		if cs.Status.StoppedPodUID != pod.UID {
 			podUID := pod.UID
 			err := updateCodespaceStatus(ctx, r.Client, cs, func(current *api.Codespace) error {
@@ -537,6 +547,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	stoppedPodUID := cs.Status.Pod.UID
+	r.Diagnostics.capture(ctx, cs, nil, "resources-stopped")
 	if remove && cs.Status.Volume.Name != "" {
 		var volume corev1.PersistentVolumeClaim
 		err := r.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: cs.Status.Volume.Name}, &volume)
@@ -566,6 +577,9 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		return ctrl.Result{RequeueAfter: time.Second}, nil
 	}
 	observedGeneration, operationVersion, operationType := cs.Generation, cs.Spec.Operation.Version, cs.Spec.Operation.Type
+	if (operationType == "stop" || operationType == "delete") && cs.Status.Result != nil && cs.Status.Result.Version == operationVersion && !cs.Status.Result.Succeeded {
+		r.Diagnostics.emit(ctx, cs, "cleanup", []string{"Runtime cleanup completed after Agent execution error: " + cs.Status.Result.Message})
+	}
 	err := updateCodespaceStatus(ctx, r.Client, cs, func(current *api.Codespace) error {
 		if current.Generation != observedGeneration || current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || (stoppedPodUID != "" && current.Status.Pod.UID != stoppedPodUID) {
 			return errObservedResourceChanged
@@ -579,7 +593,7 @@ func (r *RuntimeReconciler) stopOrDelete(ctx context.Context, cs *api.Codespace,
 		current.Status.LastNodeName = ""
 		meta.RemoveStatusCondition(&current.Status.Conditions, "InfrastructureReady")
 		meta.SetStatusCondition(&current.Status.Conditions, metav1.Condition{Type: "Stopped", Status: metav1.ConditionTrue, Reason: "ResourcesStopped", Message: "Runtime Pod has stopped", ObservedGeneration: observedGeneration})
-		if (operationType == "stop" || operationType == "delete") && (current.Status.Result == nil || current.Status.Result.Version != operationVersion) {
+		if operationType == "stop" || operationType == "delete" {
 			current.Status.Result = &api.OperationResult{Version: operationVersion, Succeeded: true}
 		}
 		return nil

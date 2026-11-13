@@ -256,7 +256,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if err := resolved.Finalize(); err != nil {
 		return "", nil, err
 	}
-	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
+	if err := e.checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return "", nil, err
 	}
 	digests := make(map[string]string, len(orderedFeatures))

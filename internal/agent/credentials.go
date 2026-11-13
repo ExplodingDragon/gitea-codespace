@@ -11,6 +11,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"unicode/utf8"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
@@ -105,15 +106,41 @@ func runtimeAccessEnvironment(items []*codespacev1.RuntimeSecretEnvironmentVaria
 }
 
 func writeAccessEnvironment(path string, environment map[string]string, owner devcontainer.HostUser) error {
-	var content strings.Builder
+	var shell, systemd strings.Builder
+	escape := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "$", "\\$", "`", "\\`")
 	for _, name := range slices.Sorted(maps.Keys(environment)) {
-		_, _ = fmt.Fprintf(&content, "export %s='%s'\n", name, strings.ReplaceAll(environment[name], "'", "'\\''"))
+		value := environment[name]
+		if !utf8.ValidString(value) {
+			return fmt.Errorf("runtime environment variable %s is not valid UTF-8", name)
+		}
+		for _, char := range value {
+			if char == 0 || char == '\uFEFF' || (char >= '\uFDD0' && char <= '\uFDEF') || char&0xFFFF >= 0xFFFE {
+				return fmt.Errorf("runtime environment variable %s contains a character unsupported by systemd EnvironmentFile", name)
+			}
+		}
+		_, _ = fmt.Fprintf(&shell, "export %s='%s'\n", name, strings.ReplaceAll(value, "'", "'\\''"))
+		// EnvironmentFile keeps literal newlines inside double quotes.
+		_, _ = fmt.Fprintf(&systemd, "%s=\"%s\"\n", name, escape.Replace(value))
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o711); err != nil {
+	directory := filepath.Dir(path)
+	if err := os.MkdirAll(directory, 0o711); err != nil {
 		return fmt.Errorf("prepare runtime authorization environment: %w", err)
 	}
-	if err := replaceFileAtomically(path, []byte(content.String()), 0o600, &owner); err != nil {
-		return fmt.Errorf("write runtime authorization environment: %w", err)
+	files := []struct {
+		name    string
+		content string
+		mode    os.FileMode
+		owner   *devcontainer.HostUser
+	}{
+		{filepath.Base(path), shell.String(), 0o600, &owner},
+		{filepath.Base(devcontainerruntime.ContainerSystemdEnvironmentPath), systemd.String(), 0o600, nil},
+		{filepath.Base(devcontainerruntime.RuntimeSystemdDropInPath), "[Service]\nEnvironmentFile=" + devcontainerruntime.ContainerSystemdEnvironmentPath + "\n", 0o644, nil},
+	}
+	// The Agent runs as root; only the shell file belongs to remoteUser.
+	for _, file := range files {
+		if err := replaceFileAtomically(filepath.Join(directory, file.name), []byte(file.content), file.mode, file.owner); err != nil {
+			return fmt.Errorf("write runtime authorization environment %s: %w", file.name, err)
+		}
 	}
 	return nil
 }

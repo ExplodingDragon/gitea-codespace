@@ -4,10 +4,12 @@
 package cgroup
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"testing"
 
+	"github.com/moby/sys/mountinfo"
 	"github.com/stretchr/testify/require"
 )
 
@@ -47,7 +49,7 @@ func TestReader(t *testing.T) {
 	require.Error(t, err)
 }
 
-func TestResolveMountPath(t *testing.T) {
+func TestResolveHierarchy(t *testing.T) {
 	tests := []struct {
 		name                 string
 		processPath, root    string
@@ -57,17 +59,45 @@ func TestResolveMountPath(t *testing.T) {
 		{name: "root mount", processPath: "/kubepods/pod", root: "/", mountpoint: "/sys/fs/cgroup", expected: "/sys/fs/cgroup/kubepods/pod"},
 		{name: "namespace root", processPath: "/delegated", root: "/delegated", mountpoint: "/sys/fs/cgroup", expected: "/sys/fs/cgroup"},
 		{name: "delegated child", processPath: "/delegated/child", root: "/delegated", mountpoint: "/sys/fs/cgroup", expected: "/sys/fs/cgroup/child"},
+		{name: "nested agent", processPath: "/init", root: "/", mountpoint: "/sys/fs/cgroup", expected: "/sys/fs/cgroup/init"},
+		{name: "sysbox init", processPath: "/init.scope", root: "/", mountpoint: "/sys/fs/cgroup", expected: "/sys/fs/cgroup/init.scope"},
 		{name: "outside hierarchy", processPath: "/other", root: "/delegated", mountpoint: "/sys/fs/cgroup", err: true},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			got, err := resolveMountPath(test.processPath, test.root, test.mountpoint)
+			current, hierarchy, err := resolveHierarchy([]byte("0::"+test.processPath+"\n"), []*mountinfo.Info{{Root: test.root, Mountpoint: test.mountpoint, FSType: "cgroup2"}})
 			if test.err {
 				require.Error(t, err)
 				return
 			}
 			require.NoError(t, err)
-			require.Equal(t, test.expected, got)
+			require.Equal(t, At(test.expected), current)
+			require.Equal(t, At(test.mountpoint), hierarchy)
 		})
 	}
+}
+
+func TestEnableNesting(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"cgroup.type": "domain\n", "cgroup.controllers": "cpu memory pids\n", "cgroup.procs": "42\n",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(content), 0o600))
+	}
+	reader := At(root)
+	require.NoError(t, reader.EnableNesting(t.Context()))
+	data, err := os.ReadFile(filepath.Join(root, "init/cgroup.procs"))
+	require.NoError(t, err)
+	require.Equal(t, "42", string(data))
+	data, err = reader.Read("cgroup.subtree_control")
+	require.NoError(t, err)
+	require.Equal(t, "+cpu +memory +pids", string(data))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cgroup.procs"), nil, 0o600))
+	require.NoError(t, reader.EnableNesting(t.Context()))
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	require.ErrorIs(t, reader.EnableNesting(ctx), context.Canceled)
+	require.NoError(t, os.WriteFile(filepath.Join(root, "cgroup.type"), []byte("domain threaded\n"), 0o600))
+	require.ErrorContains(t, reader.EnableNesting(t.Context()), "recreate the Runtime Pod")
 }

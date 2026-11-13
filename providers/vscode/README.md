@@ -4,6 +4,8 @@ This image provides code-server and the Gitea Codespace extension through the
 `vscode` provider. The extension is released with the editor because it uses VS
 Code APIs, while the Codespace platform only depends on the provider protocol.
 
+Use a Dev Container that meets the [official provider requirements](../README.md#official-providers).
+
 ## Configuration
 
 The provider accepts `settings` and `extensions` options for initial setup.

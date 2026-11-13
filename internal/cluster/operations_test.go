@@ -51,6 +51,7 @@ func TestOperationBindingRecovery(t *testing.T) {
 	site.Status.NamespaceUID = "namespace-uid"
 	namespace := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
 	template := &api.EnvironmentTemplate{ObjectMeta: metav1.ObjectMeta{Name: "standard", UID: "template-uid", Generation: 1}, Spec: api.EnvironmentTemplateSpec{Runtime: testEnvironment()}}
+	template.Spec.Runtime.Debug = true
 	meta.SetStatusCondition(&template.Status.Conditions, metav1.Condition{Type: "Ready", Status: metav1.ConditionTrue, Reason: "Verified", ObservedGeneration: 1})
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}).WithObjects(template, namespace).
 		WithInterceptorFuncs(interceptor.Funcs{Create: func(ctx context.Context, c client.WithWatch, object client.Object, opts ...client.CreateOption) error {
@@ -84,6 +85,9 @@ func TestOperationBindingRecovery(t *testing.T) {
 	var cs api.Codespace
 	require.NoError(t, c.Get(t.Context(), key, &cs))
 	require.False(t, cs.Status.Bound)
+	require.True(t, cs.Spec.Runtime.Debug)
+	template.Spec.Runtime.Debug = false
+	require.NoError(t, c.Update(t.Context(), template))
 	require.Zero(t, o.Authority.Remaining(cs.UID, 1))
 	// Recovery uses the persisted UUID even if the original payload had none.
 	input.LogOffset = 256
@@ -116,6 +120,7 @@ func TestOperationBindingRecovery(t *testing.T) {
 	require.NoError(t, o.Accept(t.Context(), site, remote, resume, time.Now()))
 	require.NoError(t, c.Get(t.Context(), key, &cs))
 	require.Empty(t, cs.Status.RecoveryAction)
+	require.True(t, cs.Spec.Runtime.Debug, "resume uses the original template snapshot")
 }
 
 func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
@@ -124,6 +129,7 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 		operationType  string
 		payload        func() *codespacev1.OperationPayload
 		bound          bool
+		missing        bool
 		finalType      codespacev1.OperationType
 		finalUUID      string
 		recoveryAction string
@@ -131,6 +137,12 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 		{name: "create", operationType: "create", payload: func() *codespacev1.OperationPayload {
 			return &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
 		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE, recoveryAction: "delete"},
+		{name: "create binding confirmed remotely", operationType: "create", payload: func() *codespacev1.OperationPayload {
+			return &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE, finalUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", recoveryAction: "delete"},
+		{name: "create runtime missing", operationType: "create", missing: true, payload: func() *codespacev1.OperationPayload {
+			return &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE, finalUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986"},
 		{name: "resume", operationType: "resume", payload: func() *codespacev1.OperationPayload {
 			return &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", OperationRversion: 3, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{}}}
 		}, bound: true, finalType: codespacev1.OperationType_OPERATION_TYPE_RESUME, finalUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", recoveryAction: "stop"},
@@ -148,8 +160,13 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 				Status: api.CodespaceStatus{Bound: tc.bound},
 			}
 			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
+			if tc.missing {
+				require.NoError(t, c.Delete(t.Context(), cs))
+			}
 			authority := &ExecutionAuthority{}
-			authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
+			if !tc.missing {
+				authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
+			}
 			o := Operations{Client: c, Authority: authority, ManagementNamespace: "codespace-system"}
 			attempts := 0
 			remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
@@ -168,6 +185,10 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 			require.ErrorContains(t, o.finalizeRejectedOperation(t.Context(), site, remote, tc.payload()), "final response lost")
 			require.Zero(t, authority.Remaining(cs.UID, 3))
 			require.NoError(t, o.finalizeRejectedOperation(t.Context(), site, remote, tc.payload()))
+			if tc.missing {
+				require.Equal(t, 2, attempts)
+				return
+			}
 			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 			require.EqualValues(t, 3, cs.Status.SettledOperationVersion)
 			require.Equal(t, tc.recoveryAction, cs.Status.RecoveryAction)

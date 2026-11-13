@@ -87,6 +87,10 @@ spec:
                     - ReadWriteOncePod
                     - ReadWriteOnce
                     type: string
+                  debug:
+                    description: Debug enables bounded lifecycle diagnostics for runtimes
+                      created from this template.
+                    type: boolean
                   devContainer:
                     description: |-
                       Configuration defines administrator-owned additions to a repository's Dev

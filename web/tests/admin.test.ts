@@ -291,6 +291,8 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.keyboard.press('Enter');
   await page.keyboard.press('Escape');
   await field('Tag').fill('standard');
+  await expect(page.getByRole('checkbox', {name: 'Debug mode'})).not.toBeChecked();
+  await page.getByRole('checkbox', {name: 'Debug mode'}).check();
   await field('Provider image').fill('ghcr.io/example/web-ide-vscode:main');
   await page.getByRole('button', {name: 'Resolve image'}).click();
   await expect(page.getByText('VS Code', {exact: true})).toBeVisible();
@@ -313,6 +315,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     options: {settings: {'editor.tabSize': 2}, extensions: ['golang.go', 'redhat.vscode-yaml']},
   });
   expect(environments[0].spec.runtime.devContainer.giteaCLI).toBe(true);
+  expect(environments[0].spec.runtime.debug).toBe(true);
   expect(environments[0].spec.runtime.resources).toEqual({
     requests: {cpu: '100m', memory: '256Mi'},
   });

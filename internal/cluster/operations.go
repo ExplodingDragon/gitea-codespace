@@ -314,9 +314,6 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 	if runtimeUUID == "" && local && cs.Status.Bound {
 		runtimeUUID = cs.Spec.RuntimeUUID
 	}
-	if operationType == codespacev1.OperationType_OPERATION_TYPE_CREATE && (!local || !cs.Status.Bound) {
-		runtimeUUID = ""
-	}
 	_, err = remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{
 		ProtocolVersion:   1,
 		CodespaceId:       payload.CodespaceId,

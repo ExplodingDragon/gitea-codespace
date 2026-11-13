@@ -15,6 +15,7 @@ import (
 	"syscall"
 	"time"
 
+	"gitea.dev/codespace/internal/cgroup"
 	"github.com/docker/docker/client"
 	"golang.org/x/sys/unix"
 )
@@ -96,8 +97,10 @@ type DockerDaemon struct {
 	err     error
 }
 
-func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, nativeRuntime bool, caBundlePath string, output io.Writer) (*DockerDaemon, error) {
-	if nativeRuntime {
+func StartDocker(ctx context.Context, directory, cdiSpecDirectory, isolation string, hierarchy cgroup.Reader, caBundlePath string, output io.Writer) (*DockerDaemon, error) {
+	readyCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	if isolation == "native" {
 		// Kubernetes gives the container private, read-only cgroup and sysctl
 		// mounts. Making those mounts writable keeps nested containers inside
 		// the Pod namespaces without exposing either node hierarchy.
@@ -106,6 +109,11 @@ func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, native
 		}
 		if err := unix.Mount("", "/proc/sys", "", unix.MS_REMOUNT|unix.MS_BIND, ""); err != nil {
 			return nil, fmt.Errorf("make private Runtime sysctl mount writable: %w", err)
+		}
+	}
+	if isolation == "kata" || isolation == "native" {
+		if err := hierarchy.EnableNesting(readyCtx); err != nil {
+			return nil, fmt.Errorf("prepare Runtime cgroup nesting: %w", err)
 		}
 	}
 	interfaces, err := net.Interfaces()
@@ -137,8 +145,6 @@ func StartDocker(ctx context.Context, directory, cdiSpecDirectory string, native
 		return nil, err
 	}
 	defer func() { _ = docker.Close() }()
-	readyCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	defer cancel()
 	for {
 		pingCtx, pingCancel := context.WithTimeout(readyCtx, time.Second)
 		_, err := docker.Ping(pingCtx)

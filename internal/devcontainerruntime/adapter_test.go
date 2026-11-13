@@ -49,6 +49,9 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
 		Type: "bind", Source: filepath.Dir(RuntimeEnvironmentPath), Target: filepath.Dir(containerEnvironmentPath), ReadOnly: true,
 	})
+	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
+		Type: "bind", Source: RuntimeSystemdDropInPath, Target: containerSystemdDropInPath, ReadOnly: true,
+	})
 	require.Equal(t, request.Native.CDIDeviceIDs, options.PlatformDevices.CDI)
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: asset, Target: platformGiteaCLIPath, ReadOnly: true})
 	require.Empty(t, options.ContainerEnv, "platform environment is applied after image builds")
@@ -69,6 +72,9 @@ func TestCreateOptionsSkipsWebIDEMountsWhenDisabled(t *testing.T) {
 	require.Equal(t, []string{"GITEA_INSTANCE_URL=https://another.example.com", "PROJECT=kept"}, config.Env)
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
 		Type: "bind", Source: filepath.Dir(RuntimeEnvironmentPath), Target: filepath.Dir(containerEnvironmentPath), ReadOnly: true,
+	})
+	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
+		Type: "bind", Source: RuntimeSystemdDropInPath, Target: containerSystemdDropInPath, ReadOnly: true,
 	})
 	for _, mount := range options.AdditionalMounts {
 		require.NotEqual(t, webide.ContainerProgramPath, mount.Target)

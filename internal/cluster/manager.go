@@ -335,6 +335,8 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err != nil {
 		return nil, err
 	}
+	diagnostics := &runtimeDiagnostics{Reader: liveClient, Pods: coreClient, Logs: logs}
+	control.Diagnostics = diagnostics
 	if err := mgr.Add(&ResourceCollector{Reader: mgr.GetClient(), Metrics: resourceMetrics, Nodes: coreClient.RESTClient(), Samples: &control.Samples}); err != nil {
 		return nil, err
 	}
@@ -347,7 +349,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.EnvironmentTemplate{}).Complete(&TemplateReconciler{Client: liveClient}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets, WebIDEProgramSize: programSize}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets, WebIDEProgramSize: programSize, Diagnostics: diagnostics}); err != nil {
 		return nil, err
 	}
 	componentController := ctrl.NewControllerManagedBy(mgr).For(&api.CodespaceComponent{}).

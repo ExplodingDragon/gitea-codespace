@@ -96,6 +96,7 @@ type AgentControlServer struct {
 	Caches              *ComponentServer
 	Connections         *siteConnectionStore
 	Logs                *operationLogs
+	Diagnostics         *runtimeDiagnostics
 	Authority           ExecutionAuthority
 	Samples             ResourceSamples
 	mu                  sync.Mutex
@@ -332,6 +333,13 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 				return err
 			}
 			response.Access, accessVersion = reply.Access, cs.Spec.Operation.Version
+			if cs.Spec.Runtime.Debug && reply.Access != nil {
+				credentials := []string{reply.Access.GiteaToken}
+				for _, secret := range reply.Access.Secrets {
+					credentials = append(credentials, secret.GetValue())
+				}
+				s.Diagnostics.credentials(cs, credentials)
+			}
 		}
 		response.PermitValidForMilliseconds = s.Authority.Remaining(cs.UID, cs.Spec.Operation.Version).Milliseconds()
 		response.CancelExecution = response.PermitValidForMilliseconds <= 0

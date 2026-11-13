@@ -74,6 +74,7 @@
     "refresh": "템플릿 새로 고침",
     "basicSection": "템플릿 정보",
     "runtimeSection": "런타임과 격리",
+    "debug": "디버그 모드",
     "storageSection": "워크스페이스 스토리지",
     "computeSection": "컴퓨팅 리소스",
     "tag": "태그",

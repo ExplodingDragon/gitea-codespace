@@ -32,7 +32,7 @@ POSIX_SCRIPTS := \
 	tests/e2e/web-ide/serve \
 	$(sort $(wildcard devcontainer/docker/builtin/*.sh internal/devcontainerruntime/builtin/*.sh)) \
 	internal/cluster/usbip-e2e.sh
-GO_FILES := $(shell find . -path './.git' -prune -o -path './.tmp' -prune -o -path './web/node_modules' -prune -o -type f -name '*.go' -print)
+GO_FILES := $(shell find . -type d \( -name .git -o -name .tmp -o -name node_modules \) -prune -o -type f -name '*.go' -print)
 
 define prepare-proto-workspace
 set -e; \

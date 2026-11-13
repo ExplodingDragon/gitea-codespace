@@ -16,34 +16,31 @@ import (
 	"gitea.dev/codespace/internal/cgroup"
 )
 
-func checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
+func (e *Engine) checkHostRequirements(requirements devcontainer.HostRequirements, workspace string) error {
 	var reader cgroup.Reader
-	if requirements.CPUs != nil || strings.TrimSpace(requirements.Memory) != "" {
+	if e.hostCgroup != nil {
+		reader = *e.hostCgroup
+	} else if requirements.CPUs != nil || strings.TrimSpace(requirements.Memory) != "" {
 		var err error
-		reader, err = cgroup.Current()
+		reader, _, err = cgroup.Discover()
 		if err != nil {
 			return fmt.Errorf("inspect runtime cgroup: %w", err)
 		}
 	}
-	return checkHostRequirementsWithCgroup(requirements, workspace, reader)
-}
-
-func checkHostRequirementsWithCgroup(requirements devcontainer.HostRequirements, workspace string, reader cgroup.Reader) error {
 	if requirements.CPUs != nil && *requirements.CPUs > runtime.NumCPU() {
 		return fmt.Errorf("dev container requires %d CPUs but the runtime provides %d", *requirements.CPUs, runtime.NumCPU())
 	}
 	if requirements.CPUs != nil {
 		data, err := reader.Read("cpu.max")
-		if err == nil {
-			quota, period, unlimited, err := cgroup.ParseCPUQuota(data)
-			if err != nil {
-				return fmt.Errorf("inspect runtime CPU limit: %w", err)
-			}
-			if !unlimited && int64(*requirements.CPUs)*period > quota {
-				return fmt.Errorf("dev container requires %d CPUs but the runtime CPU quota is %d/%d", *requirements.CPUs, quota, period)
-			}
-		} else {
+		if err != nil {
 			return fmt.Errorf("inspect runtime CPU limit: %w", err)
+		}
+		quota, period, unlimited, err := cgroup.ParseCPUQuota(data)
+		if err != nil {
+			return fmt.Errorf("inspect runtime CPU limit: %w", err)
+		}
+		if !unlimited && int64(*requirements.CPUs)*period > quota {
+			return fmt.Errorf("dev container requires %d CPUs but the runtime CPU quota is %d/%d", *requirements.CPUs, quota, period)
 		}
 	}
 	if strings.TrimSpace(requirements.Memory) != "" {

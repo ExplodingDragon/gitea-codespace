@@ -66,6 +66,8 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			return nil, err
 		}
 		options.CustomizeImage = imageCustomization(request.DevContainer.LifecycleScript)
+		options.Debug = request.Debug
+		options.HostCgroup = request.HostCgroup
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			if err := prepareContainerStart(ctx, engine, state, request); err != nil {
 				return err
@@ -87,6 +89,9 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			// Start may have started some or all containers before preparing
 			// Runtime-owned mounts and lifecycle hooks. Always stop the saved
 			// environment on failure so a later resume sees a coherent state.
+			if request.Debug {
+				engine.WriteDiagnostics(ctx, request.CodespaceUUID)
+			}
 			stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			defer cancel()
 			_, stopErr := engine.Stop(stopContext, request.Environment)
@@ -94,21 +99,27 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		}
 		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stderr)
 		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
-	case "stop":
-		lifecycleErr := runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
+	case "stop", "delete":
+		var lifecycleErr error
+		if request.Action == "stop" {
+			lifecycleErr = runTemplateLifecycle(ctx, request, engine, request.Environment, "stop")
+		}
+		if lifecycleErr != nil {
+			_, _ = fmt.Fprintf(stderr, "Warning: stop lifecycle failed; continuing container cleanup: %v\n", lifecycleErr)
+			if request.Debug {
+				engine.WriteDiagnostics(ctx, request.CodespaceUUID)
+			}
+		}
 		if request.BeforeContainerStop != nil {
 			request.BeforeContainerStop()
 		}
 		stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()
 		state, stopErr := engine.Stop(stopContext, request.Environment)
-		return &Outcome{Environment: state}, errors.Join(lifecycleErr, stopErr)
-	case "delete":
-		if request.BeforeContainerStop != nil {
-			request.BeforeContainerStop()
+		if stopErr != nil && lifecycleErr == nil && request.Debug {
+			engine.WriteDiagnostics(ctx, request.CodespaceUUID)
 		}
-		state, err := engine.Stop(ctx, request.Environment)
-		return &Outcome{Environment: state}, err
+		return &Outcome{Environment: state}, stopErr
 	default:
 		state, err := engine.Inspect(ctx, request.Environment)
 		return &Outcome{Environment: state}, err

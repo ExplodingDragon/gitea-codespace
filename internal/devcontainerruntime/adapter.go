@@ -45,6 +45,7 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 	mounts = append(mounts,
 		devcontainer.Mount{Type: "bind", Source: filepath.Dir(runtimeendpoint.AgentSocketPath), Target: filepath.Dir(runtimeendpoint.ContainerSocketPath), ReadOnly: true},
 		devcontainer.Mount{Type: "bind", Source: filepath.Dir(RuntimeEnvironmentPath), Target: filepath.Dir(containerEnvironmentPath), ReadOnly: true},
+		devcontainer.Mount{Type: "bind", Source: RuntimeSystemdDropInPath, Target: containerSystemdDropInPath, ReadOnly: true},
 	)
 	if request.DevContainer.GiteaCLI {
 		info, err := os.Lstat(giteaCLIPath)

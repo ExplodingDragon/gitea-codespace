@@ -11,6 +11,7 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
+	"gitea.dev/codespace/internal/cgroup"
 	"gitea.dev/codespace/internal/runtimeplatform"
 )
 
@@ -38,12 +39,14 @@ type USBIPContainerConfiguration struct {
 
 // Request supplies one Agent lifecycle action to the Dev Container executor.
 type Request struct {
+	Debug                bool
 	Action               string
 	CodespaceUUID        string
 	OperationVersion     int64
 	Workspace            string
 	Source               devcontainer.Source
 	HostUser             devcontainer.HostUser
+	HostCgroup           *cgroup.Reader
 	GitUserName          string
 	GitUserEmail         string
 	GiteaURL             string

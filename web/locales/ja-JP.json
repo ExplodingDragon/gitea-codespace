@@ -74,6 +74,7 @@
     "refresh": "テンプレートを更新",
     "basicSection": "テンプレート情報",
     "runtimeSection": "ランタイムと分離",
+    "debug": "デバッグモード",
     "storageSection": "ワークスペースストレージ",
     "computeSection": "コンピュートリソース",
     "tag": "タグ",

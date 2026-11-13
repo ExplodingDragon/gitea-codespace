@@ -12,6 +12,11 @@ which keeps existing templates on the reviewed provider release.
 | VS Code | `ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main` | [Settings and extensions](vscode/README.md) |
 | DeepSeek Harness | `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main` | [Settings and plugins](dsh/README.md) |
 
+Both official providers support `linux/amd64` and `linux/arm64` Dev Containers
+using glibc. The editor runs inside the Dev Container, so that image must supply
+compatible system libraries; the carrier image only exports program files.
+Third-party providers define their own program compatibility requirements.
+
 Select an image in an environment template and resolve it before saving. The
 resolved provider name, version, supported platforms, and configuration fields
 come from the image itself. A compatible third-party provider can be used in

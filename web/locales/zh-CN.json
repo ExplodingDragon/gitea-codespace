@@ -74,6 +74,7 @@
     "refresh": "刷新模板",
     "basicSection": "模板信息",
     "runtimeSection": "运行时与隔离",
+    "debug": "调试模式",
     "storageSection": "工作区存储",
     "computeSection": "计算资源",
     "tag": "标签",

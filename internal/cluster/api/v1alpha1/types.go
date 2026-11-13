@@ -133,6 +133,8 @@ type OutboundProxy struct {
 
 // EnvironmentConfiguration defines administrator-selected runtime behavior.
 type EnvironmentConfiguration struct {
+	// Debug enables bounded lifecycle diagnostics for runtimes created from this template.
+	Debug bool `json:"debug,omitempty"`
 	// +kubebuilder:validation:Enum=kata;sysbox;native
 	Isolation        string                      `json:"isolation"`
 	RuntimeClassName string                      `json:"runtimeClassName,omitempty"`

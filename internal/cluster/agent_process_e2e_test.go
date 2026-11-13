@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -67,10 +66,7 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 	command = exec.CommandContext(cluster.ctx, "kubectl", "cp", binary, ns.Name+"/agent:/agent.test")
 	output, err = command.CombinedOutput()
 	require.NoError(t, err, "%s", output)
-	dockerEnvironment := []string{"env", "CODESPACE_E2E=1"}
-	if runtime.isolation == api.IsolationNative {
-		dockerEnvironment = append(dockerEnvironment, "CODESPACE_E2E_NATIVE=1")
-	}
+	dockerEnvironment := []string{"env", "CODESPACE_E2E=1", "CODESPACE_RUNTIME_ISOLATION=" + runtime.isolation}
 	for _, args := range [][]string{
 		{"env", "CODESPACE_E2E=1", "unshare", "--pid", "--fork", "--mount-proc", "/agent.test", "-test.run=^TestAgentE2EPID1Supervision$", "-test.v"},
 		append(dockerEnvironment, "/agent.test", "-test.run=^TestAgentE2EDockerSupervision$", "-test.v"),

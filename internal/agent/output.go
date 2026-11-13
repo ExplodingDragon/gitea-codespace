@@ -6,13 +6,8 @@ package agent
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"io"
 	"log/slog"
-	"net/url"
-	"regexp"
-	"slices"
-	"strings"
 	"sync"
 	"time"
 
@@ -22,17 +17,12 @@ import (
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
 )
 
-var (
-	logAuthorizationPattern  = regexp.MustCompile(`(?i)\b((?:bearer|basic)\s+)[A-Za-z0-9._~+/=-]+`)
-	logURLCredentialsPattern = regexp.MustCompile(`([a-z][a-z0-9+.-]*://)[^/@\s]+@`)
-)
-
 // Output buffers redacted output independently of its upload connection. stdout
 // and stderr have separate partial-line buffers so their writes cannot interleave
 // a secret across two otherwise unrelated lines.
 type Output struct {
 	version        int64
-	replacements   *strings.Replacer
+	redactor       *logbuffer.Redactor
 	stdout, stderr *outputWriter
 	mu             sync.Mutex
 	buffer         logbuffer.Buffer
@@ -49,24 +39,7 @@ type outputWriter struct {
 }
 
 func NewOutput(version int64, credentials []string) *Output {
-	values := make(map[string]struct{})
-	for _, credential := range credentials {
-		for _, value := range strings.FieldsFunc(credential, func(r rune) bool { return r == '\r' || r == '\n' }) {
-			values[value] = struct{}{}
-			values[url.QueryEscape(value)] = struct{}{}
-			values[base64.StdEncoding.EncodeToString([]byte(value))] = struct{}{}
-		}
-	}
-	ordered := make([]string, 0, len(values))
-	for value := range values {
-		ordered = append(ordered, value)
-	}
-	slices.SortFunc(ordered, func(a, b string) int { return len(b) - len(a) })
-	pairs := make([]string, 0, 2*len(ordered))
-	for _, value := range ordered {
-		pairs = append(pairs, value, "[redacted]")
-	}
-	output := &Output{version: version, replacements: strings.NewReplacer(pairs...), changed: make(chan struct{}, 1)}
+	output := &Output{version: version, redactor: logbuffer.NewRedactor(credentials), changed: make(chan struct{}, 1)}
 	output.stdout, output.stderr = &outputWriter{output: output}, &outputWriter{output: output}
 	return output
 }
@@ -109,14 +82,7 @@ func (w *outputWriter) Write(data []byte) (int, error) {
 }
 
 func (o *Output) append(message string) {
-	message = strings.ReplaceAll(message, "\r", "")
-	message = o.replacements.Replace(message)
-	message = logAuthorizationPattern.ReplaceAllString(message, "${1}[redacted]")
-	message = logURLCredentialsPattern.ReplaceAllString(message, "${1}[redacted]@")
-	message = strings.ToValidUTF8(message, "\ufffd")
-	if len(message) > logbuffer.MaxLineBytes {
-		message = "[output line omitted: redacted line exceeds 32 KiB]"
-	}
+	message = o.redactor.Redact(message)
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.closed {

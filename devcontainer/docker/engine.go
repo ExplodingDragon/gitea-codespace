@@ -35,6 +35,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/cgroup"
 )
 
 const (
@@ -45,12 +46,13 @@ const (
 
 // Engine creates and controls one complete Dev Container environment.
 type Engine struct {
-	cli      *command.DockerCli
-	client   client.APIClient
-	compose  api.Compose
-	stdout   io.Writer
-	stderr   io.Writer
-	platform *ocispec.Platform
+	cli        *command.DockerCli
+	client     client.APIClient
+	compose    api.Compose
+	stdout     io.Writer
+	stderr     io.Writer
+	platform   *ocispec.Platform
+	hostCgroup *cgroup.Reader
 }
 
 // PrepareLifecycleFunc prepares caller-specific state after the remote user and
@@ -82,11 +84,15 @@ type MutateContainerCreateFunc func(*container.Config, *container.HostConfig) er
 
 // CreateOptions contains caller identity, configuration input, and integration hooks.
 type CreateOptions struct {
-	OwnerID             string
-	Workspace           string
-	Source              devcontainer.Source
-	AllowedPathRoot     string
-	HostUser            devcontainer.HostUser
+	Debug           bool
+	OwnerID         string
+	Workspace       string
+	Source          devcontainer.Source
+	AllowedPathRoot string
+	HostUser        devcontainer.HostUser
+	// HostCgroup identifies the caller's resource boundary when it manages
+	// nested containers outside the current process's immediate cgroup.
+	HostCgroup          *cgroup.Reader
 	LocalEnvironment    map[string]string
 	PlatformEnvironment map[string]string
 	Secrets             map[string]string
@@ -198,6 +204,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (_ *devconta
 	if strings.TrimSpace(options.OwnerID) == "" {
 		return nil, fmt.Errorf("dev container owner ID is empty")
 	}
+	e.hostCgroup = options.HostCgroup
 	environmentID := devContainerID(options.OwnerID)
 	resolved, err := devcontainer.Load(devcontainer.LoadOptions{
 		Workspace:       options.Workspace,
@@ -225,7 +232,7 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (_ *devconta
 	resolved.FrozenLockfile = options.FrozenLockfile
 	resolved.Cache = options.Cache
 	resolved.Configuration = devcontainer.Merge(resolved.Configuration, devcontainer.Configuration{Mounts: options.AdditionalMounts, ContainerEnv: options.ContainerEnv})
-	if err := checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
+	if err := e.checkHostRequirements(resolved.HostRequirements, resolved.Workspace); err != nil {
 		return nil, err
 	}
 	if err := runLifecycleStage(ctx, options.RunLifecycle, devcontainer.LifecycleStageInitialize, resolved.InitializeCommand, func(ctx context.Context) error {
@@ -259,6 +266,9 @@ func (e *Engine) Create(ctx context.Context, options CreateOptions) (_ *devconta
 	defer func() {
 		if returnErr == nil {
 			return
+		}
+		if options.Debug {
+			e.WriteDiagnostics(ctx, options.OwnerID)
 		}
 		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 		defer cancel()

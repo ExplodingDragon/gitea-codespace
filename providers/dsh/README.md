@@ -6,6 +6,8 @@ Codespace Gateway for browser authentication. The upstream build and its
 Codespace startup integration are released with this image rather than the
 Codespace platform.
 
+Use a Dev Container that meets the [official provider requirements](../README.md#official-providers).
+
 ## Workspace startup
 
 DSH opens the current repository as a workspace and uses its root as the process

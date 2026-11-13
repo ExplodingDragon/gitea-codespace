@@ -37,6 +37,8 @@ func TestOutputRedactsStreamsAndBoundsLines(t *testing.T) {
 	require.NoError(t, err)
 	_, err = fmt.Fprintln(output.Stdout(), base64.StdEncoding.EncodeToString([]byte("secret-token")))
 	require.NoError(t, err)
+	_, err = fmt.Fprintln(output.Stdout(), base64.StdEncoding.EncodeToString([]byte("multi\nline-secret")))
+	require.NoError(t, err)
 	_, err = fmt.Fprintln(output.Stderr(), "Authorization: Bearer private-token https://user:pass@registry.example/path")
 	require.NoError(t, err)
 	_, err = fmt.Fprint(output.Stdout(), strings.Repeat("x", logbuffer.MaxLineBytes-7)+"secret-")
@@ -53,7 +55,7 @@ func TestOutputRedactsStreamsAndBoundsLines(t *testing.T) {
 		}
 		return &agentv1.UploadLogsResponse{}, nil
 	}})
-	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[output line omitted: exceeds 32 KiB]", "[redacted]"}, messages)
+	require.Equal(t, []string{"separate error", "prefix [redacted] suffix", "[redacted]", "[redacted]", "Authorization: Bearer [redacted] https://[redacted]@registry.example/path", "[output line omitted: exceeds 32 KiB]", "[redacted]"}, messages)
 }
 
 func TestOutputUploadsWhileLowRateOutputContinues(t *testing.T) {

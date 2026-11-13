@@ -150,6 +150,7 @@ function edit(item?: Resource<Environment>) {
     : {
         description: '',
         runtime: {
+          debug: false,
           isolation: isolationOptions.value[0]?.value ?? 'kata',
           runtimeClassName: '',
           storageClassName:
@@ -421,6 +422,9 @@ function remove(item: Resource<Environment>) {
       </NFormItem>
     </div>
 
+    <NFormItem>
+      <NCheckbox v-model:checked="form.runtime.debug">{{ t('environment.debug') }}</NCheckbox>
+    </NFormItem>
     <template v-if="form.runtime.isolation === 'native' && form.runtime.native">
       <NativeRuntimeFields
         :native="form.runtime.native"

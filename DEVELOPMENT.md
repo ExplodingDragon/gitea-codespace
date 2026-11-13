@@ -7,8 +7,9 @@ for system design decisions.
 
 ## Set up
 
-Use the Go version declared in [`go.mod`](go.mod), Node.js, and pnpm. Kubernetes
-resource generation and validation also need Helm; deployment and E2E workflows
+Use the Go version declared in [`go.mod`](go.mod) and the Node.js and pnpm
+versions selected by the [platform CI workflow](.github/workflows/ci.yml).
+Kubernetes resource validation also needs Helm; deployment and E2E workflows
 need `kubectl`. Image builds need a Docker-compatible container tool.
 
 ```sh
@@ -17,8 +18,8 @@ pnpm --dir web install --frozen-lockfile
 pnpm --dir web exec playwright install chromium
 ```
 
-The Makefile installs pinned development tools so local and CI checks use the
-same versions.
+`make install-tools` installs the pinned Go-based generators and checkers used
+by CI. Install Go, Node.js, pnpm, and Helm separately before running validation.
 
 ## Repository layout
 
@@ -81,6 +82,11 @@ and bundles the Codespace plugin against them. Each provider's `image` target
 builds an image for the current architecture. See the [provider development
 guide](providers/DEVELOPMENT.md) for the third-party integration contract and
 image verification steps.
+
+For provider work, select Node.js from its [VS Code](providers/vscode/.node-version)
+or [DSH](providers/dsh/.node-version) version file and pnpm from the corresponding
+workflow below. Providers have independent toolchains because their editor and
+plugin builds follow different upstream dependencies.
 
 The [VS Code](.github/workflows/provider-vscode.yml) and
 [DSH](.github/workflows/provider-dsh.yml) workflows validate their own build

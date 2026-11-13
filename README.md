@@ -130,11 +130,10 @@ editor configuration, and third-party provider integration.
 
 ## Versions
 
-The `main` tag tracks the current development build. Published OCI charts use
-versions in the form `0.1.0-main.<run>` and contain the digest of the matching
-platform image. Pin an exact chart version for repeatable deployments and
-follow the [upgrade procedure](charts/gitea-codespace/README.md#upgrade) when
-moving an existing installation to another version.
+The `main` tag tracks the current development build. Pin a published chart
+version for repeatable deployments. See the [Helm guide](charts/gitea-codespace/README.md#install)
+for version selection and the [upgrade procedure](charts/gitea-codespace/README.md#upgrade)
+for an existing installation.
 
 ## Documentation
 

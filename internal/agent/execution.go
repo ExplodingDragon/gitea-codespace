@@ -19,6 +19,7 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
+	"gitea.dev/codespace/internal/cgroup"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
@@ -38,6 +39,9 @@ var commitPattern = regexp.MustCompile(`^[0-9a-fA-F]{40}([0-9a-fA-F]{24})?$`)
 // Runtime executes one Gitea lifecycle operation against the Pod-local Docker
 // daemon. Persistent facts are owned by Journal; credentials stay in tmpfs.
 type Runtime struct {
+	Debug                      bool
+	Isolation                  string
+	Cgroup                     cgroup.Reader
 	Journal                    *Journal
 	PodUID                     string
 	DockerDirectory            string
@@ -67,6 +71,9 @@ type Runtime struct {
 
 func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse, update func(*agentv1.AgentReport), stdout, stderr io.Writer) (returnErr error) {
 	defer func() {
+		if returnErr != nil && r.Debug {
+			writeFailureDiagnostics(stderr, r.Cgroup, r.Isolation == "kata")
+		}
 		if ctx.Err() != nil {
 			// A cancelled operation must release its network streams and Docker
 			// client, but the Agent-owned Guest mounts stay available for the next
@@ -132,12 +139,12 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, trust, report)
 	case operation.GetStop() != nil:
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	case operation.GetDelete() != nil:
 		// Kubernetes removes the Pod before deleting its PVC. If the control
 		// message arrives first, stopping Docker resources shortens shutdown.
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	default:
 		return fmt.Errorf("runtime operation is not executable by the Agent")
@@ -175,7 +182,7 @@ func (r *Runtime) ensureDocker(ctx context.Context, cache *agentv1.RuntimeCache,
 	if r.NativeDevices != nil {
 		cdiSpecDirectory = r.NativeDevices.CDISpecDirectory
 	}
-	daemon, err := StartDocker(ctx, directory, cdiSpecDirectory, r.NativeDevices != nil, trust.caBundlePath, r.Diagnostics)
+	daemon, err := StartDocker(ctx, directory, cdiSpecDirectory, r.Isolation, r.Cgroup, trust.caBundlePath, r.Diagnostics)
 	if err != nil {
 		return err
 	}
@@ -271,6 +278,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		}
 	}
 	outcome, applyErr := executor.Apply(ctx, devcontainerruntime.Request{
+		Debug: r.Debug, HostCgroup: &r.Cgroup,
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
@@ -313,6 +321,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	outcome, err := executor.Apply(ctx, devcontainerruntime.Request{
+		Debug:  r.Debug,
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
 		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
 	})

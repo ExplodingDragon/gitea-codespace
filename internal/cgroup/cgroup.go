@@ -1,7 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-// Package cgroup contains neutral cgroup v2 discovery and reading helpers.
+// Package cgroup contains cgroup v2 discovery and delegation helpers.
 package cgroup
 
 import (
@@ -26,38 +26,42 @@ func At(root string) Reader {
 	return Reader{root: path.Clean(root)}
 }
 
-// Current locates the current process in the mounted cgroup v2 hierarchy.
-func Current() (Reader, error) {
+// Discover locates the process and the root of its mounted cgroup v2 hierarchy.
+// A container's private hierarchy root includes its nested containers even
+// after the initial processes have moved into a child cgroup.
+func Discover() (current, hierarchy Reader, err error) {
 	data, err := os.ReadFile("/proc/self/cgroup")
 	if err != nil {
-		return Reader{}, fmt.Errorf("read process cgroup: %w", err)
+		return Reader{}, Reader{}, fmt.Errorf("read process cgroup: %w", err)
 	}
+	mounts, err := mountinfo.GetMounts(func(info *mountinfo.Info) (skip, stop bool) {
+		return info.FSType != "cgroup2", false
+	})
+	if err != nil {
+		return Reader{}, Reader{}, fmt.Errorf("read cgroup mounts: %w", err)
+	}
+	return resolveHierarchy(data, mounts)
+}
+
+func resolveHierarchy(data []byte, mounts []*mountinfo.Info) (current, hierarchy Reader, err error) {
 	processPath := ""
 	for line := range strings.Lines(string(data)) {
-		parts := strings.SplitN(line, ":", 3)
+		parts := strings.SplitN(strings.TrimSuffix(line, "\n"), ":", 3)
 		if len(parts) == 3 && parts[0] == "0" {
 			processPath = path.Clean(parts[2])
 			break
 		}
 	}
 	if processPath == "" || processPath == "." || !path.IsAbs(processPath) {
-		return Reader{}, errors.New("process is not in a cgroup v2 hierarchy")
+		return Reader{}, Reader{}, errors.New("process is not in a cgroup v2 hierarchy")
 	}
-	mounts, err := mountinfo.GetMounts(func(info *mountinfo.Info) (skip, stop bool) {
-		return info.FSType != "cgroup2", false
-	})
-	if err != nil {
-		return Reader{}, fmt.Errorf("read cgroup mounts: %w", err)
+	for _, mount := range mounts {
+		root, err := resolveMountPath(processPath, mount.Root, mount.Mountpoint)
+		if err == nil {
+			return At(root), At(mount.Mountpoint), nil
+		}
 	}
-	if len(mounts) == 0 {
-		return Reader{}, errors.New("cgroup v2 mount not found")
-	}
-	mount := mounts[0]
-	root, err := resolveMountPath(processPath, mount.Root, mount.Mountpoint)
-	if err != nil {
-		return Reader{}, err
-	}
-	return At(root), nil
+	return Reader{}, Reader{}, errors.New("process cgroup is not in a mounted cgroup v2 hierarchy")
 }
 
 func resolveMountPath(processPath, mountRoot, mountpoint string) (string, error) {

@@ -7,8 +7,9 @@ source_bundle=/var/lib/gitea-codespace/ca/bundle.pem
   echo "cannot update the Dev Container CA store: the platform CA bundle is unavailable" >&2
   exit 1
 }
-split_dir=$(mktemp -d)
+split_dir=$(mktemp -d /var/lib/gitea-codespace/.ca-XXXXXX)
 trap 'rm -rf "$split_dir"' 0 HUP INT TERM
+export TMPDIR="$split_dir"
 certificate_count=0
 certificate_active=false
 certificate_path=

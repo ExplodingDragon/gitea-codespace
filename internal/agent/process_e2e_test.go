@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"gitea.dev/codespace/internal/cgroup"
 	"github.com/stretchr/testify/require"
 )
 
@@ -82,14 +83,18 @@ while :; do sleep 0.05; done`, "worker", ready, stopped, orphan}, os.Stdin, os.S
 
 func TestAgentE2EDockerSupervision(t *testing.T) {
 	if os.Getenv("CODESPACE_E2E") != "1" {
-		t.Skip("requires a dedicated Sysbox or Kata Runtime Pod")
+		t.Skip("requires an isolated Runtime Pod")
 	}
 	require.NoError(t, os.MkdirAll("/run/codespace", 0o700))
 	directory, err := os.MkdirTemp("/var/lib/codespace", "agent-docker-")
 	require.NoError(t, err)
 	// Sysbox retains its data-root mount until Pod teardown. The enclosing
 	// Kubernetes test owns the disposable Pod/PVC and reclaims it there.
-	daemon, err := StartDocker(t.Context(), directory, "", os.Getenv("CODESPACE_E2E_NATIVE") == "1", defaultSystemCABundlePath, os.Stderr)
+	_, hierarchy, err := cgroup.Discover()
+	require.NoError(t, err)
+	isolation := os.Getenv("CODESPACE_RUNTIME_ISOLATION")
+	require.Contains(t, []string{"kata", "native", "sysbox"}, isolation)
+	daemon, err := StartDocker(t.Context(), directory, "", isolation, hierarchy, defaultSystemCABundlePath, os.Stderr)
 	require.NoError(t, err)
 	require.NoError(t, daemon.Close())
 	select {

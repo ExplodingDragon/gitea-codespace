@@ -15,7 +15,14 @@ import (
 // RuntimeEnvironmentPath is the Agent-generated authorization environment.
 const RuntimeEnvironmentPath = "/run/codespace/environment/env.sh"
 
+// RuntimeSystemdDropInPath is prepared before starting the Dev Container.
+const RuntimeSystemdDropInPath = "/run/codespace/environment/systemd.conf"
+
+// ContainerSystemdEnvironmentPath is read by systemd when starting services.
+const ContainerSystemdEnvironmentPath = "/var/lib/gitea-codespace/environment/systemd.env"
+
 const containerEnvironmentPath = "/var/lib/gitea-codespace/environment/env.sh"
+const containerSystemdDropInPath = "/etc/systemd/system/service.d/60-gitea-codespace-environment.conf"
 
 func prepareRuntimeEnvironment(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 	uid, gid, err := engine.RemoteUserIDs(ctx, state)

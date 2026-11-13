@@ -74,6 +74,7 @@
     "refresh": "Refresh templates",
     "basicSection": "Template details",
     "runtimeSection": "Runtime and isolation",
+    "debug": "Debug mode",
     "storageSection": "Workspace storage",
     "computeSection": "Compute resources",
     "tag": "Tag",

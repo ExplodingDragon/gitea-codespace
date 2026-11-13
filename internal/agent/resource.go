@@ -27,14 +27,9 @@ type ResourceSampler struct {
 	volume         string
 }
 
-// NewResourceSampler anchors cgroup discovery before the runtime starts its
-// Docker daemon. Filesystem observations remain available if cgroup discovery
-// is unavailable.
-func NewResourceSampler() *ResourceSampler {
-	reader, err := cgroup.Current()
-	if err != nil {
-		slog.Warn("Discover Agent cgroup", "error", err)
-	}
+// NewResourceSampler keeps the Runtime hierarchy as its sampling boundary,
+// independent of where the Agent and Docker processes live below it.
+func NewResourceSampler(reader cgroup.Reader) *ResourceSampler {
 	return &ResourceSampler{cgroup: reader, metricFailures: make(map[string]bool), volume: runtimeVolume}
 }
 

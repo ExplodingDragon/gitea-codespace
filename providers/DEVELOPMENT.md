@@ -109,8 +109,13 @@ defaults that Manager can place in a new environment:
 Manager accepts a Draft 2020-12 schema whose root type is `object`. Schema
 references stay inside the label by using local `#...` references. The complete
 metadata label is limited to 32 KiB, and saved option values are limited to 16
-KiB. Manager validates environment-template options against this schema before
-saving them.
+KiB. During image resolution, Manager takes the schema's root default object
+or constructs an object from property defaults, including nested objects, and
+validates that result against the schema. Supply defaults that satisfy required
+fields and other constraints: invalid defaults fail image resolution before the
+administrator can edit the options. This gives each resolved image a valid
+starting configuration. Manager also validates edited options before saving
+the environment template.
 
 For a multi-platform image, the provider metadata, version, source, and
 revision must be identical on `linux/amd64` and `linux/arm64`. This makes one
@@ -122,6 +127,8 @@ template behave the same regardless of the Kubernetes node selected for a pod.
   stores the selected digest in the environment template.
 - Valid option values round-trip through the administration form and validate
   against the embedded schema.
+- Resolving the image produces default options that already satisfy its schema;
+  administrators can then edit and save those options.
 - Every platform manifest presents the same provider ID, version, source,
   revision, and option schema.
 
@@ -159,6 +166,13 @@ present before publishing. Agent then parses the manifest as JSON and checks
 its protocol, provider identity, architecture, and version. This keeps semantic
 validation in one implementation and accepts normal JSON whitespace.
 
+The init container runs as UID/GID `0:0` with a read-only root filesystem, all
+Linux capabilities dropped, and privilege escalation disabled. Use the writable
+`/output` volume for staging and export. It is the only platform-provided volume
+for this container, because exporting the bundle needs neither workspace data
+nor platform credentials. Choose a carrier base image with the tools needed
+under these conditions; the official providers use BusyBox.
+
 ### Implementation acceptance criteria
 
 - Running the image with an empty `/output` creates one complete
@@ -168,6 +182,8 @@ validation in one implementation and accepts normal JSON whitespace.
 - `bin/prepare` and `bin/serve` are executable, while program assets remain
   provider-owned and read-only after they enter the Dev Container.
 - Interrupting export leaves no partial `current` directory for Agent to mount.
+- Export succeeds with the deployed init-container permissions and a read-only
+  root filesystem, using `/output` for temporary and final files.
 
 ## Adapter programs
 
@@ -351,8 +367,9 @@ an environment template.
 ## Test the image locally
 
 Run the init-container entrypoint with an empty output directory before
-publishing. The command below uses the host architecture and leaves the
-exported bundle available for inspection:
+publishing. The command below uses the host architecture and mirrors the
+init-container filesystem and privilege settings, leaving the exported bundle
+available for inspection:
 
 ```sh
 image=registry.example.com/tools/example-web-ide:1.0.0
@@ -361,6 +378,10 @@ output=$(mktemp -d)
 
 docker run --rm \
   --platform "linux/$architecture" \
+  --user 0:0 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges=true \
   --volume "$output:/output" \
   "$image"
 

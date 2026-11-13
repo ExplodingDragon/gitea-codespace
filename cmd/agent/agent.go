@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -23,6 +24,7 @@ import (
 	"connectrpc.com/connect/v2"
 	"connectrpc.com/connect/v2/connecthttp"
 	agentpkg "gitea.dev/codespace/internal/agent"
+	"gitea.dev/codespace/internal/cgroup"
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	identitypkg "gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
@@ -136,7 +138,11 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err != nil {
 		return fmt.Errorf("prepare Kata USB/IP: %w", err)
 	}
-	runtime := &agentpkg.Runtime{Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices, USBIP: usbIP}
+	_, hierarchy, err := cgroup.Discover()
+	if err != nil {
+		slog.Warn("Discover Runtime cgroup", "error", err)
+	}
+	runtime := &agentpkg.Runtime{Debug: os.Getenv("CODESPACE_DEBUG") == "true", Isolation: os.Getenv("CODESPACE_RUNTIME_ISOLATION"), Cgroup: hierarchy, Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices, USBIP: usbIP}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
 	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
 	if err != nil {
@@ -146,7 +152,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		_ = endpointListener.Close()
 		_ = os.Remove(runtimeendpoint.AgentSocketPath)
 	}()
-	sampler := agentpkg.NewResourceSampler()
+	sampler := agentpkg.NewResourceSampler(hierarchy)
 	client := &agentpkg.ControlClient{Journal: journal, Remote: remote, Execute: runtime.Execute, Sample: sampler.Sample, TargetChanges: runtime.TargetChanges(), CurrentTarget: runtime.CurrentAccessTarget}
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runAccessServer(groupCtx, runtime, certificates) })

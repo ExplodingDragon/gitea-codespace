@@ -107,6 +107,7 @@ export function upsertResource<T, S>(resources: Resource<T, S>[], saved: Resourc
 }
 
 export type Runtime = {
+  debug?: boolean;
   isolation: string;
   runtimeClassName?: string;
   storageClassName: string;

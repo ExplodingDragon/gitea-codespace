@@ -21,20 +21,18 @@ func TestCheckHostRequirementsUsesCgroupQuotaAndMemory(t *testing.T) {
 	write("cpu.max", "100000 100000\n")
 	write("memory.max", "536870912\n")
 	reader := cgroup.At(root)
+	engine := &Engine{hostCgroup: &reader}
 	oneCPU := 1
-	require.NoError(t, checkHostRequirementsWithCgroup(devcontainer.HostRequirements{CPUs: &oneCPU, Memory: "256MiB"}, t.TempDir(), reader))
+	require.NoError(t, engine.checkHostRequirements(devcontainer.HostRequirements{CPUs: &oneCPU, Memory: "256MiB"}, t.TempDir()))
 	require.NoError(t, os.WriteFile(filepath.Join(root, "cpu.max"), []byte("50000 100000\n"), 0o600))
-	require.ErrorContains(t, checkHostRequirementsWithCgroup(devcontainer.HostRequirements{CPUs: &oneCPU}, t.TempDir(), reader), "CPU quota")
-	require.ErrorContains(t, checkHostRequirementsWithCgroup(devcontainer.HostRequirements{Memory: "1GiB"}, t.TempDir(), reader), "memory")
+	require.ErrorContains(t, engine.checkHostRequirements(devcontainer.HostRequirements{CPUs: &oneCPU}, t.TempDir()), "CPU quota")
+	require.ErrorContains(t, engine.checkHostRequirements(devcontainer.HostRequirements{Memory: "1GiB"}, t.TempDir()), "memory")
 }
 
-func TestCheckHostRequirementsRequiresMemoryCgroupWhenRequested(t *testing.T) {
-	root := t.TempDir()
-	reader := cgroup.At(root)
-	require.ErrorContains(t, checkHostRequirementsWithCgroup(devcontainer.HostRequirements{Memory: "256MiB"}, t.TempDir(), reader), "inspect runtime memory")
-}
-
-func TestCheckHostRequirementsRequiresCPUQuotaWhenRequested(t *testing.T) {
+func TestCheckHostRequirementsReportsUnavailableLimits(t *testing.T) {
+	reader := cgroup.At(t.TempDir())
+	engine := &Engine{hostCgroup: &reader}
 	cpu := 1
-	require.ErrorContains(t, checkHostRequirementsWithCgroup(devcontainer.HostRequirements{CPUs: &cpu}, t.TempDir(), cgroup.Reader{}), "inspect runtime CPU limit")
+	require.ErrorContains(t, engine.checkHostRequirements(devcontainer.HostRequirements{Memory: "256MiB"}, t.TempDir()), "inspect runtime memory")
+	require.ErrorContains(t, engine.checkHostRequirements(devcontainer.HostRequirements{CPUs: &cpu}, t.TempDir()), "inspect runtime CPU limit")
 }

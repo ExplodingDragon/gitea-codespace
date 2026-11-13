@@ -30,6 +30,8 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes/scheme"
+	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
+	"k8s.io/client-go/rest"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -552,14 +554,24 @@ func TestRuntimeDeletionAfterInitFailure(t *testing.T) {
 			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "starting"},
 		},
 	}
+	cs.Spec.Runtime.Debug = true
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
 	require.NoError(t, err)
+	require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_DEBUG", Value: "true"})
 	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodPending
 	pod.Spec.InitContainers = []corev1.Container{{Name: "prepare", Image: "example.invalid/prepare"}}
 	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}}}
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
-	r := &RuntimeReconciler{Client: c}
+	var logReads atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		logReads.Add(1)
+		http.Error(w, "node is unavailable", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	core, err := coreclient.NewForConfig(&rest.Config{Host: server.URL})
+	require.NoError(t, err)
+	r := &RuntimeReconciler{Client: c, Diagnostics: &runtimeDiagnostics{Reader: c, Pods: core}}
 	ctx := t.Context()
 
 	_, err = r.stopOrDelete(ctx, cs, false)
@@ -584,6 +596,7 @@ func TestRuntimeDeletionAfterInitFailure(t *testing.T) {
 	require.Empty(t, cs.Status.Pod)
 	require.Nil(t, cs.Status.Target)
 	require.Nil(t, cs.Status.Boot)
+	require.Positive(t, logReads.Load())
 }
 
 func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
@@ -624,21 +637,35 @@ func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(volume), volume))
 }
 
-func TestFailedStopKeepsFailureAfterRuntimeConverges(t *testing.T) {
-	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2},
-		Spec: api.CodespaceSpec{
-			Operation: api.Operation{Type: "stop", Version: 4, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
-		},
-		Status: api.CodespaceStatus{Result: &api.OperationResult{Version: 4, Message: "lifecycle stop failed"}},
+func TestCleanupCompletesAfterAgentFailure(t *testing.T) {
+	for _, operation := range []string{"stop", "delete"} {
+		t.Run(operation, func(t *testing.T) {
+			cs := &api.Codespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2},
+				Spec: api.CodespaceSpec{
+					Operation: api.Operation{Type: operation, Version: 4, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
+				},
+				Status: api.CodespaceStatus{Result: &api.OperationResult{Version: 4, Message: "lifecycle stop failed"}},
+			}
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
+			r := &RuntimeReconciler{Client: c, Authority: &ExecutionAuthority{}}
+			_, err := r.stopOrDelete(t.Context(), cs, operation == "delete")
+			require.NoError(t, err)
+			require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
+			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+			require.Equal(t, &api.OperationResult{Version: 4, Succeeded: true}, cs.Status.Result)
+			finalized := false
+			cs.Status.Bound = true
+			require.NoError(t, c.Status().Update(t.Context(), cs))
+			o := &Operations{Client: c, Authority: r.Authority}
+			require.NoError(t, o.Flush(t.Context(), cs, &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
+				finalized = true
+				require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_DONE, request.Status)
+				return &codespacev1.FinalizeOperationResponse{}, nil
+			}}))
+			require.True(t, finalized)
+		})
 	}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
-	r := &RuntimeReconciler{Client: c, Authority: &ExecutionAuthority{}}
-	_, err := r.stopOrDelete(t.Context(), cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-	require.Equal(t, &api.OperationResult{Version: 4, Message: "lifecycle stop failed"}, cs.Status.Result)
 }
 
 func TestRuntimeCertificateOwnership(t *testing.T) {
