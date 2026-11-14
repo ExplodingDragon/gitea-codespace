@@ -10,9 +10,7 @@ output=${3:-}
 mode=${4:-bundle}
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$source_root/version.env"
-dsh_version=${DSH_VERSION:-$DSH_DEFAULT_VERSION}
-node_version=${DSH_NODE_VERSION:-$(cat "$source_root/.node-version")}
-pnpm_version=${DSH_PNPM_VERSION:-$DSH_PNPM_DEFAULT_VERSION}
+node_version=$(cat "$source_root/.node-version")
 
 fail() {
   echo "DeepSeek Harness provider build: $*" >&2
@@ -23,11 +21,11 @@ fail() {
 case $arch in
 amd64)
   node_arch=x64
-  node_sha256=46da9a098973ab7ba4fca76945581ecb2eaf468de347173897044382f10e0a0a
+  node_sha256=$DSH_NODE_SHA256_AMD64
   ;;
 arm64)
   node_arch=arm64
-  node_sha256=33a6673b2c7bffeae9deec7f9f8b31aad9119b08f13d49b2ca3ee3bebfe8260f
+  node_sha256=$DSH_NODE_SHA256_ARM64
   ;;
 *) fail "unsupported architecture: $arch" ;;
 esac
@@ -36,9 +34,6 @@ case $mode in
 bundle | check) ;;
 *) fail "unsupported build mode: $mode" ;;
 esac
-[ -n "$dsh_version" ] || fail "DSH_VERSION is required"
-[ -n "$node_version" ] || fail "DSH_NODE_VERSION is required"
-[ -n "$pnpm_version" ] || fail "DSH_PNPM_VERSION is required"
 for command in curl git node npm pnpm sha256sum tar; do command -v "$command" >/dev/null 2>&1 || fail "$command is required"; done
 [ "$(node -p process.arch)" = "$node_arch" ] || fail "DeepSeek Harness must be built on the target $node_arch architecture"
 
@@ -46,16 +41,15 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
-dsh_ref="dsh-v$dsh_version"
-dsh_commit=66491b05e3f05ad35bcdd4f6cd7ed26041d9e3db
+dsh_ref="dsh-v$DSH_VERSION"
 git clone --branch "$dsh_ref" --depth 1 https://github.com/deepseek-ai/DeepSeek-Harness.git "$work/source" || fail "cannot clone DeepSeek Harness $dsh_ref"
-[ "$(git -C "$work/source" rev-parse HEAD)" = "$dsh_commit" ] || fail "DeepSeek Harness tag does not match the pinned commit"
+[ "$(git -C "$work/source" rev-parse HEAD)" = "$DSH_COMMIT" ] || fail "DeepSeek Harness tag does not match the pinned commit"
 git -C "$work/source" apply --check "$source_root/codespace-integration.patch" || fail "DeepSeek Harness Codespace integration patch no longer applies"
 git -C "$work/source" apply "$source_root/codespace-integration.patch"
 (
   cd "$work/source"
+  [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$DSH_PNPM_VERSION" ] || fail "DeepSeek Harness requires a different pnpm version"
   CI=1 pnpm install --frozen-lockfile
-  [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$pnpm_version" ] || fail "DeepSeek Harness requires a different pnpm version"
   if [ "$mode" = bundle ]; then
     pnpm exec vitest run packages/bundle/web-app/tests/startup.spec.ts packages/bundle/web-app/tests/web-app.spec.ts packages/client/connection/tests/browser-auth.host.spec.ts
     pnpm exec tsx scripts/build.ts --profile official --serial
@@ -117,5 +111,5 @@ printf '%s\n' "$help" | grep -F -- '--trusted-proxy' >/dev/null || fail "trusted
 printf '%s\n' "$help" | grep -F -- '--workspace' >/dev/null || fail "workspace option is unavailable"
 [ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/client.js" ] || fail "Codespace DSH client bundle is unavailable"
 [ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/typert.host.js" ] || fail "Codespace DSH Remote metadata is unavailable"
-printf '{"schemaVersion":1,"provider":"dsh","architecture":"%s","version":"%s"}\n' "$arch" "$dsh_version" >"$output/manifest.json"
+printf '{"schemaVersion":1,"provider":"dsh","architecture":"%s","version":"%s"}\n' "$arch" "$DSH_VERSION" >"$output/manifest.json"
 chmod -R a+rX "$output"

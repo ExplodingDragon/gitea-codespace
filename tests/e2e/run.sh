@@ -52,7 +52,7 @@ if [[ $CODESPACE_E2E_PLATFORM_IMAGE != *@sha256:* ]]; then
 	exit 1
 fi
 if [[ $CODESPACE_E2E_WEB_IDE_IMAGE != *:* || ! -r $CODESPACE_E2E_WEB_IDE_LAYOUT/index.json ]]; then
-	echo "fake Web IDE image tag and readable OCI layout are required" >&2
+	echo "fake Web IDE image reference and readable OCI layout are required" >&2
 	exit 1
 fi
 if [[ $CODESPACE_E2E_RUNTIME_ISOLATION != sysbox && $CODESPACE_E2E_RUNTIME_ISOLATION != kata && $CODESPACE_E2E_RUNTIME_ISOLATION != native ]]; then
@@ -238,8 +238,12 @@ if [[ -n ${CODESPACE_E2E_WEB_IDE_ARCHIVE:-} ]]; then
 		exit 1
 		;;
 	esac
-	web_ide_repository=${CODESPACE_E2E_WEB_IDE_IMAGE%:*}
+	web_ide_repository=${CODESPACE_E2E_WEB_IDE_IMAGE%@*}
+	if [[ ${web_ide_repository##*/} == *:* ]]; then
+		web_ide_repository=${web_ide_repository%:*}
+	fi
 	sudo k3s ctr --namespace k8s.io images tag --local --force "$CODESPACE_E2E_WEB_IDE_IMAGE" "$web_ide_repository@$web_ide_digest"
+	export CODESPACE_E2E_WEB_IDE_IMAGE="$web_ide_repository@$web_ide_digest"
 fi
 
 echo "Building Runtime test binaries"

@@ -10,10 +10,19 @@ This guide describes provider protocol version 1. The fake provider under
 
 ## Lifecycle
 
-When an environment template is saved, Manager validates the provider's OCI
-metadata and records its immutable `sha256` image reference. A new Codespace
-copies that configuration into its runtime snapshot; later template edits
-apply to subsequently created Codespaces.
+When creating a template with Web IDE enabled or changing its enabled Web IDE
+configuration, Manager validates the provider's OCI metadata and options, then
+records the selected tag or explicit `sha256` digest. Other template edits retain
+the validated Web IDE configuration so they can be saved independently of registry
+availability. Image names use [Docker's reference rules](README.md), with
+`latest` as the default tag; when both a tag and digest are present, the digest
+selects the content. A new Codespace copies that configuration into its runtime
+snapshot; later template edits apply to subsequently created Codespaces.
+
+New or replacement Pods pull tagged images with `Always`, including during
+resume. Explicit digests use `IfNotPresent`. A running Pod keeps its mounted
+content; use a digest to keep the same program across Pod replacements. Node
+image caches reuse layers with matching digests under either policy.
 
 Each start uses that snapshot:
 
@@ -45,7 +54,11 @@ running inside it. Provider process recovery is described under
 
 ### Implementation acceptance criteria
 
-- Saving an environment resolves its provider image to an immutable digest.
+- Saving an environment preserves its normalized tag or explicit digest.
+- Creating a template with Web IDE enabled or changing its enabled Web IDE
+  configuration validates the image metadata and options; unrelated edits
+  preserve that configuration without a registry request.
+- New Pods refresh tags and reuse fixed digests; running Pods retain their image.
 - Starting a codespace mounts the selected bundle, prepares it as the remote
   user, starts `bin/serve`, and publishes one browser endpoint.
 - The editor process runs inside the Dev Container and can use the workspace,
@@ -127,11 +140,12 @@ template behave the same regardless of the Kubernetes node selected for a pod.
 ### Implementation acceptance criteria
 
 - Manager resolves the image, displays its provider identity and options, and
-  stores the selected digest in the environment template.
+  stores the normalized image reference in the environment template.
 - Valid option values round-trip through the administration form and validate
   against the embedded schema.
 - Resolving the image produces default options that already satisfy its schema;
-  administrators can then edit and save those options.
+  administrators can then edit and save those options. Re-resolving the same
+  provider preserves edited options; selecting a different provider uses its defaults.
 - Every platform manifest presents the same provider ID, version, source,
   revision, and option schema.
 
@@ -206,16 +220,16 @@ following environment:
 
 The normal Dev Container remote environment and declared secrets are also
 available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`; the program
-bundle is read-only and comes from the digest in the Codespace runtime snapshot,
-including after Pod replacement.
+bundle is read-only and comes from the image reference in the Codespace runtime
+snapshot, following the pull policy described in [Lifecycle](#lifecycle).
 The SSH variables let providers generate local connection instructions; their
 refresh behavior and usage examples are documented in the [SSH guide](../docs/ssh.md).
 Expose only these public fields to a browser interface; the complete process
 environment also contains credentials.
 Because the adapter intentionally receives the development environment and its
 secrets, selecting a provider image is equivalent to trusting another
-development tool. Digest pinning makes that reviewed input stable and
-auditable.
+development tool. A tag trusts future content published under that tag; an
+explicit digest keeps the reviewed program content stable and auditable.
 
 ### `bin/prepare`
 
@@ -373,9 +387,9 @@ for both Manager metadata resolution and node image pulls.
 ## Test the image locally
 
 Use a test cluster meeting the [deployment requirements](../charts/gitea-codespace/README.md#requirements).
-After publishing or importing the image into the node's container runtime,
-apply this temporary Pod with your image reference. It verifies the same
-read-only subdirectory mount used by Codespace and reads it as a non-root user:
+After publishing the image, apply this temporary Pod with your image reference.
+It verifies the same read-only subdirectory mount used by Codespace and reads
+it as a non-root user:
 
 ```yaml
 apiVersion: v1
@@ -402,8 +416,13 @@ spec:
     - name: program
       image:
         reference: registry.example.com/tools/example-web-ide:1.0.0
-        pullPolicy: IfNotPresent
+        pullPolicy: Always
 ```
+
+Using `Always` checks the current tag even when an earlier build is cached. For
+an image imported into the node's container runtime, use its imported
+`repository@sha256:...` reference with `IfNotPresent` to test that exact content
+without requiring a provider registry request.
 
 Inspect `kubectl logs web-ide-bundle-check` and the Pod's exit status, then remove
 it with `kubectl delete pod web-ide-bundle-check`. For a private registry, supply
@@ -418,29 +437,40 @@ and verify that editor state survives a stop and resume. Use the
 
 - The test Pod completes and reads the expected manifest on every supported
   node architecture.
+- Recreating the test Pod with a published tag checks its current image;
+  an imported digest selects the exact locally available image.
 - A Codespace prepares and serves the editor as its remote user from the
   read-only bundle, and retains provider data across stop and resume.
 
 ## Connect the provider to Codespace
 
 1. Open **Environment templates** in the administration panel.
-2. Enter the provider image with an explicit tag or digest and select
-   **Resolve**.
+2. Enter a registry image with an optional tag or explicit digest and select
+   **Resolve**. An omitted tag defaults to `latest`.
 3. Review the provider name, version, platforms, and generated default options.
-4. Save the environment template. Manager stores the resolved digest rather
-   than the mutable tag.
+4. Save the environment template. Manager validates the options and preserves
+   the normalized image reference.
 5. Create a codespace with that environment and open its browser workspace.
 
-When publishing an updated provider, publish a new image, resolve it again in
-the environment template, and save the template. The [lifecycle](#lifecycle)
-snapshot rules determine which Codespaces use that update.
+Publishing to an existing tag makes the update available to new or replacement
+Pods using that tag. Resolve the image again to inspect its current metadata;
+the displayed version describes that lookup, while the saved tag can change
+later. To select a different reference or options, edit and save the template.
+The [lifecycle](#lifecycle) snapshot rules determine which Codespaces use it.
 
 ### Implementation acceptance criteria
 
-- A newly created Codespace uses the saved digest and configuration.
+- A newly created Codespace uses the saved image reference and configuration.
 - Updating a template leaves existing Codespace snapshots unchanged.
 
 ## Maintain the official providers
+
+On `main`, each official provider publishes `latest` and its actual bundle
+version to the same `linux/amd64` + `linux/arm64` index. Publishing verifies
+both platform build records use the same version before creating the index.
+PRs and manual runs on other branches validate without publishing. Version tags
+can receive adapter or plugin fixes for the same editor version; use an explicit
+digest to select exact content independently of those updates.
 
 The official VS Code and DeepSeek Harness providers restart their editor after
 every exit, with a one-second delay to avoid a tight failure loop. They restart
@@ -463,12 +493,18 @@ make -C providers/dsh check
 ```
 
 The DSH check fetches its pinned upstream sources and bundles the Codespace
-plugin against them. Each provider's `image` target builds an image for the
-current architecture; use the [local image verification steps](#test-the-image-locally)
-to check its mounted bundle.
+plugin against them. Its [version file](dsh/version.env) pins the source release,
+commit, pnpm version, and Node archive checksums; update the checksums with
+[`.node-version`](dsh/.node-version) so the toolchain and verified downloads
+stay consistent. VS Code uses its [version file](vscode/version.env) as the
+default and accepts `CODE_SERVER_VERSION` for a different code-server release.
+`make version` reports the configured editor version. Each provider's `image`
+target builds for the current architecture; local builds and CI read the image
+version label from the completed bundle manifest so it describes the packaged
+release. Use the [local image verification steps](#test-the-image-locally) to
+check its mounted bundle.
 
-Each provider workflow validates its own source and publishes amd64/arm64 images
-on matching pushes to `main`. Changes to the shared
+Each provider workflow runs for changes to its own source. Changes to the shared
 [build workflow](../.github/workflows/provider-build.yml) trigger both providers;
 the [platform workflow](../.github/workflows/ci.yml) handles core changes separately.
 
@@ -479,3 +515,7 @@ the [platform workflow](../.github/workflows/ci.yml) handles core changes separa
 - `HUP`, `INT`, and `TERM` reach the running editor and end its restart loop.
 - Each provider passes its own `check` target and supplies a valid bundle for
   every published architecture.
+- Image version labels match the completed bundle manifest, including when
+  building VS Code with a version override.
+- Both platform records have the same version before publishing, and `latest`
+  and the bundle-version tag resolve to the same multi-platform index.

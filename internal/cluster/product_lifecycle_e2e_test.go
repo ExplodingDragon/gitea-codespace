@@ -30,6 +30,7 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/webide"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/sftp"
 	"github.com/stretchr/testify/assert"
@@ -55,7 +56,11 @@ type e2eWebIDEImageResolver struct {
 }
 
 func (r e2eWebIDEImageResolver) Resolve(ctx context.Context, image string) (resolvedWebIDEImage, error) {
-	reference, err := registry.ParseReference(image)
+	named, err := webide.ParseImageReference(image)
+	if err != nil {
+		return resolvedWebIDEImage{}, err
+	}
+	reference, err := registry.ParseReference(named.String())
 	if err != nil {
 		return resolvedWebIDEImage{}, err
 	}
@@ -63,7 +68,7 @@ func (r e2eWebIDEImageResolver) Resolve(ctx context.Context, image string) (reso
 	if _, err := r.store.Resolve(ctx, layoutReference); err != nil {
 		layoutReference = image
 	}
-	return resolveWebIDEImage(ctx, r.store, reference.Registry+"/"+reference.Repository, layoutReference)
+	return resolveWebIDEImage(ctx, r.store, named.String(), layoutReference)
 }
 
 type e2eWebIDEState struct {

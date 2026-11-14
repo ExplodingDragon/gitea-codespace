@@ -95,8 +95,9 @@ jobs:
         id: metadata
         env:
           PROVIDER: ${{ inputs.provider }}
+          PROVIDER_ARCH: ${{ matrix.arch }}
         run: |
-          version="$(make -s -C "providers/$PROVIDER" version)"
+          version="$(node -p "require('./providers/$PROVIDER/.tmp/$PROVIDER_ARCH/manifest.json').version")"
           echo "version=$version" >>"$GITHUB_OUTPUT"
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -122,23 +123,26 @@ jobs:
           sbom: false
           cache-from: type=gha,scope=provider-${{ inputs.provider }}-${{ matrix.arch }}
           cache-to: type=gha,mode=max,scope=provider-${{ inputs.provider }}-${{ matrix.arch }},ignore-error=true
-      - name: Record platform digest
+      - name: Record platform image
         env:
           IMAGE_DIGEST: ${{ steps.image.outputs.digest }}
+          PROVIDER_VERSION: ${{ steps.metadata.outputs.version }}
+          PROVIDER_ARCH: ${{ matrix.arch }}
         run: |
-          mkdir -p .tmp/provider-digests
-          touch ".tmp/provider-digests/${IMAGE_DIGEST#sha256:}"
-      - name: Upload platform digest
+          mkdir -p .tmp/provider-images
+          jq -n --arg digest "$IMAGE_DIGEST" --arg version "$PROVIDER_VERSION" --arg architecture "$PROVIDER_ARCH" \
+            '{digest: $digest, version: $version, architecture: $architecture}' >".tmp/provider-images/$PROVIDER_ARCH.json"
+      - name: Upload platform image metadata
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: provider-${{ inputs.provider }}-${{ matrix.arch }}
-          path: .tmp/provider-digests
+          path: .tmp/provider-images
           if-no-files-found: error
           retention-days: 1
           include-hidden-files: true
 
   publish:
-    name: Publish main manifest
+    name: Publish latest and version manifests
     if: inputs.publish
     needs: build
     runs-on: ubuntu-24.04
@@ -148,11 +152,11 @@ jobs:
       id-token: write
       packages: write
     steps:
-      - name: Download platform digests
+      - name: Download platform image metadata
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           pattern: provider-${{ inputs.provider }}-*
-          path: .tmp/provider-digests
+          path: .tmp/provider-images
           merge-multiple: true
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4
@@ -167,16 +171,24 @@ jobs:
         env:
           IMAGE_NAME: ${{ inputs.image }}
         run: |
+          version="$(jq -esr '
+            if length == 2
+              and ([.[].architecture] | sort) == ["amd64", "arm64"]
+              and ([.[].version] | unique | length) == 1
+              and all(.[]; (.version | test("^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$")) and (.digest | test("^sha256:[0-9a-f]{64}$")))
+            then .[0].version
+            else error("provider platforms, versions, or digests are inconsistent") end
+          ' .tmp/provider-images/*.json)"
           set --
-          for digest in .tmp/provider-digests/*; do
-            set -- "$@" "$IMAGE_NAME@sha256:${digest##*/}"
+          for metadata in .tmp/provider-images/*.json; do
+            set -- "$@" "$IMAGE_NAME@$(jq -r .digest "$metadata")"
           done
-          test "$#" -eq 2
-          docker buildx imagetools create --tag "$IMAGE_NAME:main" "$@"
-          docker buildx imagetools inspect --raw "$IMAGE_NAME:main" >.tmp/manifest.json
-          test "$(jq '[.manifests[] | select(.platform.os == "linux" and (.platform.architecture == "amd64" or .platform.architecture == "arm64"))] | length' .tmp/manifest.json)" -eq 2
-          digest="$(docker buildx imagetools inspect "$IMAGE_NAME:main" --format '{{json .Manifest}}' | jq -r .digest)"
+          docker buildx imagetools create --tag "$IMAGE_NAME:$version" --tag "$IMAGE_NAME:latest" "$@"
+          docker buildx imagetools inspect --raw "$IMAGE_NAME:$version" >.tmp/manifest.json
+          jq -e '[.manifests[].platform | .os + "/" + .architecture] | sort == ["linux/amd64", "linux/arm64"]' .tmp/manifest.json
+          digest="$(docker buildx imagetools inspect "$IMAGE_NAME:$version" --format '{{json .Manifest}}' | jq -r .digest)"
           printf '%s\n' "$digest" | grep -Eq '^sha256:[0-9a-f]{64}$'
+          test "$digest" = "$(docker buildx imagetools inspect "$IMAGE_NAME:latest" --format '{{json .Manifest}}' | jq -r .digest)"
           echo "digest=$digest" >>"$GITHUB_OUTPUT"
       - name: Attest image provenance
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4

@@ -97,8 +97,10 @@ platform image built for that chart.
 
 ## Configure Web IDE storage and image access
 
-Web IDE programs are mounted read-only from their digest-pinned OCI image with
-`pullPolicy: IfNotPresent`. Nodes need space for pulled and unpacked images;
+Web IDE programs are mounted read-only from the selected OCI image. Tags use
+`pullPolicy: Always`; explicit digests use `IfNotPresent`. New or replacement
+Pods resolve tags again, while running Pods retain their mounted content.
+Nodes need space for pulled and unpacked images;
 kubelet and the container runtime manage their cache and garbage collection.
 Provider settings and installed extensions remain on the workspace volume so
 they survive Pod replacement.
@@ -122,7 +124,8 @@ editor configuration.
 
 ### Verify
 
-- Manager resolves the provider image and saves the template with its digest.
+- Manager validates the provider image and saves its tag or explicit digest;
+  an omitted tag becomes `latest`.
 - Each workspace node can pull the selected provider image and mount its
   `provider` subdirectory read-only.
 - The editor starts as the Dev Container remote user, and its settings remain

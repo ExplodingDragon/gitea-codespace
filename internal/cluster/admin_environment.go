@@ -30,7 +30,7 @@ func (s *AdminServer) saveEnvironment(ctx context.Context, template *api.Environ
 	case !requestedWebIDE.Enabled():
 		spec.Runtime.DevContainer.WebIDE = devcontainerruntime.WebIDEConfiguration{}
 	case !creating && reflect.DeepEqual(requestedWebIDE, previousWebIDE):
-		// Unrelated template edits retain the already verified immutable snapshot.
+		// Unrelated template edits retain the validated provider configuration.
 	case s.WebIDEResolver == nil:
 		return apierrors.NewServiceUnavailable("Web IDE image resolution is unavailable")
 	default:

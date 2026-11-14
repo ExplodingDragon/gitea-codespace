@@ -169,35 +169,72 @@ func TestLoadLocalFeature(t *testing.T) {
 	}
 }
 
-func TestLoadFeatureTarball(t *testing.T) {
+func TestResolveFeaturesExpandsDependenciesAndDeduplicatesContent(t *testing.T) {
 	t.Parallel()
 
 	var archive bytes.Buffer
 	writer := tar.NewWriter(&archive)
 	for name, content := range map[string]string{
-		"devcontainer-feature.json": `{"id":"tarball","version":"1.0.0"}`,
+		"devcontainer-feature.json": `{"id":"base","version":"1.0.0","options":{"version":{"type":"string","default":"1"}}}`,
 		"install.sh":                "#!/bin/sh\n",
 	} {
 		if err := writer.WriteHeader(&tar.Header{Name: name, Typeflag: tar.TypeReg, Mode: 0o755, Size: int64(len(content))}); err != nil {
-			t.Fatalf("write tarball header: %v", err)
+			t.Fatal(err)
 		}
 		if _, err := writer.Write([]byte(content)); err != nil {
-			t.Fatalf("write tarball content: %v", err)
+			t.Fatal(err)
 		}
 	}
 	if err := writer.Close(); err != nil {
-		t.Fatalf("close tarball: %v", err)
+		t.Fatal(err)
 	}
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
 		_, _ = response.Write(archive.Bytes())
 	}))
 	defer server.Close()
-	resolved, err := (&Engine{}).fetchFeature(context.Background(), server.URL+"/feature.tgz", nil, filepath.Join(t.TempDir(), "resolved"), devcontainer.LockedFeature{}, devcontainer.CacheOptions{}, t.TempDir(), "")
-	if err != nil {
-		t.Fatalf("load tarball Feature: %v", err)
+	baseReference, aliasReference := server.URL+"/base.tgz", server.URL+"/alias.tgz"
+	variantReference := server.URL + "/variant.tgz"
+	directory := t.TempDir()
+	if err := os.Mkdir(filepath.Join(directory, "tool"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if resolved.metadata.ID != "tarball" || !resolved.lockable || resolved.digest == "" {
-		t.Fatalf("tarball Feature = %#v", resolved)
+	metadata, err := json.Marshal(featureMetadata{ID: "tool", Version: "1.0.0", DependsOn: map[string]json.RawMessage{baseReference: json.RawMessage(`{"version":"1"}`)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, content := range map[string][]byte{"devcontainer-feature.json": metadata, "install.sh": []byte("#!/bin/sh\n")} {
+		if err := os.WriteFile(filepath.Join(directory, "tool", name), content, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved := &devcontainer.ResolvedConfiguration{
+		ConfigurationPath: filepath.Join(directory, "devcontainer.json"), ConfigurationDir: directory, AllowedPathRoot: directory,
+		Configuration: devcontainer.Configuration{Features: map[string]json.RawMessage{
+			"./tool": json.RawMessage(`true`), "./disabled": json.RawMessage(`false`),
+			baseReference: json.RawMessage(`{"version":"2"}`), aliasReference: json.RawMessage(`{"version":"2"}`),
+			variantReference: json.RawMessage(`{"version":"3"}`),
+		}},
+	}
+	features, err := (&Engine{}).resolveFeatures(t.Context(), resolved, t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(features) != 3 || features[0].metadata.ID != "base" || features[1].metadata.ID != "base" || features[2].metadata.ID != "tool" {
+		t.Fatalf("resolved Features = %#v", features)
+	}
+	base, variant, tool := features[0], features[1], features[2]
+	if !base.lockable || base.digest == "" || base.options["VERSION"] != "2" || len(base.references) != 2 || len(tool.hardDependencies) != 1 || tool.hardDependencies[0] != base {
+		t.Fatalf("resolved dependency = %#v, tool dependencies = %#v", base, tool.hardDependencies)
+	}
+	if variant.digest != base.digest || variant.options["VERSION"] != "3" || len(variant.references) != 1 {
+		t.Fatalf("Feature with distinct options = %#v", variant)
+	}
+	if err := writeResolvedFeatureLockfile(resolved, features); err != nil {
+		t.Fatal(err)
+	}
+	lockfile, exists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
+	if err != nil || !exists || len(lockfile.Features) != 3 || lockfile.Features[baseReference].Integrity != base.digest || lockfile.Features[aliasReference].Integrity != base.digest || lockfile.Features[variantReference].Integrity != variant.digest {
+		t.Fatalf("resolved lockfile = %#v, exists = %v, error = %v", lockfile, exists, err)
 	}
 }
 
@@ -306,23 +343,5 @@ func TestOrderFeaturesUsesDependenciesAndSoftInstallHints(t *testing.T) {
 	base.softDependencies = []*resolvedFeature{editor}
 	if _, err := orderFeatures(features, nil); err == nil {
 		t.Fatal("soft installsAfter cycle was accepted")
-	}
-}
-
-func TestFeatureEqualityUsesContentAndResolvedOptions(t *testing.T) {
-	t.Parallel()
-
-	first := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "1"}}
-	same := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "1"}}
-	differentOptions := &resolvedFeature{digest: "sha256:content", lockable: true, options: map[string]string{"VERSION": "2"}}
-	local := &resolvedFeature{digest: "sha256:content", options: map[string]string{"VERSION": "1"}}
-	if !featuresEqual(first, same) {
-		t.Fatal("identical resolved Features were not equal")
-	}
-	if featuresEqual(first, differentOptions) {
-		t.Fatal("Features with different options were equal")
-	}
-	if featuresEqual(first, local) {
-		t.Fatal("local Feature was equal to a fetched Feature")
 	}
 }

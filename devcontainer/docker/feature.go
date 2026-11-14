@@ -91,85 +91,12 @@ type featureOption struct {
 }
 
 func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *devcontainer.ResolvedConfiguration, imageConfiguration devcontainer.Configuration, imageSources []devcontainer.Configuration, repositoryConfiguration devcontainer.Configuration, platformEnvironment map[string]string) (string, map[string]string, error) {
-	lockfile, lockfileExists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
-	if err != nil {
-		return "", nil, err
-	}
-	if resolved.FrozenLockfile && !resolved.Synthetic && !lockfileExists {
-		return "", nil, fmt.Errorf("dev container lockfile does not exist")
-	}
-	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
-	for reference, options := range resolved.Features {
-		enabled, normalized, err := normalizeFeatureRequest(options)
-		if err != nil {
-			return "", nil, fmt.Errorf("dev container feature %s: %w", reference, err)
-		}
-		if enabled {
-			requestedFeatures[reference] = normalized
-		}
-	}
 	buildContext, err := os.MkdirTemp("", "devcontainer-features-*")
 	if err != nil {
 		return "", nil, err
 	}
 	defer func() { _ = os.RemoveAll(buildContext) }()
-	var features []*resolvedFeature
-	requests := map[string]*resolvedFeature{}
-	directoryIndex := 0
-	var resolveFeature func(string, json.RawMessage) (*resolvedFeature, error)
-	resolveFeature = func(reference string, rawOptions json.RawMessage) (*resolvedFeature, error) {
-		enabled, normalized, err := normalizeFeatureRequest(rawOptions)
-		if err != nil {
-			return nil, err
-		}
-		if !enabled {
-			return nil, fmt.Errorf("dependency Feature %s cannot be disabled", reference)
-		}
-		requestKey := strings.ToLower(strings.TrimSpace(reference)) + "\x00" + string(normalized)
-		if feature := requests[requestKey]; feature != nil {
-			return feature, nil
-		}
-		directory := filepath.Join(buildContext, strconv.Itoa(directoryIndex))
-		directoryIndex++
-		feature, err := e.fetchFeature(ctx, reference, normalized, directory, lockfile.Features[strings.ToLower(reference)], resolved.Cache, resolved.ConfigurationDir, resolved.AllowedPathRoot)
-		if err != nil {
-			return nil, err
-		}
-		for _, existing := range features {
-			if featuresEqual(existing, feature) {
-				existing.references = append(existing.references, reference)
-				requests[requestKey] = existing
-				_ = os.RemoveAll(directory)
-				return existing, nil
-			}
-		}
-		feature.references = []string{reference}
-		features = append(features, feature)
-		requests[requestKey] = feature
-		for _, dependency := range slices.Sorted(maps.Keys(feature.metadata.DependsOn)) {
-			options := feature.metadata.DependsOn[dependency]
-			if requestedOptions, explicitlyRequested := requestedFeatures[dependency]; explicitlyRequested {
-				options = requestedOptions
-			}
-			resolvedDependency, err := resolveFeature(dependency, options)
-			if err != nil {
-				return nil, fmt.Errorf("resolve dependency of Feature %s: %w", reference, err)
-			}
-			feature.hardDependencies = append(feature.hardDependencies, resolvedDependency)
-		}
-		return feature, nil
-	}
-	for _, reference := range slices.Sorted(maps.Keys(requestedFeatures)) {
-		if _, err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
-			return "", nil, err
-		}
-	}
-	for _, feature := range features {
-		for _, requested := range feature.metadata.InstallsAfter {
-			feature.softDependencies = append(feature.softDependencies, findFeatureMatches(features, requested)...)
-		}
-	}
-	orderedFeatures, err := orderFeatures(features, resolved.OverrideFeatureInstallOrder)
+	orderedFeatures, err := e.resolveFeatures(ctx, resolved, buildContext)
 	if err != nil {
 		return "", nil, err
 	}
@@ -302,6 +229,83 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	}
 	e.publishCachedImage(ctx, imageName, cacheReference, "features")
 	return imageName, digests, nil
+}
+
+func (e *Engine) resolveFeatures(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, buildContext string) ([]*resolvedFeature, error) {
+	lockfile, lockfileExists, err := devcontainer.ReadLockfile(resolved.ConfigurationPath)
+	if err != nil {
+		return nil, err
+	}
+	if resolved.FrozenLockfile && !resolved.Synthetic && !lockfileExists {
+		return nil, fmt.Errorf("dev container lockfile does not exist")
+	}
+	requestedFeatures := make(map[string]json.RawMessage, len(resolved.Features))
+	for reference, options := range resolved.Features {
+		enabled, normalized, err := normalizeFeatureRequest(options)
+		if err != nil {
+			return nil, fmt.Errorf("dev container feature %s: %w", reference, err)
+		}
+		if enabled {
+			requestedFeatures[reference] = normalized
+		}
+	}
+	var features []*resolvedFeature
+	requests := map[string]*resolvedFeature{}
+	directoryIndex := 0
+	var resolveFeature func(string, json.RawMessage) (*resolvedFeature, error)
+	resolveFeature = func(reference string, rawOptions json.RawMessage) (*resolvedFeature, error) {
+		enabled, normalized, err := normalizeFeatureRequest(rawOptions)
+		if err != nil {
+			return nil, err
+		}
+		if !enabled {
+			return nil, fmt.Errorf("dependency Feature %s cannot be disabled", reference)
+		}
+		requestKey := strings.ToLower(strings.TrimSpace(reference)) + "\x00" + string(normalized)
+		if feature := requests[requestKey]; feature != nil {
+			return feature, nil
+		}
+		directory := filepath.Join(buildContext, strconv.Itoa(directoryIndex))
+		directoryIndex++
+		feature, err := e.fetchFeature(ctx, reference, normalized, directory, lockfile.Features[strings.ToLower(reference)], resolved.Cache, resolved.ConfigurationDir, resolved.AllowedPathRoot)
+		if err != nil {
+			return nil, err
+		}
+		for _, existing := range features {
+			if existing.lockable && feature.lockable && existing.digest == feature.digest && maps.Equal(existing.options, feature.options) {
+				existing.references = append(existing.references, reference)
+				requests[requestKey] = existing
+				_ = os.RemoveAll(directory)
+				return existing, nil
+			}
+		}
+		feature.references = []string{reference}
+		features = append(features, feature)
+		requests[requestKey] = feature
+		for _, dependency := range slices.Sorted(maps.Keys(feature.metadata.DependsOn)) {
+			options := feature.metadata.DependsOn[dependency]
+			if requestedOptions, explicitlyRequested := requestedFeatures[dependency]; explicitlyRequested {
+				options = requestedOptions
+			}
+			resolvedDependency, err := resolveFeature(dependency, options)
+			if err != nil {
+				return nil, fmt.Errorf("resolve dependency of Feature %s: %w", reference, err)
+			}
+			feature.hardDependencies = append(feature.hardDependencies, resolvedDependency)
+		}
+		return feature, nil
+	}
+	for _, reference := range slices.Sorted(maps.Keys(requestedFeatures)) {
+		if _, err := resolveFeature(reference, requestedFeatures[reference]); err != nil {
+			return nil, err
+		}
+	}
+	for _, feature := range features {
+		for _, requested := range feature.metadata.InstallsAfter {
+			feature.softDependencies = append(feature.softDependencies, findFeatureMatches(features, requested)...)
+		}
+	}
+	return orderFeatures(features, resolved.OverrideFeatureInstallOrder)
 }
 
 func writeResolvedFeatureLockfile(resolved *devcontainer.ResolvedConfiguration, features []*resolvedFeature) error {
@@ -707,10 +711,6 @@ func resolveFeatureOptions(declared map[string]featureOption, raw json.RawMessag
 		}
 	}
 	return result, providedValues, nil
-}
-
-func featuresEqual(left, right *resolvedFeature) bool {
-	return left.lockable && right.lockable && left.digest == right.digest && maps.Equal(left.options, right.options)
 }
 
 func featureOptionEnvironmentName(name string) string {

@@ -10,8 +10,8 @@ import (
 	"regexp"
 	"strings"
 
+	"gitea.dev/codespace/internal/webide"
 	"github.com/distribution/reference"
-	"github.com/opencontainers/go-digest"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 )
 
@@ -19,7 +19,6 @@ const (
 	maxInjectedFeatures     = 32
 	maxJSONObjectBytes      = 16 * 1024
 	maxLifecycleScriptBytes = 64 * 1024
-	maxWebIDEImageLength    = 4096
 )
 
 var webIDEProviderPattern = regexp.MustCompile(`^[a-z0-9](?:[-a-z0-9]{0,30}[a-z0-9])?$`)
@@ -38,7 +37,7 @@ type Configuration struct {
 // WebIDEConfiguration defines the platform-managed Web IDE runtime and initial
 // user configuration.
 type WebIDEConfiguration struct {
-	// Image is resolved by the Manager before this configuration is persisted.
+	// Image retains the selected tag or digest after Manager metadata validation.
 	// +kubebuilder:validation:MaxLength=4096
 	Image string `json:"image,omitempty"`
 	// Provider is derived from the image metadata rather than selected separately.
@@ -100,16 +99,8 @@ func (c WebIDEConfiguration) validate() error {
 	if err := ValidateWebIDEProvider(provider); err != nil {
 		return err
 	}
-	if len(image) > maxWebIDEImageLength {
-		return fmt.Errorf("web IDE image must be at most %d characters", maxWebIDEImageLength)
-	}
-	named, err := reference.ParseNormalizedNamed(image)
-	if err != nil {
-		return fmt.Errorf("invalid Web IDE image: %w", err)
-	}
-	digested, ok := named.(reference.Digested)
-	if !ok || digested.Digest().Algorithm() != digest.SHA256 {
-		return fmt.Errorf("web IDE image must be pinned by sha256 digest")
+	if _, err := webide.ParseImageReference(image); err != nil {
+		return err
 	}
 	return validateJSONObject("Web IDE options", c.Options.Raw)
 }

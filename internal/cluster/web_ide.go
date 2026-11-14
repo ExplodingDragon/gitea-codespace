@@ -15,13 +15,13 @@ import (
 
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"gitea.dev/codespace/internal/webide"
+	"github.com/distribution/reference"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v6"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	"oras.land/oras-go/v2/content"
-	"oras.land/oras-go/v2/registry"
 	"oras.land/oras-go/v2/registry/remote"
 	"oras.land/oras-go/v2/registry/remote/auth"
 	"oras.land/oras-go/v2/registry/remote/retry"
@@ -38,8 +38,8 @@ const (
 )
 
 var webIDEImageSuggestions = []string{
-	"ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:main",
-	"ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:main",
+	"ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:latest",
+	"ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:latest",
 }
 
 type webIDEImageMetadata struct {
@@ -53,7 +53,7 @@ type webIDEImageMetadata struct {
 }
 
 // resolvedWebIDEImage is safe to return through the administration API. It
-// contains no registry credentials and its Image is always digest-pinned.
+// contains no registry credentials and preserves the normalized image reference.
 type resolvedWebIDEImage struct {
 	Image           string          `json:"image"`
 	Provider        string          `json:"provider"`
@@ -102,27 +102,11 @@ func newRegistryWebIDEImageResolver(reader client.Reader, namespace string, imag
 }
 
 func (r *registryWebIDEImageResolver) Resolve(ctx context.Context, image string) (resolvedWebIDEImage, error) {
-	image = strings.TrimSpace(image)
-	if len(image) == 0 || len(image) > 4096 {
-		return resolvedWebIDEImage{}, fmt.Errorf("web IDE image is required and must be at most 4096 characters")
+	parsed, err := webide.ParseImageReference(image)
+	if err != nil {
+		return resolvedWebIDEImage{}, err
 	}
-	parsed, err := registry.ParseReference(image)
-	if err != nil || parsed.Reference == "" {
-		return resolvedWebIDEImage{}, fmt.Errorf("web IDE image must contain a registry, repository, and explicit tag or digest")
-	}
-	if parsed.Registry != "localhost" && !strings.ContainsAny(parsed.Registry, ".:") {
-		return resolvedWebIDEImage{}, fmt.Errorf("web IDE image must use an explicit registry hostname")
-	}
-	if parsed.ValidateReferenceAsTag() != nil && parsed.ValidateReferenceAsDigest() != nil {
-		return resolvedWebIDEImage{}, fmt.Errorf("web IDE image must contain an explicit tag or sha256 digest")
-	}
-	if parsed.ValidateReferenceAsDigest() == nil {
-		value, _ := parsed.Digest()
-		if value.Algorithm() != digest.SHA256 {
-			return resolvedWebIDEImage{}, fmt.Errorf("web IDE image digest must use sha256")
-		}
-	}
-	repository, err := remote.NewRepository(parsed.Registry + "/" + parsed.Repository)
+	repository, err := remote.NewRepository(parsed.Name())
 	if err != nil {
 		return resolvedWebIDEImage{}, fmt.Errorf("open Web IDE image repository: %w", err)
 	}
@@ -137,7 +121,13 @@ func (r *registryWebIDEImageResolver) Resolve(ctx context.Context, image string)
 			return credentials[normalizeRegistryHost(host)], nil
 		},
 	}
-	return resolveWebIDEImage(ctx, repository, parsed.Registry+"/"+parsed.Repository, parsed.Reference)
+	var imageReference string
+	if digested, ok := parsed.(reference.Digested); ok {
+		imageReference = digested.Digest().String()
+	} else {
+		imageReference = parsed.(reference.Tagged).Tag()
+	}
+	return resolveWebIDEImage(ctx, repository, parsed.String(), imageReference)
 }
 
 func (r *registryWebIDEImageResolver) registryCredentials(ctx context.Context) (map[string]auth.Credential, error) {
@@ -204,10 +194,11 @@ func normalizeRegistryHost(value string) string {
 	} else {
 		value = strings.Split(strings.TrimPrefix(strings.TrimPrefix(value, "https://"), "http://"), "/")[0]
 	}
-	if value == "index.docker.io" {
+	value = strings.ToLower(value)
+	if value == "index.docker.io" || value == "docker.io" {
 		return "registry-1.docker.io"
 	}
-	return strings.ToLower(value)
+	return value
 }
 
 type webIDEContent interface {
@@ -225,7 +216,7 @@ type resolvedWebIDEPlatform struct {
 	defaults json.RawMessage
 }
 
-func resolveWebIDEImage(ctx context.Context, source webIDEContent, repository, imageReference string) (resolvedWebIDEImage, error) {
+func resolveWebIDEImage(ctx context.Context, source webIDEContent, image, imageReference string) (resolvedWebIDEImage, error) {
 	descriptor, err := source.Resolve(ctx, imageReference)
 	if err != nil {
 		return resolvedWebIDEImage{}, fmt.Errorf("resolve Web IDE image: %w", err)
@@ -266,7 +257,7 @@ func resolveWebIDEImage(ctx context.Context, source webIDEContent, repository, i
 	first := platforms[0]
 	canonicalMetadata, _ := json.Marshal(first.metadata)
 	result := resolvedWebIDEImage{
-		Image: repository + "@" + descriptor.Digest.String(), Provider: first.metadata.Provider.ID, ProviderName: first.metadata.Provider.Name,
+		Image: image, Provider: first.metadata.Provider.ID, ProviderName: first.metadata.Provider.Name,
 		Version: first.version, ProtocolVersion: first.metadata.ProtocolVersion,
 		OptionDefaults: first.defaults, compiledSchema: first.schema,
 	}

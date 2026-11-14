@@ -14,24 +14,24 @@ check:
 	@set -e; for script in $(SHELL_SCRIPTS); do sh -n "$$script"; done
 	$(SHFMT) -d -ln posix -i 2 $(SHELL_SCRIPTS)
 	node --check runtime/prepare.mjs
-	node --test adapter.test.mjs
+	node --test adapter.test.mjs build.test.mjs
 	$(PNPM) --dir extension install --frozen-lockfile
 	$(PNPM) --dir extension run check
 	$(PNPM) --dir extension run format:check
 	$(PNPM) --dir extension run test
 
 version:
-	@set -e; . ./version.env; printf '%s\n' "$$CODE_SERVER_DEFAULT_VERSION"
+	@set -e; . ./version.env; printf '%s\n' "$$CODE_SERVER_VERSION"
 
 bundle: check
 	$(PNPM) --dir extension run build
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle
-	@set -e; . ./version.env; \
+	@set -e; version="$$(node -p "require('./.tmp/$(ARCH)/manifest.json').version")"; \
 	$(CONTAINER_TOOL) build \
 		--build-arg TARGETARCH="$(ARCH)" \
-		--build-arg PROVIDER_VERSION="$$CODE_SERVER_DEFAULT_VERSION" \
+		--build-arg PROVIDER_VERSION="$$version" \
 		--build-arg PROVIDER_SOURCE="$(PROVIDER_SOURCE)" \
 		--build-arg PROVIDER_REVISION="$(PROVIDER_REVISION)" \
 		-t $(IMAGE) .

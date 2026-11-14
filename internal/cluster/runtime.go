@@ -401,12 +401,12 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 		}
 	}
 	if runtime.DevContainer.WebIDE.Enabled() {
-		webIDEPullPolicy, err := imagePullPolicy("Web IDE", runtime.DevContainer.WebIDE.Image)
+		webIDEImage, err := webide.ParseImageReference(runtime.DevContainer.WebIDE.Image)
 		if err != nil {
 			return nil, err
 		}
 		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: "web-ide-program", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{
-			Reference: runtime.DevContainer.WebIDE.Image, PullPolicy: webIDEPullPolicy,
+			Reference: webIDEImage.String(), PullPolicy: imagePullPolicy(webIDEImage),
 		}}})
 		pod.Spec.Containers[0].VolumeMounts = append(pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: webide.ProgramRootPath, SubPath: "provider", ReadOnly: true})
 	}

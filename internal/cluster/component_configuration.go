@@ -87,34 +87,12 @@ func cacheComponentConfig(component *api.CodespaceComponent) (configpkg.CacheCon
 	if component.Spec.Role != "cache" || component.Spec.Cache == nil || component.Spec.Gateway != nil {
 		return configpkg.CacheConfig{}, fmt.Errorf("component %s is not a Cache", component.Name)
 	}
-	spec := component.Spec.Cache
-	maxAge, err := componentDuration(spec.MaxAge, "cache maximum age")
+	config, err := component.Spec.Cache.RuntimeConfig()
 	if err != nil {
 		return configpkg.CacheConfig{}, err
 	}
-	gcInterval, err := componentDuration(spec.GCInterval, "cache cleanup interval")
-	if err != nil {
-		return configpkg.CacheConfig{}, err
-	}
-	upstreams := make(map[string]configpkg.RuntimeCacheUpstreamConfig, len(spec.Upstreams))
-	for host, upstream := range spec.Upstreams {
-		upstreams[host] = configpkg.RuntimeCacheUpstreamConfig{Allow: append([]string(nil), upstream.Allow...)}
-	}
-	revision := component.Generation
-	if revision < 1 {
-		revision = 1
-	}
-	config := configpkg.CacheConfig{
-		ID: component.Name, Name: component.Spec.DisplayName, Revision: revision, Enabled: spec.Enabled,
-		Listen: cacheListen, MaxSize: spec.MaxSize, MaxAge: maxAge, GCInterval: gcInterval, Upstreams: upstreams,
-		Storage: configpkg.CacheStorageConfig{
-			Driver: spec.Storage.Driver, Path: cacheStoragePath, MinFreeSpace: spec.Storage.MinFreeSpace,
-			S3: configpkg.CacheS3Config{
-				Endpoint: spec.Storage.S3.Endpoint, Region: spec.Storage.S3.Region, Bucket: spec.Storage.S3.Bucket,
-				Prefix: spec.Storage.S3.Prefix, ForcePathStyle: spec.Storage.S3.ForcePathStyle,
-			},
-		},
-	}
+	config.ID, config.Name, config.Revision = component.Name, component.Spec.DisplayName, max(component.Generation, 1)
+	config.Listen, config.Storage.Path = cacheListen, cacheStoragePath
 	if err := config.Validate(); err != nil {
 		return configpkg.CacheConfig{}, fmt.Errorf("invalid Cache configuration: %w", err)
 	}

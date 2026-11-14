@@ -260,6 +260,45 @@ func TestGatewayActivityUsesAuthorizedSnapshot(t *testing.T) {
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
+func TestCacheComponentRuntimeConfig(t *testing.T) {
+	for _, storage := range []api.CacheStorage{
+		{Driver: "filesystem", VolumeSize: "1Gi", MinFreeSpace: "128MiB"},
+		{Driver: "s3", S3: api.CacheS3Storage{Endpoint: "https://storage.example.com", Region: "test", Bucket: "cache", Prefix: "registry", ForcePathStyle: true}},
+	} {
+		t.Run(storage.Driver, func(t *testing.T) {
+			component := testCacheComponent("cache-primary", "cache-uid")
+			component.Generation = 3
+			component.Spec.Cache.Storage = storage
+			require.NoError(t, component.Validate())
+			configuration, err := cacheComponentConfig(component)
+			require.NoError(t, err)
+			require.Equal(t, configpkg.CacheConfig{
+				ID: "cache-primary", Name: "Build cache", Revision: 3, Enabled: true,
+				Listen: cacheListen, MaxSize: "768MiB", MaxAge: configpkg.Duration(24 * time.Hour), GCInterval: configpkg.Duration(time.Hour),
+				Upstreams: map[string]configpkg.RuntimeCacheUpstreamConfig{"docker.io": {Allow: []string{"library/*"}}},
+				Storage: configpkg.CacheStorageConfig{
+					Driver: storage.Driver, Path: cacheStoragePath, MinFreeSpace: storage.MinFreeSpace,
+					S3: configpkg.CacheS3Config{
+						Endpoint: storage.S3.Endpoint, Region: storage.S3.Region, Bucket: storage.S3.Bucket,
+						Prefix: storage.S3.Prefix, ForcePathStyle: storage.S3.ForcePathStyle,
+					},
+				},
+			}, configuration)
+			configuration.Upstreams["docker.io"].Allow[0] = "other/*"
+			require.Equal(t, []string{"library/*"}, component.Spec.Cache.Upstreams["docker.io"].Allow)
+
+			for _, field := range []*string{&component.Spec.Cache.MaxAge, &component.Spec.Cache.GCInterval} {
+				original := *field
+				*field = "invalid"
+				_, err := cacheComponentConfig(component)
+				require.Error(t, err)
+				require.EqualError(t, component.Validate(), err.Error())
+				*field = original
+			}
+		})
+	}
+}
+
 func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	ctx := t.Context()
 	namespace := "codespace-system"

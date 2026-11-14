@@ -86,8 +86,8 @@ spec:
                           user configuration.
                         properties:
                           image:
-                            description: Image is resolved by the Manager before this
-                              configuration is persisted.
+                            description: Image retains the selected tag or digest
+                              after Manager metadata validation.
                             maxLength: 4096
                             type: string
                           options:

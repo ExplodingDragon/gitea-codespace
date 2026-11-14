@@ -1,4 +1,4 @@
-import {expect, test} from '@playwright/test';
+import {expect, test, type Route} from '@playwright/test';
 import type {
   ClusterOptions,
   Component,
@@ -130,7 +130,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
-    webIDEImageSuggestions: ['ghcr.io/example/web-ide-vscode:main', 'ghcr.io/example/web-ide-example:main'],
+    webIDEImageSuggestions: ['ghcr.io/example/web-ide-vscode:latest', 'ghcr.io/example/web-ide-example:latest'],
   };
   let signedIn = false;
   let lastWrite: {registrationToken?: string; uid?: string; resourceVersion?: string; spec?: Site} = {};
@@ -163,7 +163,7 @@ test('administration workflows preserve resource identity and validate cluster-b
       const example = input.image.includes('web-ide-example');
       await route.fulfill({
         json: {
-          image: `ghcr.io/example/web-ide-${example ? 'example' : 'vscode'}@sha256:${(example ? 'b' : 'a').repeat(64)}`,
+          image: input.image === 'ghcr.io/example/web-ide-vscode' ? `${input.image}:latest` : input.image,
           provider: example ? 'example' : 'vscode',
           providerName: example ? 'Example IDE' : 'VS Code',
           version: 'test',
@@ -208,14 +208,16 @@ test('administration workflows preserve resource identity and validate cluster-b
         await route.fulfill({status: 503, json: {code: 'request_failed', message: 'temporary failure'}});
         return;
       }
-      environments.push({
+      const environment = {
         name: body.name,
         uid: 'template-uid',
         resourceVersion: '1',
         generation: 1,
         deleting: false,
         spec: body.spec,
-      });
+      };
+      if (name) environments[environments.findIndex((item) => item.name === name)] = environment;
+      else environments.push(environment);
     } else if (kind === 'sites') {
       lastWrite = body;
       if (name) {
@@ -250,7 +252,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     await route.fulfill({
       json:
         kind === 'environments'
-          ? environments.at(-1)
+          ? environments.find((item) => item.name === body.name)
           : kind === 'sites'
             ? name
               ? sites[0]
@@ -294,12 +296,36 @@ test('administration workflows preserve resource identity and validate cluster-b
   await field('Tag').fill('standard');
   await expect(page.getByRole('checkbox', {name: 'Debug mode'})).not.toBeChecked();
   await page.getByRole('checkbox', {name: 'Debug mode'}).check();
-  await field('Provider image').fill('ghcr.io/example/web-ide-vscode:main');
+  let pendingResolution: Route | undefined;
+  await page.route(
+    '**/api/admin/web-ide-images/resolve',
+    (route) => {
+      pendingResolution = route;
+    },
+    {times: 1},
+  );
+  await field('Provider image').fill('ghcr.io/example/unavailable');
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect.poll(() => Boolean(pendingResolution)).toBe(true);
+  await field('Provider image').fill('ghcr.io/example/web-ide-vscode');
+  await pendingResolution!.fulfill({
+    status: 502,
+    json: {code: 'request_failed', detail: 'Previous image lookup failed'},
+  });
+  await expect(page.getByRole('button', {name: 'Resolve image'})).not.toHaveClass(/n-button--loading/);
+  await expect(page.getByText('Previous image lookup failed')).not.toBeVisible();
   await page.getByRole('button', {name: 'Resolve image'}).click();
   await expect(page.getByText('VS Code', {exact: true})).toBeVisible();
+  await expect(field('Provider image')).toHaveValue('ghcr.io/example/web-ide-vscode:latest');
+  await expect(page.locator('.web-ide-resolution code')).toHaveText('ghcr.io/example/web-ide-vscode:latest');
   await page
     .getByRole('textbox', {name: 'Web IDE provider options JSON'})
     .fill('{"settings":{"editor.tabSize":2},"extensions":["golang.go","redhat.vscode-yaml"]}');
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect(page.getByRole('button', {name: 'Resolve image'})).not.toHaveClass(/n-button--loading/);
+  await expect(page.getByRole('textbox', {name: 'Web IDE provider options JSON'})).toHaveText(
+    '{"settings":{"editor.tabSize":2},"extensions":["golang.go","redhat.vscode-yaml"]}',
+  );
   await page.getByRole('checkbox', {name: 'Install the Gitea CLI'}).check();
   await page.getByRole('checkbox', {name: 'Use an outbound proxy'}).check();
   await field('HTTP proxy').fill('http://proxy-user:proxy-password@proxy.example:3128');
@@ -311,7 +337,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByText('Waiting for status', {exact: true})).toBeVisible();
   expect(environments[0].spec.runtime.devContainer.webIDE).toEqual({
-    image: `ghcr.io/example/web-ide-vscode@sha256:${'a'.repeat(64)}`,
+    image: 'ghcr.io/example/web-ide-vscode:latest',
     provider: 'vscode',
     options: {settings: {'editor.tabSize': 2}, extensions: ['golang.go', 'redhat.vscode-yaml']},
   });
@@ -328,9 +354,25 @@ test('administration workflows preserve resource identity and validate cluster-b
     httpProxy: 'http://proxy-user:proxy-password@proxy.example:3128',
     noProxy: ['registry.internal.example'],
   });
+  await page.getByRole('button', {name: 'Edit template', exact: true}).click();
+  await expect(field('Provider image')).toHaveValue('ghcr.io/example/web-ide-vscode:latest');
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect(page.getByText('VS Code', {exact: true})).toBeVisible();
+  expect(JSON.parse(await page.getByRole('textbox', {name: 'Web IDE provider options JSON'}).innerText())).toEqual(
+    environments[0].spec.runtime.devContainer.webIDE.options,
+  );
+  const fixedImage = `ghcr.io/example/web-ide-example@sha256:${'b'.repeat(64)}`;
+  await field('Provider image').fill(fixedImage);
+  await page.getByRole('button', {name: 'Resolve image'}).click();
+  await expect(page.getByText('Example IDE', {exact: true})).toBeVisible();
+  await expect(page.locator('.web-ide-resolution code')).toHaveText(fixedImage);
+  await expect(page.getByRole('textbox', {name: 'Web IDE provider options JSON'})).toHaveText('{}');
+  await page.getByRole('button', {name: 'Save template'}).click();
+  await expect(page.getByRole('cell', {name: 'standard example', exact: true})).toBeVisible();
+  expect(environments[0].spec.runtime.devContainer.webIDE.image).toBe(fixedImage);
   await page.getByRole('button', {name: 'Add template'}).click();
   await field('Tag').fill('example');
-  await field('Provider image').fill('ghcr.io/example/web-ide-example:main');
+  await field('Provider image').fill('ghcr.io/example/web-ide-example:1.2.3');
   await page.getByRole('button', {name: 'Resolve image'}).click();
   await expect(page.getByText('Example IDE', {exact: true})).toBeVisible();
   await page
@@ -339,7 +381,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.getByRole('button', {name: 'Save template'}).click();
   await expect(page.getByRole('cell', {name: 'example example', exact: true})).toBeVisible();
   expect(environments[1].spec.runtime.devContainer.webIDE).toEqual({
-    image: `ghcr.io/example/web-ide-example@sha256:${'b'.repeat(64)}`,
+    image: 'ghcr.io/example/web-ide-example:1.2.3',
     provider: 'example',
     options: {theme: 'dark', tools: ['terminal']},
   });

@@ -21,16 +21,16 @@ check: adapter-check
 	./build.sh linux $(ARCH) .tmp/$(ARCH) check
 
 version:
-	@set -e; . ./version.env; printf '%s\n' "$$DSH_DEFAULT_VERSION"
+	@set -e; . ./version.env; printf '%s\n' "$$DSH_VERSION"
 
 bundle: adapter-check
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle
-	@set -e; . ./version.env; \
+	@set -e; version="$$(node -p "require('./.tmp/$(ARCH)/manifest.json').version")"; \
 	$(CONTAINER_TOOL) build \
 		--build-arg TARGETARCH="$(ARCH)" \
-		--build-arg PROVIDER_VERSION="$$DSH_DEFAULT_VERSION" \
+		--build-arg PROVIDER_VERSION="$$version" \
 		--build-arg PROVIDER_SOURCE="$(PROVIDER_SOURCE)" \
 		--build-arg PROVIDER_REVISION="$(PROVIDER_REVISION)" \
 		-t $(IMAGE) .

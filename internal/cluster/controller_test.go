@@ -446,13 +446,26 @@ func TestRuntimePodDeliversSelectedWebIDEProvider(t *testing.T) {
 				cs.Spec.Runtime.RuntimeClassName = ""
 				cs.Spec.Runtime.Native = &runtimeplatform.NativeConfiguration{}
 			}
-			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", []string{"provider-registry"})
-			require.NoError(t, err)
-			require.Contains(t, pod.Spec.Volumes, corev1.Volume{Name: "web-ide-program", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{
-				Reference: runtimeConfiguration.DevContainer.WebIDE.Image, PullPolicy: corev1.PullIfNotPresent,
-			}}})
-			require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "provider", ReadOnly: true})
-			require.Equal(t, []corev1.LocalObjectReference{{Name: "provider-registry"}}, pod.Spec.ImagePullSecrets)
+			for _, test := range []struct {
+				image, reference string
+				policy           corev1.PullPolicy
+			}{
+				{"registry.example/ide", "registry.example/ide:latest", corev1.PullAlways},
+				{"registry.example/ide:latest", "registry.example/ide:latest", corev1.PullAlways},
+				{"registry.example/ide:1.2.3", "registry.example/ide:1.2.3", corev1.PullAlways},
+				{runtimeConfiguration.DevContainer.WebIDE.Image, runtimeConfiguration.DevContainer.WebIDE.Image, corev1.PullIfNotPresent},
+			} {
+				t.Run(test.image, func(t *testing.T) {
+					cs.Spec.Runtime.DevContainer.WebIDE.Image = test.image
+					pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", []string{"provider-registry"})
+					require.NoError(t, err)
+					require.Contains(t, pod.Spec.Volumes, corev1.Volume{Name: "web-ide-program", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{
+						Reference: test.reference, PullPolicy: test.policy,
+					}}})
+					require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "provider", ReadOnly: true})
+					require.Equal(t, []corev1.LocalObjectReference{{Name: "provider-registry"}}, pod.Spec.ImagePullSecrets)
+				})
+			}
 		})
 	}
 	t.Run("disabled", func(t *testing.T) {

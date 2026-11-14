@@ -9,7 +9,7 @@ arch=${2:-}
 output=${3:-}
 source_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 . "$source_root/version.env"
-version=${CODE_SERVER_VERSION:-$CODE_SERVER_DEFAULT_VERSION}
+version=$CODE_SERVER_VERSION
 
 fail() {
   echo "VS Code provider build: $*" >&2

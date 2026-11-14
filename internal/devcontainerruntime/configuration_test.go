@@ -50,8 +50,10 @@ func TestConfigurationValidation(t *testing.T) {
 			wantError: "lowercase identifier",
 		},
 		{
-			name: "tagged image", configuration: Configuration{WebIDE: WebIDEConfiguration{Provider: "vscode", Image: "ghcr.io/example/web-ide:main"}},
-			wantError: "pinned by sha256 digest",
+			name: "tagged image", configuration: Configuration{WebIDE: WebIDEConfiguration{Provider: "vscode", Image: "ghcr.io/example/web-ide:latest"}},
+		},
+		{
+			name: "repository image", configuration: Configuration{WebIDE: WebIDEConfiguration{Provider: "vscode", Image: "ghcr.io/example/web-ide"}},
 		},
 		{
 			name: "options are object", configuration: Configuration{WebIDE: WebIDEConfiguration{

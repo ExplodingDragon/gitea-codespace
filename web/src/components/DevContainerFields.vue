@@ -17,7 +17,7 @@ const {t} = useI18n();
 const resolving = ref(false);
 const resolveError = ref('');
 const resolved = ref<ResolvedWebIDEImage>();
-const resolvedInput = ref('');
+let optionsProvider = props.configuration.webIDE.provider;
 
 const imageOptions = computed(() => props.imageSuggestions.map((value) => ({label: value, value})));
 const optionsValidation = computed(() => {
@@ -31,10 +31,23 @@ const optionsValidation = computed(() => {
 });
 
 watch(optionsValidation, (message) => emit('validation', message), {immediate: true});
+watch(
+  () => props.configuration,
+  () => {
+    optionsProvider = props.configuration.webIDE.provider;
+    resolved.value = undefined;
+    resolveError.value = '';
+  },
+);
 
 function updateImage(image: string) {
   props.configuration.webIDE.image = image;
-  if (image !== resolvedInput.value) {
+  if (!image.trim()) {
+    props.configuration.webIDE = {};
+    optionsProvider = undefined;
+    options.value = '{}';
+  }
+  if (image !== resolved.value?.image) {
     delete props.configuration.webIDE.provider;
     resolved.value = undefined;
     resolveError.value = '';
@@ -42,27 +55,28 @@ function updateImage(image: string) {
 }
 
 async function resolveImage() {
-  const image = props.configuration.webIDE.image?.trim() ?? '';
+  const configuration = props.configuration;
+  const image = configuration.webIDE.image?.trim() ?? '';
   if (!image) {
-    props.configuration.webIDE = {};
-    options.value = '{}';
-    resolved.value = undefined;
-    resolvedInput.value = '';
-    resolveError.value = '';
     return;
   }
   resolving.value = true;
   resolveError.value = '';
   try {
     const result = await request<ResolvedWebIDEImage>('web-ide-images/resolve', 'POST', {image});
-    props.configuration.webIDE.image = result.image;
-    props.configuration.webIDE.provider = result.provider;
-    props.configuration.webIDE.options = result.optionDefaults;
-    options.value = JSON.stringify(result.optionDefaults, null, 2);
+    if (props.configuration !== configuration || configuration.webIDE.image?.trim() !== image) return;
+    configuration.webIDE.image = result.image;
+    configuration.webIDE.provider = result.provider;
+    if (optionsProvider !== result.provider) {
+      configuration.webIDE.options = result.optionDefaults;
+      options.value = JSON.stringify(result.optionDefaults, null, 2);
+    }
+    optionsProvider = result.provider;
     resolved.value = result;
-    resolvedInput.value = result.image;
   } catch (error) {
-    resolveError.value = errorMessage(error, t);
+    if (props.configuration === configuration && configuration.webIDE.image?.trim() === image) {
+      resolveError.value = errorMessage(error, t);
+    }
   } finally {
     resolving.value = false;
   }
@@ -118,7 +132,7 @@ async function resolveImage() {
       >
         {{ platform }}
       </NTag>
-      <code>{{ resolved.image.split('@')[1] }}</code>
+      <code>{{ resolved.image }}</code>
     </div>
     <NFormItem
       v-if="configuration.webIDE.image"

@@ -13,12 +13,10 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
 	"uuid"
 
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
-	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/distribution/reference"
 	dockerunits "github.com/docker/go-units"
@@ -246,30 +244,12 @@ func validateCacheComponent(cache *CacheComponentSpec) error {
 	default:
 		return fmt.Errorf("cache storage driver must be filesystem or s3")
 	}
-	upstreams := make(map[string]configpkg.RuntimeCacheUpstreamConfig, len(cache.Upstreams))
-	for host, upstream := range cache.Upstreams {
-		upstreams[host] = configpkg.RuntimeCacheUpstreamConfig{Allow: upstream.Allow}
-	}
-	runtimeConfig := configpkg.CacheConfig{
-		ID: "cache", Name: "cache", Revision: 1, Enabled: cache.Enabled, Listen: "127.0.0.1:8443",
-		MaxSize: cache.MaxSize, MaxAge: configpkg.Duration(0), GCInterval: configpkg.Duration(0), Upstreams: upstreams,
-		Storage: configpkg.CacheStorageConfig{
-			Driver: cache.Storage.Driver, Path: "cache", MinFreeSpace: cache.Storage.MinFreeSpace,
-			S3: configpkg.CacheS3Config{
-				Endpoint: cache.Storage.S3.Endpoint, Region: cache.Storage.S3.Region, Bucket: cache.Storage.S3.Bucket,
-				Prefix: cache.Storage.S3.Prefix, ForcePathStyle: cache.Storage.S3.ForcePathStyle,
-			},
-		},
-	}
-	maxAge, err := time.ParseDuration(cache.MaxAge)
+	runtimeConfig, err := cache.RuntimeConfig()
 	if err != nil {
-		return fmt.Errorf("invalid cache maximum age: %w", err)
+		return err
 	}
-	gcInterval, err := time.ParseDuration(cache.GCInterval)
-	if err != nil {
-		return fmt.Errorf("invalid cache cleanup interval: %w", err)
-	}
-	runtimeConfig.MaxAge, runtimeConfig.GCInterval = configpkg.Duration(maxAge), configpkg.Duration(gcInterval)
+	runtimeConfig.ID, runtimeConfig.Name, runtimeConfig.Revision = "cache", "cache", 1
+	runtimeConfig.Listen, runtimeConfig.Storage.Path = "127.0.0.1:8443", "cache"
 	if err := runtimeConfig.Validate(); err != nil {
 		return fmt.Errorf("invalid cache configuration: %w", err)
 	}

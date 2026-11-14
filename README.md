@@ -135,8 +135,11 @@ editor configuration, and third-party provider integration.
 
 ## Versions
 
-The `main` tag tracks the current development build. Pin a published chart
-version for repeatable deployments. See the [Helm guide](charts/gitea-codespace/README.md#install)
+The platform image's `main` tag tracks the current development build. Pin a
+published chart version to select its platform image digest. Web IDE providers
+are versioned independently; choose a provider digest to also fix the editor
+content, as described in the [provider guide](providers/README.md).
+See the [Helm guide](charts/gitea-codespace/README.md#install)
 for version selection and the [upgrade procedure](charts/gitea-codespace/README.md#upgrade)
 for an existing installation.
 
