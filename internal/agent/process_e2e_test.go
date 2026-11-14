@@ -15,6 +15,8 @@ import (
 	"time"
 
 	"gitea.dev/codespace/internal/cgroup"
+	"github.com/docker/docker/api/types/network"
+	"github.com/docker/docker/client"
 	"github.com/stretchr/testify/require"
 )
 
@@ -96,6 +98,31 @@ func TestAgentE2EDockerSupervision(t *testing.T) {
 	require.Contains(t, []string{"kata", "native", "sysbox"}, isolation)
 	daemon, err := StartDocker(t.Context(), directory, "", isolation, hierarchy, defaultSystemCABundlePath, os.Stderr)
 	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, daemon.Close()) })
+	docker, err := client.NewClientWithOpts(client.WithHost(DockerHost), client.WithAPIVersionNegotiation())
+	require.NoError(t, err)
+	defer func() { _ = docker.Close() }()
+	interfaces, err := net.Interfaces()
+	require.NoError(t, err)
+	mtu := strconv.Itoa(runtimeNetworkMTU(interfaces))
+	const mtuOption = "com.docker.network.driver.mtu"
+	for _, test := range []struct {
+		name    string
+		options map[string]string
+		mtu     string
+	}{
+		{name: "bridge", mtu: mtu},
+		{name: "compose-default", mtu: mtu},
+		{name: "explicit-mtu", options: map[string]string{mtuOption: "1400"}, mtu: "1400"},
+	} {
+		if test.name != "bridge" {
+			_, err := docker.NetworkCreate(t.Context(), test.name, network.CreateOptions{Driver: "bridge", Options: test.options})
+			require.NoError(t, err)
+		}
+		info, err := docker.NetworkInspect(t.Context(), test.name, network.InspectOptions{})
+		require.NoError(t, err)
+		require.Equal(t, test.mtu, info.Options[mtuOption], test.name)
+	}
 	require.NoError(t, daemon.Close())
 	select {
 	case <-daemon.Done():

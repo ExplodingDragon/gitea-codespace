@@ -21,13 +21,13 @@ PROTOC_GEN_CONNECT_GO_VERSION := v2.0.1
 SHFMT_VERSION := v3.14.1
 ACTIONLINT_VERSION := v1.7.12
 STATICCHECK_VERSION := v0.8.2
+HELM_CHECK_ARGS := --kube-version 1.36.0 --set admin.tokenSecret.name=codespace-admin
 BASH_SCRIPTS := \
 	tests/e2e/build-kata-kernel.sh \
 	tests/e2e/run.sh \
 	tests/e2e/setup-k3s.sh
 POSIX_SCRIPTS := \
 	deploy/prepare-gitea-cli.sh \
-	tests/e2e/web-ide/export.sh \
 	tests/e2e/web-ide/prepare \
 	tests/e2e/web-ide/serve \
 	$(sort $(wildcard devcontainer/docker/builtin/*.sh internal/devcontainerruntime/builtin/*.sh)) \
@@ -149,14 +149,12 @@ test-frontend:
 	$(PNPM) --dir web run test
 
 helm-check:
-	helm lint charts/gitea-codespace --set admin.tokenSecret.name=codespace-admin
-	@set -e; rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set admin.tokenSecret.name=codespace-admin)"; \
+	helm lint charts/gitea-codespace $(HELM_CHECK_ARGS)
+	@set -e; rendered="$$(helm template codespace charts/gitea-codespace $(HELM_CHECK_ARGS) --namespace codespace-system)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'; \
-	printf '%s\n' "$$rendered" | grep -Fq -- '--web-ide-program-volume-size=4Gi'; \
 	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'
-	helm lint charts/gitea-codespace --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin
-	@set -e; rendered="$$(helm template codespace charts/gitea-codespace --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 --set admin.tokenSecret.name=codespace-admin)"; \
+	@set -e; rendered="$$(helm template codespace charts/gitea-codespace $(HELM_CHECK_ARGS) --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: IfNotPresent'
 

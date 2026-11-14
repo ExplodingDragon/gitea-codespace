@@ -50,7 +50,6 @@ func NewCommand() *cobra.Command {
 	flags.StringVar(&options.ManagerURL, "manager-url", "https://codespace-manager.codespace-system.svc:8443", "Manager Service URL used by Agents")
 	flags.StringVar(&options.ComponentURL, "component-url", "https://codespace-manager.codespace-system.svc:8445", "Manager Service URL used by Gateway and Cache")
 	flags.StringVar(&options.PlatformImage, "platform-image", "", "Explicitly tagged or digest-pinned image used by all managed Codespace workloads")
-	flags.StringVar(&options.WebIDEProgramSize, "web-ide-program-volume-size", "4Gi", "Maximum disk space for the Pod-scoped Web IDE program volume")
 	flags.StringSliceVar(&options.ImagePullSecrets, "image-pull-secret", nil, "Management-namespace image pull Secret copied to managed site namespaces")
 	flags.StringVar(&options.IdentitySecretName, "identity-secret", "gitea-codespace-internal-ca", "Kubernetes Secret that persists the Manager internal certificate authority")
 	flags.StringVar(&options.HealthAddress, "health-address", healthcheck.Address(), "Health and readiness listen address")

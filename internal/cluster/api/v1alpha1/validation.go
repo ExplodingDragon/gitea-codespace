@@ -136,15 +136,8 @@ func (s *GiteaSite) Validate(managementNamespace string) error {
 			}
 		}
 	}
-	for _, target := range s.Spec.Upstreams {
-		if _, err := netip.ParsePrefix(target.CIDR); err != nil || len(target.Ports) == 0 {
-			return fmt.Errorf("upstream requires a CIDR and explicit ports")
-		}
-		for _, port := range target.Ports {
-			if port < 1 || port > 65535 {
-				return fmt.Errorf("upstream port must be between 1 and 65535")
-			}
-		}
+	if _, err := s.Spec.Network.Normalized(); err != nil {
+		return err
 	}
 	return ValidateObjectSize(s)
 }

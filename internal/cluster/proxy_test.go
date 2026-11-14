@@ -8,6 +8,7 @@ import (
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 )
 
 func TestUpdateProxySecretData(t *testing.T) {
@@ -25,9 +26,17 @@ func TestUpdateProxySecretData(t *testing.T) {
 	require.Equal(t, "value", string(data["unrelated"]))
 }
 
-func TestLiteralProxyRequiresSiteUpstream(t *testing.T) {
+func TestProxySiteEgress(t *testing.T) {
 	proxy := &api.OutboundProxy{HTTPProxy: "http://10.0.3.2:8889"}
-	require.ErrorContains(t, validateProxyDestination(nil, proxy), "matching upstream")
-	require.NoError(t, validateProxyDestination([]api.NetworkDestination{{CIDR: "10.0.3.0/24", Ports: []int32{8889}}}, proxy))
-	require.NoError(t, validateProxyDestination(nil, &api.OutboundProxy{HTTPProxy: "http://proxy.internal:8889"}))
+	egress := api.SiteEgress{AllowInternet: true}
+	require.ErrorContains(t, validateProxyDestination(egress, proxy), "allowed TCP egress")
+	egress.Allow = []api.NetworkDestination{{CIDR: "10.0.3.0/24", Protocols: []corev1.Protocol{corev1.ProtocolTCP}, Ports: []api.NetworkPort{{Port: 8880, EndPort: 8890}}}}
+	require.NoError(t, validateProxyDestination(egress, proxy))
+	egress.Allow[0].Protocols = []corev1.Protocol{corev1.ProtocolUDP}
+	require.Error(t, validateProxyDestination(egress, proxy))
+	public := &api.OutboundProxy{HTTPProxy: "http://8.8.8.8:8889"}
+	require.NoError(t, validateProxyDestination(egress, public))
+	egress.InternalCIDRs = []string{"8.8.8.0/24"}
+	require.Error(t, validateProxyDestination(egress, public))
+	require.NoError(t, validateProxyDestination(api.SiteEgress{}, &api.OutboundProxy{HTTPProxy: "http://proxy.internal:8889"}))
 }

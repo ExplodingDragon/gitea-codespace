@@ -7,7 +7,6 @@ on:
     paths:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-dsh.yml
-      - providers/export.sh
       - providers/dsh/**
       - '!providers/dsh/README.md'
   push:
@@ -16,7 +15,6 @@ on:
     paths:
       - .github/workflows/provider-build.yml
       - .github/workflows/provider-dsh.yml
-      - providers/export.sh
       - providers/dsh/**
       - '!providers/dsh/README.md'
   workflow_dispatch:

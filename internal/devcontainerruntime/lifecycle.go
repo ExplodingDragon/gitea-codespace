@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"os"
 	"strings"
 	"time"
 
@@ -49,7 +50,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	}
 	if request.DevContainer.WebIDE.Enabled() && (request.Action == "create" || request.Action == "resume") {
 		_, _ = fmt.Fprintf(stdout, "[INFO] [webide] Validating %s Provider bundle\n", request.DevContainer.WebIDE.Provider)
-		err := webide.Prepare(string(request.DevContainer.WebIDE.Provider), request.HostUser.UID, request.HostUser.GID)
+		err := webide.Prepare(string(request.DevContainer.WebIDE.Provider))
 		if err != nil {
 			_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider bundle preparation failed; continuing without Web IDE: %v\n", err)
 			request.DevContainer.WebIDE = WebIDEConfiguration{}
@@ -60,6 +61,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		return nil, err
 	}
 	defer func() { returnErr = errors.Join(returnErr, engine.Close()) }()
+	var state *devcontainer.State
 	switch request.Action {
 	case "create":
 		options, err := buildCreateOptions(request, platformGiteaCLIPath)
@@ -76,14 +78,12 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			_, _, err := ConfiguredEndpoints(state)
 			return err
 		}
-		state, err := engine.Create(ctx, options)
+		state, err = engine.Create(ctx, options)
 		if err != nil {
 			return nil, err
 		}
-		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, true, stdout, stderr)
-		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "resume":
-		state, err := engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
+		state, err = engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			return prepareContainerStart(ctx, engine, state, request, stdout)
 		}, request.RunLifecycle)
 		if err != nil {
@@ -98,8 +98,6 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			_, stopErr := engine.Stop(stopContext, request.Environment)
 			return nil, errors.Join(err, stopErr)
 		}
-		webIDEStarted := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer, false, stdout, stderr)
-		return &Outcome{Environment: state, WebIDEStarted: webIDEStarted}, nil
 	case "stop", "delete":
 		var lifecycleErr error
 		if request.Action == "stop" {
@@ -125,6 +123,18 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		state, err := engine.Inspect(ctx, request.Environment)
 		return &Outcome{Environment: state}, err
 	}
+	outcome := &Outcome{Environment: state}
+	if request.DevContainer.WebIDE.Enabled() {
+		if err := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer.WebIDE, request.Action == "create", stdout); err != nil {
+			_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider startup failed; continuing without Web IDE: %v\n", err)
+		} else {
+			outcome.WebIDEStarted = true
+			if err := engine.RunPostAttach(ctx, state, request.Secrets); err != nil {
+				_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Web IDE postAttachCommand failed; Codespace access is unaffected: %v\n", err)
+			}
+		}
+	}
+	return outcome, nil
 }
 
 func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request, stdout io.Writer) error {
@@ -198,50 +208,48 @@ func runTemplateLifecycle(ctx context.Context, request Request, engine *containe
 	return run(ctx)
 }
 
-func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration Configuration, initialize bool, stdout, stderr io.Writer) bool {
-	if !configuration.WebIDE.Enabled() {
-		return false
-	}
-	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] Preparing %s settings and extensions\n", configuration.WebIDE.Provider)
+func startWebIDE(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, secrets map[string]string, configuration WebIDEConfiguration, initialize bool, stdout io.Writer) error {
+	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] Preparing %s settings and extensions\n", configuration.Provider)
 	values := devcontainer.ProcessEnvironment(state.RemoteEnvironment, secrets)
-	values["CODESPACE_WEB_IDE_PROVIDER"] = string(configuration.WebIDE.Provider)
+	values["CODESPACE_WEB_IDE_PROVIDER"] = string(configuration.Provider)
 	values["CODESPACE_WEB_IDE_PROGRAM_DIR"] = webide.ContainerProgramPath
 	values["CODESPACE_WEB_IDE_DATA_DIR"] = webide.ContainerDataPath
 	values["CODESPACE_WEB_IDE_WORKSPACE"] = state.RemoteWorkdir
 	values["CODESPACE_WEB_IDE_ADDRESS"] = fmt.Sprintf("127.0.0.1:%d", runtimeendpoint.WorkspaceEndpointPort)
-	templateOptions := json.RawMessage(configuration.WebIDE.Options.Raw)
+	templateOptions := json.RawMessage(configuration.Options.Raw)
 	if len(templateOptions) == 0 {
 		templateOptions = json.RawMessage(`{}`)
 	}
-	repositoryOptions := state.Configuration.Customizations[string(configuration.WebIDE.Provider)]
+	repositoryOptions := state.Configuration.Customizations[string(configuration.Provider)]
 	if len(repositoryOptions) == 0 {
 		repositoryOptions = json.RawMessage(`{}`)
 	}
-	payload, startErr := json.Marshal(struct {
+	payload, err := json.Marshal(struct {
 		ProtocolVersion   int             `json:"protocolVersion"`
 		Initialize        bool            `json:"initialize"`
 		TemplateOptions   json.RawMessage `json:"templateOptions"`
 		RepositoryOptions json.RawMessage `json:"repositoryOptions"`
-	}{1, initialize, templateOptions, repositoryOptions})
-	if startErr == nil {
-		prepare := webide.ContainerProgramPath + "/" + webide.PrepareProgram
-		if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{prepare}, values, bytes.NewReader(payload)); err != nil {
-			startErr = fmt.Errorf("prepare %s Web IDE: %w", configuration.WebIDE.Provider, err)
-		}
+	}{webide.ProviderProtocolVersion, initialize, templateOptions, repositoryOptions})
+	if err != nil {
+		return fmt.Errorf("encode Web IDE configuration: %w", err)
 	}
-	if startErr == nil {
-		serve := webide.ContainerProgramPath + "/" + webide.ServeProgram
-		if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{serve}, values); err != nil {
-			startErr = fmt.Errorf("start %s Web IDE Provider: %w", configuration.WebIDE.Provider, err)
-		}
+	uid, gid, err := engine.RemoteUserIDs(ctx, state)
+	if err != nil {
+		return err
 	}
-	if startErr != nil {
-		_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider startup failed; continuing without Web IDE: %v\n", startErr)
-		return false
+	// The image may retain a remote UID different from the Runtime user.
+	dataPath := webide.ProviderDataPath(string(configuration.Provider))
+	if err := os.Chown(dataPath, uid, gid); err != nil {
+		return fmt.Errorf("set Web IDE data directory %s owner to %d:%d: %w", dataPath, uid, gid, err)
 	}
-	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] %s preparation completed; start request accepted\n", configuration.WebIDE.Provider)
-	if err := engine.RunPostAttach(ctx, state, secrets); err != nil {
-		_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Web IDE postAttachCommand failed; Codespace access is unaffected: %v\n", err)
+	prepare := webide.ContainerProgramPath + "/" + webide.PrepareProgram
+	if err := engine.Run(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{prepare}, values, bytes.NewReader(payload)); err != nil {
+		return fmt.Errorf("prepare %s Web IDE: %w", configuration.Provider, err)
 	}
-	return true
+	serve := webide.ContainerProgramPath + "/" + webide.ServeProgram
+	if err := engine.RunDetached(ctx, state.PrimaryContainerID, state.RemoteUser, state.RemoteWorkdir, []string{serve}, values); err != nil {
+		return fmt.Errorf("start %s Web IDE Provider: %w", configuration.Provider, err)
+	}
+	_, _ = fmt.Fprintf(stdout, "[INFO] [webide] %s preparation completed; start request accepted\n", configuration.Provider)
+	return nil
 }

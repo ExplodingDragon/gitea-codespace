@@ -6,7 +6,9 @@ Gateway, and Cache components.
 
 ## Requirements
 
-- Kubernetes 1.31 or later
+- Kubernetes 1.36 or later
+- A CRI runtime supporting image volumes and their `subPath` mounts, such as
+  containerd 2.2 or later
 - Helm with OCI registry support
 - kubectl and OpenSSL for the installation commands
 - Gitea with Codespace support
@@ -53,6 +55,11 @@ Select the resource and CDI settings in the environment template. Validate
 nested containers, persistent storage, and device access before making the
 template available to users.
 
+Native Runtime Pods include `SYS_PTRACE` so Docker and Agent can access the
+network namespace of a container whose main process is non-root. This applies
+within the Runtime's private process namespace; Pod admission policies must
+permit the required capabilities shown in the template editor.
+
 ### Verify
 
 - A workspace Pod starts with the selected isolation mode and StorageClass.
@@ -60,6 +67,7 @@ template available to users.
 - Dev Container builds can run nested containers with Kata or Sysbox.
 - Native environments receive the selected extended resources, CDI devices,
   capabilities, and mounts.
+- Containers with a non-root main process start and support TCP forwarding.
 
 ## Install
 
@@ -89,14 +97,36 @@ platform image built for that chart.
 
 ## Configure Web IDE storage and image access
 
-`webIDE.programVolumeSize` sets the size limit of the disk-backed `emptyDir`
-that holds the selected Web IDE program. It does not reserve disk space;
-nodes also need enough free storage for the unpacked bundle. Increase the limit
-when the bundle exceeds the default limit. Configure `image.pullSecrets` when
-platform or provider images are stored in a private registry; the same
-credentials are available to workspace Pods. See the
+Web IDE programs are mounted read-only from their digest-pinned OCI image with
+`pullPolicy: IfNotPresent`. Nodes need space for pulled and unpacked images;
+kubelet and the container runtime manage their cache and garbage collection.
+Provider settings and installed extensions remain on the workspace volume so
+they survive Pod replacement.
+
+Configure `image.pullSecrets` when platform or provider images are stored in a
+private registry. Manager uses these credentials to resolve provider metadata,
+and the same credentials are available to workspace Pods. Registry connectivity
+and certificate trust must work at both stages:
+
+| Stage | Required access |
+| --- | --- |
+| Template configuration | Manager resolves the image and reads its metadata using the Manager process's network, proxy, and certificate trust. |
+| Pod startup | The node's container runtime pulls and mounts the image using its own registry, proxy, and certificate configuration. |
+
+Pull Secrets supply authentication, not CA trust or proxy configuration. The
+site CA and Runtime trust bundle apply to Gitea connections and workspace
+downloads; they do not configure Manager's provider registry client or the
+node's container runtime. See the
 [Web IDE provider guide](../../providers/README.md) for image selection and
 editor configuration.
+
+### Verify
+
+- Manager resolves the provider image and saves the template with its digest.
+- Each workspace node can pull the selected provider image and mount its
+  `provider` subdirectory read-only.
+- The editor starts as the Dev Container remote user, and its settings remain
+  available after stop and resume.
 
 ## Connect Gitea
 
@@ -122,6 +152,8 @@ Each Gateway has a same-name ClusterIP Service. Port `80` carries HTTP and
 WebSocket traffic; port `22` carries SSH and SFTP. Publish HTTP with an Ingress
 and SSH with a LoadBalancer Service, or route the ClusterIP Service through
 existing cluster infrastructure. Configure public DNS and TLS at that boundary.
+Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
+Gateway.
 
 ### Verify
 
@@ -131,6 +163,42 @@ existing cluster infrastructure. Configure public DNS and TLS at that boundary.
   and port.
 - Gateway Services remain reachable inside the cluster when public publishing
   is managed by separate infrastructure.
+
+## Configure network access
+
+Configure Runtime network access in **Gitea sites > Network access** before
+creating workspaces. These rules also cover the nested Dev Container's traffic.
+Internet access and communication between Codespaces in the same site are
+separate switches, both disabled by default. Internet access allows outbound
+TCP/UDP to public addresses; add internal CIDRs to exclude organization networks
+that use public addresses. Explicit destinations grant a CIDR access through the
+selected TCP/UDP protocols and individual ports, inclusive port ranges, or all
+ports. These grants also apply when Internet access is disabled, so they can
+authorize internal services and outbound proxies.
+
+Allow the actual Gitea HTTP or SSH clone destination and the registries and
+services needed by builds. A private Gitea address needs an explicit grant even
+when Internet access is enabled. CIDR rules apply to destination IP addresses,
+so account for the addresses a hostname resolves to. Successful Manager
+registration verifies its control connection, not the Runtime's outbound path.
+
+Gateway, Manager, Cache, and cluster DNS retain their required connections.
+The same-site switch permits bidirectional TCP/UDP between Runtime Pods,
+including different users' Codespaces. Changes apply to existing and new Pods
+through the cluster's NetworkPolicy controller. The network plugin must enforce
+`endPort` for port ranges; existing connections may survive a policy update.
+NetworkPolicy does not isolate a Pod from its resident node, and a permitted
+proxy or Cache makes its own upstream connections. Keep their access rules
+appropriate for the services they expose.
+
+### Verify
+
+- A workspace can clone from its configured Gitea destination and reach the
+  required build services through the selected direct or proxy path.
+- TCP/UDP connections follow the configured CIDRs, protocols, and port ranges.
+- Direct communication between the site's Runtime Pods follows the same-site
+  switch, and Runtime Pods in other sites remain isolated.
+- Gateway workspace access and required platform connections continue to work.
 
 ## Operations
 
@@ -146,9 +214,6 @@ trust set. Dockerfile `RUN` commands and Feature installation scripts execute
 inside the build image and use that image's own certificate configuration.
 Component mTLS identities remain in separate Secrets and are not exposed to
 the Dev Container.
-
-Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
-Gateway. Allow configured outbound proxies through the site NetworkPolicy.
 
 Cache is cluster-internal and uses Manager's internal CA. Use a persistent
 volume for the local backend or shared object storage for the S3 backend.

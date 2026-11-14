@@ -7,8 +7,7 @@ ARCH ?= $(shell $(GO) env GOARCH)
 IMAGE ?= gitea-codespace-web-ide-vscode:local
 PROVIDER_SOURCE ?= https://github.com/ExplodingDragon/gitea-codespace
 PROVIDER_REVISION ?= development
-EXPORT_SCRIPT := ../export.sh
-SHELL_SCRIPTS := build.sh $(EXPORT_SCRIPT) runtime/prepare runtime/serve
+SHELL_SCRIPTS := build.sh runtime/prepare runtime/serve
 
 .PHONY: check version bundle image clean
 check:
@@ -27,7 +26,6 @@ version:
 bundle: check
 	$(PNPM) --dir extension run build
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
-	cp $(EXPORT_SCRIPT) .tmp/export.sh
 
 image: bundle
 	@set -e; . ./version.env; \

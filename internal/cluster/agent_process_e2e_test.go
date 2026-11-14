@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
@@ -54,7 +55,7 @@ func TestKubernetesE2EAgentProcesses(t *testing.T) {
 		pod.Spec.HostUsers = ptr.To(false)
 		pod.Spec.Containers[0].SecurityContext = &corev1.SecurityContext{RunAsUser: ptr.To(int64(0)), RunAsGroup: ptr.To(int64(0))}
 	} else {
-		configureNativeRuntimePod(pod, runtime.environmentConfiguration().Native)
+		configureNativeRuntimePod(pod, &runtimeplatform.NativeConfiguration{})
 	}
 	require.NoError(t, cluster.Create(cluster.ctx, pod))
 	require.Eventually(t, func() bool {

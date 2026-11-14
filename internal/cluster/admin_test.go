@@ -184,7 +184,7 @@ func TestAdminSiteRegistrationAndConcurrentEdit(t *testing.T) {
 		DisplayName: site.Spec.DisplayName, URL: site.Spec.URL, CABundle: site.Spec.CABundle, Enabled: site.Spec.Enabled, AcceptCreates: site.Spec.AcceptCreates,
 		StartupConcurrency: site.Spec.StartupConcurrency, CleanupConcurrency: site.Spec.CleanupConcurrency,
 		Templates: site.Spec.Templates, Gateway: site.Spec.Gateway, Caches: site.Spec.Caches, Quota: site.Spec.Quota,
-		Upstreams: site.Spec.Upstreams,
+		Network: site.Spec.Network,
 	}
 	input := adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: site.Name}, Spec: spec, RegistrationToken: strings.Repeat("t", 40)}
 	invalid := site.DeepCopy()

@@ -118,3 +118,4 @@ printf '%s\n' "$help" | grep -F -- '--workspace' >/dev/null || fail "workspace o
 [ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/client.js" ] || fail "Codespace DSH client bundle is unavailable"
 [ -f "$output/program/app/node_modules/@gitea/codespace-dsh/lib/typert.host.js" ] || fail "Codespace DSH Remote metadata is unavailable"
 printf '{"schemaVersion":1,"provider":"dsh","architecture":"%s","version":"%s"}\n' "$arch" "$dsh_version" >"$output/manifest.json"
+chmod -R a+rX "$output"

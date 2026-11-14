@@ -10,8 +10,10 @@ Run the commands below from the repository root.
 
 ## Prepare a worker
 
-Use a dedicated Linux k3s test worker with the selected runtime and StorageClass
-installed. The harness imports images through local k3s containerd and, for
+Use a dedicated Linux amd64 k3s test worker with the selected runtime and StorageClass
+installed, meeting the [deployment requirements](../../charts/gitea-codespace/README.md#requirements).
+The standard `make images` path below builds the platform image for amd64.
+The harness imports images through local k3s containerd and, for
 Native tests, registers a local Device Plugin. `KUBECONFIG` selects Kubernetes
 API access; those host operations still run on the machine invoking the harness.
 
@@ -95,6 +97,16 @@ the test.
 
 ## Coverage and validation
 
+The fake Web IDE runs from a read-only image volume, including the nested
+Dev Container bind mount. Its lifecycle checks cover template and repository
+configuration, HTTP and WebSocket access, and state across stop and resume.
+
+Network tests verify platform connections, same-site communication, cross-site
+isolation, Internet access, and explicit TCP/UDP port ranges with actual traffic
+in each runtime. The worker needs direct access to `http://example.com/` for the
+Internet test. Docker process tests check the default bridge, newly created
+bridges, and explicit MTU overrides so Compose networks inherit the Pod's MTU.
+
 USB/IP tests use two servers exporting the same bus ID. The real Gateway and
 Agent handle source selection, SSH cancellation, reconnection, and stop/start;
 the Dev Container verifies hotplug, udev permissions, and non-root serial I/O.
@@ -118,6 +130,11 @@ a non-privileged container so the test exercises its device cgroup rules.
 ### Implementation acceptance criteria
 
 - Reusing an imported image succeeds and Pods run the selected digest.
+- Platform connections remain available while site network switches and
+  protocol/port rules control new connections; explicit Docker MTU settings
+  take precedence over the Runtime-derived default.
+- Network-denial checks execute the probe successfully and verify its connection
+  result, with reachable fixtures establishing that the target service works.
 - Ordinary reverse forwarding reaches the Dev Container, and independent
   USB/IP sources can list, attach, transfer data, and detach.
 - A wrong kernel, ineffective device permissions, or broken forwarding fails

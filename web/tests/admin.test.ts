@@ -126,7 +126,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
     deviceResources: [],
-    requiredRuntimeCapabilities: ['SYS_ADMIN', 'SYS_RESOURCE'],
+    requiredRuntimeCapabilities: ['SYS_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE'],
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
     issuers: [{kind: 'ClusterIssuer', name: 'letsencrypt'}],
@@ -281,6 +281,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   await expect(selectField('RuntimeClass')).not.toBeVisible();
   const runtimeCapabilities = selectField('Runtime Pod capabilities');
   await expect(runtimeCapabilities.getByText('SYS_ADMIN (required)', {exact: true})).toBeVisible();
+  await expect(runtimeCapabilities.getByText('SYS_PTRACE (required)', {exact: true})).toBeVisible();
   await runtimeCapabilities.click();
   await page.keyboard.type('SYS_MODULE');
   await page.keyboard.press('Enter');
@@ -367,10 +368,30 @@ test('administration workflows preserve resource identity and validate cluster-b
     .locator('.n-base-selection')
     .click();
   await page.getByText('Primary gateway', {exact: true}).click();
+  await page.getByRole('checkbox', {name: 'Allow Internet access', exact: true}).check();
+  await page.getByRole('checkbox', {name: 'Allow communication between Codespaces in this site'}).check();
+  await page.getByRole('button', {name: 'Add allowed destination', exact: true}).click();
+  const networkRule = page.locator('.network-rule');
+  await networkRule.locator('input[placeholder="10.20.0.0/24"]').fill('10.20.0.0/24');
+  await networkRule.getByRole('checkbox', {name: 'UDP', exact: true}).check();
+  await networkRule.locator('.network-port-row input').nth(0).fill('8000');
+  await networkRule.locator('.network-port-row input').nth(1).fill('8010');
   await page.getByRole('button', {name: 'Save site'}).click();
   await expect(page.getByText('Production Gitea', {exact: true})).toBeVisible();
   expect(lastWrite.registrationToken).toBe('0000000000000000000000000000000000000000');
+  expect(lastWrite.spec?.network).toEqual({
+    allowSameSite: true,
+    egress: {
+      allowInternet: true,
+      internalCIDRs: [],
+      allow: [{cidr: '10.20.0.0/24', protocols: ['TCP', 'UDP'], allPorts: false, ports: [{port: 8000, endPort: 8010}]}],
+    },
+  });
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
+  await expect(networkRule.locator('.network-port-row input').nth(0)).toHaveValue('8000');
+  await expect(networkRule.locator('.network-port-row input').nth(1)).toHaveValue('8010');
+  await networkRule.getByText('All ports', {exact: true}).click();
+  await expect(networkRule.locator('.network-port-row input')).toHaveCount(0);
   await expect(field('Registration token')).toHaveCount(0);
   await expect(
     page.getByText('example.com/gpu requests (not used by selected templates)', {exact: true}),
@@ -378,6 +399,12 @@ test('administration workflows preserve resource identity and validate cluster-b
   await field('Display name').fill('Renamed Gitea');
   await page.getByRole('button', {name: 'Save site'}).click();
   await expect(page.getByText('Renamed Gitea', {exact: true})).toBeVisible();
+  expect(lastWrite.spec?.network.egress.allow?.[0]).toEqual({
+    cidr: '10.20.0.0/24',
+    protocols: ['TCP', 'UDP'],
+    allPorts: true,
+    ports: [],
+  });
   expect(lastWrite.spec?.quota).toEqual({
     pods: '10',
     persistentvolumeclaims: '10',
@@ -402,7 +429,13 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.setViewportSize({width: 390, height: 844});
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await expect(networkRule.getByText('All ports', {exact: true})).toBeVisible();
+  await networkRule.getByText('Selected ports', {exact: true}).click();
+  await expect(networkRule.locator('.network-port-row input').first()).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  page.once('dialog', (dialog) => dialog.accept());
   await page.getByRole('button', {name: 'Cancel', exact: true}).click();
+  await page.setViewportSize({width: 1280, height: 900});
   await page.getByRole('link', {name: 'Components', exact: true}).click();
   await expect(page.getByRole('cell', {name: 'https://workspace.example.com'})).toBeVisible();
   await expect(page.getByText('Available', {exact: true}).first()).toBeVisible();

@@ -546,8 +546,10 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	siteSpec := adminSiteSpec{
 		DisplayName: "Lifecycle E2E site", URL: remote.baseURL, Enabled: true, AcceptCreates: true, StartupConcurrency: 1, CleanupConcurrency: 1,
 		Templates: []api.ResourceReference{{Name: template.Name, UID: template.UID}}, Gateway: api.ResourceReference{Name: gateway.Name, UID: gateway.UID}, Caches: []api.ResourceReference{{Name: cache.Name, UID: cache.UID}},
-		Quota:     quota,
-		Upstreams: []api.NetworkDestination{{CIDR: host + "/32", Ports: []int32{int32(port)}}, {CIDR: "0.0.0.0/0", Ports: []int32{80, 443}}},
+		Quota: quota,
+		Network: api.SiteNetwork{Egress: api.SiteEgress{AllowInternet: true, Allow: []api.NetworkDestination{
+			{CIDR: host + "/32", Protocols: []corev1.Protocol{corev1.ProtocolTCP}, Ports: []api.NetworkPort{{Port: int32(port)}}},
+		}}},
 	}
 	site := &api.GiteaSite{ObjectMeta: metav1.ObjectMeta{Name: siteName, Labels: map[string]string{e2eRunLabel: cluster.runID}}}
 	require.NoError(t, admin.saveSite(ctx, site, adminSiteWrite{adminWriteIdentity: adminWriteIdentity{Name: siteName}, Spec: siteSpec, RegistrationToken: strings.Repeat("r", 40)}, true))

@@ -13,7 +13,7 @@ import (
 
 const ProviderProtocolVersion = 1
 
-// Manifest identifies one provider bundle exported by its init container.
+// Manifest identifies the provider bundle mounted from its OCI image.
 type Manifest struct {
 	SchemaVersion int    `json:"schemaVersion"`
 	Provider      string `json:"provider"`
@@ -21,18 +21,15 @@ type Manifest struct {
 	Version       string `json:"version"`
 }
 
-// Prepare validates the exported provider and creates its persistent data
-// directory for the Dev Container remote user.
-func Prepare(provider string, uid, gid uint32) error {
+// Prepare validates the mounted provider and creates its persistent data
+// directory before Docker binds it into the Dev Container.
+func Prepare(provider string) error {
 	if err := validateBundle(ProgramRootPath, provider, runtime.GOARCH); err != nil {
 		return err
 	}
 	dataPath := ProviderDataPath(provider)
 	if err := os.MkdirAll(dataPath, 0o700); err != nil {
 		return fmt.Errorf("create Web IDE data directory: %w", err)
-	}
-	if err := os.Chown(dataPath, int(uid), int(gid)); err != nil {
-		return fmt.Errorf("set Web IDE data ownership: %w", err)
 	}
 	return nil
 }
@@ -62,8 +59,12 @@ func validateBundle(root, provider, architecture string) error {
 		return fmt.Errorf("web IDE provider version is required")
 	}
 	for _, path := range []string{PrepareProgram, ServeProgram} {
-		if err := regularExecutable(filepath.Join(root, path)); err != nil {
+		info, err := os.Stat(filepath.Join(root, path))
+		if err != nil {
 			return fmt.Errorf("validate Web IDE provider %s: %w", path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return fmt.Errorf("web IDE provider %s is not an executable regular file", path)
 		}
 	}
 	return nil
@@ -72,15 +73,4 @@ func validateBundle(root, provider, architecture string) error {
 // ProviderDataPath returns the persistent outer Runtime path for a provider.
 func ProviderDataPath(provider string) string {
 	return filepath.Join(PersistentRootPath, provider)
-}
-
-func regularExecutable(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
-		return fmt.Errorf("%s is not an executable regular file", path)
-	}
-	return nil
 }

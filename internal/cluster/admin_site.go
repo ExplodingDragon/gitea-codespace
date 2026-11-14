@@ -30,18 +30,18 @@ type adminSiteWrite struct {
 }
 
 type adminSiteSpec struct {
-	DisplayName        string                   `json:"displayName"`
-	URL                string                   `json:"url"`
-	CABundle           string                   `json:"caBundle,omitempty"`
-	Enabled            bool                     `json:"enabled"`
-	AcceptCreates      bool                     `json:"acceptCreates"`
-	StartupConcurrency int32                    `json:"startupConcurrency"`
-	CleanupConcurrency int32                    `json:"cleanupConcurrency"`
-	Templates          []api.ResourceReference  `json:"templates"`
-	Gateway            api.ResourceReference    `json:"gateway"`
-	Caches             []api.ResourceReference  `json:"caches,omitempty"`
-	Quota              corev1.ResourceList      `json:"quota"`
-	Upstreams          []api.NetworkDestination `json:"upstreams,omitempty"`
+	DisplayName        string                  `json:"displayName"`
+	URL                string                  `json:"url"`
+	CABundle           string                  `json:"caBundle,omitempty"`
+	Enabled            bool                    `json:"enabled"`
+	AcceptCreates      bool                    `json:"acceptCreates"`
+	StartupConcurrency int32                   `json:"startupConcurrency"`
+	CleanupConcurrency int32                   `json:"cleanupConcurrency"`
+	Templates          []api.ResourceReference `json:"templates"`
+	Gateway            api.ResourceReference   `json:"gateway"`
+	Caches             []api.ResourceReference `json:"caches,omitempty"`
+	Quota              corev1.ResourceList     `json:"quota"`
+	Network            api.SiteNetwork         `json:"network"`
 }
 
 // adminSiteSpec exposes only fields controlled by administrators. Registration
@@ -62,7 +62,7 @@ func newAdminSiteSpec(spec api.GiteaSiteSpec) adminSiteSpec {
 		Gateway:            spec.Gateway,
 		Caches:             spec.Caches,
 		Quota:              spec.Quota,
-		Upstreams:          spec.Upstreams,
+		Network:            spec.Network,
 	}
 }
 
@@ -79,13 +79,18 @@ func (spec adminSiteSpec) resourceSpec() api.GiteaSiteSpec {
 		Gateway:            spec.Gateway,
 		Caches:             spec.Caches,
 		Quota:              spec.Quota,
-		Upstreams:          spec.Upstreams,
+		Network:            spec.Network,
 	}
 }
 
 func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body adminSiteWrite, creating bool) error {
 	previous := site.DeepCopy()
 	site.Spec = body.Spec.resourceSpec()
+	network, err := site.Spec.Network.Normalized()
+	if err != nil {
+		return apierrors.NewBadRequest(err.Error())
+	}
+	site.Spec.Network = network
 	if !creating {
 		if body.RegistrationToken != "" {
 			return apierrors.NewBadRequest("registration tokens are accepted only when creating a site")
@@ -184,7 +189,7 @@ func (s *AdminServer) checkSiteReferences(ctx context.Context, site *api.GiteaSi
 			return apierrors.NewBadRequest("template reference is stale or duplicated")
 		}
 		seen[ref.UID] = true
-		if err := validateProxyDestination(site.Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
+		if err := validateProxyDestination(site.Spec.Network.Egress, template.Spec.Runtime.Proxy); err != nil {
 			return apierrors.NewBadRequest(fmt.Sprintf("template %s: %v", template.Name, err))
 		}
 	}

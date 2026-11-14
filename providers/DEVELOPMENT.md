@@ -17,8 +17,8 @@ apply to subsequently created Codespaces.
 
 Each start uses that snapshot:
 
-1. Kubernetes runs the image as an init container. Its entrypoint copies
-   the provider bundle to `/output/current`.
+1. Kubernetes mounts the selected image's `/provider` directory read-only at
+   `/opt/gitea-codespace/web-ide` in the Runtime using an `image` volume.
 2. Agent validates the bundle manifest and mounts the bundle read-only in the
    Dev Container.
 3. Agent invokes `bin/prepare` as the Dev Container remote user. The adapter
@@ -26,7 +26,7 @@ Each start uses that snapshot:
 4. Agent starts `bin/serve` with a detached Docker execution and publishes the
    browser endpoint after Docker accepts that execution.
 
-The init image is a carrier rather than the editor process itself. The editor
+The image supplies files rather than running an editor process itself. The editor
 runs inside the Dev Container, so its executable must be compatible with the
 libraries available in the Dev Container images that the environment supports.
 A statically linked executable is the most portable choice.
@@ -35,7 +35,7 @@ The failure stage determines which access remains available:
 
 | Stage | Effect |
 | --- | --- |
-| Init-container image pull or export | Runtime startup waits for Kubernetes to complete the init container; Dev Container access, including SSH, is not available yet |
+| Image pull or volume mount | Runtime startup waits for Kubernetes to mount the image; Dev Container access, including SSH, is not available yet |
 | Agent bundle validation, `bin/prepare`, or Docker execution submission | Agent records a warning and withholds the Web IDE endpoint; Dev Container startup and SSH proceed independently |
 | Editor startup or a later editor exit | The published endpoint remains present; Gateway returns a temporary `502 Workspace is unavailable` while the editor is not listening |
 
@@ -46,12 +46,15 @@ running inside it. Provider process recovery is described under
 ### Implementation acceptance criteria
 
 - Saving an environment resolves its provider image to an immutable digest.
-- Starting a codespace exports one complete bundle, prepares it as the remote
+- Starting a codespace mounts the selected bundle, prepares it as the remote
   user, starts `bin/serve`, and publishes one browser endpoint.
 - The editor process runs inside the Dev Container and can use the workspace,
   declared environment, and persistent provider data.
-- An init-container failure blocks Runtime startup; a later editor preparation
+- An image-volume failure blocks Runtime startup; a later editor preparation
   or launch failure only withholds Web IDE access.
+- Creation and resume use the same startup sequence. After a successful launch,
+  `postAttachCommand` runs; a command failure is logged while editor access remains
+  available.
 
 ## Provider identity and image metadata
 
@@ -60,7 +63,7 @@ digit, may contain lowercase letters, digits, and hyphens, and may be at most 32
 characters. The ID connects four parts of the contract:
 
 - the OCI metadata;
-- the exported bundle manifest;
+- the bundle manifest;
 - the environment-template configuration;
 - the repository's Dev Container `customizations` object.
 
@@ -134,7 +137,7 @@ template behave the same regardless of the Kubernetes node selected for a pod.
 
 ## Bundle layout
 
-The image entrypoint publishes this directory at `/output/current`:
+The image contains this directory at `/provider`:
 
 ```text
 manifest.json
@@ -158,32 +161,32 @@ program/...
 The manifest is limited to 64 KiB. `bin/prepare` and `bin/serve` must be regular
 executable files. Everything else under the bundle is provider-owned.
 
-The entrypoint stages the complete bundle and finishes with one rename so an
-interrupted copy leaves the final path unpublished. The official images share
-[`export.sh`](export.sh); include that script in your image build context to use
-the same export flow. It checks that the manifest and executable programs are
-present before publishing. Agent then parses the manifest as JSON and checks
-its protocol, provider identity, architecture, and version. This keeps semantic
-validation in one implementation and accepts normal JSON whitespace.
+Kubernetes selects the node architecture and mounts the image with
+`subPath: provider`. The manifest must identify the selected provider and
+architecture, use the supported schema version, and contain a nonempty version.
 
-The init container runs as UID/GID `0:0` with a read-only root filesystem, all
-Linux capabilities dropped, and privilege escalation disabled. Use the writable
-`/output` volume for staging and export. It is the only platform-provided volume
-for this container, because exporting the bundle needs neither workspace data
-nor platform credentials. Choose a carrier base image with the tools needed
-under these conditions; the official providers use BusyBox.
+Make directories traversable and files readable by the Dev Container remote
+user, and preserve executable permissions on programs. The image can use
+`FROM scratch`: scripts use the Dev Container's interpreter and programs use
+its system libraries. Writable settings, extensions, and editor state belong
+in the separate persistent data directory. This separates cached program files
+from user data and lets kubelet and the container runtime manage image storage.
+
+The persistent data directory root belongs to the Dev Container's actual remote
+user before adapters start, so images can retain their own user IDs. Existing
+files retain their permissions across stop and resume. See the
+[startup design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md#web-ide-交付与启动)
+for lifecycle sequencing and failure handling.
 
 ### Implementation acceptance criteria
 
-- Running the image with an empty `/output` creates one complete
-  `/output/current` directory.
-- Agent accepts formatted JSON and verifies the provider and architecture
-  against the selected runtime configuration.
-- `bin/prepare` and `bin/serve` are executable, while program assets remain
-  provider-owned and read-only after they enter the Dev Container.
-- Interrupting export leaves no partial `current` directory for Agent to mount.
-- Export succeeds with the deployed init-container permissions and a read-only
-  root filesystem, using `/output` for temporary and final files.
+- Mounting the image's `provider` subdirectory exposes the complete bundle.
+- The manifest matches the selected provider and architecture and declares a
+  supported schema version and nonempty version.
+- The remote user can read the manifest and assets and execute both adapters
+  from the read-only bundle mounted in the Dev Container.
+- On creation and resume, the remote user can write the data directory even
+  when its UID differs from the Runtime host user.
 
 ## Adapter programs
 
@@ -193,7 +196,7 @@ following environment:
 | Variable                         | Value                                                   |
 | -------------------------------- | ------------------------------------------------------- |
 | `CODESPACE_WEB_IDE_PROVIDER`     | Stable provider ID                                      |
-| `CODESPACE_WEB_IDE_PROGRAM_DIR`  | Read-only exported bundle                               |
+| `CODESPACE_WEB_IDE_PROGRAM_DIR`  | Read-only image bundle                                  |
 | `CODESPACE_WEB_IDE_DATA_DIR`     | Persistent, writable provider data directory            |
 | `CODESPACE_WEB_IDE_WORKSPACE`    | Repository workspace inside the Dev Container           |
 | `CODESPACE_WEB_IDE_ADDRESS`      | Required loopback listen address in `host:port` form     |
@@ -319,31 +322,27 @@ dist/
     program/bin/example-ide
     program/bin/example-adapter
 Dockerfile
-export.sh
 metadata.json
 ```
 
-Use `amd64` and `arm64` as the architecture directory names. The carrier needs
-only file-copying tools. A small Dockerfile is sufficient:
+Use `amd64` and `arm64` as the architecture directory names. Before building,
+set readable assets and executable programs with permissions suitable for any
+remote user. A data-only Dockerfile is sufficient:
 
 ```dockerfile
-FROM busybox:1.37.0
+FROM scratch
 
 ARG TARGETARCH
 ARG PROVIDER_VERSION
 ARG PROVIDER_REVISION
 ARG PROVIDER_METADATA
 
-COPY --chmod=0555 export.sh /usr/local/bin/export-web-ide
 COPY dist/${TARGETARCH}/ /provider/
 
 LABEL org.opencontainers.image.version=$PROVIDER_VERSION \
       org.opencontainers.image.source="https://example.com/owner/provider" \
       org.opencontainers.image.revision=$PROVIDER_REVISION \
       dev.gitea.codespace.web-ide.metadata="$PROVIDER_METADATA"
-
-USER 0:0
-ENTRYPOINT ["/usr/local/bin/export-web-ide"]
 ```
 
 Publish a manifest that contains both supported Linux architectures, using the
@@ -360,41 +359,67 @@ docker buildx build \
 ```
 
 Manager accepts a single-platform image as well, but a codespace can then run
-only on nodes with that architecture. Private registries use the pull Secrets
-configured for the Codespace Helm installation; credentials are not stored in
-an environment template.
+only on nodes with that architecture. For private registries, configure
+[image access](../charts/gitea-codespace/README.md#configure-web-ide-storage-and-image-access)
+for both Manager metadata resolution and node image pulls.
+
+### Implementation acceptance criteria
+
+- Each platform image contains `/provider` with the matching manifest and
+  executable adapters, accessible to a non-root remote user.
+- Published platform manifests share the same metadata and resolve successfully
+  in Manager.
 
 ## Test the image locally
 
-Run the init-container entrypoint with an empty output directory before
-publishing. The command below uses the host architecture and mirrors the
-init-container filesystem and privilege settings, leaving the exported bundle
-available for inspection:
+Use a test cluster meeting the [deployment requirements](../charts/gitea-codespace/README.md#requirements).
+After publishing or importing the image into the node's container runtime,
+apply this temporary Pod with your image reference. It verifies the same
+read-only subdirectory mount used by Codespace and reads it as a non-root user:
 
-```sh
-image=registry.example.com/tools/example-web-ide:1.0.0
-architecture=$(go env GOARCH)
-output=$(mktemp -d)
-
-docker run --rm \
-  --platform "linux/$architecture" \
-  --user 0:0 \
-  --read-only \
-  --cap-drop ALL \
-  --security-opt no-new-privileges=true \
-  --volume "$output:/output" \
-  "$image"
-
-test -f "$output/current/manifest.json"
-test -x "$output/current/bin/prepare"
-test -x "$output/current/bin/serve"
-cat "$output/current/manifest.json"
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: web-ide-bundle-check
+spec:
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: busybox:1.37.0
+      command: [sh, -ec]
+      args:
+        - cat /bundle/manifest.json; test -x /bundle/bin/prepare; test -x /bundle/bin/serve
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+      volumeMounts:
+        - name: program
+          mountPath: /bundle
+          subPath: provider
+          readOnly: true
+  volumes:
+    - name: program
+      image:
+        reference: registry.example.com/tools/example-web-ide:1.0.0
+        pullPolicy: IfNotPresent
 ```
 
-This checks image export on the selected architecture. Create a Codespace to
-also validate Agent's manifest checks and the adapter inside a real Dev
-Container. Use the [lifecycle table](#lifecycle) to distinguish an init-container
-failure from an editor preparation or serving failure.
+Inspect `kubectl logs web-ide-bundle-check` and the Pod's exit status, then remove
+it with `kubectl delete pod web-ide-bundle-check`. For a private registry, supply
+the Pod's `imagePullSecrets` and configure registry trust on the node.
+
+Create a Codespace to also validate Agent's manifest checks and the adapter
+inside a compatible Dev Container. Repeat with the supported isolation modes
+and verify that editor state survives a stop and resume. Use the
+[lifecycle table](#lifecycle) to identify which startup stage failed.
+
+### Implementation acceptance criteria
+
+- The test Pod completes and reads the expected manifest on every supported
+  node architecture.
+- A Codespace prepares and serves the editor as its remote user from the
+  read-only bundle, and retains provider data across stop and resume.
 
 ## Connect the provider to Codespace
 
@@ -409,6 +434,11 @@ failure from an editor preparation or serving failure.
 When publishing an updated provider, publish a new image, resolve it again in
 the environment template, and save the template. The [lifecycle](#lifecycle)
 snapshot rules determine which Codespaces use that update.
+
+### Implementation acceptance criteria
+
+- A newly created Codespace uses the saved digest and configuration.
+- Updating a template leaves existing Codespace snapshots unchanged.
 
 ## Maintain the official providers
 
@@ -435,17 +465,17 @@ make -C providers/dsh check
 The DSH check fetches its pinned upstream sources and bundles the Codespace
 plugin against them. Each provider's `image` target builds an image for the
 current architecture; use the [local image verification steps](#test-the-image-locally)
-to check its exported bundle.
+to check its mounted bundle.
 
-Each provider workflow validates its own build inputs and publishes
-amd64/arm64 images on matching pushes to `main`. Shared provider inputs trigger
-both workflows; the [platform workflow](../.github/workflows/ci.yml) handles
-core changes separately. Workflow path filters define the exact scope.
+Each provider workflow validates its own source and publishes amd64/arm64 images
+on matching pushes to `main`. Changes to the shared
+[build workflow](../.github/workflows/provider-build.yml) trigger both providers;
+the [platform workflow](../.github/workflows/ci.yml) handles core changes separately.
 
 ### Implementation acceptance criteria
 
 - Both official providers restart the editor after a successful or failed exit,
   with a one-second delay between attempts.
 - `HUP`, `INT`, and `TERM` reach the running editor and end its restart loop.
-- Each provider passes its own `check` target and exports a valid bundle for
+- Each provider passes its own `check` target and supplies a valid bundle for
   every published architecture.

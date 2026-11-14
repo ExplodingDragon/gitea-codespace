@@ -72,14 +72,48 @@ type GiteaSiteSpec struct {
 	Gateway   ResourceReference   `json:"gateway"`
 	Caches    []ResourceReference `json:"caches,omitempty"`
 	// Quota is empty when Kubernetes admission alone manages site capacity.
-	Quota corev1.ResourceList `json:"quota,omitempty"`
-	// Upstreams are explicit exceptions to the workload's private-network isolation.
-	Upstreams []NetworkDestination `json:"upstreams,omitempty"`
+	Quota   corev1.ResourceList `json:"quota,omitempty"`
+	Network SiteNetwork         `json:"network,omitempty"`
 }
 
+type SiteNetwork struct {
+	// AllowSameSite permits TCP/UDP traffic in both directions between this site's Runtime Pods.
+	AllowSameSite bool       `json:"allowSameSite"`
+	Egress        SiteEgress `json:"egress"`
+}
+
+type SiteEgress struct {
+	AllowInternet bool `json:"allowInternet"`
+	// InternalCIDRs exclude additional destinations from automatic Internet access.
+	// Explicit allow rules can still authorize these destinations.
+	// +kubebuilder:validation:MaxItems=128
+	InternalCIDRs []string `json:"internalCIDRs,omitempty"`
+	// +kubebuilder:validation:MaxItems=128
+	Allow []NetworkDestination `json:"allow,omitempty"`
+}
+
+// NetworkDestination allows the selected protocols and destination ports within one CIDR.
+// +kubebuilder:validation:XValidation:rule="self.allPorts ? (!has(self.ports) || size(self.ports) == 0) : (has(self.ports) && size(self.ports) > 0)",message="choose all ports or a nonempty list of ports"
 type NetworkDestination struct {
-	CIDR  string  `json:"cidr"`
-	Ports []int32 `json:"ports"`
+	CIDR string `json:"cidr"`
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=2
+	// +kubebuilder:validation:items:Enum=TCP;UDP
+	Protocols []corev1.Protocol `json:"protocols"`
+	AllPorts  bool              `json:"allPorts"`
+	// +kubebuilder:validation:MaxItems=128
+	Ports []NetworkPort `json:"ports,omitempty"`
+}
+
+// NetworkPort describes an inclusive destination port range, or one port when EndPort is omitted.
+// +kubebuilder:validation:XValidation:rule="!has(self.endPort) || self.endPort >= self.port",message="endPort must be at least port"
+type NetworkPort struct {
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	Port int32 `json:"port"`
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65535
+	EndPort int32 `json:"endPort,omitempty"`
 }
 
 type GiteaSiteStatus struct {

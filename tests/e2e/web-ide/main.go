@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/sys/unix"
 )
 
 type prepareRequest struct {
@@ -48,6 +49,13 @@ func main() {
 }
 
 func prepare() {
+	var filesystem unix.Statfs_t
+	if err := unix.Statfs(requiredEnvironment("CODESPACE_WEB_IDE_PROGRAM_DIR"), &filesystem); err != nil {
+		fatalf("inspect provider program mount: %v", err)
+	}
+	if filesystem.Flags&unix.ST_RDONLY == 0 {
+		fatalf("provider program mount must be read-only")
+	}
 	data := requiredEnvironment("CODESPACE_WEB_IDE_DATA_DIR")
 	input, err := io.ReadAll(io.LimitReader(os.Stdin, 64*1024+1))
 	if err != nil || len(input) > 64*1024 {

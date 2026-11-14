@@ -13,6 +13,7 @@ import (
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 )
 
@@ -60,7 +61,7 @@ func (s *AdminServer) saveEnvironment(ctx context.Context, template *api.Environ
 				if ref.UID != template.UID {
 					continue
 				}
-				if err := validateProxyDestination(sites.Items[i].Spec.Upstreams, template.Spec.Runtime.Proxy); err != nil {
+				if err := validateProxyDestination(sites.Items[i].Spec.Network.Egress, template.Spec.Runtime.Proxy); err != nil {
 					return apierrors.NewBadRequest(fmt.Sprintf("site %s: %v", sites.Items[i].Name, err))
 				}
 			}
@@ -72,10 +73,15 @@ func (s *AdminServer) saveEnvironment(ctx context.Context, template *api.Environ
 	return s.Client.Update(ctx, template)
 }
 
-func validateProxyDestination(upstreams []api.NetworkDestination, proxy *api.OutboundProxy) error {
+func validateProxyDestination(egress api.SiteEgress, proxy *api.OutboundProxy) error {
 	if proxy == nil {
 		return nil
 	}
+	network, err := (api.SiteNetwork{Egress: egress}).Normalized()
+	if err != nil {
+		return err
+	}
+	egress = network.Egress
 	for _, raw := range []string{proxy.HTTPProxy, proxy.HTTPSProxy, proxy.SOCKSProxy} {
 		if raw == "" {
 			continue
@@ -86,18 +92,8 @@ func validateProxyDestination(upstreams []api.NetworkDestination, proxy *api.Out
 			continue
 		}
 		port, _ := strconv.ParseInt(parsed.Port(), 10, 32)
-		allowed := false
-		for _, destination := range upstreams {
-			prefix, err := netip.ParsePrefix(destination.CIDR)
-			if err != nil || !prefix.Contains(address) {
-				continue
-			}
-			for _, allowedPort := range destination.Ports {
-				allowed = allowed || allowedPort == int32(port)
-			}
-		}
-		if !allowed {
-			return fmt.Errorf("proxy %s:%d requires a matching upstream CIDR and port", address, port)
+		if !siteAllowsEgress(egress, address, corev1.ProtocolTCP, int32(port)) {
+			return fmt.Errorf("proxy %s:%d requires an allowed TCP egress destination", address, port)
 		}
 	}
 	return nil

@@ -126,6 +126,85 @@ spec:
                 x-kubernetes-validations:
                 - message: Gitea Manager identity is immutable
                   rule: self == oldSelf
+              network:
+                properties:
+                  allowSameSite:
+                    description: AllowSameSite permits TCP/UDP traffic in both directions
+                      between this site's Runtime Pods.
+                    type: boolean
+                  egress:
+                    properties:
+                      allow:
+                        items:
+                          description: NetworkDestination allows the selected protocols
+                            and destination ports within one CIDR.
+                          properties:
+                            allPorts:
+                              type: boolean
+                            cidr:
+                              type: string
+                            ports:
+                              items:
+                                description: NetworkPort describes an inclusive destination
+                                  port range, or one port when EndPort is omitted.
+                                properties:
+                                  endPort:
+                                    format: int32
+                                    maximum: 65535
+                                    minimum: 1
+                                    type: integer
+                                  port:
+                                    format: int32
+                                    maximum: 65535
+                                    minimum: 1
+                                    type: integer
+                                required:
+                                - port
+                                type: object
+                                x-kubernetes-validations:
+                                - message: endPort must be at least port
+                                  rule: '!has(self.endPort) || self.endPort >= self.port'
+                              maxItems: 128
+                              type: array
+                            protocols:
+                              items:
+                                description: Protocol defines network protocols supported
+                                  for things like container ports.
+                                enum:
+                                - TCP
+                                - UDP
+                                type: string
+                              maxItems: 2
+                              minItems: 1
+                              type: array
+                          required:
+                          - allPorts
+                          - cidr
+                          - protocols
+                          type: object
+                          x-kubernetes-validations:
+                          - message: choose all ports or a nonempty list of ports
+                            rule: 'self.allPorts ? (!has(self.ports) || size(self.ports)
+                              == 0) : (has(self.ports) && size(self.ports) > 0)'
+                        maxItems: 128
+                        type: array
+                      allowInternet:
+                        type: boolean
+                      internalCIDRs:
+                        description: |-
+                          InternalCIDRs exclude additional destinations from automatic Internet access.
+                          Explicit allow rules can still authorize these destinations.
+                        items:
+                          type: string
+                        maxItems: 128
+                        type: array
+                    required:
+                    - allowInternet
+                    type: object
+                required:
+                - allowSameSite
+                - egress
+                type: object
               quota:
                 additionalProperties:
                   anyOf:
@@ -165,23 +244,6 @@ spec:
                   type: object
                 maxItems: 64
                 minItems: 1
-                type: array
-              upstreams:
-                description: Upstreams are explicit exceptions to the workload's private-network
-                  isolation.
-                items:
-                  properties:
-                    cidr:
-                      type: string
-                    ports:
-                      items:
-                        format: int32
-                        type: integer
-                      type: array
-                  required:
-                  - cidr
-                  - ports
-                  type: object
                 type: array
               url:
                 type: string

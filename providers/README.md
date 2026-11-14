@@ -14,7 +14,7 @@ which keeps existing templates on the reviewed provider release.
 
 Both official providers support `linux/amd64` and `linux/arm64` Dev Containers
 using glibc. The editor runs inside the Dev Container, so that image must supply
-compatible system libraries; the carrier image only exports program files.
+compatible system libraries; the carrier image supplies read-only program files.
 Third-party providers define their own program compatibility requirements.
 
 Select an image in an environment template and resolve it before saving. The

@@ -6,9 +6,6 @@ image:
   digest: ""
   pullSecrets: []
 
-webIDE:
-  programVolumeSize: 4Gi
-
 nameOverride: ""
 fullnameOverride: ""
 

@@ -337,6 +337,7 @@ run_cluster_tests "Kubernetes API integration" \
 run_cluster_tests "component lifecycle" '^TestKubernetesE2EComponentWorkloads$' 5m
 run_cluster_tests "Manager leader failover" '^TestKubernetesE2EManagerFailover$' 5m
 run_cluster_tests "Runtime Agent process model" '^TestKubernetesE2EAgentProcesses$' 6m
+run_cluster_tests "Runtime network access" '^TestKubernetesE2ENetworkPolicy$' 6m
 run_cluster_tests "Runtime, Docker persistence, and Dev Container" '^TestKubernetesE2EDockerPersistence$' 80m
 
 echo "Deploying S3Mock"

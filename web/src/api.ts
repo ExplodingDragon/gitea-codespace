@@ -191,7 +191,21 @@ export type Site = {
   gateway: ResourceReference;
   caches: ResourceReference[];
   quota: Record<string, string>;
-  upstreams: {cidr: string; ports: number[]}[];
+  network: SiteNetwork;
+};
+
+export type SiteNetwork = {
+  allowSameSite: boolean;
+  egress: {
+    allowInternet: boolean;
+    internalCIDRs?: string[];
+    allow?: {
+      cidr: string;
+      protocols: ('TCP' | 'UDP')[];
+      allPorts: boolean;
+      ports?: {port: number; endPort?: number}[];
+    }[];
+  };
 };
 
 export type Component = {

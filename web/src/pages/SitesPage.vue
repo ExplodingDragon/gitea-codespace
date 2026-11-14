@@ -15,6 +15,7 @@ import {
 import {useDirtyForm} from '../composables/useDirtyForm';
 import MeasurementInput from '../components/MeasurementInput.vue';
 import ResourceStatus from '../components/ResourceStatus.vue';
+import SiteNetworkFields from '../components/SiteNetworkFields.vue';
 import {cloneFormValue} from '../utils/form';
 import {measurementBaseValue, type MeasurementKind} from '../utils/measurement';
 
@@ -128,10 +129,9 @@ function edit(site?: Resource<Site>) {
         gateway: {name: '', uid: ''},
         caches: [],
         quota: {},
-        upstreams: [],
+        network: {allowSameSite: false, egress: {allowInternet: false, internalCIDRs: [], allow: []}},
       };
   form.value.caches ||= [];
-  form.value.upstreams ||= [];
   quotaEnabled.value = Object.keys(form.value.quota ?? {}).length > 0;
   quotaDraft.value = quotaEnabled.value
     ? cloneFormValue(form.value.quota)
@@ -403,49 +403,7 @@ function remove(site: Resource<Site>) {
         </div>
       </NFormItem>
     </div>
-    <h2>{{ t('site.upstreams') }}</h2>
-    <p class="section-help">{{ t('site.upstreamsHelp') }}</p>
-    <div
-      v-for="(upstream, index) in form.upstreams"
-      :key="index"
-      class="upstream-row"
-    >
-      <NFormItem :label="t('site.cidr')">
-        <NInput
-          v-model:value="upstream.cidr"
-          placeholder="10.0.0.10/32"
-        />
-      </NFormItem>
-      <NFormItem :label="t('site.ports')">
-        <NSelect
-          :value="upstream.ports"
-          multiple
-          filterable
-          tag
-          :options="upstream.ports.map((port) => ({label: String(port), value: port}))"
-          @update:value="
-            (values: (string | number)[]) => {
-              upstream.ports = values.map(Number);
-            }
-          "
-        />
-      </NFormItem>
-      <NButton
-        type="error"
-        quaternary
-        :aria-label="t('site.removeUpstream')"
-        :title="t('site.removeUpstream')"
-        @click="form.upstreams.splice(index, 1)"
-      >
-        <template #icon><Trash2 :size="16" /></template>
-      </NButton>
-    </div>
-    <NButton
-      class="add-row"
-      @click="form.upstreams.push({cidr: '', ports: [443]})"
-    >
-      {{ t('site.addUpstream') }}
-    </NButton>
+    <SiteNetworkFields v-model="form.network" />
     <div class="form-actions">
       <NButton
         :disabled="saving"

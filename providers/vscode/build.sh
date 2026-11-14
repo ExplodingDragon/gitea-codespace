@@ -45,3 +45,4 @@ cp "$source_root/extension/dist/gitea-codespace.vsix" "$output/assets/gitea-code
 node -p "require(process.argv[1]).version" "$source_root/extension/package.json" >"$output/assets/gitea-codespace.version"
 chmod 0555 "$output/bin/prepare" "$output/bin/serve"
 printf '{"schemaVersion":1,"provider":"vscode","architecture":"%s","version":"%s"}\n' "$arch" "$version" >"$output/manifest.json"
+chmod -R a+rX "$output"

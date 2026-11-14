@@ -20,7 +20,6 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
-	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -242,39 +241,6 @@ func (r *SiteReconciler) ensureSiteResources(ctx context.Context, site *api.Gite
 		}
 	}
 	return nil
-}
-
-func siteNetworkPolicy(site *api.GiteaSite, namespace, managementNamespace string) *networkingv1.NetworkPolicy {
-	management := &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": managementNamespace}}
-	policy := &networkingv1.NetworkPolicy{
-		ObjectMeta: metav1.ObjectMeta{Name: "codespace", Namespace: namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}},
-		Spec: networkingv1.NetworkPolicySpec{
-			PodSelector: metav1.LabelSelector{},
-			PolicyTypes: []networkingv1.PolicyType{networkingv1.PolicyTypeIngress, networkingv1.PolicyTypeEgress},
-			Ingress: []networkingv1.NetworkPolicyIngressRule{{
-				From:  []networkingv1.NetworkPolicyPeer{{NamespaceSelector: management, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{ComponentLabel: "gateway"}}}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(8444))}},
-			}},
-			Egress: []networkingv1.NetworkPolicyEgressRule{{
-				To:    []networkingv1.NetworkPolicyPeer{{NamespaceSelector: management, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{ComponentLabel: "manager"}}}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(8443))}},
-			}, {
-				To:    []networkingv1.NetworkPolicyPeer{{NamespaceSelector: management, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{ComponentLabel: "cache"}}}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromString(cacheHTTPSPortName))}},
-			}, {
-				To:    []networkingv1.NetworkPolicyPeer{{NamespaceSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"kubernetes.io/metadata.name": "kube-system"}}, PodSelector: &metav1.LabelSelector{MatchLabels: map[string]string{"k8s-app": "kube-dns"}}}},
-				Ports: []networkingv1.NetworkPolicyPort{{Protocol: ptr.To(corev1.ProtocolUDP), Port: ptr.To(intstr.FromInt32(53))}, {Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(53))}},
-			}},
-		},
-	}
-	for _, target := range site.Spec.Upstreams {
-		rule := networkingv1.NetworkPolicyEgressRule{To: []networkingv1.NetworkPolicyPeer{{IPBlock: &networkingv1.IPBlock{CIDR: target.CIDR}}}}
-		for _, port := range target.Ports {
-			rule.Ports = append(rule.Ports, networkingv1.NetworkPolicyPort{Protocol: ptr.To(corev1.ProtocolTCP), Port: ptr.To(intstr.FromInt32(port))})
-		}
-		policy.Spec.Egress = append(policy.Spec.Egress, rule)
-	}
-	return policy
 }
 
 func (r *SiteReconciler) deleteSite(ctx context.Context, site *api.GiteaSite, namespace string) (ctrl.Result, error) {

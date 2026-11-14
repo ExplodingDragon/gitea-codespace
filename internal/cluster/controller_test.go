@@ -357,7 +357,7 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.True(t, *container.SecurityContext.Privileged)
@@ -373,7 +373,7 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 	runtime := testRuntime()
 	runtime.Isolation, runtime.RuntimeClassName = api.IsolationNative, ""
 	runtime.Native = &runtimeplatform.NativeConfiguration{
-		RuntimeCapAdd: []corev1.Capability{"SYS_MODULE"}, DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"},
+		RuntimeCapAdd: []corev1.Capability{"SYS_MODULE", "SYS_PTRACE"}, DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"},
 		DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "nvidia.com/gpu", Count: 2,
 			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
@@ -384,7 +384,7 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.Nil(t, pod.Spec.RuntimeClassName)
@@ -395,6 +395,8 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 	require.Equal(t, container.Resources.Requests["nvidia.com/gpu"], container.Resources.Limits["nvidia.com/gpu"])
 	require.Contains(t, container.SecurityContext.Capabilities.Add, corev1.Capability("SYS_MODULE"))
 	require.Contains(t, container.SecurityContext.Capabilities.Add, corev1.Capability("SYS_RESOURCE"))
+	require.Contains(t, container.SecurityContext.Capabilities.Add, corev1.Capability("SYS_PTRACE"))
+	require.Len(t, container.SecurityContext.Capabilities.Add, len(requiredNativeRuntimeCapabilities)+1)
 	require.Equal(t, corev1.SeccompProfileTypeUnconfined, container.SecurityContext.SeccompProfile.Type)
 	for _, mount := range container.VolumeMounts {
 		require.NotEqual(t, "/sys/fs/cgroup", mount.MountPath)
@@ -410,7 +412,7 @@ func TestRuntimePodUsesProxySecret(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 	require.NoError(t, err)
 	container := pod.Spec.Containers[0]
 	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "proxy-ca", MountPath: "/run/codespace/proxy", ReadOnly: true})
@@ -435,14 +437,32 @@ func TestRuntimePodDeliversSelectedWebIDEProvider(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtimeConfiguration},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
-	require.NoError(t, err)
-	require.Len(t, pod.Spec.InitContainers, 1)
-	require.Equal(t, runtimeConfiguration.DevContainer.WebIDE.Image, pod.Spec.InitContainers[0].Image)
-	require.Equal(t, runtimeConfiguration.Resources, pod.Spec.InitContainers[0].Resources)
-	require.Contains(t, pod.Spec.InitContainers[0].Env, corev1.EnvVar{Name: "CODESPACE_WEB_IDE_EXPECTED_PROVIDER", Value: "vscode"})
-	require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "current", ReadOnly: true})
-	require.Equal(t, resource.MustParse("4Gi"), *pod.Spec.Volumes[len(pod.Spec.Volumes)-1].EmptyDir.SizeLimit)
+	for _, isolation := range []string{api.IsolationNative, api.IsolationSysbox, api.IsolationKata} {
+		t.Run(isolation, func(t *testing.T) {
+			cs := cs.DeepCopy()
+			cs.Spec.Runtime.Isolation = isolation
+			cs.Spec.Runtime.RuntimeClassName = isolation
+			if isolation == api.IsolationNative {
+				cs.Spec.Runtime.RuntimeClassName = ""
+				cs.Spec.Runtime.Native = &runtimeplatform.NativeConfiguration{}
+			}
+			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", []string{"provider-registry"})
+			require.NoError(t, err)
+			require.Contains(t, pod.Spec.Volumes, corev1.Volume{Name: "web-ide-program", VolumeSource: corev1.VolumeSource{Image: &corev1.ImageVolumeSource{
+				Reference: runtimeConfiguration.DevContainer.WebIDE.Image, PullPolicy: corev1.PullIfNotPresent,
+			}}})
+			require.Contains(t, pod.Spec.Containers[0].VolumeMounts, corev1.VolumeMount{Name: "web-ide-program", MountPath: "/opt/gitea-codespace/web-ide", SubPath: "provider", ReadOnly: true})
+			require.Equal(t, []corev1.LocalObjectReference{{Name: "provider-registry"}}, pod.Spec.ImagePullSecrets)
+		})
+	}
+	t.Run("disabled", func(t *testing.T) {
+		cs.Spec.Runtime.DevContainer.WebIDE = devcontainerruntime.WebIDEConfiguration{}
+		pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+		require.NoError(t, err)
+		for _, volume := range pod.Spec.Volumes {
+			require.Nil(t, volume.Image)
+		}
+	})
 }
 
 func TestExitedRuntimePreservesVolume(t *testing.T) {
@@ -459,7 +479,7 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			if settled {
 				cs.Status.SettledOperationVersion = 3
 			}
-			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
+			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
 			require.NoError(t, err)
 			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodFailed
 			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{Reason: "OOMKilled", ExitCode: 137, Signal: 9}}}}
@@ -537,110 +557,77 @@ func TestLeadershipSelectsOnlyCurrentManagerPod(t *testing.T) {
 }
 
 func TestRuntimeDeletionWaitsForWriterTermination(t *testing.T) {
-	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
-		Status: api.CodespaceStatus{
-			Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
-			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "ready"},
-		},
+	for _, phase := range []corev1.PodPhase{corev1.PodRunning, corev1.PodPending} {
+		t.Run(string(phase), func(t *testing.T) {
+			cs := &api.Codespace{
+				ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
+				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
+				Status: api.CodespaceStatus{
+					Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
+					LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "starting"},
+				},
+			}
+			cs.Spec.Runtime.Debug = true
+			pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
+			require.NoError(t, err)
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_DEBUG", Value: "true"})
+			pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", phase
+			pod.Finalizers = nil
+			containerState := corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ContainerCreating"}}
+			if phase == corev1.PodRunning {
+				containerState = corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}
+			}
+			pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: containerState}}
+			volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
+			var logReads atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				logReads.Add(1)
+				http.Error(w, "node is unavailable", http.StatusServiceUnavailable)
+			}))
+			defer server.Close()
+			core, err := coreclient.NewForConfig(&rest.Config{Host: server.URL})
+			require.NoError(t, err)
+			r := &RuntimeReconciler{Client: c, Diagnostics: &runtimeDiagnostics{Reader: c, Pods: core}}
+			ctx := t.Context()
+			// Restore the writer finalizer before initiating graceful termination.
+			_, err = r.stopOrDelete(ctx, cs, false)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
+			require.Contains(t, pod.Finalizers, WriterFinalizer)
+			require.True(t, pod.DeletionTimestamp.IsZero())
+			_, err = r.stopOrDelete(ctx, cs, false)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
+			require.False(t, pod.DeletionTimestamp.IsZero())
+			_, err = r.stopOrDelete(ctx, cs, false)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
+			require.Equal(t, "WriterUnconfirmed", meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady").Reason)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
+			pod.Status.Phase = corev1.PodFailed
+			if phase == corev1.PodRunning {
+				pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137}}
+			}
+			require.NoError(t, c.Status().Update(ctx, pod))
+			_, err = r.stopOrDelete(ctx, cs, false)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
+			require.Equal(t, pod.UID, cs.Status.StoppedPodUID)
+			require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(pod), pod)))
+			_, err = r.stopOrDelete(ctx, cs, false)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
+			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
+			require.Nil(t, meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady"))
+			require.Empty(t, cs.Status.Pod)
+			require.Nil(t, cs.Status.Target)
+			require.Nil(t, cs.Status.Boot)
+			require.Empty(t, cs.Status.LastNodeName)
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
+			require.Equal(t, phase == corev1.PodRunning, logReads.Load() > 0)
+		})
 	}
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
-	require.NoError(t, err)
-	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodRunning
-	pod.Finalizers = nil
-	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Running: &corev1.ContainerStateRunning{}}}}
-	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
-	r := &RuntimeReconciler{Client: c}
-	ctx := t.Context()
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	// Restore the writer finalizer before initiating graceful termination.
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
-	require.Contains(t, pod.Finalizers, WriterFinalizer)
-	require.True(t, pod.DeletionTimestamp.IsZero())
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
-	require.False(t, pod.DeletionTimestamp.IsZero())
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.Equal(t, "WriterUnconfirmed", meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady").Reason)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
-	pod.Status.Phase = corev1.PodFailed
-	pod.Status.ContainerStatuses[0].State = corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137}}
-	require.NoError(t, c.Status().Update(ctx, pod))
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.Equal(t, pod.UID, cs.Status.StoppedPodUID)
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-	require.Nil(t, meta.FindStatusCondition(cs.Status.Conditions, "InfrastructureReady"))
-	require.Empty(t, cs.Status.Pod)
-	require.Nil(t, cs.Status.Target)
-	require.Nil(t, cs.Status.Boot)
-	require.Empty(t, cs.Status.LastNodeName)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(volume), volume))
-}
-
-func TestRuntimeDeletionAfterInitFailure(t *testing.T) {
-	cs := &api.Codespace{
-		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, Runtime: testRuntime(), Operation: api.Operation{Type: "stop", Version: 2}},
-		Status: api.CodespaceStatus{
-			Pod: api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "runtime-data", UID: "volume-uid"},
-			LastNodeName: "worker", Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}, Boot: &api.RuntimeBoot{OperationVersion: 2, Stage: "starting"},
-		},
-	}
-	cs.Spec.Runtime.Debug = true
-	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil, resource.MustParse("4Gi"))
-	require.NoError(t, err)
-	require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_DEBUG", Value: "true"})
-	pod.UID, pod.Spec.NodeName, pod.Status.Phase = cs.Status.Pod.UID, "worker", corev1.PodPending
-	pod.Spec.InitContainers = []corev1.Container{{Name: "prepare", Image: "example.invalid/prepare"}}
-	pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "PodInitializing"}}}}
-	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Volume.Name, Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}}
-	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs, pod).WithObjects(cs, pod, volume).Build()
-	var logReads atomic.Int32
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		logReads.Add(1)
-		http.Error(w, "node is unavailable", http.StatusServiceUnavailable)
-	}))
-	defer server.Close()
-	core, err := coreclient.NewForConfig(&rest.Config{Host: server.URL})
-	require.NoError(t, err)
-	r := &RuntimeReconciler{Client: c, Diagnostics: &runtimeDiagnostics{Reader: c, Pods: core}}
-	ctx := t.Context()
-
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), pod))
-	require.False(t, pod.DeletionTimestamp.IsZero())
-	pod.Status.Phase = corev1.PodFailed
-	pod.Status.InitContainerStatuses = []corev1.ContainerStatus{{Name: "prepare", State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 1, Reason: "Error"}}}}
-	require.NoError(t, c.Status().Update(ctx, pod))
-
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.Equal(t, pod.UID, cs.Status.StoppedPodUID)
-	err = c.Get(ctx, client.ObjectKeyFromObject(pod), pod)
-	require.True(t, apierrors.IsNotFound(err))
-
-	_, err = r.stopOrDelete(ctx, cs, false)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(cs), cs))
-	require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-	require.Empty(t, cs.Status.Pod)
-	require.Nil(t, cs.Status.Target)
-	require.Nil(t, cs.Status.Boot)
-	require.Positive(t, logReads.Load())
 }
 
 func TestMissingRuntimePodConvergesToStopped(t *testing.T) {

@@ -38,7 +38,7 @@ func TestKubernetesE2EManagerServing(t *testing.T) {
 	address := listener.Addr().String()
 	require.NoError(t, listener.Close())
 	managerHost := "manager." + namespace.Name + ".svc"
-	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), WebIDEProgramSize: "4Gi", IdentitySecretName: "test-internal-ca", HealthAddress: "0"}, AdminAddress: address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0"}
+	options := ServerOptions{ManagerOptions: ManagerOptions{Namespace: namespace.Name, ManagerURL: "https://" + managerHost + ":8443", ComponentURL: "https://" + managerHost + ":8445", PlatformImage: "localhost/codespace@sha256:" + strings.Repeat("a", 64), IdentitySecretName: "test-internal-ca", HealthAddress: "0"}, AdminAddress: address, AdminTokenFile: filepath.Join(directory, "token"), AgentAddress: "127.0.0.1:0", ComponentAddress: "127.0.0.1:0"}
 	adminURL := "http://" + address
 	log.SetLogger(logr.Discard())
 	ctx, cancel := context.WithCancel(t.Context())

@@ -26,7 +26,8 @@ configuration and can be used from a browser, a desktop editor, SSH, or SFTP.
 
 ## Requirements
 
-- Kubernetes 1.31 or later
+- Kubernetes 1.36 or later with image-volume subdirectory support in the CRI
+  runtime
 - Helm with OCI registry support
 - A Gitea instance with Codespace support
 - A StorageClass suitable for workspace data
@@ -78,7 +79,11 @@ Complete the initial configuration in the administration interface:
 3. Create a registration token in Gitea's Codespace Managers page.
 4. Register the Gitea URL and token, then assign the environment and
    components.
-5. Enable the site after its readiness checks pass.
+5. Configure the site's [network access](charts/gitea-codespace/README.md#configure-network-access)
+   for repository cloning and build dependencies. Internet access is disabled
+   by default.
+6. Enable the site, then confirm that the site and its assigned resources are
+   ready before creating a Codespace.
 
 Gateway HTTP and SSH services remain internal until the cluster operator
 publishes them. See the [deployment

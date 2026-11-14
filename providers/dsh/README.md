@@ -7,6 +7,10 @@ Codespace startup integration are released with this image rather than the
 Codespace platform.
 
 Use a Dev Container that meets the [official provider requirements](../README.md#official-providers).
+DSH extracts native modules into the remote user's temporary directory before
+loading them. That directory (`/tmp` by default, or `TMPDIR` when configured)
+must be writable and permit executable mappings. When using a tmpfs for it,
+include the `exec` mount option so Node can load those modules.
 
 ## Workspace startup
 

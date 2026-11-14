@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -15,8 +16,39 @@ import (
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
+	containerdocker "gitea.dev/codespace/devcontainer/docker"
 	"github.com/stretchr/testify/require"
 )
+
+func TestWebIDEUserLookupFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.URL.Path == "/_ping":
+			w.Header().Set("OSType", "linux")
+		case strings.HasSuffix(r.URL.Path, "/version"):
+			_, _ = io.WriteString(w, `{"Os":"linux","Arch":"amd64","ApiVersion":"1.51"}`)
+		case strings.HasSuffix(r.URL.Path, "/containers/container/exec"):
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = io.WriteString(w, `{"message":"unable to find user developer"}`)
+		default:
+			t.Errorf("unexpected request: %s", r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	t.Setenv("DOCKER_HOST", "tcp://"+server.Listener.Addr().String())
+	t.Setenv("DOCKER_API_VERSION", "1.51")
+	t.Setenv("DOCKER_CONFIG", t.TempDir())
+	t.Setenv("DOCKER_CONTEXT", "")
+	engine, err := containerdocker.New(t.Context(), io.Discard, io.Discard)
+	require.NoError(t, err)
+	defer engine.Close()
+	state := &devcontainer.State{PrimaryContainerID: "container", RemoteUser: "developer"}
+	err = startWebIDE(t.Context(), engine, state, nil, WebIDEConfiguration{Provider: "vscode"}, true, io.Discard)
+	require.ErrorContains(t, err, "resolve Dev Container remote user IDs")
+	require.ErrorContains(t, err, "unable to find user developer")
+}
 
 func TestCleanupCompletesAfterCancellation(t *testing.T) {
 	for _, action := range []string{"stop", "delete"} {
