@@ -10,9 +10,9 @@ interface EndpointDocument {
 
 /** Validate and detach the versioned endpoint CLI response. */
 export function parseEndpointList(output: string): Endpoint[] {
-  let document: EndpointDocument
+  let document: EndpointDocument | null
   try {
-    document = JSON.parse(output) as EndpointDocument
+    document = JSON.parse(output) as EndpointDocument | null
   } catch {
     throw new Error('The Codespace endpoint command returned invalid JSON')
   }
@@ -24,7 +24,7 @@ export function parseEndpointList(output: string): Endpoint[] {
     if (typeof value !== 'object' || value === null || Array.isArray(value)) {
       throw new Error('The Codespace endpoint command returned an invalid endpoint')
     }
-    const normalized = validateEndpoint(value as Endpoint)
+    const normalized = validateEndpoint(value as Record<string, unknown>)
     if (ports.has(normalized.port)) {
       throw new Error(`The Codespace endpoint command returned duplicate port ${normalized.port}`)
     }
@@ -61,7 +61,7 @@ export class EndpointClient {
   }
 }
 
-function validateEndpoint(endpoint: Endpoint): Endpoint {
+function validateEndpoint(endpoint: { port?: unknown; label?: unknown; visibility?: unknown }): Endpoint {
   validatePort(endpoint.port)
   if (typeof endpoint.label !== 'string') throw new Error('Endpoint label must be a string')
   const label = endpoint.label.trim()

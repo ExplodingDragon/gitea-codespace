@@ -68,13 +68,13 @@ export class CodespaceEndpointService extends TypertRemoteService {
   }
 
   @Remote
-  usbList(): Promise<USBList> {
-    return this.usb.list(this.ctx.invocation?.signal)
+  usbList(signal: AbortSignal): Promise<USBList> {
+    return this.usb.list(signal)
   }
 
   @Remote
-  usbStatus(): Promise<USBStatus> {
-    return this.usb.status(this.ctx.invocation?.signal)
+  usbStatus(signal: AbortSignal): Promise<USBStatus> {
+    return this.usb.status(signal)
   }
 
   @Remote

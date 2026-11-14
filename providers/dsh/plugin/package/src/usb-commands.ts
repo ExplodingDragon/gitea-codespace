@@ -8,20 +8,21 @@ const usage = 'Usage: /usb [sources | list [--source name] | status | attach <bu
 export async function executeUSBCommand(client: USBClient, input: string, signal?: AbortSignal): Promise<CommandResult> {
   try {
     const args = input.trim().split(/\s+/u)
-    const action = args[0] || 'status'
+    const [command, value = '', option, source] = args
+    const action = command || 'status'
     if (args.length === 1 && (action === 'list' || action === 'status' || action === 'sources')) {
       return { kind: 'success', text: JSON.stringify(await client[action](signal), null, 2) }
     }
-    if (args.length === 3 && action === 'list' && args[1] === '--source') {
-      return { kind: 'success', text: JSON.stringify(await client.list(signal, args[2]), null, 2) }
+    if (args.length === 3 && action === 'list' && value === '--source') {
+      return { kind: 'success', text: JSON.stringify(await client.list(signal, option), null, 2) }
     }
-    if (action === 'attach' && (args.length === 2 || (args.length === 4 && args[2] === '--source'))) {
-      await client.attach(args[1]!, args[3], signal)
-      return { kind: 'success', text: `USB/IP import completed for ${args[3] ? `${args[3]}/` : ''}${args[1]}. Device enumeration and application setup may still be pending.` }
+    if (action === 'attach' && (args.length === 2 || (args.length === 4 && option === '--source'))) {
+      await client.attach(value, source, signal)
+      return { kind: 'success', text: `USB/IP import completed for ${source ? `${source}/` : ''}${value}. Device enumeration and application setup may still be pending.` }
     }
-    if (args.length === 2 && action === 'detach' && /^\d+$/u.test(args[1]!)) {
-      await client.detach(Number(args[1]), signal)
-      return { kind: 'success', text: `Detached USB port ${args[1]}.` }
+    if (args.length === 2 && action === 'detach' && /^\d+$/u.test(value)) {
+      await client.detach(Number(value), signal)
+      return { kind: 'success', text: `Detached USB port ${value}.` }
     }
     throw new Error(usage)
   } catch (error) {

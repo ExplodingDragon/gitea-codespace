@@ -63,6 +63,7 @@ git -C "$work/source" apply "$source_root/codespace-integration.patch"
   pnpm install --filter @gitea/codespace-dsh --lockfile=false --prefer-offline
   pnpm exec tsx scripts/generate-typert.ts
   pnpm exec tsc -b packages/codespace/codespace/tsconfig.host.json packages/codespace/codespace/tsconfig.client.json
+  pnpm exec oxlint packages/codespace/codespace/src packages/codespace/codespace/tests
   pnpm --dir packages/codespace/codespace run bundle
   pnpm exec vitest run packages/codespace/codespace/tests
   if [ "$mode" = bundle ]; then

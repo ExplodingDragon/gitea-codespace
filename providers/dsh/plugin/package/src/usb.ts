@@ -9,7 +9,9 @@ const port = z.number().int().min(0).max(65535)
 const source = z.string().regex(usbSourcePattern)
 const device = z.object({ source: source.or(z.literal('')), busId: z.string(), description: z.string() })
 const listResponse = z.object({
-  version: z.literal(1), sources: z.array(z.object({ name: source, error: z.string().optional() }).transform(({ name, error }) => ({ name, ...(error === undefined ? {} : { error }) }))),
+  version: z.literal(1),
+  sources: z.array(z.object({ name: source, error: z.string().optional() })
+    .transform(({ name, error }) => ({ name, ...(error === undefined ? {} : { error }) }))),
   devices: z.array(device.extend({ source, busId: busID })),
 })
 const statusResponse = listResponse.extend({

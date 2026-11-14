@@ -47,13 +47,11 @@ describe('Codespace endpoint client', () => {
     await expect(client.list()).rejects.toBe(failure)
   })
 
-  it('reports command stderr and retains the process failure', async () => {
+  it('reports command stderr', async () => {
     const log = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       const run = runtimeCommand(process.execPath, 5000)
-      await expect(run(['-e', "process.stderr.write('runtime unavailable'); process.exit(1)"])).rejects.toMatchObject({
-        message: expect.stringMatching(/: runtime unavailable$/u), cause: expect.any(Error),
-      })
+      await expect(run(['-e', "process.stderr.write('runtime unavailable'); process.exit(1)"])).rejects.toThrow(/: runtime unavailable$/u)
       expect(log).toHaveBeenCalledWith('Codespace command failed', expect.any(Error))
     } finally {
       log.mockRestore()

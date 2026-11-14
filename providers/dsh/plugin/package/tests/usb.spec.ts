@@ -13,7 +13,9 @@ describe('Codespace USB commands and tools', () => {
     const client = new USBClient(runner, true)
     expect((await client.status()).devices[0]?.port).toBe(0)
     expect(await client.list()).toEqual({ sources: [{ name: 'lab' }], devices: [{ source: 'lab', busId: '1-1', description: 'CDC ACM' }] })
-    expect(await executeUSBCommand(client, 'attach 1-1 --source lab')).toMatchObject({ kind: 'success', text: expect.stringContaining('USB/IP import completed for lab/1-1') })
+    const result = await executeUSBCommand(client, 'attach 1-1 --source lab')
+    expect(result.kind).toBe('success')
+    expect(result.text).toContain('USB/IP import completed for lab/1-1')
     const commands = { register: vi.fn() }
     const tools = { register: vi.fn<(tool: ToolDefinition) => void>() }
     registerUSBCommands({ commands, tools } as unknown as Context, client)

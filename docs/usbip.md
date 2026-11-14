@@ -14,14 +14,15 @@ Dev Container and can be used by processes with the required device permissions.
 - Use a development image with the drivers' userspace tools and, when needed,
   udev or eudev rules for non-root device access.
 - Obtain the SSH user, host, and port from the Codespace page in Gitea, or use
-  the bundled IDE's **Copy USB tunnel command** action.
+  the bundled IDE's USB tunnel command described below.
 
 The bundled IDEs show **USB Devices** when the runtime provides USB/IP support.
 The Dev Container also receives `gitea-codespace-usbip` for command-line use.
 
 ## Connect a source
 
-In the IDE's USB view, choose **Copy USB tunnel command** and a source name
+In VS Code's USB view, choose **Copy USB tunnel command**. In DSH, open
+**Codespace → Connection help** and use the USB/IP section. Choose a source name
 (default: `workstation`). The command includes the current workspace's actual
 SSH connection details. Run it on the workstation and keep it running. In DSH,
 the generated command remains available for manual copying if the browser

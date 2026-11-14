@@ -1,10 +1,10 @@
 # Connect over SSH
 
 The Codespace page in Gitea shows the SSH connection details. The bundled
-VS Code extension and DeepSeek Harness plugin also provide **Copy SSH command**
-in their Ports interface. Run the copied command on your local computer with
-an SSH key registered in Gitea. The connection uses the existing Gateway
-authentication and SSH host-key verification.
+VS Code extension provides **Copy SSH command** in its Ports view; DeepSeek
+Harness provides it through **Codespace → Connection help**. Run the copied
+command on your local computer with an SSH key registered in Gitea. The
+connection uses the existing Gateway authentication and SSH host-key verification.
 
 The SSH login selects the Codespace; commands run as its Dev Container remote
 user. It is different from both your Gitea username and the container account.
@@ -68,7 +68,7 @@ Remote SSH. From your local computer:
 | Transfer files | `sftp my-codespace` |
 | Reach Dev Container port 8080 locally | `ssh -NT -L 127.0.0.1:8080:127.0.0.1:8080 my-codespace` |
 
-For remote USB devices, use **Copy USB tunnel command** in the IDE's USB view
-and follow the [USB connection guide](usbip.md#connect-a-source). Copying a
-command only prepares instructions; the connection begins when you run it on
-the computer that can reach the USB/IP server.
+For remote USB devices, obtain the tunnel command through the
+[USB connection guide](usbip.md#connect-a-source). Copying a command only prepares
+instructions; the connection begins when you run it on the computer that can
+reach the USB/IP server.

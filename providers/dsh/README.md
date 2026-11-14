@@ -100,10 +100,10 @@ DSH to adjust an existing codespace.
 
 ## Codespace ports
 
-The bundled Codespace plugin provides a **Ports** page for listing, publishing,
-editing, and removing Gateway endpoints. It uses the same runtime endpoint API
-as the Dev Container command, so changes made in DSH, VS Code, the command line,
-or an application script all update one authoritative list.
+The bundled Codespace plugin provides a **Codespace → Ports** tab for listing,
+publishing, editing, and removing Gateway endpoints. It uses the same runtime
+endpoint API as the Dev Container command, so changes made in DSH, VS Code, the
+command line, or an application script all update one authoritative list.
 
 The `/ports` command exposes the same operations in a DSH conversation:
 
@@ -121,27 +121,30 @@ explicitly because it allows requests without a Codespace user session.
 
 ## SSH access
 
-Use **Copy SSH command** in the Ports page to get the current workspace's SSH
-command. Run it on your local computer. The generated command remains visible
-for manual copying when the browser cannot access the clipboard. This action
+Open **Connection help** in the Codespace page to view and copy the current
+workspace's SSH command. Run it on your local computer. The command remains
+available for manual copying when the browser cannot access the clipboard. Help
 is available independently of USB support; see the [SSH guide](../../docs/ssh.md)
 for connection variables, SFTP, desktop editors, and port forwarding.
 
 ## USB devices
 
-Compatible Kata runtimes expose a **USB Devices** page with imported devices,
-source groups, remote device listing, attach and detach. First establish
+Compatible Kata runtimes expose a **USB Devices** tab in the Codespace page,
+with devices grouped by source and attach and detach actions. First establish
 the workstation's [SSH reverse tunnel](../../docs/usbip.md#connect-a-source)
-using **Copy USB tunnel command** and a source name (default: `workstation`).
-The page and its commands appear when the runtime provides the USB CLI; the
-page remains available if the tunnel disconnects so you can inspect or detach
-imported devices.
+using the USB/IP command in **Connection help** and a source name (default:
+`workstation`). The tab and USB commands appear when the runtime provides the USB
+CLI; the tab remains available if the tunnel disconnects so you can inspect or
+detach imported devices.
 
-**Refresh** updates local imports and the remote device list once that list is
-displayed. Devices already imported from a source are marked **Imported**.
-The page confirms detach; unmount disks first. See the
-[USB guide](../../docs/usbip.md#attach-and-detach-devices) for device status,
-refresh failures, and reconnecting a source.
+Opening the tab reads local imports and remote devices together. Each device
+appears once per source, with imported devices marked **Imported**. The tab
+refreshes automatically 10 seconds after each read finishes while it is visible;
+**Refresh** also starts a read manually. A failed source keeps its last list
+alongside the error, so other sources and imported devices remain manageable.
+Attach and detach refresh the actual state afterward. The tab confirms detach;
+unmount disks first. See the [USB guide](../../docs/usbip.md#attach-and-detach-devices)
+for device status, refresh failures, and reconnecting a source.
 
 The conversation command uses the same CLI as the page:
 

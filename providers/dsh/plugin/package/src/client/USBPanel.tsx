@@ -1,11 +1,10 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
-import { Button, IconLinkOutlineRegular, IconPlusOutlineRegular, IconRefreshOutlineRegular, IconTrashOutlineRegular } from '@deepseek-ai/dsh-client-ui-primitives'
-import type { InjectFace, PropsLocale, PropsRuntime } from '@deepseek-ai/dsh-client-ui-slots'
-import type { USBList, USBStatus } from '../types.ts'
+import { useEffect, useRef, useState } from 'react'
+import { Button, IconRefreshOutlineRegular, Modal, StateDot, Tag, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
+import type { PropsLocale } from '@deepseek-ai/dsh-client-ui-slots'
+import type { USBDevice, USBImportedDevice, USBList, USBStatus } from '../types.ts'
 import type { USBKey } from './usb-locales.ts'
-import css from './PortsPanel.module.css'
-import usbCSS from './USBPanel.module.css'
-import { ConnectionActions, type ConnectionInjected } from './ConnectionActions.tsx'
+import page from './CodespacePanel.module.css'
+import css from './USBPanel.module.css'
 
 declare module '@deepseek-ai/dsh-client-ui-slots' {
   interface LocaleNamespaceMap {
@@ -13,123 +12,185 @@ declare module '@deepseek-ai/dsh-client-ui-slots' {
   }
 }
 
-export interface USBPanelInjected extends ConnectionInjected {
-  status: () => Promise<USBStatus>
-  list: () => Promise<USBList>
+export interface USBPanelInjected {
+  status: (signal?: AbortSignal) => Promise<USBStatus>
+  list: (signal?: AbortSignal) => Promise<USBList>
   attach: (busId: string, source: string) => Promise<void>
   detach: (port: number) => Promise<void>
 }
 
-export type USBPanelProps = PropsRuntime<'main'> & InjectFace<USBPanelInjected> & PropsLocale<'codespace.usb'>
+export type USBPanelProps = USBPanelInjected & PropsLocale<'codespace.usb'> & { active: boolean }
 
-export function USBPanel({ status, list, attach, detach, connection, connectionT, t }: USBPanelProps) {
+export function USBPanel({ status, list, attach, detach, active, t }: USBPanelProps) {
   const [current, setCurrent] = useState<USBStatus | null>(null)
   const [exported, setExported] = useState<USBList | null>(null)
   const [pending, setPending] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
+  const [refreshVersion, setRefreshVersion] = useState(0)
+  const [visible, setVisible] = useState(document.visibilityState !== 'hidden')
   const [error, setError] = useState('')
   const [statusError, setStatusError] = useState('')
   const [listError, setListError] = useState('')
-  const busy = useRef(false)
+  const [confirmDevice, setConfirmDevice] = useState<USBImportedDevice | null>(null)
+  const readController = useRef<AbortController | null>(null)
+  const writing = useRef(false)
+  const mounted = useRef(false)
 
-  const run = useCallback(async (action?: () => Promise<void>, queryRemote = false) => {
-    if (busy.current) return
-    busy.current = true
-    setPending(true)
-    setError('')
-    try {
-      await action?.()
-    } catch (problem) {
-      setError(problem instanceof Error ? problem.message : String(problem))
+  useEffect(() => {
+    mounted.current = true
+    const visibility = () => { setVisible(document.visibilityState !== 'hidden') }
+    document.addEventListener('visibilitychange', visibility)
+    return () => {
+      mounted.current = false
+      document.removeEventListener('visibilitychange', visibility)
     }
-    // A failed mutation may still have taken effect. Refresh facts once.
-    let next: USBStatus | undefined
-    try {
-      next = await status()
-      setCurrent(next)
-      setStatusError('')
-    } catch (problem) {
-      setStatusError(problem instanceof Error ? problem.message : String(problem))
+  }, [])
+
+  useEffect(() => {
+    if (!active || !visible || pending) {
+      setRefreshing(false)
+      return
     }
-    if (queryRemote) {
+    const controller = new AbortController()
+    const { signal } = controller
+    readController.current = controller
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const refresh = async () => {
+      setRefreshing(true)
       try {
-        const result = next?.sources.length === 0 ? { sources: [], devices: [] } : await list()
-        if (next) {
-          const sources = new Set(next.sources.map(source => source.name))
-          result.sources = result.sources.filter(source => sources.has(source.name))
-          result.devices = result.devices.filter(device => sources.has(device.source))
+        let next: USBStatus
+        try {
+          next = await status(signal)
+          signal.throwIfAborted()
+          setCurrent(next)
+          setStatusError('')
+        } catch (problem) {
+          if (!signal.aborted) setStatusError(problem instanceof Error ? problem.message : String(problem))
+          return
         }
-        setExported(result)
-        setListError('')
-      } catch (problem) {
-        setExported(previous => previous ?? { sources: [], devices: [] })
-        setListError(problem instanceof Error ? problem.message : String(problem))
+        if (next.sources.length === 0) {
+          setExported({ sources: [], devices: [] })
+          setListError('')
+          return
+        }
+        try {
+          const result = await list(signal)
+          signal.throwIfAborted()
+          const registered = new Set(next.sources.map(source => source.name))
+          const sources = result.sources.filter(source => registered.has(source.name))
+          // Keep the last list only for failed sources; successful empty lists remove old devices.
+          setExported(previous => ({
+            sources,
+            devices: sources.flatMap(source => (source.error ? previous?.devices ?? [] : result.devices)
+              .filter(device => device.source === source.name)),
+          }))
+          setListError('')
+        } catch (problem) {
+          if (!signal.aborted) setListError(problem instanceof Error ? problem.message : String(problem))
+        }
+      } finally {
+        if (!signal.aborted) {
+          setRefreshing(false)
+          timer = setTimeout(() => { void refresh() }, 10000)
+        }
       }
     }
-    busy.current = false
-    setPending(false)
-  }, [status, list])
+    void refresh()
+    return () => {
+      controller.abort()
+      clearTimeout(timer)
+    }
+  }, [active, visible, pending, refreshVersion, status, list])
 
-  useEffect(() => { void run() }, [run])
+  const mutate = async (operation: () => Promise<void>) => {
+    if (writing.current) return
+    writing.current = true
+    readController.current?.abort()
+    setPending(true)
+    setError('')
+    setConfirmDevice(null)
+    try {
+      await operation()
+    } catch (problem) {
+      if (mounted.current) setError(problem instanceof Error ? problem.message : String(problem))
+    } finally {
+      writing.current = false
+      // Even a failed command may have changed the device. Restart the read cycle.
+      if (mounted.current) {
+        setPending(false)
+        setRefreshVersion(value => value + 1)
+      }
+    }
+  }
+
   const statusReady = current !== null && statusError === ''
+  const sources = [...new Set([
+    ...(current?.sources.map(source => source.name) ?? []),
+    ...(current?.devices.map(device => device.source) ?? []),
+  ])]
+  const canDetach = statusReady && current.devices.some(device => device.port === confirmDevice?.port
+    && device.source === confirmDevice.source && device.busId === confirmDevice.busId)
 
-  return <section className={css.page} aria-label={t('title')}>
-    <div className={css.content}>
-      <header className={css.header}>
-        <h1>{t('title')}</h1>
-        <div className={usbCSS.actions}>
-          <Button size="sm" variant="outline" icon={<IconRefreshOutlineRegular size={14} />} disabled={pending}
-            onClick={() => { void run(undefined, exported !== null) }}>{t('refresh')}</Button>
-          <Button size="sm" variant="outline" icon={<IconPlusOutlineRegular size={14} />} disabled={pending || !statusReady || !current?.sources.length}
-            onClick={() => { void run(undefined, true) }}>{t('list')}</Button>
-        </div>
-      </header>
-      <ConnectionActions connection={connection} connectionT={connectionT} usb />
-      <p role="status">{statusError !== '' ? t('stale') : current === null ? t('loading') : t(current.sources.length > 0 ? 'forwarded' : 'disconnected')}</p>
-      {(error || statusError || listError) && <div className={`${css.error} ${usbCSS.error}`} role="alert">
-        {error && <p>{t('operationFailed')}: {error}</p>}
-        {statusError && <p>{t('statusFailed')}: {statusError}</p>}
-        {listError && <p>{t('listFailed')}: {listError}</p>}
-      </div>}
-
-      <h2 className={usbCSS.heading}>{t('imported')}</h2>
-      {current !== null && current.devices.length === 0 && <p>{t('emptyImported')}</p>}
-      {[...new Set([...(current?.sources.map(source => source.name) ?? []), ...(current?.devices.map(device => device.source) ?? [])])].map(source => <section key={source}>
-        <h3 className={usbCSS.heading}>{source || t('unknownSource')}</h3>
-        <div className={css.list}>
-        {current?.devices.filter(device => device.source === source).map(device => <div className={usbCSS.row} key={device.port}>
-          <div className={usbCSS.device}><strong>{device.description}</strong><span>{t('port')} {device.port} · {device.busId || '?'} · {device.state}</span></div>
-          <Button size="sm" variant="outline" icon={<IconTrashOutlineRegular size={14} />} disabled={pending || !statusReady}
-            onClick={() => {
-              if (window.confirm(`${t('detach')} ${device.description} (${source || t('unknownSource')} / ${device.busId || '?'}, ${t('port')} ${device.port})?\n${t('detachWarning')}`)) {
-                void run(() => detach(device.port), exported !== null)
-              }
-            }}>{t('detach')}</Button>
-        </div>)}
-        </div>
-      </section>)}
-
-      {exported !== null && <>
-        <h2 className={usbCSS.heading}>{t('exported')}</h2>
-        {exported.sources.map(source => <section key={source.name}>
-          <h3 className={usbCSS.heading}>{source.name}</h3>
-          {source.error && <p className={css.error} role="alert">{source.error}</p>}
-          {!source.error && !exported.devices.some(device => device.source === source.name) && <p>{t('emptyExported')}</p>}
-          <div className={css.list}>
-          {exported.devices.filter(device => device.source === source.name).map(device => {
-            const imported = current?.devices.some(value => value.source === device.source && value.busId === device.busId)
-            return <div className={usbCSS.row} key={device.busId}>
-            <div className={usbCSS.device}><strong>{device.description}</strong><span>{device.busId}</span></div>
-            <Button size="sm" variant="outline" icon={<IconPlusOutlineRegular size={14} />}
-              disabled={pending || !statusReady || listError !== '' || Boolean(source.error) || !current?.sources.some(value => value.name === device.source) || imported}
-              onClick={() => { void run(() => attach(device.busId, device.source), true) }}>{t(imported ? 'attached' : 'attach')}</Button>
-          </div>})}
-          </div>
-        </section>)}
-      </>}
+  return <section aria-label={t('title')}>
+    <div className={page.toolbar}>
+      <p className={page.status} role="status">
+        {statusError ? t('stale') : current === null ? t('loading') : t(current.sources.length > 0 ? 'forwarded' : 'disconnected')}
+      </p>
+      <Tooltip label={t('refresh')} portal>
+        <Button className={page.iconButton} size="sm" variant="ghost" aria-label={t('refresh')} aria-busy={refreshing}
+          disabled={pending || refreshing} onClick={() => { setError(''); setRefreshVersion(value => value + 1) }}>
+          {refreshing ? <StateDot state="ongoing" size={16} /> : <IconRefreshOutlineRegular size={16} />}
+        </Button>
+      </Tooltip>
     </div>
+    {(error || statusError || listError) && <div className={page.error} role="alert">
+      {error && <p>{t('operationFailed')}: {error}</p>}
+      {statusError && <p>{t('statusFailed')}: {statusError}</p>}
+      {listError && <p>{t('listFailed')}: {listError}</p>}
+    </div>}
+    {statusReady && sources.length === 0 && <p className={page.feedback}>{t('empty')}</p>}
+    {sources.map((source) => {
+      const registered = current?.sources.some(value => value.name === source) ?? false
+      const sourceError = exported?.sources.find(value => value.name === source)?.error
+      const imported = current?.devices.filter(device => device.source === source) ?? []
+      const rows: { device: USBDevice; imported?: USBImportedDevice }[] = [
+        ...imported.map(device => ({ device, imported: device })),
+        ...(registered ? exported?.devices.filter(device => device.source === source
+          && !imported.some(value => value.busId === device.busId)).map(device => ({ device })) ?? [] : []),
+      ]
+      return <section key={source} className={css.group} aria-label={source || t('unknownSource')}>
+        <header className={css.heading}>
+          <h2>{source || t('unknownSource')}</h2>
+          {!registered && <span>{t('sourceDisconnected')}</span>}
+        </header>
+        {sourceError && <p className={page.error} role="alert">{t('listFailed')}: {sourceError}</p>}
+        {rows.length === 0 && !sourceError && !listError && <p className={page.feedback}>{t(refreshing ? 'loading' : 'empty')}</p>}
+        {rows.map(({ device, imported }) => <div className={css.row} key={imported ? `port:${imported.port}` : `bus:${device.busId}`}>
+          <div className={css.device}>
+            <strong>{device.description}</strong>
+            <span>{device.busId || '?'}{imported && <> · {t('port')} {imported.port} · {imported.state}</>}</span>
+          </div>
+          <Tag tone="neutral">{t(imported ? 'attached' : 'unattached')}</Tag>
+          {imported
+            ? <Button size="sm" variant="outline" disabled={pending || !statusReady}
+              onClick={() => { setConfirmDevice(imported) }}>{t('detach')}</Button>
+            : <Button size="sm" variant="outline" disabled={pending || !statusReady || listError !== '' || Boolean(sourceError)}
+              onClick={() => { void mutate(() => attach(device.busId, device.source)) }}>{t('attach')}</Button>}
+        </div>)}
+      </section>
+    })}
+    <Modal open={confirmDevice !== null && active} onClose={() => { setConfirmDevice(null) }} title={t('detach')}
+      closeLabel={t('close')} tone="warning" description={t('detachWarning')}
+      footer={<>
+        <Button size="sm" onClick={() => { setConfirmDevice(null) }}>{t('cancel')}</Button>
+        <Button size="sm" variant="primary" disabled={pending || !canDetach}
+          onClick={() => { if (confirmDevice) void mutate(() => detach(confirmDevice.port)) }}>{t('detach')}</Button>
+      </>}>
+      {confirmDevice && <p className={css.confirmDevice}>{confirmDevice.description}<br />
+        {confirmDevice.source || t('unknownSource')} / {confirmDevice.busId || '?'} · {t('port')} {confirmDevice.port}
+      </p>}
+      {!canDetach && <p className={page.status}>{t('stale')}</p>}
+    </Modal>
   </section>
-}
-
-export function USBPanelIcon({ size }: PropsRuntime<'sidebar.panellist'>) {
-  return <IconLinkOutlineRegular size={size} />
 }

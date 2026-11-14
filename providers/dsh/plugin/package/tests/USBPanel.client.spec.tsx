@@ -1,98 +1,112 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, expect, it, vi } from 'vitest'
 import { USBPanel, type USBPanelProps } from '../src/client/USBPanel.tsx'
-import { apply } from '../src/client/index.tsx'
+import type { USBList, USBStatus } from '../src/types.ts'
 
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => { cleanup(); vi.useRealTimers(); vi.restoreAllMocks() })
 
-it('refreshes after an uncertain detach and keeps devices visible without forwarding', async () => {
-  const status = vi.fn(async () => ({ sources: [], devices: [{ source: '', busId: '1-1', description: 'CDC ACM', port: 0, state: 'Port in Use' }] }))
+const device = { source: 'workstation', busId: '1-3', description: 'USB disk' }
+const imported = { ...device, port: 0, state: 'Port in Use' }
+const t = (key: string) => key
+
+it('refreshes only while visible and active, waits for slow reads and cancels on exit', async () => {
+  vi.useFakeTimers()
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const slow = Promise.withResolvers<USBList>()
+  const status = vi.fn(async () => ({ sources: [{ name: 'workstation' }], devices: [] }))
+  const list = vi.fn(async (_signal?: AbortSignal) => slow.promise)
+  const props = { status, list, attach: vi.fn(), detach: vi.fn(), active: true, t } as USBPanelProps
+  const { rerender, unmount } = render(<USBPanel {...props} />)
+  await act(async () => {})
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(list).toHaveBeenCalledTimes(1)
+  await act(async () => { slow.resolve({ sources: [{ name: 'workstation' }], devices: [device] }) })
+  expect(screen.getByText('USB disk')).toBeDefined()
+  await act(async () => { await vi.advanceTimersByTimeAsync(10000) })
+  expect(list).toHaveBeenCalledTimes(2)
+  visibility.mockReturnValue('hidden')
+  fireEvent(document, new Event('visibilitychange'))
+  expect(list.mock.calls[1]?.[0]?.aborted).toBe(true)
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(status).toHaveBeenCalledTimes(2)
+  visibility.mockReturnValue('visible')
+  fireEvent(document, new Event('visibilitychange'))
+  await act(async () => {})
+  expect(status).toHaveBeenCalledTimes(3)
+  rerender(<USBPanel {...props} active={false} />)
+  await act(async () => { await vi.advanceTimersByTimeAsync(30000) })
+  expect(status).toHaveBeenCalledTimes(3)
+  rerender(<USBPanel {...props} />)
+  await act(async () => {})
+  expect(status).toHaveBeenCalledTimes(4)
+  unmount()
+  expect(list.mock.calls.at(-1)?.[0]?.aborted).toBe(true)
+  await vi.advanceTimersByTimeAsync(30000)
+  expect(list).toHaveBeenCalledTimes(4)
+})
+
+it('merges devices per source and retains usable local devices when sources fail or disconnect', async () => {
+  const status = vi.fn<() => Promise<USBStatus>>(async () => ({ sources: [{ name: 'workstation' }, { name: 'lab' }], devices: [imported] }))
+  const list = vi.fn<() => Promise<USBList>>(async () => ({ sources: [{ name: 'workstation' }, { name: 'lab' }], devices: [device, { ...device, source: 'lab' }] }))
   const detach = vi.fn(async () => { throw new Error('Request timed out') })
-  render(<USBPanel {...({ status, detach, list: vi.fn(), attach: vi.fn(), connection: null, connectionT: (key: string) => key, t: (key: string) => key } as unknown as USBPanelProps)} />)
-  expect(await screen.findByText('CDC ACM')).toBeDefined()
-  expect(screen.getByText('disconnected')).toBeDefined()
-  expect((screen.getByText('list').closest('button') as HTMLButtonElement).disabled).toBe(true)
-  const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false)
-  fireEvent.click(screen.getByText('detach'))
+  render(<USBPanel status={status} list={list} attach={vi.fn()} detach={detach} active t={t} />)
+  await waitFor(() => { expect(screen.getAllByText('USB disk')).toHaveLength(2) })
+  expect(within(screen.getByRole('region', { name: 'workstation' })).getAllByText('USB disk')).toHaveLength(1)
+  expect(within(screen.getByRole('region', { name: 'lab' })).getByRole('button', { name: 'attach' }).hasAttribute('disabled')).toBe(false)
+
+  list.mockResolvedValueOnce({ sources: [{ name: 'workstation' }, { name: 'lab', error: 'Server unavailable' }], devices: [device] })
+  fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
+  expect((await screen.findByRole('alert')).textContent).toContain('Server unavailable')
+  expect(within(screen.getByRole('region', { name: 'lab' })).getByRole('button', { name: 'attach' }).hasAttribute('disabled')).toBe(true)
+  expect(screen.getAllByText('USB disk')).toHaveLength(2)
+  expect(screen.getByRole('button', { name: 'detach' }).hasAttribute('disabled')).toBe(false)
+
+  status.mockResolvedValue({ sources: [], devices: [imported] })
+  fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
+  await screen.findByText('sourceDisconnected')
+  expect(screen.getAllByText('USB disk')).toHaveLength(1)
+  expect(list).toHaveBeenCalledTimes(2)
+  fireEvent.click(screen.getByRole('button', { name: 'detach' }))
+  expect(screen.getByRole('dialog').textContent).toContain('port 0')
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'cancel' }))
   expect(detach).not.toHaveBeenCalled()
-  expect(confirm).toHaveBeenCalledWith(expect.stringContaining('port 0'))
-  confirm.mockReturnValue(true)
+  fireEvent.click(screen.getByRole('button', { name: 'detach' }))
   status.mockRejectedValueOnce(new Error('Status unavailable'))
-  fireEvent.click(screen.getByText('detach'))
-  await waitFor(() => { expect(status).toHaveBeenCalledTimes(2) })
+  fireEvent.click(within(screen.getByRole('dialog')).getByRole('button', { name: 'detach' }))
+  await waitFor(() => { expect(screen.getByRole('alert').textContent).toContain('Status unavailable') })
   expect(detach).toHaveBeenCalledWith(0)
-  expect(screen.getByText('CDC ACM')).toBeDefined()
   expect(screen.getByRole('alert').textContent).toContain('Request timed out')
-  expect(screen.getByRole('alert').textContent).toContain('Status unavailable')
-  expect(screen.getByRole('status').textContent).toBe('stale')
-  expect((screen.getByText('detach').closest('button') as HTMLButtonElement).disabled).toBe(true)
-  fireEvent.click(screen.getByText('refresh'))
-  await waitFor(() => { expect((screen.getByText('detach').closest('button') as HTMLButtonElement).disabled).toBe(false) })
-  expect(screen.queryByRole('alert')).toBeNull()
+  expect(screen.getByRole('button', { name: 'detach' }).hasAttribute('disabled')).toBe(true)
 })
 
-it('refreshes remote devices and distinguishes identical bus IDs across sources', async () => {
-  const device = { source: 'workstation', busId: '1-3', description: 'USB disk' }
-  const status = vi.fn(async () => ({ sources: [{ name: 'workstation' }, { name: 'lab' }, { name: 'offline' }], devices: [{ ...device, port: 0, state: 'Port in Use' }] }))
-  const list = vi.fn(async () => ({ sources: [{ name: 'workstation' }, { name: 'lab' }, { name: 'offline', error: 'Server unavailable' }],
-    devices: [device, { ...device, source: 'lab' }],
-  }))
-  const attach = vi.fn(async () => {})
-  render(<USBPanel {...({ status, list, attach, detach: vi.fn(), connection: null, connectionT: (key: string) => key, t: (key: string) => key } as unknown as USBPanelProps)} />)
-  await waitFor(() => { expect((screen.getByText('list').closest('button') as HTMLButtonElement).disabled).toBe(false) })
-  expect(list).not.toHaveBeenCalled()
-  fireEvent.click(screen.getByText('list'))
-  await waitFor(() => { expect((screen.getByText('attach').closest('button') as HTMLButtonElement).disabled).toBe(false) })
-  expect((screen.getByText('attached').closest('button') as HTMLButtonElement).disabled).toBe(true)
-  expect(screen.getByRole('alert').textContent).toContain('Server unavailable')
-  fireEvent.click(screen.getByText('attach'))
+it('prioritizes a mutation over slow refresh and ignores its late result', async () => {
+  const visibility = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('visible')
+  const status = vi.fn<() => Promise<USBStatus>>(async () => ({ sources: [{ name: 'workstation' }], devices: [] }))
+  const list = vi.fn(async (_signal?: AbortSignal) => ({ sources: [{ name: 'workstation' }], devices: [device] }))
+  const attach = vi.fn(async () => {
+    status.mockResolvedValue({ sources: [{ name: 'workstation' }], devices: [imported] })
+    throw new Error('Operation result uncertain')
+  })
+  const slow = Promise.withResolvers<USBList>()
+  render(<USBPanel status={status} list={list} attach={attach} detach={vi.fn()} active t={t} />)
+  await screen.findByText('USB disk')
+  list.mockImplementationOnce(() => slow.promise)
+  fireEvent.click(screen.getByRole('button', { name: 'refresh' }))
   await waitFor(() => { expect(list).toHaveBeenCalledTimes(2) })
-  expect(attach).toHaveBeenCalledWith('1-3', 'lab')
-  list.mockRejectedValueOnce(new Error('Remote query failed'))
-  fireEvent.click(screen.getByText('refresh'))
-  expect(await screen.findByText('listFailed: Remote query failed')).toBeDefined()
-  expect((screen.getByText('attach').closest('button') as HTMLButtonElement).disabled).toBe(true)
-  status.mockResolvedValue({ sources: [{ name: 'lab' }], devices: [] })
-  list.mockResolvedValue({ sources: [{ name: 'lab' }], devices: [{ ...device, source: 'lab', description: 'Replacement disk' }] })
-  fireEvent.click(screen.getByText('refresh'))
-  expect(await screen.findByText('Replacement disk')).toBeDefined()
-  await waitFor(() => { expect((screen.getByText('attach').closest('button') as HTMLButtonElement).disabled).toBe(false) })
-  expect(screen.queryByText('workstation')).toBeNull()
-  expect(screen.queryByText('USB disk')).toBeNull()
-  expect(screen.queryByRole('alert')).toBeNull()
-})
-
-it('keeps Ports registered when USB capability discovery is temporarily unavailable', async () => {
-  const registered: string[] = []
-  const disposeRemote = vi.fn()
-  const disposeUI = vi.fn()
-  const warning = vi.spyOn(console, 'warn').mockImplementation(() => {})
-  const scope = {
-    remote: {
-      $mount: async () => disposeRemote,
-      codespace: { sshConnection: async () => ({ ok: true, value: null }), usbAvailable: async () => { throw new Error('Connection interrupted') } },
-    },
-    locale: { register: () => {}, bind: () => (key: string) => key },
-    slots: {
-      inject: (_name: string, callback: () => void) => callback(),
-      register: (slot: { key?: string; id?: string }) => { registered.push(slot.key ?? slot.id ?? '') },
-    },
-    effect: (callback: () => void) => callback(),
-    inject: (_names: string[], callback: (context: unknown) => Promise<void>) =>
-      Object.assign(Promise.resolve().then(() => callback(scope)), { dispose: disposeUI }),
-  }
-  try {
-    const dispose = await apply(scope as unknown as Parameters<typeof apply>[0])
-    expect(registered).toEqual(['codespace-ports', 'codespace-ports'])
-    expect(warning).toHaveBeenCalledWith('Codespace USB capability query failed', expect.any(Error))
-    expect(disposeRemote).not.toHaveBeenCalled()
-    expect(disposeUI).not.toHaveBeenCalled()
-    await dispose()
-    expect(disposeUI).toHaveBeenCalledTimes(1)
-    expect(disposeRemote).toHaveBeenCalledTimes(1)
-  } finally {
-    warning.mockRestore()
-  }
+  const oldSignal = list.mock.calls[1]?.[0]
+  fireEvent.click(screen.getByRole('button', { name: 'attach' }))
+  expect(oldSignal?.aborted).toBe(true)
+  await screen.findByRole('button', { name: 'detach' })
+  expect(attach).toHaveBeenCalledWith('1-3', 'workstation')
+  await act(async () => { slow.resolve({ sources: [{ name: 'workstation' }], devices: [{ ...device, busId: '2-9', description: 'Old result' }] }) })
+  expect(screen.queryByText('Old result')).toBeNull()
+  expect(screen.getByRole('alert').textContent).toContain('Operation result uncertain')
+  visibility.mockReturnValue('hidden')
+  fireEvent(document, new Event('visibilitychange'))
+  visibility.mockReturnValue('visible')
+  fireEvent(document, new Event('visibilitychange'))
+  await waitFor(() => { expect(list).toHaveBeenCalledTimes(4) })
+  expect(screen.getByRole('alert').textContent).toContain('Operation result uncertain')
 })

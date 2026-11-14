@@ -5,24 +5,22 @@ import type {} from '@deepseek-ai/dsh-client-ui-renderer/client'
 import type {} from '@deepseek-ai/dsh-client-ui-sidebar/client'
 import type {} from '@deepseek-ai/dsh-api-gateway/client'
 import codespaceRemote from '@gitea/codespace-dsh/remote'
-import { PortsPanel, PortsPanelIcon, type PortsPanelInjected } from './PortsPanel.tsx'
+import { CodespacePanel, CodespacePanelIcon, type CodespacePanelInjected } from './CodespacePanel.tsx'
 import { de, en, es, fr, ja, NS, pt, ru, zh } from './locales.ts'
-import { USBPanel, USBPanelIcon, type USBPanelInjected } from './USBPanel.tsx'
 import { USB_NS, usbLocales } from './usb-locales.ts'
 import type { SSHConnection } from '../types.ts'
 import { CONNECTION_NS, connectionLocales } from './connection-locales.ts'
 
-const PANEL_ID = 'codespace-ports' as MainPanelId
+const PANEL_ID = 'codespace' as MainPanelId
 
 /** Services and UI surfaces required by the Codespace Client contribution. */
 export const inject = ['remote', 'slots', 'locale']
 
-/** Mount the generated Remote namespace and the global Ports panel. */
+/** Mount the generated Remote namespace and the Codespace management panel. */
 export async function apply(ctx: Context): Promise<() => Promise<void>> {
   const disposeRemote = await ctx.remote.$mount(codespaceRemote)
   const ui = ctx.inject(['remote.codespace', 'slots', 'locale'], async (scope) => {
     scope.effect(() => scope.locale.register(NS, { zh, en, ja, es, fr, de, ru, pt }), 'codespace: port dictionaries')
-    const t = scope.locale.bind(NS)
     const unwrap = async <T,>(operation: () => Promise<{ ok: true; value: T } | { ok: false; error: { message: string } }>): Promise<T> => {
       const result = await operation()
       if (!result.ok) throw new Error(result.error.message)
@@ -35,44 +33,35 @@ export async function apply(ctx: Context): Promise<() => Promise<void>> {
     } catch (error) {
       console.warn('Codespace SSH connection query failed', error)
     }
-    const connectionT = scope.locale.bind(CONNECTION_NS)
-    const injected: PortsPanelInjected = {
-      connection, connectionT,
-      list: () => unwrap(() => scope.remote.codespace.list()),
-      publish: endpoint => unwrap(() => scope.remote.codespace.publish(endpoint)),
-      unpublish: port => unwrap(() => scope.remote.codespace.unpublish(port)),
-    }
-    scope.effect(() => scope.slots.inject('main', () => scope.slots.register({
-      name: 'main', key: PANEL_ID, locale: NS, inject: () => injected,
-    }, PortsPanel)), 'codespace: ports panel')
-    scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register({
-      name: 'sidebar.panellist', id: PANEL_ID, order: 20, locale: NS, label: () => t('panel'),
-    }, PortsPanelIcon)), 'codespace: ports navigation')
-
     let usbAvailable = false
     try {
       usbAvailable = await unwrap(() => scope.remote.codespace.usbAvailable())
     } catch (error) {
       console.warn('Codespace USB capability query failed', error)
     }
-    if (usbAvailable) {
-      scope.effect(() => scope.locale.register(USB_NS, usbLocales), 'codespace: USB dictionaries')
-      const usbT = scope.locale.bind(USB_NS)
-      const usbPanel = 'codespace-usb' as MainPanelId
-      const usb: USBPanelInjected = {
-        connection, connectionT,
-        status: () => unwrap(() => scope.remote.codespace.usbStatus()),
-        list: () => unwrap(() => scope.remote.codespace.usbList()),
+    scope.effect(() => scope.locale.register(USB_NS, usbLocales), 'codespace: USB dictionaries')
+    const injected: CodespacePanelInjected = {
+      connection,
+      portsT: scope.locale.bind(NS),
+      usbT: scope.locale.bind(USB_NS),
+      ports: {
+        list: () => unwrap(() => scope.remote.codespace.list()),
+        publish: endpoint => unwrap(() => scope.remote.codespace.publish(endpoint)),
+        unpublish: port => unwrap(() => scope.remote.codespace.unpublish(port)),
+      },
+      usb: usbAvailable ? {
+        status: signal => unwrap(() => scope.remote.codespace.usbStatus(signal)),
+        list: signal => unwrap(() => scope.remote.codespace.usbList(signal)),
         attach: (busId, source) => unwrap(() => scope.remote.codespace.usbAttach(busId, source)),
         detach: port => unwrap(() => scope.remote.codespace.usbDetach(port)),
-      }
-      scope.effect(() => scope.slots.inject('main', () => scope.slots.register({
-        name: 'main', key: usbPanel, locale: USB_NS, inject: () => usb,
-      }, USBPanel)), 'codespace: USB panel')
-      scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register({
-        name: 'sidebar.panellist', id: usbPanel, order: 21, locale: USB_NS, label: () => usbT('title'),
-      }, USBPanelIcon)), 'codespace: USB navigation')
+      } : null,
     }
+    scope.effect(() => scope.slots.inject('main', () => scope.slots.register({
+      name: 'main', key: PANEL_ID, locale: CONNECTION_NS, inject: () => injected,
+    }, CodespacePanel)), 'codespace: management panel')
+    scope.effect(() => scope.slots.inject('sidebar.panellist', () => scope.slots.register({
+      name: 'sidebar.panellist', id: PANEL_ID, order: 20, label: () => 'Codespace',
+    }, CodespacePanelIcon)), 'codespace: navigation')
   })
   try {
     await ui

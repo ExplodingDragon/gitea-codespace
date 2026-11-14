@@ -30,7 +30,7 @@ export interface USBImportedDevice extends USBDevice {
 }
 
 export interface USBList {
-  sources: { name: string, error?: string }[]
+  sources: { name: string; error?: string }[]
   devices: USBDevice[]
 }
 

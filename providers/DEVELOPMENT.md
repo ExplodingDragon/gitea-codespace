@@ -492,8 +492,9 @@ make -C providers/vscode check
 make -C providers/dsh check
 ```
 
-The DSH check fetches its pinned upstream sources and bundles the Codespace
-plugin against them. Its [version file](dsh/version.env) pins the source release,
+The DSH check fetches its pinned upstream sources, type-checks and lints the
+Codespace plugin, then bundles and tests it against that version. Its
+[version file](dsh/version.env) pins the source release,
 commit, pnpm version, and Node archive checksums; update the checksums with
 [`.node-version`](dsh/.node-version) so the toolchain and verified downloads
 stay consistent. VS Code uses its [version file](vscode/version.env) as the

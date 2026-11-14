@@ -16,7 +16,7 @@ export function runtimeCommand(file: string, timeout: number): CommandRunner {
         encoding: 'utf8', maxBuffer: 1024 * 1024, signal, timeout,
       })
     } catch (error) {
-      console.error('Codespace command failed', error)
+      if (!signal?.aborted) console.error('Codespace command failed', error)
       const stderr = (error as { stderr?: unknown } | null)?.stderr
       const detail = typeof stderr === 'string' && stderr.trim() ? stderr.trim() : error instanceof Error ? error.message : String(error)
       throw new Error(`${args.join(' ')}: ${detail}`, { cause: error })

@@ -1,0 +1,11 @@
+.dialog { width: min(640px, calc(100vw - 32px)); max-height: calc(100dvh - 32px); overflow: auto; }
+.address { margin: 0; overflow-wrap: anywhere; font-family: monospace; }
+.hint { color: var(--dsw-alias-label-secondary); font-size: 13px; }
+.section { margin-top: 20px; }
+.section h3 { margin: 0 0 8px; font-size: 14px; font-weight: 500; }
+.source { display: grid; gap: 6px; margin-bottom: 12px; font-size: 13px; }
+.source input { width: min(100%, 240px); }
+.command { display: flex; align-items: flex-start; gap: 4px; padding: 8px; border: 1px solid var(--dsw-alias-border-l3); border-radius: 8px; background: var(--dsw-alias-bg-base); }
+.command textarea { display: block; flex: 1; min-width: 0; padding: 0; resize: vertical; border: 0; color: inherit; background: transparent; font: 12px/1.6 monospace; overflow-wrap: anywhere; }
+.copy { width: 32px; height: 32px; padding: 0; flex-shrink: 0; }
+.error { color: var(--dsw-alias-state-error-primary); font-size: 13px; }
