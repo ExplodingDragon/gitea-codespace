@@ -12,17 +12,12 @@ This guide describes provider protocol version 1. The fake provider under
 
 When creating a template with Web IDE enabled or changing its enabled Web IDE
 configuration, Manager validates the provider's OCI metadata and options, then
-records the selected tag or explicit `sha256` digest. Other template edits retain
-the validated Web IDE configuration so they can be saved independently of registry
-availability. Image names use [Docker's reference rules](README.md), with
-`latest` as the default tag; when both a tag and digest are present, the digest
-selects the content. A new Codespace copies that configuration into its runtime
-snapshot; later template edits apply to subsequently created Codespaces.
-
-New or replacement Pods pull tagged images with `Always`, including during
-resume. Explicit digests use `IfNotPresent`. A running Pod keeps its mounted
-content; use a digest to keep the same program across Pod replacements. Node
-image caches reuse layers with matching digests under either policy.
+records the selected image reference. Other template edits retain the validated
+Web IDE configuration so they can be saved independently of registry availability.
+A new Codespace copies that configuration into its runtime snapshot; later
+template edits apply to subsequently created Codespaces. See the
+[provider overview](README.md) for image reference formats, pull policies, and
+when image updates take effect.
 
 Each start uses that snapshot:
 
@@ -446,17 +441,16 @@ and verify that editor state survives a stop and resume. Use the
 
 1. Open **Environment templates** in the administration panel.
 2. Enter a registry image with an optional tag or explicit digest and select
-   **Resolve**. An omitted tag defaults to `latest`.
+   **Resolve**.
 3. Review the provider name, version, platforms, and generated default options.
 4. Save the environment template. Manager validates the options and preserves
    the normalized image reference.
 5. Create a codespace with that environment and open its browser workspace.
 
-Publishing to an existing tag makes the update available to new or replacement
-Pods using that tag. Resolve the image again to inspect its current metadata;
-the displayed version describes that lookup, while the saved tag can change
-later. To select a different reference or options, edit and save the template.
-The [lifecycle](#lifecycle) snapshot rules determine which Codespaces use it.
+Resolve the image again to inspect its current metadata; the displayed version
+describes that lookup. Edit and save the template to select a different reference
+or options. The [lifecycle](#lifecycle) snapshot rules determine which Codespaces
+use that configuration.
 
 ### Implementation acceptance criteria
 
@@ -469,8 +463,9 @@ On `main`, each official provider publishes `latest` and its actual bundle
 version to the same `linux/amd64` + `linux/arm64` index. Publishing verifies
 both platform build records use the same version before creating the index.
 PRs and manual runs on other branches validate without publishing. Version tags
-can receive adapter or plugin fixes for the same editor version; use an explicit
-digest to select exact content independently of those updates.
+can receive adapter or plugin fixes for the same editor version; the
+[provider overview](README.md) explains how administrators select updates or
+fixed content.
 
 The official VS Code and DeepSeek Harness providers restart their editor after
 every exit, with a one-second delay to avoid a tight failure loop. They restart

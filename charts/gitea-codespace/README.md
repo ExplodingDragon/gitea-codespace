@@ -158,6 +158,12 @@ existing cluster infrastructure. Configure public DNS and TLS at that boundary.
 Configure Gateway trusted proxy CIDRs when a reverse proxy connects directly to
 Gateway.
 
+Workspace HTTP requests renew the browser session; active WebSocket and SSE
+connections keep it valid, with the idle timeout starting when the last request
+ends. Authenticated application ports retain a fixed session lifetime and their
+own idle timeout; their traffic does not renew the Workspace session. Reopen an
+expired session from Gitea so Gateway can authenticate it again.
+
 ### Verify
 
 - The published HTTP address supports browser navigation and WebSocket
@@ -166,6 +172,8 @@ Gateway.
   and port.
 - Gateway Services remain reachable inside the cluster when public publishing
   is managed by separate infrastructure.
+- An active Workspace remains accessible across its ticket lifetime; ordinary
+  application port traffic does not extend an idle Workspace session.
 
 ## Configure network access
 

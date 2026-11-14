@@ -31,6 +31,11 @@ const (
 	gatewayHTTPReadHeaderTime            = 10 * time.Second
 )
 
+type workspaceActivityAcknowledgement struct {
+	registry *sessionRegistry
+	revision uint64
+}
+
 // Run serves the external HTTP and SSH protocols while Manager supplies
 // configuration, authorization and current Runtime targets.
 func Run(ctx context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, health *healthcheck.State) error {
@@ -63,9 +68,17 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 			}
 			continue
 		}
+		pendingActivity := make(map[uint64]workspaceActivityAcknowledgement)
 		sendActivity := func() error {
 			sequence++
-			return stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: sessionID, Sequence: sequence, ActiveSessions: gatewayActivity(runtime)})
+			request := &componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: sessionID, Sequence: sequence}
+			if runtime != nil {
+				activity := runtime.sessions.Activity(time.Now())
+				request.ActiveSessions = activity.runtimes
+				request.WorkspaceSessions = activity.workspaces
+				pendingActivity[sequence] = workspaceActivityAcknowledgement{registry: runtime.sessions, revision: activity.revision}
+			}
+			return stream.Send(request)
 		}
 		if err := sendActivity(); err != nil {
 			cancelStream()
@@ -105,6 +118,12 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 					break
 				}
 				responseSequence = response.Sequence
+				for sent, activity := range pendingActivity {
+					if sent <= response.Sequence {
+						activity.registry.acknowledgeWorkspaceActivity(activity.revision)
+						delete(pendingActivity, sent)
+					}
+				}
 				permitUntil = time.Now().Add(time.Duration(response.PermitValidForMilliseconds) * time.Millisecond)
 				if !permit.Stop() {
 					select {
@@ -202,17 +221,6 @@ func gatewayActivityChanges(runtime *runningGateway) <-chan struct{} {
 	return runtime.sessions.ActivityChanges()
 }
 
-func gatewayActivity(runtime *runningGateway) map[string]int64 {
-	counts := make(map[string]int64)
-	if runtime == nil || runtime.sessions == nil {
-		return counts
-	}
-	for runtimeUUID, count := range runtime.sessions.Activity(time.Now()) {
-		counts[runtimeUUID] = int64(count)
-	}
-	return counts
-}
-
 func waitGatewayReconnect(ctx context.Context) bool {
 	select {
 	case <-ctx.Done():
@@ -281,6 +289,7 @@ func startGateway(parent context.Context, output io.Writer, client componentv1co
 		_ = sshLn.Close()
 		return nil, fmt.Errorf("initialize Gateway sessions: %w", err)
 	}
+	sessions.requireWorkspaceAck = true
 	access := newAccessControllerFromConfig(config)
 	control := &componentControlPlane{Client: client}
 	origin, err := newOriginPolicy(config.HTTP.PublicURL)

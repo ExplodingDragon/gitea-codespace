@@ -283,6 +283,7 @@
     "trustedProxiesHelp": "これらのネットワークからの直接接続だけが X-Forwarded-For を提供できます。Service に直接到達する場合は空にします。",
     "sessions": "セッションと制限",
     "sessionLifetime": "セッション有効期間",
+    "sessionLifetimeHelp": "Workspace のチケットはセッションがアクティブな間更新され、最後のリクエストまたは接続の終了後にアイドルタイムアウトが始まります。Web 転送ポートでは、この値がセッションの最大有効期間です。",
     "idleTimeout": "アイドルタイムアウト",
     "authRefresh": "認可更新間隔",
     "sessionsPerCodespace": "Codespace ごとのセッション数",

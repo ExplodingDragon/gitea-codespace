@@ -116,9 +116,9 @@ gitea-codespace-endpoint set 8080 --label "Public preview" --public
 gitea-codespace-endpoint delete 8080
 ```
 
-Authenticated ports require the current Gitea session. Use `--public` only for
-services that are intended to be reachable without that session. The Codespace
-page shows the resulting Gateway URL for every published port.
+Open authenticated ports from the Gitea Codespace page to establish a Gateway
+session. Use `--public` only for services intended to be accessible without a
+Gateway session. The Codespace page shows the Gateway URL for each published port.
 
 ## Connect a remote USB device
 

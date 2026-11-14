@@ -3,7 +3,11 @@
 
 package gateway
 
-import "context"
+import (
+	"context"
+
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
+)
 
 type gatewayControlPlaneClient interface {
 	ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error)
@@ -11,6 +15,7 @@ type gatewayControlPlaneClient interface {
 	VerifySSHPublicKey(context.Context, string, []byte) (gatewaySSHAuthDecision, error)
 	RevalidateEndpointSession(context.Context, string, int64, string, string) (gatewayAccessDecision, error)
 	RevalidateSSHSession(context.Context, string, int64, string) (gatewayAccessDecision, error)
+	LookupWorkspaceSession(context.Context, *componentv1.WorkspaceSessionIdentity) (bool, error)
 }
 
 type gatewayAccessDecision struct {

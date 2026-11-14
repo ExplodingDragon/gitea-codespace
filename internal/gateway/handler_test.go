@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"github.com/stretchr/testify/require"
 )
@@ -23,6 +24,14 @@ type gatewayHandlerTestControlPlane struct {
 	openDecision     gatewayOpenTokenDecision
 	endpointDecision gatewayAccessDecision
 	revalidateSSH    func(context.Context) (gatewayAccessDecision, error)
+	lookupWorkspace  func(context.Context, *componentv1.WorkspaceSessionIdentity) (bool, error)
+}
+
+func (c gatewayHandlerTestControlPlane) LookupWorkspaceSession(ctx context.Context, identity *componentv1.WorkspaceSessionIdentity) (bool, error) {
+	if c.lookupWorkspace != nil {
+		return c.lookupWorkspace(ctx, identity)
+	}
+	return false, nil
 }
 
 func (c gatewayHandlerTestControlPlane) ValidateOpenToken(context.Context, string, string, string) (gatewayOpenTokenDecision, error) {
@@ -88,89 +97,181 @@ func (b gatewayTestBackend) OpenWorkspaceEndpoint(ctx context.Context, _, _ stri
 	return (&net.Dialer{}).DialContext(ctx, "tcp", b.address)
 }
 
-func TestGatewayPublicEndpointRootProxiesWebSocket(t *testing.T) {
+func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 	t.Parallel()
 
-	const externalHost = "app-3000-11111111111141118111111111111111.gateway.example.test"
-	upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if request.URL.Path != "/socket" || !isGatewayWebSocketRequest(request) || request.Host != externalHost {
-			http.Error(writer, "invalid upgrade request", http.StatusBadRequest)
-			return
-		}
-		connection, buffered, err := writer.(http.Hijacker).Hijack()
-		if err != nil {
-			return
-		}
-		defer func() { _ = connection.Close() }()
-		_, _ = buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
-		if buffered.Flush() != nil {
-			return
-		}
-		payload := make([]byte, 4)
-		if _, err := io.ReadFull(buffered, payload); err == nil {
-			_, _ = connection.Write(payload)
-		}
-	}))
-	defer upstream.Close()
+	for _, endpointID := range []string{"app-3000", "workspace"} {
+		t.Run(endpointID, func(t *testing.T) {
+			externalHost := endpointID + "-11111111111141118111111111111111.gateway.example.test"
+			if endpointID == "workspace" {
+				externalHost = "11111111111141118111111111111111.gateway.example.test"
+			}
+			upstream := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+				if request.URL.Path == "/status" {
+					writer.WriteHeader(http.StatusNoContent)
+					return
+				}
+				if request.URL.Path != "/socket" || !isGatewayWebSocketRequest(request) || request.Host != externalHost {
+					http.Error(writer, "invalid upgrade request", http.StatusBadRequest)
+					return
+				}
+				connection, buffered, err := writer.(http.Hijacker).Hijack()
+				if err != nil {
+					return
+				}
+				defer func() { _ = connection.Close() }()
+				_, _ = buffered.WriteString("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n")
+				if buffered.Flush() != nil {
+					return
+				}
+				payload := make([]byte, 4)
+				if _, err := io.ReadFull(buffered, payload); err == nil {
+					_, _ = connection.Write(payload)
+				}
+			}))
+			defer upstream.Close()
 
-	upstreamAddress := upstream.Listener.Addr().String()
-	routes := newRouteStore(gatewayTestBackend{address: upstreamAddress})
-	t.Cleanup(routes.Close)
+			upstreamAddress := upstream.Listener.Addr().String()
+			routes := newRouteStore(gatewayTestBackend{address: upstreamAddress})
+			t.Cleanup(routes.Close)
+			const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+			if err := routes.Put(endpointRoute{
+				SiteUID:       "site-1",
+				GiteaWebURL:   "https://gitea.example.test",
+				CodespaceUUID: runtimeUUID,
+				EndpointID:    endpointID,
+				Label:         "Workspace",
+				Public:        endpointID != "workspace",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			policy, err := newOriginPolicy("http://gateway.example.test")
+			if err != nil {
+				t.Fatal(err)
+			}
+			access := newAccessController(accessConfig{
+				AllowedTTL:                      time.Minute,
+				StreamRevalidateInterval:        time.Hour,
+				MaxInflightTotal:                8,
+				MaxInflightPerSession:           4,
+				PublicMaxConnectionsPerEndpoint: 4,
+				PublicMaxConnectionsPerIP:       4,
+				ValidationMaxInflight:           4,
+			})
+			sessions := newGatewaySessionRegistry(t)
+			token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: runtimeUUID, EndpointID: endpointID}, time.Now())
+			require.NoError(t, err)
+			control := gatewayHandlerTestControlPlane{endpointDecision: gatewayAccessDecision{Allowed: true}}
+			gateway := httptest.NewServer(newHandler(sessions.sessionRegistry, access, control, policy, nil, routes))
+			defer gateway.Close()
+
+			request, err := http.NewRequest(http.MethodGet, gateway.URL+"/socket", nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			request.Host = externalHost
+			request.Header.Set("Connection", "Upgrade")
+			request.Header.Set("Upgrade", "websocket")
+			request.Header.Set("Origin", "http://"+externalHost)
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+			response, err := gateway.Client().Do(request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer func() { _ = response.Body.Close() }()
+			if response.StatusCode != http.StatusSwitchingProtocols {
+				t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusSwitchingProtocols)
+			}
+			if endpointID == "workspace" {
+				ticket, ok := sessions.tickets.open(response.Cookies()[0].Value)
+				require.True(t, ok)
+				past := time.Now().Add(-9 * time.Hour)
+				ticket.IssuedAt = past.UnixMilli()
+				ticket.ExpiresAt = past.Add(time.Hour).UnixMilli()
+				ticket.IdleExpiresAt = past.Add(time.Minute).UnixMilli()
+				oldCookie, err := sessions.tickets.seal(ticket)
+				require.NoError(t, err)
+				sessions.mu.Lock()
+				sessions.sessions[ticket.ID].lastActive = past
+				sessions.sessions[ticket.ID].expires = past.Add(time.Hour)
+				sessions.mu.Unlock()
+				require.Equal(t, map[string]int64{runtimeUUID: 1}, sessions.Activity(time.Now()).runtimes)
+				followup, err := http.NewRequest(http.MethodGet, gateway.URL+"/status", nil)
+				require.NoError(t, err)
+				followup.Host = externalHost
+				followup.Header.Set("Origin", "http://"+externalHost)
+				followup.AddCookie(&http.Cookie{Name: sessionCookieName, Value: oldCookie})
+				result, err := gateway.Client().Do(followup)
+				require.NoError(t, err)
+				require.NoError(t, result.Body.Close())
+				require.Equal(t, http.StatusNoContent, result.StatusCode)
+				require.NotEmpty(t, result.Cookies())
+				renewed, ok := sessions.tickets.open(result.Cookies()[0].Value)
+				require.True(t, ok)
+				require.True(t, renewed.validAt(time.Now()))
+			}
+			connection, ok := response.Body.(io.ReadWriteCloser)
+			if !ok {
+				t.Fatal("upgraded response is not bidirectional")
+			}
+			if _, err := connection.Write([]byte("ping")); err != nil {
+				t.Fatal(err)
+			}
+			payload := make([]byte, 4)
+			if _, err := io.ReadFull(connection, payload); err != nil {
+				t.Fatal(err)
+			}
+			if string(payload) != "ping" {
+				t.Fatalf("payload = %q, want ping", payload)
+			}
+		})
+	}
+}
+
+func TestGatewayWorkspaceRenewalRequiresAuthorization(t *testing.T) {
 	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	if err := routes.Put(endpointRoute{
-		SiteUID:       "site-1",
-		GiteaWebURL:   "https://gitea.example.test",
-		CodespaceUUID: runtimeUUID,
-		EndpointID:    "app-3000",
-		Label:         "Application",
-		Public:        true,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	const host = "11111111111141118111111111111111.gateway.example.test"
 	policy, err := newOriginPolicy("http://gateway.example.test")
-	if err != nil {
-		t.Fatal(err)
-	}
-	access := newAccessController(accessConfig{
-		AllowedTTL:                      time.Minute,
-		StreamRevalidateInterval:        time.Hour,
-		MaxInflightTotal:                8,
-		MaxInflightPerSession:           4,
-		PublicMaxConnectionsPerEndpoint: 4,
-		PublicMaxConnectionsPerIP:       4,
-		ValidationMaxInflight:           4,
-	})
-	gateway := httptest.NewServer(newHandler(nil, access, gatewayHandlerTestControlPlane{}, policy, nil, routes))
-	defer gateway.Close()
-
-	request, err := http.NewRequest(http.MethodGet, gateway.URL+"/socket", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Host = externalHost
-	request.Header.Set("Connection", "Upgrade")
-	request.Header.Set("Upgrade", "websocket")
-	response, err := gateway.Client().Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusSwitchingProtocols {
-		t.Fatalf("status = %d, want %d", response.StatusCode, http.StatusSwitchingProtocols)
-	}
-	connection, ok := response.Body.(io.ReadWriteCloser)
-	if !ok {
-		t.Fatal("upgraded response is not bidirectional")
-	}
-	if _, err := connection.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	payload := make([]byte, 4)
-	if _, err := io.ReadFull(connection, payload); err != nil {
-		t.Fatal(err)
-	}
-	if string(payload) != "ping" {
-		t.Fatalf("payload = %q, want ping", payload)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name               string
+		renewable, allowed bool
+		lookupError        error
+		status             int
+	}{
+		{name: "expired", status: http.StatusUnauthorized},
+		{name: "synchronizing", lookupError: errors.New("activity unavailable"), status: http.StatusServiceUnavailable},
+		{name: "permission revoked", renewable: true, status: http.StatusForbidden},
+		{name: "provider unavailable", renewable: true, allowed: true, status: http.StatusBadGateway},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			sessions := newGatewaySessionRegistry(t)
+			token, err := sessions.Create(openTokenBinding{SiteUID: "site", UserID: 42, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now().Add(-time.Hour))
+			require.NoError(t, err)
+			routes := newRouteStore(gatewayTestBackend{endpointError: errors.New("provider not listening")})
+			t.Cleanup(routes.Close)
+			require.NoError(t, routes.Put(endpointRoute{SiteUID: "site", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: runtimeUUID, EndpointID: "workspace", Label: "Workspace"}))
+			control := gatewayHandlerTestControlPlane{
+				endpointDecision: gatewayAccessDecision{Allowed: tc.allowed, DeniedCategory: "permission_revoked"},
+				lookupWorkspace: func(context.Context, *componentv1.WorkspaceSessionIdentity) (bool, error) {
+					return tc.renewable, tc.lookupError
+				},
+			}
+			request := httptest.NewRequest(http.MethodGet, "http://"+host+"/api", nil)
+			request.Header.Set("Origin", "http://"+host)
+			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+			response := httptest.NewRecorder()
+			newHandler(sessions.sessionRegistry, newAccessControllerFromConfig(validGatewayConfig()), control, policy, nil, routes).ServeHTTP(response, request)
+			require.Equal(t, tc.status, response.Code)
+			activity := sessions.Activity(time.Now()).workspaces
+			if tc.allowed {
+				require.Len(t, activity, 1)
+				require.NotEmpty(t, response.Result().Cookies())
+			} else {
+				require.Empty(t, activity)
+				require.Empty(t, response.Result().Cookies())
+			}
+		})
 	}
 }
 

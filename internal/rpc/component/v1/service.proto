@@ -14,6 +14,9 @@ service ComponentService {
   // AuthorizeGateway delegates one user authorization decision to its Gitea site.
   rpc AuthorizeGateway(AuthorizeGatewayRequest) returns (AuthorizeGatewayResponse);
 
+  // LookupWorkspaceSession confirms activity for an expired browser ticket.
+  rpc LookupWorkspaceSession(LookupWorkspaceSessionRequest) returns (LookupWorkspaceSessionResponse);
+
   // IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
   rpc IssueAgentAccess(IssueAgentAccessRequest) returns (IssueAgentAccessResponse);
 
@@ -26,6 +29,29 @@ message GatewayControlRequest {
   string session_id = 2;
   uint64 sequence = 3;
   map<string, int64> active_sessions = 4;
+  repeated WorkspaceSessionActivity workspace_sessions = 5;
+}
+
+message WorkspaceSessionIdentity {
+  string session_id = 1;
+  string site_uid = 2;
+  int64 user_id = 3;
+  string runtime_uuid = 4;
+}
+
+message WorkspaceSessionActivity {
+  WorkspaceSessionIdentity identity = 1;
+  bool active = 2;
+  int64 last_active_unix_milliseconds = 3;
+}
+
+message LookupWorkspaceSessionRequest {
+  uint32 protocol_version = 1;
+  WorkspaceSessionIdentity identity = 2;
+}
+
+message LookupWorkspaceSessionResponse {
+  bool renewable = 1;
 }
 
 message GatewayControlResponse {

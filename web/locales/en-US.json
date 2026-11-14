@@ -283,6 +283,7 @@
     "trustedProxiesHelp": "Only immediate peers in these networks may provide X-Forwarded-For. Leave empty when traffic reaches the Service directly.",
     "sessions": "Sessions and limits",
     "sessionLifetime": "Session lifetime",
+    "sessionLifetimeHelp": "Workspace tickets renew while the session is active; idle timeout starts when its last request or connection ends. For forwarded web ports, this is the absolute session lifetime.",
     "idleTimeout": "Idle timeout",
     "authRefresh": "Authorization refresh",
     "sessionsPerCodespace": "Sessions per Codespace",

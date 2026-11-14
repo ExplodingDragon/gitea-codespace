@@ -63,7 +63,7 @@ func (t *gatewaySessionTickets) seal(ticket gatewaySessionTicket) (string, error
 	return base64.RawURLEncoding.EncodeToString(sealed), nil
 }
 
-func (t *gatewaySessionTickets) open(token string, now time.Time) (gatewaySessionTicket, bool) {
+func (t *gatewaySessionTickets) open(token string) (gatewaySessionTicket, bool) {
 	if t == nil || token == "" || len(token) > gatewaySessionTicketMaxBytes {
 		return gatewaySessionTicket{}, false
 	}
@@ -80,11 +80,9 @@ func (t *gatewaySessionTickets) open(token string, now time.Time) (gatewaySessio
 	if json.Unmarshal(plain, &ticket) != nil || ticket.Version != gatewaySessionTicketVersion || ticket.ID == "" || ticket.SiteUID == "" || ticket.UserID <= 0 || ticket.CodespaceUUID == "" || ticket.EndpointID == "" || ticket.IssuedAt <= 0 || ticket.ExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt > ticket.ExpiresAt {
 		return gatewaySessionTicket{}, false
 	}
-	if now.IsZero() {
-		now = time.Now()
-	}
-	if now.After(time.UnixMilli(ticket.ExpiresAt)) || now.After(time.UnixMilli(ticket.IdleExpiresAt)) {
-		return gatewaySessionTicket{}, false
-	}
 	return ticket, true
+}
+
+func (t gatewaySessionTicket) validAt(now time.Time) bool {
+	return now.Before(time.UnixMilli(t.ExpiresAt)) && now.Before(time.UnixMilli(t.IdleExpiresAt))
 }

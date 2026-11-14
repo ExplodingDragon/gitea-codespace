@@ -6,9 +6,10 @@ Manager validates image metadata when creating a template or changing its
 Web IDE configuration, and retains the selected tag or explicit digest.
 Other template edits keep the validated Web IDE configuration so they do not
 depend on registry availability.
-An image without a tag uses `latest`; short names follow
+An image without a tag or digest uses `latest`; short names follow
 [Docker's reference rules](https://docs.docker.com/reference/cli/docker/image/tag/)
 and expand to Docker Hub, for example `team/ide` becomes `docker.io/team/ide:latest`.
+When both a tag and digest are present, the digest selects the content.
 
 ## Official providers
 

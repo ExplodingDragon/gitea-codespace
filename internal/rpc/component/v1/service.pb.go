@@ -23,13 +23,14 @@ const (
 )
 
 type GatewayControlRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	SessionId       string                 `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Sequence        uint64                 `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	ActiveSessions  map[string]int64       `protobuf:"bytes,4,rep,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state             protoimpl.MessageState      `protogen:"open.v1"`
+	ProtocolVersion   uint32                      `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	SessionId         string                      `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Sequence          uint64                      `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	ActiveSessions    map[string]int64            `protobuf:"bytes,4,rep,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
+	WorkspaceSessions []*WorkspaceSessionActivity `protobuf:"bytes,5,rep,name=workspace_sessions,json=workspaceSessions,proto3" json:"workspace_sessions,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
 }
 
 func (x *GatewayControlRequest) Reset() {
@@ -90,6 +91,237 @@ func (x *GatewayControlRequest) GetActiveSessions() map[string]int64 {
 	return nil
 }
 
+func (x *GatewayControlRequest) GetWorkspaceSessions() []*WorkspaceSessionActivity {
+	if x != nil {
+		return x.WorkspaceSessions
+	}
+	return nil
+}
+
+type WorkspaceSessionIdentity struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	SiteUid       string                 `protobuf:"bytes,2,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
+	UserId        int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	RuntimeUuid   string                 `protobuf:"bytes,4,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *WorkspaceSessionIdentity) Reset() {
+	*x = WorkspaceSessionIdentity{}
+	mi := &file_component_v1_service_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkspaceSessionIdentity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkspaceSessionIdentity) ProtoMessage() {}
+
+func (x *WorkspaceSessionIdentity) ProtoReflect() protoreflect.Message {
+	mi := &file_component_v1_service_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkspaceSessionIdentity.ProtoReflect.Descriptor instead.
+func (*WorkspaceSessionIdentity) Descriptor() ([]byte, []int) {
+	return file_component_v1_service_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *WorkspaceSessionIdentity) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *WorkspaceSessionIdentity) GetSiteUid() string {
+	if x != nil {
+		return x.SiteUid
+	}
+	return ""
+}
+
+func (x *WorkspaceSessionIdentity) GetUserId() int64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *WorkspaceSessionIdentity) GetRuntimeUuid() string {
+	if x != nil {
+		return x.RuntimeUuid
+	}
+	return ""
+}
+
+type WorkspaceSessionActivity struct {
+	state                      protoimpl.MessageState    `protogen:"open.v1"`
+	Identity                   *WorkspaceSessionIdentity `protobuf:"bytes,1,opt,name=identity,proto3" json:"identity,omitempty"`
+	Active                     bool                      `protobuf:"varint,2,opt,name=active,proto3" json:"active,omitempty"`
+	LastActiveUnixMilliseconds int64                     `protobuf:"varint,3,opt,name=last_active_unix_milliseconds,json=lastActiveUnixMilliseconds,proto3" json:"last_active_unix_milliseconds,omitempty"`
+	unknownFields              protoimpl.UnknownFields
+	sizeCache                  protoimpl.SizeCache
+}
+
+func (x *WorkspaceSessionActivity) Reset() {
+	*x = WorkspaceSessionActivity{}
+	mi := &file_component_v1_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *WorkspaceSessionActivity) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*WorkspaceSessionActivity) ProtoMessage() {}
+
+func (x *WorkspaceSessionActivity) ProtoReflect() protoreflect.Message {
+	mi := &file_component_v1_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use WorkspaceSessionActivity.ProtoReflect.Descriptor instead.
+func (*WorkspaceSessionActivity) Descriptor() ([]byte, []int) {
+	return file_component_v1_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *WorkspaceSessionActivity) GetIdentity() *WorkspaceSessionIdentity {
+	if x != nil {
+		return x.Identity
+	}
+	return nil
+}
+
+func (x *WorkspaceSessionActivity) GetActive() bool {
+	if x != nil {
+		return x.Active
+	}
+	return false
+}
+
+func (x *WorkspaceSessionActivity) GetLastActiveUnixMilliseconds() int64 {
+	if x != nil {
+		return x.LastActiveUnixMilliseconds
+	}
+	return 0
+}
+
+type LookupWorkspaceSessionRequest struct {
+	state           protoimpl.MessageState    `protogen:"open.v1"`
+	ProtocolVersion uint32                    `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	Identity        *WorkspaceSessionIdentity `protobuf:"bytes,2,opt,name=identity,proto3" json:"identity,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *LookupWorkspaceSessionRequest) Reset() {
+	*x = LookupWorkspaceSessionRequest{}
+	mi := &file_component_v1_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LookupWorkspaceSessionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LookupWorkspaceSessionRequest) ProtoMessage() {}
+
+func (x *LookupWorkspaceSessionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_component_v1_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LookupWorkspaceSessionRequest.ProtoReflect.Descriptor instead.
+func (*LookupWorkspaceSessionRequest) Descriptor() ([]byte, []int) {
+	return file_component_v1_service_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *LookupWorkspaceSessionRequest) GetProtocolVersion() uint32 {
+	if x != nil {
+		return x.ProtocolVersion
+	}
+	return 0
+}
+
+func (x *LookupWorkspaceSessionRequest) GetIdentity() *WorkspaceSessionIdentity {
+	if x != nil {
+		return x.Identity
+	}
+	return nil
+}
+
+type LookupWorkspaceSessionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Renewable     bool                   `protobuf:"varint,1,opt,name=renewable,proto3" json:"renewable,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *LookupWorkspaceSessionResponse) Reset() {
+	*x = LookupWorkspaceSessionResponse{}
+	mi := &file_component_v1_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *LookupWorkspaceSessionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*LookupWorkspaceSessionResponse) ProtoMessage() {}
+
+func (x *LookupWorkspaceSessionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_component_v1_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use LookupWorkspaceSessionResponse.ProtoReflect.Descriptor instead.
+func (*LookupWorkspaceSessionResponse) Descriptor() ([]byte, []int) {
+	return file_component_v1_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *LookupWorkspaceSessionResponse) GetRenewable() bool {
+	if x != nil {
+		return x.Renewable
+	}
+	return false
+}
+
 type GatewayControlResponse struct {
 	state                      protoimpl.MessageState        `protogen:"open.v1"`
 	ProtocolVersion            uint32                        `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
@@ -105,7 +337,7 @@ type GatewayControlResponse struct {
 
 func (x *GatewayControlResponse) Reset() {
 	*x = GatewayControlResponse{}
-	mi := &file_component_v1_service_proto_msgTypes[1]
+	mi := &file_component_v1_service_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -117,7 +349,7 @@ func (x *GatewayControlResponse) String() string {
 func (*GatewayControlResponse) ProtoMessage() {}
 
 func (x *GatewayControlResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[1]
+	mi := &file_component_v1_service_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -130,7 +362,7 @@ func (x *GatewayControlResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayControlResponse.ProtoReflect.Descriptor instead.
 func (*GatewayControlResponse) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{1}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *GatewayControlResponse) GetProtocolVersion() uint32 {
@@ -212,7 +444,7 @@ type GatewayConfigurationSnapshot struct {
 
 func (x *GatewayConfigurationSnapshot) Reset() {
 	*x = GatewayConfigurationSnapshot{}
-	mi := &file_component_v1_service_proto_msgTypes[2]
+	mi := &file_component_v1_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -224,7 +456,7 @@ func (x *GatewayConfigurationSnapshot) String() string {
 func (*GatewayConfigurationSnapshot) ProtoMessage() {}
 
 func (x *GatewayConfigurationSnapshot) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[2]
+	mi := &file_component_v1_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -237,7 +469,7 @@ func (x *GatewayConfigurationSnapshot) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayConfigurationSnapshot.ProtoReflect.Descriptor instead.
 func (*GatewayConfigurationSnapshot) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{2}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *GatewayConfigurationSnapshot) GetHttpListen() string {
@@ -410,7 +642,7 @@ type GatewayRuntimeRoute struct {
 
 func (x *GatewayRuntimeRoute) Reset() {
 	*x = GatewayRuntimeRoute{}
-	mi := &file_component_v1_service_proto_msgTypes[3]
+	mi := &file_component_v1_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -422,7 +654,7 @@ func (x *GatewayRuntimeRoute) String() string {
 func (*GatewayRuntimeRoute) ProtoMessage() {}
 
 func (x *GatewayRuntimeRoute) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[3]
+	mi := &file_component_v1_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -435,7 +667,7 @@ func (x *GatewayRuntimeRoute) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayRuntimeRoute.ProtoReflect.Descriptor instead.
 func (*GatewayRuntimeRoute) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{3}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *GatewayRuntimeRoute) GetSiteUid() string {
@@ -505,7 +737,7 @@ type GatewayEndpoint struct {
 
 func (x *GatewayEndpoint) Reset() {
 	*x = GatewayEndpoint{}
-	mi := &file_component_v1_service_proto_msgTypes[4]
+	mi := &file_component_v1_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -517,7 +749,7 @@ func (x *GatewayEndpoint) String() string {
 func (*GatewayEndpoint) ProtoMessage() {}
 
 func (x *GatewayEndpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[4]
+	mi := &file_component_v1_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -530,7 +762,7 @@ func (x *GatewayEndpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GatewayEndpoint.ProtoReflect.Descriptor instead.
 func (*GatewayEndpoint) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{4}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *GatewayEndpoint) GetEndpointId() string {
@@ -571,7 +803,7 @@ type AuthorizeGatewayRequest struct {
 
 func (x *AuthorizeGatewayRequest) Reset() {
 	*x = AuthorizeGatewayRequest{}
-	mi := &file_component_v1_service_proto_msgTypes[5]
+	mi := &file_component_v1_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +815,7 @@ func (x *AuthorizeGatewayRequest) String() string {
 func (*AuthorizeGatewayRequest) ProtoMessage() {}
 
 func (x *AuthorizeGatewayRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[5]
+	mi := &file_component_v1_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +828,7 @@ func (x *AuthorizeGatewayRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeGatewayRequest.ProtoReflect.Descriptor instead.
 func (*AuthorizeGatewayRequest) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{5}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *AuthorizeGatewayRequest) GetProtocolVersion() uint32 {
@@ -705,7 +937,7 @@ type OpenCodeAuthorization struct {
 
 func (x *OpenCodeAuthorization) Reset() {
 	*x = OpenCodeAuthorization{}
-	mi := &file_component_v1_service_proto_msgTypes[6]
+	mi := &file_component_v1_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -717,7 +949,7 @@ func (x *OpenCodeAuthorization) String() string {
 func (*OpenCodeAuthorization) ProtoMessage() {}
 
 func (x *OpenCodeAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[6]
+	mi := &file_component_v1_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -730,7 +962,7 @@ func (x *OpenCodeAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenCodeAuthorization.ProtoReflect.Descriptor instead.
 func (*OpenCodeAuthorization) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{6}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *OpenCodeAuthorization) GetCode() string {
@@ -764,7 +996,7 @@ type PublicEndpointAuthorization struct {
 
 func (x *PublicEndpointAuthorization) Reset() {
 	*x = PublicEndpointAuthorization{}
-	mi := &file_component_v1_service_proto_msgTypes[7]
+	mi := &file_component_v1_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -776,7 +1008,7 @@ func (x *PublicEndpointAuthorization) String() string {
 func (*PublicEndpointAuthorization) ProtoMessage() {}
 
 func (x *PublicEndpointAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[7]
+	mi := &file_component_v1_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -789,7 +1021,7 @@ func (x *PublicEndpointAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PublicEndpointAuthorization.ProtoReflect.Descriptor instead.
 func (*PublicEndpointAuthorization) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{7}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *PublicEndpointAuthorization) GetRuntimeUuid() string {
@@ -816,7 +1048,7 @@ type SSHPublicKeyAuthorization struct {
 
 func (x *SSHPublicKeyAuthorization) Reset() {
 	*x = SSHPublicKeyAuthorization{}
-	mi := &file_component_v1_service_proto_msgTypes[8]
+	mi := &file_component_v1_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -828,7 +1060,7 @@ func (x *SSHPublicKeyAuthorization) String() string {
 func (*SSHPublicKeyAuthorization) ProtoMessage() {}
 
 func (x *SSHPublicKeyAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[8]
+	mi := &file_component_v1_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -841,7 +1073,7 @@ func (x *SSHPublicKeyAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SSHPublicKeyAuthorization.ProtoReflect.Descriptor instead.
 func (*SSHPublicKeyAuthorization) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{8}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *SSHPublicKeyAuthorization) GetRuntimeUuid() string {
@@ -870,7 +1102,7 @@ type EndpointSessionAuthorization struct {
 
 func (x *EndpointSessionAuthorization) Reset() {
 	*x = EndpointSessionAuthorization{}
-	mi := &file_component_v1_service_proto_msgTypes[9]
+	mi := &file_component_v1_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -882,7 +1114,7 @@ func (x *EndpointSessionAuthorization) String() string {
 func (*EndpointSessionAuthorization) ProtoMessage() {}
 
 func (x *EndpointSessionAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[9]
+	mi := &file_component_v1_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -895,7 +1127,7 @@ func (x *EndpointSessionAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointSessionAuthorization.ProtoReflect.Descriptor instead.
 func (*EndpointSessionAuthorization) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{9}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *EndpointSessionAuthorization) GetUserId() int64 {
@@ -937,7 +1169,7 @@ type SSHSessionAuthorization struct {
 
 func (x *SSHSessionAuthorization) Reset() {
 	*x = SSHSessionAuthorization{}
-	mi := &file_component_v1_service_proto_msgTypes[10]
+	mi := &file_component_v1_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -949,7 +1181,7 @@ func (x *SSHSessionAuthorization) String() string {
 func (*SSHSessionAuthorization) ProtoMessage() {}
 
 func (x *SSHSessionAuthorization) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[10]
+	mi := &file_component_v1_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -962,7 +1194,7 @@ func (x *SSHSessionAuthorization) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SSHSessionAuthorization.ProtoReflect.Descriptor instead.
 func (*SSHSessionAuthorization) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{10}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{14}
 }
 
 func (x *SSHSessionAuthorization) GetUserId() int64 {
@@ -1000,7 +1232,7 @@ type AuthorizeGatewayResponse struct {
 
 func (x *AuthorizeGatewayResponse) Reset() {
 	*x = AuthorizeGatewayResponse{}
-	mi := &file_component_v1_service_proto_msgTypes[11]
+	mi := &file_component_v1_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1012,7 +1244,7 @@ func (x *AuthorizeGatewayResponse) String() string {
 func (*AuthorizeGatewayResponse) ProtoMessage() {}
 
 func (x *AuthorizeGatewayResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[11]
+	mi := &file_component_v1_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1025,7 +1257,7 @@ func (x *AuthorizeGatewayResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AuthorizeGatewayResponse.ProtoReflect.Descriptor instead.
 func (*AuthorizeGatewayResponse) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{11}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *AuthorizeGatewayResponse) GetAllowed() bool {
@@ -1082,7 +1314,7 @@ type IssueAgentAccessRequest struct {
 
 func (x *IssueAgentAccessRequest) Reset() {
 	*x = IssueAgentAccessRequest{}
-	mi := &file_component_v1_service_proto_msgTypes[12]
+	mi := &file_component_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1094,7 +1326,7 @@ func (x *IssueAgentAccessRequest) String() string {
 func (*IssueAgentAccessRequest) ProtoMessage() {}
 
 func (x *IssueAgentAccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[12]
+	mi := &file_component_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1107,7 +1339,7 @@ func (x *IssueAgentAccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueAgentAccessRequest.ProtoReflect.Descriptor instead.
 func (*IssueAgentAccessRequest) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{12}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *IssueAgentAccessRequest) GetProtocolVersion() uint32 {
@@ -1148,7 +1380,7 @@ type IssueAgentAccessResponse struct {
 
 func (x *IssueAgentAccessResponse) Reset() {
 	*x = IssueAgentAccessResponse{}
-	mi := &file_component_v1_service_proto_msgTypes[13]
+	mi := &file_component_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1160,7 +1392,7 @@ func (x *IssueAgentAccessResponse) String() string {
 func (*IssueAgentAccessResponse) ProtoMessage() {}
 
 func (x *IssueAgentAccessResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[13]
+	mi := &file_component_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1173,7 +1405,7 @@ func (x *IssueAgentAccessResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IssueAgentAccessResponse.ProtoReflect.Descriptor instead.
 func (*IssueAgentAccessResponse) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{13}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *IssueAgentAccessResponse) GetRuntime() *GatewayRuntimeRoute {
@@ -1208,7 +1440,7 @@ type CacheControlRequest struct {
 
 func (x *CacheControlRequest) Reset() {
 	*x = CacheControlRequest{}
-	mi := &file_component_v1_service_proto_msgTypes[14]
+	mi := &file_component_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1220,7 +1452,7 @@ func (x *CacheControlRequest) String() string {
 func (*CacheControlRequest) ProtoMessage() {}
 
 func (x *CacheControlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[14]
+	mi := &file_component_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1233,7 +1465,7 @@ func (x *CacheControlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheControlRequest.ProtoReflect.Descriptor instead.
 func (*CacheControlRequest) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{14}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *CacheControlRequest) GetProtocolVersion() uint32 {
@@ -1327,7 +1559,7 @@ type CacheControlResponse struct {
 
 func (x *CacheControlResponse) Reset() {
 	*x = CacheControlResponse{}
-	mi := &file_component_v1_service_proto_msgTypes[15]
+	mi := &file_component_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1339,7 +1571,7 @@ func (x *CacheControlResponse) String() string {
 func (*CacheControlResponse) ProtoMessage() {}
 
 func (x *CacheControlResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[15]
+	mi := &file_component_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1352,7 +1584,7 @@ func (x *CacheControlResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheControlResponse.ProtoReflect.Descriptor instead.
 func (*CacheControlResponse) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *CacheControlResponse) GetProtocolVersion() uint32 {
@@ -1408,7 +1640,7 @@ type CacheConfiguration struct {
 
 func (x *CacheConfiguration) Reset() {
 	*x = CacheConfiguration{}
-	mi := &file_component_v1_service_proto_msgTypes[16]
+	mi := &file_component_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1420,7 +1652,7 @@ func (x *CacheConfiguration) String() string {
 func (*CacheConfiguration) ProtoMessage() {}
 
 func (x *CacheConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[16]
+	mi := &file_component_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1433,7 +1665,7 @@ func (x *CacheConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheConfiguration.ProtoReflect.Descriptor instead.
 func (*CacheConfiguration) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *CacheConfiguration) GetId() string {
@@ -1518,7 +1750,7 @@ type CacheStorageConfiguration struct {
 
 func (x *CacheStorageConfiguration) Reset() {
 	*x = CacheStorageConfiguration{}
-	mi := &file_component_v1_service_proto_msgTypes[17]
+	mi := &file_component_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1530,7 +1762,7 @@ func (x *CacheStorageConfiguration) String() string {
 func (*CacheStorageConfiguration) ProtoMessage() {}
 
 func (x *CacheStorageConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[17]
+	mi := &file_component_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1543,7 +1775,7 @@ func (x *CacheStorageConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheStorageConfiguration.ProtoReflect.Descriptor instead.
 func (*CacheStorageConfiguration) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *CacheStorageConfiguration) GetDriver() string {
@@ -1587,7 +1819,7 @@ type CacheS3Configuration struct {
 
 func (x *CacheS3Configuration) Reset() {
 	*x = CacheS3Configuration{}
-	mi := &file_component_v1_service_proto_msgTypes[18]
+	mi := &file_component_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1599,7 +1831,7 @@ func (x *CacheS3Configuration) String() string {
 func (*CacheS3Configuration) ProtoMessage() {}
 
 func (x *CacheS3Configuration) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[18]
+	mi := &file_component_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1612,7 +1844,7 @@ func (x *CacheS3Configuration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheS3Configuration.ProtoReflect.Descriptor instead.
 func (*CacheS3Configuration) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{18}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *CacheS3Configuration) GetEndpoint() string {
@@ -1659,7 +1891,7 @@ type CacheUpstreamConfiguration struct {
 
 func (x *CacheUpstreamConfiguration) Reset() {
 	*x = CacheUpstreamConfiguration{}
-	mi := &file_component_v1_service_proto_msgTypes[19]
+	mi := &file_component_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1671,7 +1903,7 @@ func (x *CacheUpstreamConfiguration) String() string {
 func (*CacheUpstreamConfiguration) ProtoMessage() {}
 
 func (x *CacheUpstreamConfiguration) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[19]
+	mi := &file_component_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1684,7 +1916,7 @@ func (x *CacheUpstreamConfiguration) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheUpstreamConfiguration.ProtoReflect.Descriptor instead.
 func (*CacheUpstreamConfiguration) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{19}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *CacheUpstreamConfiguration) GetAllow() []string {
@@ -1708,7 +1940,7 @@ type CacheStatus struct {
 
 func (x *CacheStatus) Reset() {
 	*x = CacheStatus{}
-	mi := &file_component_v1_service_proto_msgTypes[20]
+	mi := &file_component_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1720,7 +1952,7 @@ func (x *CacheStatus) String() string {
 func (*CacheStatus) ProtoMessage() {}
 
 func (x *CacheStatus) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[20]
+	mi := &file_component_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1733,7 +1965,7 @@ func (x *CacheStatus) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheStatus.ProtoReflect.Descriptor instead.
 func (*CacheStatus) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *CacheStatus) GetConfigRevision() int64 {
@@ -1791,7 +2023,7 @@ type CacheGCGrant struct {
 
 func (x *CacheGCGrant) Reset() {
 	*x = CacheGCGrant{}
-	mi := &file_component_v1_service_proto_msgTypes[21]
+	mi := &file_component_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1803,7 +2035,7 @@ func (x *CacheGCGrant) String() string {
 func (*CacheGCGrant) ProtoMessage() {}
 
 func (x *CacheGCGrant) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[21]
+	mi := &file_component_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1816,7 +2048,7 @@ func (x *CacheGCGrant) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheGCGrant.ProtoReflect.Descriptor instead.
 func (*CacheGCGrant) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *CacheGCGrant) GetCacheId() string {
@@ -1862,7 +2094,7 @@ type CacheGCRequest struct {
 
 func (x *CacheGCRequest) Reset() {
 	*x = CacheGCRequest{}
-	mi := &file_component_v1_service_proto_msgTypes[22]
+	mi := &file_component_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1874,7 +2106,7 @@ func (x *CacheGCRequest) String() string {
 func (*CacheGCRequest) ProtoMessage() {}
 
 func (x *CacheGCRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[22]
+	mi := &file_component_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1887,7 +2119,7 @@ func (x *CacheGCRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheGCRequest.ProtoReflect.Descriptor instead.
 func (*CacheGCRequest) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 type CacheGCComplete struct {
@@ -1899,7 +2131,7 @@ type CacheGCComplete struct {
 
 func (x *CacheGCComplete) Reset() {
 	*x = CacheGCComplete{}
-	mi := &file_component_v1_service_proto_msgTypes[23]
+	mi := &file_component_v1_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1911,7 +2143,7 @@ func (x *CacheGCComplete) String() string {
 func (*CacheGCComplete) ProtoMessage() {}
 
 func (x *CacheGCComplete) ProtoReflect() protoreflect.Message {
-	mi := &file_component_v1_service_proto_msgTypes[23]
+	mi := &file_component_v1_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1924,7 +2156,7 @@ func (x *CacheGCComplete) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CacheGCComplete.ProtoReflect.Descriptor instead.
 func (*CacheGCComplete) Descriptor() ([]byte, []int) {
-	return file_component_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_component_v1_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *CacheGCComplete) GetGrantId() string {
@@ -1938,16 +2170,32 @@ var File_component_v1_service_proto protoreflect.FileDescriptor
 
 const file_component_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1acomponent/v1/service.proto\x12\fcomponent.v1\x1a\x16agent/v1/service.proto\"\xa2\x02\n" +
+	"\x1acomponent/v1/service.proto\x12\fcomponent.v1\x1a\x16agent/v1/service.proto\"\xf9\x02\n" +
 	"\x15GatewayControlRequest\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x03 \x01(\x04R\bsequence\x12`\n" +
-	"\x0factive_sessions\x18\x04 \x03(\v27.component.v1.GatewayControlRequest.ActiveSessionsEntryR\x0eactiveSessions\x1aA\n" +
+	"\x0factive_sessions\x18\x04 \x03(\v27.component.v1.GatewayControlRequest.ActiveSessionsEntryR\x0eactiveSessions\x12U\n" +
+	"\x12workspace_sessions\x18\x05 \x03(\v2&.component.v1.WorkspaceSessionActivityR\x11workspaceSessions\x1aA\n" +
 	"\x13ActiveSessionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\xd9\x02\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\x90\x01\n" +
+	"\x18WorkspaceSessionIdentity\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
+	"\bsite_uid\x18\x02 \x01(\tR\asiteUid\x12\x17\n" +
+	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12!\n" +
+	"\fruntime_uuid\x18\x04 \x01(\tR\vruntimeUuid\"\xb9\x01\n" +
+	"\x18WorkspaceSessionActivity\x12B\n" +
+	"\bidentity\x18\x01 \x01(\v2&.component.v1.WorkspaceSessionIdentityR\bidentity\x12\x16\n" +
+	"\x06active\x18\x02 \x01(\bR\x06active\x12A\n" +
+	"\x1dlast_active_unix_milliseconds\x18\x03 \x01(\x03R\x1alastActiveUnixMilliseconds\"\x8e\x01\n" +
+	"\x1dLookupWorkspaceSessionRequest\x12)\n" +
+	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12B\n" +
+	"\bidentity\x18\x02 \x01(\v2&.component.v1.WorkspaceSessionIdentityR\bidentity\">\n" +
+	"\x1eLookupWorkspaceSessionResponse\x12\x1c\n" +
+	"\trenewable\x18\x01 \x01(\bR\trenewable\"\xd9\x02\n" +
 	"\x16GatewayControlResponse\x12)\n" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
@@ -2110,10 +2358,11 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"\x10\n" +
 	"\x0eCacheGCRequest\",\n" +
 	"\x0fCacheGCComplete\x12\x19\n" +
-	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x94\x03\n" +
+	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x89\x04\n" +
 	"\x10ComponentService\x12_\n" +
 	"\x0eGatewayControl\x12#.component.v1.GatewayControlRequest\x1a$.component.v1.GatewayControlResponse(\x010\x01\x12a\n" +
-	"\x10AuthorizeGateway\x12%.component.v1.AuthorizeGatewayRequest\x1a&.component.v1.AuthorizeGatewayResponse\x12a\n" +
+	"\x10AuthorizeGateway\x12%.component.v1.AuthorizeGatewayRequest\x1a&.component.v1.AuthorizeGatewayResponse\x12s\n" +
+	"\x16LookupWorkspaceSession\x12+.component.v1.LookupWorkspaceSessionRequest\x1a,.component.v1.LookupWorkspaceSessionResponse\x12a\n" +
 	"\x10IssueAgentAccess\x12%.component.v1.IssueAgentAccessRequest\x1a&.component.v1.IssueAgentAccessResponse\x12Y\n" +
 	"\fCacheControl\x12!.component.v1.CacheControlRequest\x1a\".component.v1.CacheControlResponse(\x010\x01B;Z9gitea.dev/codespace/internal/rpc/component/v1;componentv1b\x06proto3"
 
@@ -2129,70 +2378,79 @@ func file_component_v1_service_proto_rawDescGZIP() []byte {
 	return file_component_v1_service_proto_rawDescData
 }
 
-var file_component_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 26)
+var file_component_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 30)
 var file_component_v1_service_proto_goTypes = []any{
-	(*GatewayControlRequest)(nil),        // 0: component.v1.GatewayControlRequest
-	(*GatewayControlResponse)(nil),       // 1: component.v1.GatewayControlResponse
-	(*GatewayConfigurationSnapshot)(nil), // 2: component.v1.GatewayConfigurationSnapshot
-	(*GatewayRuntimeRoute)(nil),          // 3: component.v1.GatewayRuntimeRoute
-	(*GatewayEndpoint)(nil),              // 4: component.v1.GatewayEndpoint
-	(*AuthorizeGatewayRequest)(nil),      // 5: component.v1.AuthorizeGatewayRequest
-	(*OpenCodeAuthorization)(nil),        // 6: component.v1.OpenCodeAuthorization
-	(*PublicEndpointAuthorization)(nil),  // 7: component.v1.PublicEndpointAuthorization
-	(*SSHPublicKeyAuthorization)(nil),    // 8: component.v1.SSHPublicKeyAuthorization
-	(*EndpointSessionAuthorization)(nil), // 9: component.v1.EndpointSessionAuthorization
-	(*SSHSessionAuthorization)(nil),      // 10: component.v1.SSHSessionAuthorization
-	(*AuthorizeGatewayResponse)(nil),     // 11: component.v1.AuthorizeGatewayResponse
-	(*IssueAgentAccessRequest)(nil),      // 12: component.v1.IssueAgentAccessRequest
-	(*IssueAgentAccessResponse)(nil),     // 13: component.v1.IssueAgentAccessResponse
-	(*CacheControlRequest)(nil),          // 14: component.v1.CacheControlRequest
-	(*CacheControlResponse)(nil),         // 15: component.v1.CacheControlResponse
-	(*CacheConfiguration)(nil),           // 16: component.v1.CacheConfiguration
-	(*CacheStorageConfiguration)(nil),    // 17: component.v1.CacheStorageConfiguration
-	(*CacheS3Configuration)(nil),         // 18: component.v1.CacheS3Configuration
-	(*CacheUpstreamConfiguration)(nil),   // 19: component.v1.CacheUpstreamConfiguration
-	(*CacheStatus)(nil),                  // 20: component.v1.CacheStatus
-	(*CacheGCGrant)(nil),                 // 21: component.v1.CacheGCGrant
-	(*CacheGCRequest)(nil),               // 22: component.v1.CacheGCRequest
-	(*CacheGCComplete)(nil),              // 23: component.v1.CacheGCComplete
-	nil,                                  // 24: component.v1.GatewayControlRequest.ActiveSessionsEntry
-	nil,                                  // 25: component.v1.CacheConfiguration.UpstreamsEntry
-	(v1.AccessCapability)(0),             // 26: agent.v1.AccessCapability
+	(*GatewayControlRequest)(nil),          // 0: component.v1.GatewayControlRequest
+	(*WorkspaceSessionIdentity)(nil),       // 1: component.v1.WorkspaceSessionIdentity
+	(*WorkspaceSessionActivity)(nil),       // 2: component.v1.WorkspaceSessionActivity
+	(*LookupWorkspaceSessionRequest)(nil),  // 3: component.v1.LookupWorkspaceSessionRequest
+	(*LookupWorkspaceSessionResponse)(nil), // 4: component.v1.LookupWorkspaceSessionResponse
+	(*GatewayControlResponse)(nil),         // 5: component.v1.GatewayControlResponse
+	(*GatewayConfigurationSnapshot)(nil),   // 6: component.v1.GatewayConfigurationSnapshot
+	(*GatewayRuntimeRoute)(nil),            // 7: component.v1.GatewayRuntimeRoute
+	(*GatewayEndpoint)(nil),                // 8: component.v1.GatewayEndpoint
+	(*AuthorizeGatewayRequest)(nil),        // 9: component.v1.AuthorizeGatewayRequest
+	(*OpenCodeAuthorization)(nil),          // 10: component.v1.OpenCodeAuthorization
+	(*PublicEndpointAuthorization)(nil),    // 11: component.v1.PublicEndpointAuthorization
+	(*SSHPublicKeyAuthorization)(nil),      // 12: component.v1.SSHPublicKeyAuthorization
+	(*EndpointSessionAuthorization)(nil),   // 13: component.v1.EndpointSessionAuthorization
+	(*SSHSessionAuthorization)(nil),        // 14: component.v1.SSHSessionAuthorization
+	(*AuthorizeGatewayResponse)(nil),       // 15: component.v1.AuthorizeGatewayResponse
+	(*IssueAgentAccessRequest)(nil),        // 16: component.v1.IssueAgentAccessRequest
+	(*IssueAgentAccessResponse)(nil),       // 17: component.v1.IssueAgentAccessResponse
+	(*CacheControlRequest)(nil),            // 18: component.v1.CacheControlRequest
+	(*CacheControlResponse)(nil),           // 19: component.v1.CacheControlResponse
+	(*CacheConfiguration)(nil),             // 20: component.v1.CacheConfiguration
+	(*CacheStorageConfiguration)(nil),      // 21: component.v1.CacheStorageConfiguration
+	(*CacheS3Configuration)(nil),           // 22: component.v1.CacheS3Configuration
+	(*CacheUpstreamConfiguration)(nil),     // 23: component.v1.CacheUpstreamConfiguration
+	(*CacheStatus)(nil),                    // 24: component.v1.CacheStatus
+	(*CacheGCGrant)(nil),                   // 25: component.v1.CacheGCGrant
+	(*CacheGCRequest)(nil),                 // 26: component.v1.CacheGCRequest
+	(*CacheGCComplete)(nil),                // 27: component.v1.CacheGCComplete
+	nil,                                    // 28: component.v1.GatewayControlRequest.ActiveSessionsEntry
+	nil,                                    // 29: component.v1.CacheConfiguration.UpstreamsEntry
+	(v1.AccessCapability)(0),               // 30: agent.v1.AccessCapability
 }
 var file_component_v1_service_proto_depIdxs = []int32{
-	24, // 0: component.v1.GatewayControlRequest.active_sessions:type_name -> component.v1.GatewayControlRequest.ActiveSessionsEntry
-	2,  // 1: component.v1.GatewayControlResponse.config:type_name -> component.v1.GatewayConfigurationSnapshot
-	3,  // 2: component.v1.GatewayControlResponse.runtimes:type_name -> component.v1.GatewayRuntimeRoute
-	4,  // 3: component.v1.GatewayRuntimeRoute.endpoints:type_name -> component.v1.GatewayEndpoint
-	6,  // 4: component.v1.AuthorizeGatewayRequest.open_code:type_name -> component.v1.OpenCodeAuthorization
-	7,  // 5: component.v1.AuthorizeGatewayRequest.public_endpoint:type_name -> component.v1.PublicEndpointAuthorization
-	8,  // 6: component.v1.AuthorizeGatewayRequest.ssh_public_key:type_name -> component.v1.SSHPublicKeyAuthorization
-	9,  // 7: component.v1.AuthorizeGatewayRequest.endpoint_session:type_name -> component.v1.EndpointSessionAuthorization
-	10, // 8: component.v1.AuthorizeGatewayRequest.ssh_session:type_name -> component.v1.SSHSessionAuthorization
-	26, // 9: component.v1.IssueAgentAccessRequest.capability:type_name -> agent.v1.AccessCapability
-	3,  // 10: component.v1.IssueAgentAccessResponse.runtime:type_name -> component.v1.GatewayRuntimeRoute
-	20, // 11: component.v1.CacheControlRequest.status:type_name -> component.v1.CacheStatus
-	22, // 12: component.v1.CacheControlRequest.begin_gc:type_name -> component.v1.CacheGCRequest
-	23, // 13: component.v1.CacheControlRequest.complete_gc:type_name -> component.v1.CacheGCComplete
-	16, // 14: component.v1.CacheControlResponse.config:type_name -> component.v1.CacheConfiguration
-	21, // 15: component.v1.CacheControlResponse.gc_grant:type_name -> component.v1.CacheGCGrant
-	17, // 16: component.v1.CacheConfiguration.storage:type_name -> component.v1.CacheStorageConfiguration
-	25, // 17: component.v1.CacheConfiguration.upstreams:type_name -> component.v1.CacheConfiguration.UpstreamsEntry
-	18, // 18: component.v1.CacheStorageConfiguration.s3:type_name -> component.v1.CacheS3Configuration
-	19, // 19: component.v1.CacheConfiguration.UpstreamsEntry.value:type_name -> component.v1.CacheUpstreamConfiguration
-	0,  // 20: component.v1.ComponentService.GatewayControl:input_type -> component.v1.GatewayControlRequest
-	5,  // 21: component.v1.ComponentService.AuthorizeGateway:input_type -> component.v1.AuthorizeGatewayRequest
-	12, // 22: component.v1.ComponentService.IssueAgentAccess:input_type -> component.v1.IssueAgentAccessRequest
-	14, // 23: component.v1.ComponentService.CacheControl:input_type -> component.v1.CacheControlRequest
-	1,  // 24: component.v1.ComponentService.GatewayControl:output_type -> component.v1.GatewayControlResponse
-	11, // 25: component.v1.ComponentService.AuthorizeGateway:output_type -> component.v1.AuthorizeGatewayResponse
-	13, // 26: component.v1.ComponentService.IssueAgentAccess:output_type -> component.v1.IssueAgentAccessResponse
-	15, // 27: component.v1.ComponentService.CacheControl:output_type -> component.v1.CacheControlResponse
-	24, // [24:28] is the sub-list for method output_type
-	20, // [20:24] is the sub-list for method input_type
-	20, // [20:20] is the sub-list for extension type_name
-	20, // [20:20] is the sub-list for extension extendee
-	0,  // [0:20] is the sub-list for field type_name
+	28, // 0: component.v1.GatewayControlRequest.active_sessions:type_name -> component.v1.GatewayControlRequest.ActiveSessionsEntry
+	2,  // 1: component.v1.GatewayControlRequest.workspace_sessions:type_name -> component.v1.WorkspaceSessionActivity
+	1,  // 2: component.v1.WorkspaceSessionActivity.identity:type_name -> component.v1.WorkspaceSessionIdentity
+	1,  // 3: component.v1.LookupWorkspaceSessionRequest.identity:type_name -> component.v1.WorkspaceSessionIdentity
+	6,  // 4: component.v1.GatewayControlResponse.config:type_name -> component.v1.GatewayConfigurationSnapshot
+	7,  // 5: component.v1.GatewayControlResponse.runtimes:type_name -> component.v1.GatewayRuntimeRoute
+	8,  // 6: component.v1.GatewayRuntimeRoute.endpoints:type_name -> component.v1.GatewayEndpoint
+	10, // 7: component.v1.AuthorizeGatewayRequest.open_code:type_name -> component.v1.OpenCodeAuthorization
+	11, // 8: component.v1.AuthorizeGatewayRequest.public_endpoint:type_name -> component.v1.PublicEndpointAuthorization
+	12, // 9: component.v1.AuthorizeGatewayRequest.ssh_public_key:type_name -> component.v1.SSHPublicKeyAuthorization
+	13, // 10: component.v1.AuthorizeGatewayRequest.endpoint_session:type_name -> component.v1.EndpointSessionAuthorization
+	14, // 11: component.v1.AuthorizeGatewayRequest.ssh_session:type_name -> component.v1.SSHSessionAuthorization
+	30, // 12: component.v1.IssueAgentAccessRequest.capability:type_name -> agent.v1.AccessCapability
+	7,  // 13: component.v1.IssueAgentAccessResponse.runtime:type_name -> component.v1.GatewayRuntimeRoute
+	24, // 14: component.v1.CacheControlRequest.status:type_name -> component.v1.CacheStatus
+	26, // 15: component.v1.CacheControlRequest.begin_gc:type_name -> component.v1.CacheGCRequest
+	27, // 16: component.v1.CacheControlRequest.complete_gc:type_name -> component.v1.CacheGCComplete
+	20, // 17: component.v1.CacheControlResponse.config:type_name -> component.v1.CacheConfiguration
+	25, // 18: component.v1.CacheControlResponse.gc_grant:type_name -> component.v1.CacheGCGrant
+	21, // 19: component.v1.CacheConfiguration.storage:type_name -> component.v1.CacheStorageConfiguration
+	29, // 20: component.v1.CacheConfiguration.upstreams:type_name -> component.v1.CacheConfiguration.UpstreamsEntry
+	22, // 21: component.v1.CacheStorageConfiguration.s3:type_name -> component.v1.CacheS3Configuration
+	23, // 22: component.v1.CacheConfiguration.UpstreamsEntry.value:type_name -> component.v1.CacheUpstreamConfiguration
+	0,  // 23: component.v1.ComponentService.GatewayControl:input_type -> component.v1.GatewayControlRequest
+	9,  // 24: component.v1.ComponentService.AuthorizeGateway:input_type -> component.v1.AuthorizeGatewayRequest
+	3,  // 25: component.v1.ComponentService.LookupWorkspaceSession:input_type -> component.v1.LookupWorkspaceSessionRequest
+	16, // 26: component.v1.ComponentService.IssueAgentAccess:input_type -> component.v1.IssueAgentAccessRequest
+	18, // 27: component.v1.ComponentService.CacheControl:input_type -> component.v1.CacheControlRequest
+	5,  // 28: component.v1.ComponentService.GatewayControl:output_type -> component.v1.GatewayControlResponse
+	15, // 29: component.v1.ComponentService.AuthorizeGateway:output_type -> component.v1.AuthorizeGatewayResponse
+	4,  // 30: component.v1.ComponentService.LookupWorkspaceSession:output_type -> component.v1.LookupWorkspaceSessionResponse
+	17, // 31: component.v1.ComponentService.IssueAgentAccess:output_type -> component.v1.IssueAgentAccessResponse
+	19, // 32: component.v1.ComponentService.CacheControl:output_type -> component.v1.CacheControlResponse
+	28, // [28:33] is the sub-list for method output_type
+	23, // [23:28] is the sub-list for method input_type
+	23, // [23:23] is the sub-list for extension type_name
+	23, // [23:23] is the sub-list for extension extendee
+	0,  // [0:23] is the sub-list for field type_name
 }
 
 func init() { file_component_v1_service_proto_init() }
@@ -2200,14 +2458,14 @@ func file_component_v1_service_proto_init() {
 	if File_component_v1_service_proto != nil {
 		return
 	}
-	file_component_v1_service_proto_msgTypes[5].OneofWrappers = []any{
+	file_component_v1_service_proto_msgTypes[9].OneofWrappers = []any{
 		(*AuthorizeGatewayRequest_OpenCode)(nil),
 		(*AuthorizeGatewayRequest_PublicEndpoint)(nil),
 		(*AuthorizeGatewayRequest_SshPublicKey)(nil),
 		(*AuthorizeGatewayRequest_EndpointSession)(nil),
 		(*AuthorizeGatewayRequest_SshSession)(nil),
 	}
-	file_component_v1_service_proto_msgTypes[14].OneofWrappers = []any{
+	file_component_v1_service_proto_msgTypes[18].OneofWrappers = []any{
 		(*CacheControlRequest_BeginGc)(nil),
 		(*CacheControlRequest_CompleteGc)(nil),
 	}
@@ -2217,7 +2475,7 @@ func file_component_v1_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_component_v1_service_proto_rawDesc), len(file_component_v1_service_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   26,
+			NumMessages:   30,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

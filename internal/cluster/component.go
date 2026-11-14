@@ -68,6 +68,7 @@ type ComponentServer struct {
 	Activity            *RuntimeActivityTracker
 	Changes             *ChangeNotifier
 	Connections         *siteConnectionStore
+	workspaceSessions   workspaceSessionTracker
 }
 
 func (s *ComponentServer) Handler() (string, http.Handler) {
@@ -248,18 +249,23 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	if err != nil {
 		return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 	}
-	authorizedRuntimes := make(map[string]struct{}, len(snapshot.Runtimes))
+	authorizedSites := make(map[string]string, len(snapshot.Runtimes))
 	for _, runtime := range snapshot.Runtimes {
-		authorizedRuntimes[runtime.RuntimeUuid] = struct{}{}
+		authorizedSites[runtime.RuntimeUuid] = runtime.SiteUid
 	}
-	if err := s.replaceGatewayActivity(identity, session, first.ActiveSessions, authorizedRuntimes); err != nil {
+	key := gatewayActivityKey{componentUID: identity.UID, instance: session}
+	workspaceReport := &workspaceSessionReport{idleTimeout: time.Duration(snapshot.Config.SessionIdleTimeoutMilliseconds) * time.Millisecond}
+	if err := s.replaceWorkspaceActivity(key, workspaceReport, first.WorkspaceSessions, authorizedSites); err != nil {
 		return err
 	}
 	defer func() {
-		if s.Activity != nil {
+		if s.workspaceSessions.disconnect(key, workspaceReport) && s.Activity != nil {
 			_ = s.Activity.ReplaceGateway(identity.UID, session, nil, true, time.Now())
 		}
 	}()
+	if err := s.replaceGatewayActivity(identity, session, first.ActiveSessions, authorizedSites); err != nil {
+		return err
+	}
 
 	requests := make(chan *componentv1.GatewayControlRequest)
 	receiveErrors := make(chan error, 1)
@@ -287,35 +293,24 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	defer permitTicker.Stop()
 	streamLifetime := time.NewTimer(45 * time.Minute)
 	defer streamLifetime.Stop()
-	sequence, cursor := first.Sequence, ""
-	pendingSnapshot := snapshot
-	sendSnapshot := true
+	sequence := first.Sequence
+	response := snapshot
 	for {
-		if sendSnapshot {
-			if pendingSnapshot == nil {
-				pendingSnapshot, err = s.gatewaySnapshot(ctx, identity)
-				if err != nil {
-					return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
-				}
+		if response != nil {
+			response.ProtocolVersion = 1
+			response.Sequence = sequence
+			response.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
+			// Confirm activity and renew permits through the same response path.
+			if err := stream.Send(response); err != nil {
+				return err
 			}
-			authorizedRuntimes = make(map[string]struct{}, len(pendingSnapshot.Runtimes))
-			for _, runtime := range pendingSnapshot.Runtimes {
-				authorizedRuntimes[runtime.RuntimeUuid] = struct{}{}
+			now := time.Now()
+			s.workspaceSessions.renew(key, workspaceReport, now, time.Duration(snapshot.Config.SessionIdleTimeoutMilliseconds)*time.Millisecond)
+			if s.Activity != nil {
+				s.Activity.RenewGatewayPermit(identity.UID, session, now)
 			}
-			if pendingSnapshot.Cursor != cursor {
-				pendingSnapshot.Sequence = sequence
-				pendingSnapshot.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
-				if err := stream.Send(pendingSnapshot); err != nil {
-					return err
-				}
-				if s.Activity != nil {
-					s.Activity.RenewGatewayPermit(identity.UID, session, time.Now())
-				}
-				cursor = pendingSnapshot.Cursor
-			}
-			pendingSnapshot = nil
-			sendSnapshot = false
 		}
+		response = &componentv1.GatewayControlResponse{Cursor: snapshot.Cursor}
 		select {
 		case <-ctx.Done():
 			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
@@ -328,32 +323,41 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 			if request.ProtocolVersion != 1 || request.SessionId != first.SessionId || request.Sequence <= sequence {
 				return connect.NewError(connect.CodeInvalidArgument, "gateway control sequence is invalid")
 			}
-			if err := s.replaceGatewayActivity(identity, session, request.ActiveSessions, authorizedRuntimes); err != nil {
+			if err := s.replaceWorkspaceActivity(key, workspaceReport, request.WorkspaceSessions, authorizedSites); err != nil {
+				return err
+			}
+			if err := s.replaceGatewayActivity(identity, session, request.ActiveSessions, authorizedSites); err != nil {
 				return err
 			}
 			sequence = request.Sequence
 		case <-changes:
-			sendSnapshot = true
+			updated, err := s.gatewaySnapshot(ctx, identity)
+			if err != nil {
+				return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
+			}
+			if updated.Cursor == snapshot.Cursor {
+				response = nil
+				continue
+			}
+			snapshot, response = updated, updated
+			authorizedSites = make(map[string]string, len(snapshot.Runtimes))
+			for _, runtime := range snapshot.Runtimes {
+				authorizedSites[runtime.RuntimeUuid] = runtime.SiteUid
+			}
 		case <-permitTicker.C:
-			if err := stream.Send(&componentv1.GatewayControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: gatewayPermitTTL.Milliseconds(), Cursor: cursor}); err != nil {
-				return err
-			}
-			if s.Activity != nil {
-				s.Activity.RenewGatewayPermit(identity.UID, session, time.Now())
-			}
 		case <-streamLifetime.C:
 			return nil
 		}
 	}
 }
 
-func (s *ComponentServer) replaceGatewayActivity(identity componentIdentity, session string, counts map[string]int64, authorizedRuntimes map[string]struct{}) error {
+func (s *ComponentServer) replaceGatewayActivity(identity componentIdentity, session string, counts map[string]int64, authorizedSites map[string]string) error {
 	filtered := make(map[string]int64, len(counts))
 	for runtimeUUID, count := range counts {
 		if count < 0 {
 			return connect.NewError(connect.CodeInvalidArgument, "gateway activity count is invalid")
 		}
-		if _, authorized := authorizedRuntimes[runtimeUUID]; authorized {
+		if _, authorized := authorizedSites[runtimeUUID]; authorized {
 			filtered[runtimeUUID] = count
 		}
 	}

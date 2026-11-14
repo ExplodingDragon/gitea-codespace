@@ -168,7 +168,10 @@ function setSSHExposure(value: 'external' | 'loadBalancer') {
   </div>
   <h2>{{ t('component.sessions') }}</h2>
   <div class="form-grid">
-    <NFormItem :label="t('component.sessionLifetime')">
+    <NFormItem
+      :label="t('component.sessionLifetime')"
+      :feedback="t('component.sessionLifetimeHelp')"
+    >
       <MeasurementInput
         v-model="gateway.sessions.ttl"
         kind="duration"

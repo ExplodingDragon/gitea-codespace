@@ -283,6 +283,7 @@
     "trustedProxiesHelp": "只有来自这些网段的直接上游才能提供 X-Forwarded-For。流量直接到达 Service 时请留空。",
     "sessions": "会话与限制",
     "sessionLifetime": "会话有效期",
+    "sessionLifetimeHelp": "Workspace 活跃期间可持续续期，最后一个请求或连接结束后计算空闲超时。对于 Web 转发端口，此值仍为会话的最长有效期。",
     "idleTimeout": "空闲超时",
     "authRefresh": "授权刷新间隔",
     "sessionsPerCodespace": "每个 Codespace 的会话数",

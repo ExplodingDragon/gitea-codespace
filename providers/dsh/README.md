@@ -35,10 +35,10 @@ provider installs plugin packages with the official DSH package command.
 }
 ```
 
-The provider validates the initial profile and then preserves changes made
-through DSH. A setting for an unavailable plugin entry produces a warning and
-is skipped; an invalid setting for an active entry reports an initialization
-error. Repository settings replace template settings for the same profile entry.
+The provider validates and initializes the profile once, then preserves changes
+made through DSH. A setting for an unavailable plugin entry produces a warning
+and is skipped; an invalid setting for an active entry reports an initialization
+error.
 
 ### Use an OpenAI-compatible service
 
@@ -90,20 +90,16 @@ Before creating the codespace:
 3. Create the codespace and confirm the secret selection.
 4. Open DSH and select `company-openai` and the configured model.
 
-Each key under `settings` is a complete DSH profile entry. If the repository
-already configures `llm-pi-ai`, place every required provider in the same
-`providers` object because the repository entry replaces an environment
-template entry with the same ID. The repository configuration initializes a
-new codespace once; later starts retain changes made through DSH. Create a new
-codespace to apply changed repository defaults, or use **Settings → Models** in
-DSH to adjust an existing codespace.
+Place all required model providers in the same `llm-pi-ai.providers` object,
+following the [configuration merge rules](#configuration). Create a new codespace
+to apply changed repository defaults, or use **Settings → Models** in DSH to
+adjust an existing codespace.
 
 ## Codespace ports
 
 The bundled Codespace plugin provides a **Codespace → Ports** tab for listing,
-publishing, editing, and removing Gateway endpoints. It uses the same runtime
-endpoint API as the Dev Container command, so changes made in DSH, VS Code, the
-command line, or an application script all update one authoritative list.
+publishing, editing, and removing Gateway endpoints. Changes are shared with
+the Dev Container command and other Codespace IDE plugins.
 
 The `/ports` command exposes the same operations in a DSH conversation:
 
@@ -137,14 +133,12 @@ using the USB/IP command in **Connection help** and a source name (default:
 CLI; the tab remains available if the tunnel disconnects so you can inspect or
 detach imported devices.
 
-Opening the tab reads local imports and remote devices together. Each device
-appears once per source, with imported devices marked **Imported**. The tab
-refreshes automatically 10 seconds after each read finishes while it is visible;
-**Refresh** also starts a read manually. A failed source keeps its last list
-alongside the error, so other sources and imported devices remain manageable.
-Attach and detach refresh the actual state afterward. The tab confirms detach;
-unmount disks first. See the [USB guide](../../docs/usbip.md#attach-and-detach-devices)
-for device status, refresh failures, and reconnecting a source.
+The tab refreshes automatically while open and provides a manual **Refresh**
+action. Imported devices are marked **Imported**. A failed source displays its
+error alongside the last device list while other sources remain usable. Unmount
+disks before confirming detach. See the
+[USB guide](../../docs/usbip.md#attach-and-detach-devices) for device status,
+refresh failures, and reconnecting a source.
 
 The conversation command uses the same CLI as the page:
 

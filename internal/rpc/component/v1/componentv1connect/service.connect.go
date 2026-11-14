@@ -30,6 +30,9 @@ const (
 	// ComponentServiceAuthorizeGatewayProcedure is the procedure name of the ComponentService's
 	// AuthorizeGateway RPC.
 	ComponentServiceAuthorizeGatewayProcedure = "/component.v1.ComponentService/AuthorizeGateway"
+	// ComponentServiceLookupWorkspaceSessionProcedure is the procedure name of the ComponentService's
+	// LookupWorkspaceSession RPC.
+	ComponentServiceLookupWorkspaceSessionProcedure = "/component.v1.ComponentService/LookupWorkspaceSession"
 	// ComponentServiceIssueAgentAccessProcedure is the procedure name of the ComponentService's
 	// IssueAgentAccess RPC.
 	ComponentServiceIssueAgentAccessProcedure = "/component.v1.ComponentService/IssueAgentAccess"
@@ -51,6 +54,13 @@ var (
 			StreamType: connect.StreamTypeUnary,
 			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("AuthorizeGateway"),
 			Procedure:  ComponentServiceAuthorizeGatewayProcedure,
+		}
+	})
+	componentServiceLookupWorkspaceSessionSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_component_v1_service_proto.Services().ByName("ComponentService").Methods().ByName("LookupWorkspaceSession"),
+			Procedure:  ComponentServiceLookupWorkspaceSessionProcedure,
 		}
 	})
 	componentServiceIssueAgentAccessSpec = sync.OnceValue(func() connect.Spec {
@@ -75,6 +85,8 @@ type ComponentServiceClient interface {
 	GatewayControl(context.Context) (ComponentServiceGatewayControlClientStream, error)
 	// AuthorizeGateway delegates one user authorization decision to its Gitea site.
 	AuthorizeGateway(context.Context, *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error)
+	// LookupWorkspaceSession confirms activity for an expired browser ticket.
+	LookupWorkspaceSession(context.Context, *v1.LookupWorkspaceSessionRequest) (*v1.LookupWorkspaceSessionResponse, error)
 	// IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
 	IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error)
 	// CacheControl publishes cache health and streams configuration and cleanup grants.
@@ -167,6 +179,8 @@ type ComponentServiceHandler interface {
 	GatewayControl(context.Context, ComponentServiceGatewayControlServerStream) error
 	// AuthorizeGateway delegates one user authorization decision to its Gitea site.
 	AuthorizeGateway(context.Context, *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error)
+	// LookupWorkspaceSession confirms activity for an expired browser ticket.
+	LookupWorkspaceSession(context.Context, *v1.LookupWorkspaceSessionRequest) (*v1.LookupWorkspaceSessionResponse, error)
 	// IssueAgentAccess binds one short-lived ticket to the current Runtime Pod target.
 	IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error)
 	// CacheControl publishes cache health and streams configuration and cleanup grants.
@@ -180,6 +194,7 @@ func RegisterComponentServiceHandler(server *connect.Server, svc ComponentServic
 	server.Register(
 		connect.Method{Spec: componentServiceGatewayControlSpec(), Handler: adapter.gatewayControl},
 		connect.Method{Spec: componentServiceAuthorizeGatewaySpec(), Handler: adapter.authorizeGateway},
+		connect.Method{Spec: componentServiceLookupWorkspaceSessionSpec(), Handler: adapter.lookupWorkspaceSession},
 		connect.Method{Spec: componentServiceIssueAgentAccessSpec(), Handler: adapter.issueAgentAccess},
 		connect.Method{Spec: componentServiceCacheControlSpec(), Handler: adapter.cacheControl},
 	)
@@ -246,6 +261,10 @@ func (UnimplementedComponentServiceHandler) AuthorizeGateway(context.Context, *v
 	return nil, connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.AuthorizeGateway is not implemented")
 }
 
+func (UnimplementedComponentServiceHandler) LookupWorkspaceSession(context.Context, *v1.LookupWorkspaceSessionRequest) (*v1.LookupWorkspaceSessionResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.LookupWorkspaceSession is not implemented")
+}
+
 func (UnimplementedComponentServiceHandler) IssueAgentAccess(context.Context, *v1.IssueAgentAccessRequest) (*v1.IssueAgentAccessResponse, error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, "component.v1.ComponentService.IssueAgentAccess is not implemented")
 }
@@ -269,6 +288,14 @@ func (c *componentServiceClient) GatewayControl(ctx context.Context) (ComponentS
 func (c *componentServiceClient) AuthorizeGateway(ctx context.Context, req *v1.AuthorizeGatewayRequest) (*v1.AuthorizeGatewayResponse, error) {
 	var res v1.AuthorizeGatewayResponse
 	if err := c.client.CallUnary(ctx, componentServiceAuthorizeGatewaySpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *componentServiceClient) LookupWorkspaceSession(ctx context.Context, req *v1.LookupWorkspaceSessionRequest) (*v1.LookupWorkspaceSessionResponse, error) {
+	var res v1.LookupWorkspaceSessionResponse
+	if err := c.client.CallUnary(ctx, componentServiceLookupWorkspaceSessionSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -302,6 +329,18 @@ func (h componentServiceHandler) authorizeGateway(ctx context.Context, _ connect
 		return err
 	}
 	res, err := h.svc.AuthorizeGateway(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h componentServiceHandler) lookupWorkspaceSession(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.LookupWorkspaceSessionRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.LookupWorkspaceSession(ctx, &req)
 	if err != nil {
 		return err
 	}

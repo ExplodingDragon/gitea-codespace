@@ -212,7 +212,12 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, http.StatusUnauthorized, "Sign in required", "Open this codespace from Gitea to create a gateway session.", "gateway session is required")
 		return
 	}
-	session, ok, ambiguous := sessions.AuthenticateAny(sessionIDs, codespaceUUID, endpointID, time.Now())
+	session, ok, ambiguous, err := sessions.ResolveAny(request.Context(), sessionIDs, codespaceUUID, endpointID, time.Now(), controlPlane.LookupWorkspaceSession)
+	if err != nil {
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_session_lookup_failed", slog.String("codespace_uuid", codespaceUUID), slog.String("endpoint_id", endpointID), slog.Any("error", err))
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Session is temporarily unavailable", "Workspace session activity cannot be confirmed right now. Try again shortly.", "gateway session activity unavailable")
+		return
+	}
 	if ambiguous {
 		writeGatewayError(writer, request, http.StatusUnauthorized, "Session is ambiguous", "More than one gateway session matched this request. Open the codespace again from Gitea.", "gateway session is ambiguous")
 		return
@@ -277,12 +282,9 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, http.StatusForbidden, "Codespace is unavailable", "Gitea reports that this codespace endpoint is not currently available for this session.", decision.DeniedCategory)
 		return
 	}
-	setGatewaySessionCookie(writer, session.token, originPolicy)
 	requestContext, cancelRequest := context.WithCancel(request.Context())
 	defer cancelRequest()
 	request = request.WithContext(requestContext)
-	end := sessions.BeginSessionCancelable(session.id, session.codespaceUUID, cancelRequest)
-	defer end()
 
 	revalidate := func(ctx context.Context) (gatewayAccessDecision, error) {
 		decision, validationFull, err := access.RevalidateEndpointSession(
@@ -323,6 +325,22 @@ func handleGatewayWorkspace(
 		return
 	}
 	defer releaseRoute()
+	session, err = sessions.Accept(session, time.Now())
+	if err != nil {
+		status := http.StatusServiceUnavailable
+		if errors.Is(err, errGatewaySessionLimitReached) {
+			status = http.StatusTooManyRequests
+		}
+		writeGatewayError(writer, request, status, "Session is unavailable", "Codespace Gateway cannot accept this session right now. Try again shortly.", "gateway session unavailable")
+		return
+	}
+	end := sessions.BeginSessionCancelable(session.id, session.codespaceUUID, cancelRequest)
+	defer end()
+	if err := sessions.waitWorkspaceActivity(routeRequest.Context(), session.id); err != nil {
+		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Session is temporarily unavailable", "Workspace session activity is synchronizing. Try again shortly.", "gateway session activity unavailable")
+		return
+	}
+	setGatewaySessionCookie(writer, session.token, originPolicy)
 	revalidationAttrs := gatewayProxyLogAttrs(request, route, proxyContext)
 	proxyRequest, cancelRevalidation := withGatewayProxyRevalidation(routeRequest, access.Config.StreamRevalidateInterval, revalidationAttrs, revalidate)
 	defer cancelRevalidation()

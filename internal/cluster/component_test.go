@@ -144,7 +144,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		WithIndex(&api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string { return []string{object.(*api.Codespace).Spec.RuntimeUUID} }).Build()
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
-	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Tickets: &AccessTickets{privateKey: signingKey}}
+	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Tickets: &AccessTickets{privateKey: signingKey}, Changes: &ChangeNotifier{}}
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: string(component.UID)})
 	snapshot, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 	require.NoError(t, err)
@@ -171,6 +171,75 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	require.Equal(t, string(cs.UID), claims.ResourceUid)
 	require.Equal(t, string(pod.UID), claims.PodUid)
 	require.EqualValues(t, cs.Status.Target.Version, claims.TargetVersion)
+
+	t.Run("control confirms workspace activity", func(t *testing.T) {
+		identity := componentIdentity{Role: "gateway", UID: string(component.UID)}
+		rpcServer := connect.NewServer()
+		componentv1connect.RegisterComponentServiceHandler(rpcServer, server)
+		mux := http.NewServeMux()
+		connecthttp.Mount(mux, rpcServer)
+		httpServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			mux.ServeHTTP(w, r.WithContext(contextWithComponent(r.Context(), identity)))
+		}))
+		httpServer.EnableHTTP2 = true
+		httpServer.StartTLS()
+		defer httpServer.Close()
+		remote := componentv1connect.NewComponentServiceClient(connect.NewClient(connecthttp.NewTransport(httpServer.Client(), httpServer.URL, connecthttp.WithGRPC())))
+		ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+		defer cancel()
+		stream, err := remote.GatewayControl(ctx)
+		require.NoError(t, err)
+		defer func() { _ = stream.Close() }()
+		require.NoError(t, stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: "gateway-process", Sequence: 1}))
+		response, err := stream.Receive()
+		require.NoError(t, err)
+		require.True(t, response.Snapshot)
+		require.EqualValues(t, 1, response.Sequence)
+		require.Len(t, response.Runtimes, 1)
+
+		activity := &componentv1.WorkspaceSessionActivity{
+			Identity: &componentv1.WorkspaceSessionIdentity{SessionId: "browser-session", SiteUid: string(site.UID), UserId: 1, RuntimeUuid: cs.Spec.RuntimeUUID},
+			Active:   true, LastActiveUnixMilliseconds: time.Now().Add(-24 * time.Hour).UnixMilli(),
+		}
+		require.NoError(t, stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: "gateway-process", Sequence: 2, ActiveSessions: map[string]int64{cs.Spec.RuntimeUUID: 1}, WorkspaceSessions: []*componentv1.WorkspaceSessionActivity{activity}}))
+		response, err = stream.Receive()
+		require.NoError(t, err)
+		require.False(t, response.Snapshot)
+		require.EqualValues(t, 2, response.Sequence)
+		require.Positive(t, response.PermitValidForMilliseconds)
+		lookup, err := remote.LookupWorkspaceSession(ctx, &componentv1.LookupWorkspaceSessionRequest{ProtocolVersion: 1, Identity: activity.Identity})
+		require.NoError(t, err)
+		require.True(t, lookup.Renewable)
+
+		updated := cs.DeepCopy()
+		require.NoError(t, index.Get(ctx, client.ObjectKeyFromObject(cs), updated))
+		updated.Status.Target.Version++
+		require.NoError(t, index.Update(ctx, updated))
+		server.Changes.Notify()
+		response, err = stream.Receive()
+		require.NoError(t, err)
+		require.True(t, response.Snapshot)
+		require.EqualValues(t, 2, response.Sequence)
+		require.Positive(t, response.PermitValidForMilliseconds)
+		require.NotEqual(t, snapshot.Cursor, response.Cursor)
+		require.Equal(t, updated.Status.Target.Version, response.Runtimes[0].TargetVersion)
+		require.NoError(t, index.Get(ctx, client.ObjectKeyFromObject(cs), updated))
+		updated.Status = cs.Status
+		require.NoError(t, index.Update(ctx, updated))
+
+		activity.Active = false
+		activity.LastActiveUnixMilliseconds = time.Now().UnixMilli()
+		require.NoError(t, stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: "gateway-process", Sequence: 3, WorkspaceSessions: []*componentv1.WorkspaceSessionActivity{activity}}))
+		response, err = stream.Receive()
+		require.NoError(t, err)
+		require.EqualValues(t, 3, response.Sequence)
+		require.NoError(t, stream.CloseSend())
+		_, err = stream.Receive()
+		require.ErrorIs(t, err, io.EOF)
+		lookup, err = remote.LookupWorkspaceSession(ctx, &componentv1.LookupWorkspaceSessionRequest{ProtocolVersion: 1, Identity: activity.Identity})
+		require.NoError(t, err)
+		require.True(t, lookup.Renewable)
+	})
 
 	request := &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"}
 	current := cs.DeepCopy()
@@ -252,11 +321,11 @@ func TestGatewayActivityUsesAuthorizedSnapshot(t *testing.T) {
 	server := &ComponentServer{Activity: tracker}
 	identity := componentIdentity{UID: "gateway-uid"}
 
-	err := server.replaceGatewayActivity(identity, "session", map[string]int64{"current": 2, "stale": 3}, map[string]struct{}{"current": {}})
+	err := server.replaceGatewayActivity(identity, "session", map[string]int64{"current": 2, "stale": 3}, map[string]string{"current": "site"})
 	require.NoError(t, err)
 	require.Equal(t, map[string]int64{"current": 2}, tracker.gateways[gatewayActivityKey{componentUID: identity.UID, instance: "session"}].counts)
 
-	err = server.replaceGatewayActivity(identity, "session", map[string]int64{"current": -1}, map[string]struct{}{"current": {}})
+	err = server.replaceGatewayActivity(identity, "session", map[string]int64{"current": -1}, map[string]string{"current": "site"})
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
 }
 
@@ -399,7 +468,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, c.Update(ctx, &gcLease))
 
 	// Maintenance wins after issuance has read the Lease but before its CAS update.
-	maintenanceServer := *server
+	maintenanceServer := &ComponentServer{Client: c, IdentityIndex: identityIndex, ManagementNamespace: namespace}
 	raced := false
 	server.Client = interceptor.NewClient(c, interceptor.Funcs{
 		Update: func(ctx context.Context, underlying client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
