@@ -18,6 +18,67 @@ index e565617..4df57d2 100644
              <SidebarNavItem
                to="/settings"
                icon={SidebarIcons.settings}
+diff --git a/packages/client/src/components/onboarding/OnboardingWizard.tsx b/packages/client/src/components/onboarding/OnboardingWizard.tsx
+index fed0b83..22b8bdd 100644
+--- a/packages/client/src/components/onboarding/OnboardingWizard.tsx
++++ b/packages/client/src/components/onboarding/OnboardingWizard.tsx
+@@ -3,8 +3,6 @@ import { useState } from "react";
+ import { Button } from "../ui/Button";
+ import { Dialog } from "../ui/Dialog";
+ import {
+-  RemoteAccessStep,
+-  RemoteAccessStepActions,
+   ThemeStep,
+   ThemeStepActions,
+ } from "./steps";
+@@ -21,12 +19,6 @@ const ONBOARDING_STEPS: OnboardingStepConfig[] = [
+     component: ThemeStep,
+     actions: ThemeStepActions,
+   },
+-  {
+-    id: "remote-access",
+-    title: "Remote Access",
+-    component: RemoteAccessStep,
+-    actions: RemoteAccessStepActions,
+-  },
+ ];
+
+ interface OnboardingWizardProps {
+@@ -36,7 +28,7 @@ interface OnboardingWizardProps {
+
+ /**
+  * Multi-step onboarding wizard shown on first launch.
+- * Guides users through initial setup: theme selection and remote access info.
++ * Guides users through initial theme selection.
+  */
+ export function OnboardingWizard({ onComplete }: OnboardingWizardProps) {
+   const [currentStepIndex, setCurrentStepIndex] = useState(0);
+diff --git a/packages/client/src/hooks/useProviders.ts b/packages/client/src/hooks/useProviders.ts
+index 589d02c..5f79d00 100644
+--- a/packages/client/src/hooks/useProviders.ts
++++ b/packages/client/src/hooks/useProviders.ts
+@@ -14,7 +14,7 @@ import {
+   type ProviderRowListener,
+ } from "../lib/providerQuery";
+ import {
+-  ALL_PROVIDERS,
++  CODESPACE_PROVIDERS,
+   DEFAULT_PROVIDER,
+   type ProviderInfo,
+   type ProviderName,
+@@ -78,8 +78,10 @@ export async function primeLocalNewSessionProvider(
+   const settings = await primeLocalServerSettings();
+   if (!settings) return;
+   const provider =
+-    ALL_PROVIDERS.find((name) => name === preferredProvider) ??
+-    settings.newSessionDefaults?.provider ??
++    CODESPACE_PROVIDERS.find((name) => name === preferredProvider) ??
++    CODESPACE_PROVIDERS.find(
++      (name) => name === settings.newSessionDefaults?.provider,
++    ) ??
+     DEFAULT_PROVIDER;
+   return loadProviderRow(LOCAL_CLIENT_SUMMARY_SOURCE_KEY, provider, false);
+ }
 diff --git a/packages/client/src/main.tsx b/packages/client/src/main.tsx
 index 27917d4..5676fc0 100644
 --- a/packages/client/src/main.tsx
@@ -40,6 +101,102 @@ index 27917d4..5676fc0 100644
                      <Route
                        path="/settings"
                        element={routeModule(<SettingsLayout />)}
+diff --git a/packages/client/src/pages/settings/ProvidersSettings.tsx b/packages/client/src/pages/settings/ProvidersSettings.tsx
+index d5ba758..6329d89 100644
+--- a/packages/client/src/pages/settings/ProvidersSettings.tsx
++++ b/packages/client/src/pages/settings/ProvidersSettings.tsx
+@@ -869,11 +869,7 @@ export function ProvidersSettings() {
+     const serverInfo = serverProviders.find(
+       (p) => p.name === clientProvider.id,
+     );
+-    if (
+-      (clientProvider.id === "claude-ollama" ||
+-        clientProvider.id === "antigravity") &&
+-      !serverInfo
+-    ) {
++    if (!serverInfo) {
+       return [];
+     }
+
+diff --git a/packages/client/src/pages/settings/SettingsLayout.tsx b/packages/client/src/pages/settings/SettingsLayout.tsx
+index 4802cf1..b3ecb17 100644
+--- a/packages/client/src/pages/settings/SettingsLayout.tsx
++++ b/packages/client/src/pages/settings/SettingsLayout.tsx
+@@ -111,14 +111,6 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
+   devices: lazy(() =>
+     import("./DevicesSettings").then((m) => ({ default: m.DevicesSettings })),
+   ),
+-  "local-access": lazy(() =>
+-    import("./LocalAccessSettings").then((m) => ({
+-      default: m.LocalAccessSettings,
+-    })),
+-  ),
+-  users: lazy(() =>
+-    import("./UsersSettings").then((m) => ({ default: m.UsersSettings })),
+-  ),
+   "project-templates": lazy(() =>
+     import("./ProjectTemplatesSettings").then((m) => ({
+       default: m.ProjectTemplatesSettings,
+@@ -127,16 +119,6 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
+   apps: lazy(() =>
+     import("./AppsSettings").then((m) => ({ default: m.AppsSettings })),
+   ),
+-  "server-connections": lazy(() =>
+-    import("./ServerConnectionsSettings").then((m) => ({
+-      default: m.ServerConnectionsSettings,
+-    })),
+-  ),
+-  remote: lazy(() =>
+-    import("./RemoteAccessSettings").then((m) => ({
+-      default: m.RemoteAccessSettings,
+-    })),
+-  ),
+   providers: lazy(() =>
+     import("./ProvidersSettings").then((m) => ({
+       default: m.ProvidersSettings,
+@@ -303,7 +285,10 @@ export function SettingsLayout() {
+   );
+
+   const allCategories = useMemo(
+-    () => getSettingsCategories((key) => t(key as never)),
++    () =>
++      getSettingsCategories((key) => t(key as never)).filter(({ id }) =>
++        Object.hasOwn(CATEGORY_COMPONENTS, id),
++      ),
+     [t],
+   );
+   const categories = useMemo(
+@@ -446,7 +431,8 @@ export function SettingsLayout() {
+     effectiveCategory &&
+     principalResolved &&
+     !withheldFromPrincipal &&
+-    !unservedCategory
++    !unservedCategory &&
++    activeCategory
+       ? CATEGORY_COMPONENTS[effectiveCategory]
+       : null;
+   const unservedCategoryAnswer =
+diff --git a/packages/client/src/providers/registry.ts b/packages/client/src/providers/registry.ts
+index 8174c6d..4e1f17e 100644
+--- a/packages/client/src/providers/registry.ts
++++ b/packages/client/src/providers/registry.ts
+@@ -1,4 +1,5 @@
+ import { ClaudeOllamaProvider } from "./implementations/ClaudeOllamaProvider";
++import { isCodespaceProvider } from "@yep-anywhere/shared";
+ import { AntigravityProvider } from "./implementations/AntigravityProvider";
+ import { ClaudeProvider } from "./implementations/ClaudeProvider";
+ import { ClaudeGatewayProvider } from "./implementations/ClaudeGatewayProvider";
+@@ -32,7 +33,9 @@ const providers: Record<string, Provider> = {
+  * Get all registered providers for settings display.
+  */
+ export function getAllProviders(): Provider[] {
+-  return Object.values(providers);
++  return Object.values(providers).filter((provider) =>
++    isCodespaceProvider(provider.id),
++  );
+ }
+
+ /**
 diff --git a/packages/client/src/remote-main.tsx b/packages/client/src/remote-main.tsx
 index e035dcb..09de59b 100644
 --- a/packages/client/src/remote-main.tsx
@@ -63,18 +220,42 @@ index e035dcb..09de59b 100644
          path="settings/:category"
          element={routeModule(<SettingsLayout />)}
 diff --git a/packages/server/src/app.ts b/packages/server/src/app.ts
-index 8eaa253..0e8ac41 100644
+index 8eaa253..d7a0f70 100644
 --- a/packages/server/src/app.ts
 +++ b/packages/server/src/app.ts
-@@ -246,6 +246,7 @@ import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
+@@ -246,6 +246,8 @@ import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
  import { createDevRoutes } from "./routes/dev.js";
  import { createDesktopBootstrapRoutes } from "./routes/desktop-bootstrap.js";
  import { createDeviceRoutes } from "./routes/devices.js";
 +import { createCodespaceRoutes } from "./routes/codespace.js";
++import { codespaceAccess } from "./routes/codespace-access.js";
  import { createFilesRoutes } from "./routes/files.js";
  import { createBangCommandsRoutes } from "./routes/bang-commands.js";
  import { BangCommandService } from "./services/BangCommandService.js";
-@@ -3200,6 +3201,7 @@ export function createApp(options: AppOptions): AppResult {
+@@ -937,6 +939,9 @@ export function createApp(options: AppOptions): AppResult {
+     }
+   });
+
++  // The Provider's browser identity is established by Codespace Gateway.
++  app.use("*", codespaceAccess);
++
+   // Auth middleware (if authService is provided)
+   // The middleware checks authService.isEnabled() dynamically
+   if (options.authService) {
+@@ -1046,8 +1051,10 @@ export function createApp(options: AppOptions): AppResult {
+         ),
+       getCookieSecret: () => authService.getCookieSecret(),
+     });
+-    app.use("/v0/*", v0Principal);
+-    app.use("/api/*", v0Principal);
++    if (!options.authDisabled) {
++      app.use("/v0/*", v0Principal);
++      app.use("/api/*", v0Principal);
++    }
+     app.route(
+       "/api/users",
+       createUsersRoutes({
+@@ -3200,6 +3207,7 @@ export function createApp(options: AppOptions): AppResult {
      createBrowserDebugClientRoutes(browserDebugService),
    );
    app.route("/api/provider-host", createProviderHostRoutes());
@@ -82,12 +263,265 @@ index 8eaa253..0e8ac41 100644
    app.route(
      "/api/projects",
      createProjectsRoutes({
+diff --git a/packages/server/src/remote-access/RemoteAccessService.ts b/packages/server/src/remote-access/RemoteAccessService.ts
+index 6e79985..15bb53d 100644
+--- a/packages/server/src/remote-access/RemoteAccessService.ts
++++ b/packages/server/src/remote-access/RemoteAccessService.ts
+@@ -112,11 +112,10 @@ export class RemoteAccessService {
+   }
+
+   /**
+-   * Check if remote access is enabled and configured.
+-   * Requires both credentials and relay config (relay username is SRP identity).
++   * Codespace Gateway authenticates direct HTTP and WebSocket connections.
+    */
+   isEnabled(): boolean {
+-    return this.state.enabled && !!this.state.credentials && !!this.state.relay;
++    return false;
+   }
+
+   /**
+@@ -151,7 +150,7 @@ export class RemoteAccessService {
+   getConfig(): { enabled: boolean; username: string | null } {
+     return {
+       enabled: this.isEnabled(),
+-      username: this.getUsername(),
++      username: null,
+     };
+   }
+
+@@ -216,10 +215,10 @@ export class RemoteAccessService {
+   }
+
+   /**
+-   * Get the relay configuration.
++   * Gateway owns routing; persisted relay settings do not start a connection.
+    */
+   getRelayConfig(): RelayConfig | null {
+-    return this.state.relay ?? null;
++    return null;
+   }
+
+   /**
+diff --git a/packages/server/src/routes/users.ts b/packages/server/src/routes/users.ts
+index 5eee95c..0b01e57 100644
+--- a/packages/server/src/routes/users.ts
++++ b/packages/server/src/routes/users.ts
+@@ -97,7 +97,7 @@ export function createUsersRoutes(deps: UsersRoutesDeps): Hono {
+         switched: false,
+         locked: false,
+         enabled,
+-        hasLimitedUsers: limitedUsers.list().length > 0,
++        hasLimitedUsers: enabled && limitedUsers.list().length > 0,
+         logoutRedirect: "stay",
+       };
+       return c.json(body);
+diff --git a/packages/server/src/sdk/cli-detection.ts b/packages/server/src/sdk/cli-detection.ts
+index 67015d5..20ed3ec 100644
+--- a/packages/server/src/sdk/cli-detection.ts
++++ b/packages/server/src/sdk/cli-detection.ts
+@@ -14,6 +14,7 @@ import {
+   resolveNpmCommandTarget,
+ } from "../utils/npmCommand.js";
+ import { whichCommand } from "./which-command.js";
++import { bundledCodespaceBinary } from "./codespace-binaries.js";
+
+ export type InstallationReadCoordinator = Pick<
+   ProviderInstallationCoordinator,
+@@ -479,6 +480,19 @@ export async function findCodexCliInstall(
+             installationCoordinator,
+           );
+           if (install) return install;
++          const bundled = bundledCodespaceBinary("codex");
++          if (bundled) {
++            const version = await getCodexCliVersion(
++              bundled,
++              installationCoordinator,
++            );
++            if (version)
++              return {
++                path: bundled,
++                version,
++                normalizedVersion: normalizeCodexCliVersion(version),
++              };
++          }
+         }
+
+         if (attempt === 0) {
+diff --git a/packages/server/src/sdk/providers/index.ts b/packages/server/src/sdk/providers/index.ts
+index 2978a8f..31b6bad 100644
+--- a/packages/server/src/sdk/providers/index.ts
++++ b/packages/server/src/sdk/providers/index.ts
+@@ -6,6 +6,8 @@ import { assertAndroidWorkspaceAvailable } from "../../lib/android-workspace.js"
+  */
+
+ import {
++  CODESPACE_PROVIDERS,
++  isCodespaceProvider,
+   DEFAULT_CODEX_CYBER_ACCESS_PROGRAM,
+   DEFAULT_CODEX_REASONING_SUMMARY,
+   DEFAULT_SUBAGENT_MAX_DEPTH,
+@@ -63,17 +65,6 @@ export {
+   type GeminiACPProviderConfig,
+ } from "./gemini-acp.js";
+
+-// Keep saved/configured `gemini` selections discoverable through the same ACP
+-// adapter used for launch. This alias owns no separate transport or state.
+-const geminiAliasProvider = new Proxy(geminiACPProvider, {
+-  get(target, property) {
+-    if (property === "name") return "gemini";
+-    if (property === "displayName") return "Gemini";
+-    const value = Reflect.get(target, property, target) as unknown;
+-    return typeof value === "function" ? value.bind(target) : value;
+-  },
+-});
+-
+ // Grok Build ACP provider (uses `grok agent stdio`)
+ // Phase 1 isolated addition per topics/grok.md. Gated by ENABLED_PROVIDERS=grok.
+ import { grokACPProvider } from "./grok-acp.js";
+@@ -284,21 +275,15 @@ function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
+  * Useful for provider detection UI.
+  */
+ export function getAllProviders(): AgentProvider[] {
+-  return [
+-    claudeProvider,
+-    ...(ClaudeGatewayProvider.isConfigured() ? [claudeGatewayProvider] : []),
+-    ...(isClaudeOllamaVisible() ? [claudeOllamaProvider] : []),
+-    codexProvider,
+-    codexOSSProvider,
+-    geminiAliasProvider,
+-    geminiACPProvider,
+-    ...(process.env.ENABLED_PROVIDERS?.split(",").includes("antigravity")
+-      ? [antigravityProvider]
+-      : []),
+-    grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
+-    opencodeProvider,
+-    piProvider,
+-  ].map(runtimeProvider);
++  return CODESPACE_PROVIDERS.flatMap((name) => {
++    if (
++      (name === "claude-gateway" && !ClaudeGatewayProvider.isConfigured()) ||
++      (name === "claude-ollama" && !isClaudeOllamaVisible())
++    )
++      return [];
++    const provider = getProvider(name);
++    return provider ? [provider] : [];
++  });
+ }
+
+ /**
+@@ -311,6 +296,12 @@ export function getAllProviders(): AgentProvider[] {
+  * getProvider("grok") is never reached from normal flows.
+  */
+ export function getRawProvider(name: ProviderName): AgentProvider | null {
++  if (
++    !isCodespaceProvider(name) ||
++    (process.env.ENABLED_PROVIDERS &&
++      !process.env.ENABLED_PROVIDERS.split(",").includes(name))
++  )
++    return null;
+   switch (name) {
+     case "claude":
+       return claudeProvider;
+diff --git a/packages/server/src/sdk/providers/opencode.ts b/packages/server/src/sdk/providers/opencode.ts
+index 65f5934..8942f77 100644
+--- a/packages/server/src/sdk/providers/opencode.ts
++++ b/packages/server/src/sdk/providers/opencode.ts
+@@ -1,4 +1,5 @@
+ import { nativeStorageScope } from "./native-storage-scope.js";
++import { bundledCodespaceBinary } from "../codespace-binaries.js";
+ /**
+  * OpenCode Provider implementation using `opencode serve`.
+  *
+@@ -1922,8 +1923,8 @@ export class OpenCodeProvider implements AgentProvider {
+    */
+   private async findOpenCodePath(): Promise<string | null> {
+     // Use configured path if provided
+-    if (this.opencodePath && existsSync(this.opencodePath)) {
+-      return this.opencodePath;
++    if (this.opencodePath) {
++      return existsSync(this.opencodePath) ? this.opencodePath : null;
+     }
+
+     // Check common locations. `~/.opencode/bin` is the official installer
+@@ -1955,7 +1956,7 @@ export class OpenCodeProvider implements AgentProvider {
+       // Not in PATH
+     }
+
+-    return null;
++    return bundledCodespaceBinary("opencode");
+   }
+ }
+
+diff --git a/packages/server/src/sdk/providers/pi.ts b/packages/server/src/sdk/providers/pi.ts
+index 46686db..af8615e 100644
+--- a/packages/server/src/sdk/providers/pi.ts
++++ b/packages/server/src/sdk/providers/pi.ts
+@@ -4,6 +4,7 @@ import {
+   toUrlProjectId,
+ } from "@yep-anywhere/shared";
+ import { resolveNativeSessionRef } from "../../sessions/SessionIdentityStore.js";
++import { bundledCodespaceBinary } from "../codespace-binaries.js";
+ import { assertProviderForkSource } from "./types.js";
+ /**
+  * pi provider — Plan A: subprocess RPC mode (`pi --mode rpc`).
+@@ -1482,11 +1483,13 @@ export class PiProvider implements AgentProvider {
+       const { stdout } = await execAsync(whichCommand("pi"), {
+         encoding: "utf-8",
+       });
+-      return selectPiLaunchTarget(stdout);
++      const target = selectPiLaunchTarget(stdout);
++      if (target) return target;
+     } catch {
+       // Not in PATH.
+     }
+-    return null;
++    const bundled = bundledCodespaceBinary("pi");
++    return bundled ? resolvePiLaunchTarget(bundled) : null;
+   }
+
+   private async getPiTerminalEvent(
+diff --git a/packages/server/src/services/ServerSettingsService.ts b/packages/server/src/services/ServerSettingsService.ts
+index 7df6ea0..7204845 100644
+--- a/packages/server/src/services/ServerSettingsService.ts
++++ b/packages/server/src/services/ServerSettingsService.ts
+@@ -402,6 +402,12 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
+
+ const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
+
++// Keep saved settings and live listeners consistent with Gateway-owned access.
++const CODESPACE_ACCESS_SETTINGS = {
++  publicSharesEnabled: false,
++  limitedUsersEnabled: false,
++};
++
+ /**
+  * Fold pre-presence toolbar defaults (a visibility boolean map plus a
+  * narrowing-priority map) into the single presence map: explicit `false`
+@@ -676,7 +682,7 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
+   normalized.longContextEffortWarning =
+     parseLongContextEffortWarningSettings(settings.longContextEffortWarning) ??
+     DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS;
+-  return normalized;
++  return { ...normalized, ...CODESPACE_ACCESS_SETTINGS };
+ }
+
+ /** Stored state with version for migrations */
+@@ -814,6 +820,7 @@ export class ServerSettingsService {
+       const merged: ServerSettings = {
+         ...previousSettings,
+         ...updates,
++        ...CODESPACE_ACCESS_SETTINGS,
+       };
+       // The services list and the legacy single-gateway keys are two views of
+       // one configuration, so an edit to either has to settle both before the
 diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
-index 60b06bb..9dff7c9 100644
+index 60b06bb..5a44522 100644
 --- a/packages/shared/src/index.ts
 +++ b/packages/shared/src/index.ts
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
 +export type { CodespaceCapabilities, CodespaceEndpoint, CodespaceUSBDevice, CodespaceUSBState } from "./codespace.js";
++export { CODESPACE_PROVIDERS, isCodespaceProvider } from "./codespace.js";
  export {
    type SessionCreationStatus,
    type SessionCreationProvenance,

@@ -2,8 +2,8 @@
 
 The Codespace page in Gitea shows the SSH connection details. The bundled
 VS Code extension provides **Copy SSH command** in its Ports view; DeepSeek
-Harness provides it through **Codespace → Connection help**. Run the copied
-command on your local computer with an SSH key registered in Gitea. The
+Harness and Yep Anywhere provide it through **Codespace → Connection help**.
+Run the copied command on your local computer with an SSH key registered in Gitea. The
 connection uses the existing Gateway authentication and SSH host-key verification.
 
 The SSH login selects the Codespace; commands run as its Dev Container remote

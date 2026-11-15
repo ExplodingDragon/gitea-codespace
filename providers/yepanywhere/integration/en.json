@@ -16,6 +16,7 @@
   "codespaceSave": "Save",
   "codespacePort": "Port",
   "codespaceLabel": "Label",
+  "codespaceLabelLength": "Enter a label of 1-128 UTF-8 bytes (non-ASCII characters may use multiple bytes).",
   "codespaceVisibility": "Visibility",
   "codespaceCopy": "Copy command",
   "codespaceCopied": "Copied",

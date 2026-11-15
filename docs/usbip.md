@@ -21,12 +21,12 @@ The Dev Container also receives `gitea-codespace-usbip` for command-line use.
 
 ## Connect a source
 
-In VS Code's USB view, choose **Copy USB tunnel command**. In DSH, open
-**Codespace → Connection help** and use the USB/IP section. Choose a source name
+In VS Code's USB view, choose **Copy USB tunnel command**. In DSH or Yep Anywhere,
+open **Codespace → Connection help** and use the USB/IP section. Choose a source name
 (default: `workstation`). The command includes the current workspace's actual
-SSH connection details. Run it on the workstation and keep it running. In DSH,
-the generated command remains available for manual copying if the browser
-cannot access the clipboard.
+SSH connection details. Run it on the workstation and keep it running. In both
+web interfaces, the generated command remains available for manual copying if
+the browser cannot access the clipboard.
 
 To enter the connection details yourself:
 

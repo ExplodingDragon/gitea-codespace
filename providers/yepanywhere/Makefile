@@ -6,15 +6,13 @@ ARCH ?= $(shell $(GO) env GOARCH)
 IMAGE ?= gitea-codespace-web-ide-yepanywhere:local
 PROVIDER_SOURCE ?= https://github.com/ExplodingDragon/gitea-codespace
 PROVIDER_REVISION ?= development
-SHELL_SCRIPTS := build.sh runtime/prepare runtime/serve
+SHELL_SCRIPTS := build.sh runtime/prepare runtime/serve tools/launch
 
 .PHONY: adapter-check check version bundle image clean
 adapter-check:
 	@set -e; for script in $(SHELL_SCRIPTS); do sh -n "$$script"; done
 	$(SHFMT) -d -ln posix -i 2 $(SHELL_SCRIPTS)
-	node --check integrate.mjs
-	node --check runtime/prepare.mjs
-	node --check runtime/launch.mjs
+	@set -e; for script in integrate.mjs runtime/*.mjs tools/*.mjs; do node --check "$$script"; done
 	node --test adapter.test.mjs
 
 check: adapter-check

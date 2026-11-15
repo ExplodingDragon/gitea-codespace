@@ -1,3 +1,19 @@
+import type { ProviderName } from "./types.js";
+
+export const CODESPACE_PROVIDERS = [
+  "claude",
+  "claude-gateway",
+  "claude-ollama",
+  "codex",
+  "codex-oss",
+  "opencode",
+  "pi",
+] as const satisfies readonly ProviderName[];
+
+export function isCodespaceProvider(name: string): boolean {
+  return CODESPACE_PROVIDERS.some((provider) => provider === name);
+}
+
 export interface CodespaceEndpoint {
   port: number;
   label: string;

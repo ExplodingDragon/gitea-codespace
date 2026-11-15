@@ -16,6 +16,7 @@
   "codespaceSave": "保存",
   "codespacePort": "端口",
   "codespaceLabel": "标签",
+  "codespaceLabelLength": "标签须为 1 至 128 个 UTF-8 字节，中文等字符会占用多个字节。",
   "codespaceVisibility": "访问权限",
   "codespaceCopy": "复制命令",
   "codespaceCopied": "已复制",

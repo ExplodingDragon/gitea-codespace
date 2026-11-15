@@ -55,6 +55,35 @@ describe("Codespace management page", () => {
         expect.objectContaining({ method: "DELETE" }),
       ),
     );
+    fireEvent.click(screen.getByRole("button", { name: "codespacePublish" }));
+    fireEvent.change(screen.getByLabelText("codespacePort"), {
+      target: { value: "3000" },
+    });
+    fireEvent.change(screen.getByLabelText("codespaceLabel"), {
+      target: { value: "界".repeat(43) },
+    });
+    fireEvent.submit(document.getElementById("codespace-port")!);
+    expect(await screen.findByText("codespaceLabelLength")).toBeTruthy();
+    expect(
+      fetchJSON.mock.calls.some(([, options]) => options?.method === "POST"),
+    ).toBe(false);
+    fireEvent.change(screen.getByLabelText("codespaceLabel"), {
+      target: { value: ` ${"界".repeat(42)}ab ` },
+    });
+    fireEvent.submit(document.getElementById("codespace-port")!);
+    await waitFor(() =>
+      expect(fetchJSON).toHaveBeenCalledWith(
+        "/codespace/ports",
+        expect.objectContaining({
+          method: "POST",
+          body: JSON.stringify({
+            port: 3000,
+            label: `${"界".repeat(42)}ab`,
+            visibility: "authenticated",
+          }),
+        }),
+      ),
+    );
   });
 
   it("merges attached/exported devices, refreshes the visible tab and confirms disconnect identity", async () => {

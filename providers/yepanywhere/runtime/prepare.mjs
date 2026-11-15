@@ -21,6 +21,7 @@ if (!(await stat(workspace)).isDirectory()) throw new Error('Yep Anywhere worksp
 await mkdir(dataDir, {recursive: true});
 process.env.YEP_DATA_DIR = dataDir;
 const app = pathToFileURL(`${path.join(root, 'program/app/dist')}/`);
+const {CODESPACE_PROVIDERS} = await import(new URL('../bundled/@yep-anywhere/shared/dist/codespace.js', app));
 const {openDiscoveryDatabase} = await import(new URL('storage/discovery-sqlite.js', app));
 openDiscoveryDatabase({dataDir}).close();
 
@@ -33,13 +34,13 @@ try {
   if (error.code !== 'ENOENT') throw error;
 }
 if (!initialized) {
-  const template = options(request.templateOptions);
-  const repository = options(request.repositoryOptions);
+  const template = parseOptions(request.templateOptions);
+  const repository = parseOptions(request.repositoryOptions);
   const {ServerSettingsService} = await import(new URL('services/ServerSettingsService.js', app));
   const settings = new ServerSettingsService({dataDir});
   await settings.initialize();
   await settings.updateSettings({...template.settings, ...repository.settings, codexUpdatePolicy: 'off'});
-  await writeFile(path.join(dataDir, 'codespace-options.json'), `${JSON.stringify({providers: repository.providers ?? template.providers})}\n`, {mode: 0o600});
+  await writeFile(path.join(dataDir, 'codespace-options.json'), `${JSON.stringify({providers: repository.providers ?? template.providers ?? CODESPACE_PROVIDERS})}\n`, {mode: 0o600});
   await writeFile(marker, '1\n', {mode: 0o600});
 }
 
@@ -51,20 +52,23 @@ const projectPath = canonicalizeProjectPath(await realpath(workspace));
 const id = encodeProjectId(projectPath);
 if (!projects.getAllProjects()[id]) await projects.addProject(id, projectPath);
 
-function options(value) {
+function parseOptions(value) {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Yep Anywhere options must be an object');
   for (const key of Object.keys(value)) {
     if (key !== 'providers' && key !== 'settings') throw new Error(`unsupported Yep Anywhere option: ${key}`);
   }
   if (value.providers !== undefined && (!Array.isArray(value.providers) || value.providers.length === 0 ||
-      value.providers.length > 32 || value.providers.some((item) => typeof item !== 'string' || !/^[a-z][a-z0-9-]*$/.test(item)))) {
-    throw new Error('Yep Anywhere providers must be a non-empty array of backend IDs');
+      new Set(value.providers).size !== value.providers.length || value.providers.some((item) => typeof item !== 'string'))) {
+    throw new Error('Yep Anywhere providers must be a non-empty array of unique backend IDs');
+  }
+  for (const provider of value.providers ?? []) {
+    if (!CODESPACE_PROVIDERS.includes(provider)) throw new Error(`unsupported Yep Anywhere backend: ${provider}; supported backends: ${CODESPACE_PROVIDERS.join(', ')}`);
   }
   if (value.settings !== undefined && (value.settings === null || typeof value.settings !== 'object' || Array.isArray(value.settings))) {
     throw new Error('Yep Anywhere settings must be an object');
   }
-  for (const name of ['allowedHosts', 'codexUpdatePolicy']) {
+  for (const name of ['allowedHosts', 'codexUpdatePolicy', 'publicSharesEnabled', 'limitedUsersEnabled']) {
     if (Object.hasOwn(value.settings ?? {}, name)) throw new Error(`Yep Anywhere setting ${name} is managed by the Provider`);
   }
   return value;

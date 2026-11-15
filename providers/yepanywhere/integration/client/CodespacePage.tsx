@@ -386,7 +386,12 @@ export function CodespacePage() {
             className={styles.form}
             onSubmit={(event) => {
               event.preventDefault();
-              void mutate("ports", "POST", editing);
+              const label = editing.label.trim();
+              if (!label || new TextEncoder().encode(label).length > 128) {
+                setActionError(t("codespaceLabelLength"));
+                return;
+              }
+              void mutate("ports", "POST", { ...editing, label });
             }}
           >
             <Field label={t("codespacePort")}>

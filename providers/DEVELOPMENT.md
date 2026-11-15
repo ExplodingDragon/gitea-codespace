@@ -504,9 +504,23 @@ Yep Anywhere follows its pinned upstream bundle build and deploys production
 dependencies from the upstream lockfile, preserving upstream dependency patches
 and bundled binaries. Codespace routes and the management page live together
 under `yepanywhere/integration`; a small patch connects them to upstream routing
-and navigation. Its `check` target compiles the server and client and tests the
-adapter, CLI calls, and management UI. The provider's private Node runs the
-application while the remote user's environment locates additional tools.
+and navigation. Its `check` target compiles the server and client, runs the
+integration tests, and assembles the same tool bundle as publication. Both
+`check` and `bundle` verify the programs' versions and offline protocol startup
+with isolated user data so missing native dependencies fail before publication.
+Codex, OpenCode and Pi versions are pinned in
+[`tools/package.json`](yepanywhere/tools/package.json) and its lockfile to the
+versions qualified by the selected Yep Anywhere release. Their package licenses
+remain alongside the installed files. Build on the target architecture because
+the dependencies include native code. From the repository root:
+
+```sh
+make -C providers/yepanywhere image IMAGE=registry.example.com/yepanywhere:test
+```
+
+See the
+[provider guide](yepanywhere/README.md) for backend selection, executable
+priority, and Gateway access behavior.
 
 Each provider workflow runs for changes to its own source. Changes to the shared
 [build workflow](../.github/workflows/provider-build.yml) trigger all providers;
@@ -524,5 +538,14 @@ the [platform workflow](../.github/workflows/ci.yml) handles core changes separa
 - Both platform records have the same version before publishing, and `latest`
   and the bundle-version tag resolve to the same multi-platform index.
 - Yep Anywhere preserves UI settings across resume, registers the current
-  workspace, and exposes Codespace management only to the full user. Its USB
-  tab follows Runtime capability and its CLI calls use validated argument arrays.
+  workspace, and uses Gateway identity for HTTP and direct WebSocket access,
+  including after restoring saved app settings. Its USB tab follows Runtime
+  capability and its CLI calls use validated argument arrays.
+- Restoring Yep Anywhere data preserves ordinary app settings while keeping
+  external relay connections inactive. Model and tool credentials come from
+  the remote user's environment and the tools' own configuration.
+- Bundled Codex, OpenCode and Pi start from a read-only Provider mount as the
+  remote user without a system Node installation; credentials and sessions use
+  user storage. Both published architectures pass version and protocol checks.
+- External installations retain discovery priority, and configured backend
+  subsets agree between the image schema, discovery, UI and execution.

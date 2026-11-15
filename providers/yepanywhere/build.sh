@@ -45,33 +45,36 @@ node "$source_root/integrate.mjs" "$work/source"
   [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$YEP_PNPM_VERSION" ] || fail "unexpected upstream pnpm version"
   CI=1 pnpm --filter yep-anywhere --filter '@yep-anywhere/server...' --filter '@yep-anywhere/client...' install --frozen-lockfile
   pnpm --filter @yep-anywhere/shared build
-  node scripts/biome.cjs check packages/shared/src/codespace.ts packages/server/src/routes/codespace.ts \
+  node scripts/biome.cjs check packages/shared/src/codespace.ts packages/server/src/routes/codespace*.ts packages/server/src/sdk/codespace-binaries.ts \
     packages/client/src/pages/CodespacePage.tsx packages/client/src/pages/CodespacePage.module.css \
-    packages/server/test/codespace packages/client/src/pages/__tests__/CodespacePage.test.tsx
+    packages/server/test/codespace packages/client/src/pages/__tests__/Codespace*.test.tsx
   pnpm --filter @yep-anywhere/server exec vitest run test/codespace
-  pnpm --filter @yep-anywhere/client exec vitest run src/pages/__tests__/CodespacePage.test.tsx
+  pnpm --filter @yep-anywhere/client exec vitest run src/pages/__tests__/Codespace
   pnpm run build:bundle
-  if [ "$mode" = bundle ]; then
-    # deploy uses the upstream lockfile, including its dependency patches.
-    pnpm --filter @yep-anywhere/server deploy --prod --legacy "$work/deploy"
-  fi
+  # deploy uses the upstream lockfile, including its dependency patches.
+  pnpm --filter @yep-anywhere/server deploy --prod --legacy "$work/deploy"
 )
-[ "$mode" = bundle ] || exit 0
+[ "$mode" = bundle ] || output="$work/check"
 node_asset="node-v$node_version-linux-$node_arch.tar.xz"
 curl -fsSL --proto '=https' --proto-redir '=https' --retry 3 --retry-all-errors \
   -o "$work/$node_asset" "https://nodejs.org/dist/v$node_version/$node_asset"
 printf '%s  %s\n' "$node_sha256" "$work/$node_asset" | sha256sum -c - >/dev/null
 rm -rf "$output"
-mkdir -p "$output/program/node" "$output/program/app" "$output/bin" "$output/lib" "$output/licenses"
+mkdir -p "$output/program/node" "$output/program/app" "$output/program/tools" "$output/bin" "$output/lib" "$output/licenses"
 tar -xJf "$work/$node_asset" --strip-components=1 -C "$output/program/node"
 cp -R "$work/source/dist/npm-package/." "$output/program/app/"
 cp -R "$work/deploy/node_modules" "$output/program/app/node_modules"
 # pnpm's workspace self-reference must point to the packaged app, not the checkout.
 ln -sfn ../../../.. "$output/program/app/node_modules/.pnpm/node_modules/@yep-anywhere/server"
 cp "$work/source/LICENSE" "$output/licenses/Yep-Anywhere-LICENSE"
+cp "$source_root/tools/licenses/"* "$output/licenses/"
+cp "$source_root/tools/package.json" "$source_root/tools/pnpm-lock.yaml" "$output/program/tools/"
+CI=1 pnpm --dir "$output/program/tools" install --prod --frozen-lockfile --ignore-scripts
+node "$source_root/tools/bundle.mjs" "$output/program/tools"
 cp "$source_root/runtime/prepare" "$source_root/runtime/serve" "$output/bin/"
 cp "$source_root/runtime/prepare.mjs" "$source_root/runtime/launch.mjs" "$output/lib/"
 chmod 0555 "$output/bin/prepare" "$output/bin/serve"
 printf '{"schemaVersion":1,"provider":"yepanywhere","architecture":"%s","version":"%s"}\n' "$arch" "$YEP_VERSION" >"$output/manifest.json"
 chmod -R a+rX "$output"
 "$output/program/node/bin/node" "$output/program/app/dist/cli.js" --version
+"$output/program/node/bin/node" "$source_root/tools/smoke.mjs" "$output"

@@ -10,6 +10,7 @@ const integration = fileURLToPath(new URL('integration/', import.meta.url));
 for (const [from, to] of [
   ['shared', 'packages/shared/src'],
   ['server', 'packages/server/src/routes'],
+  ['sdk', 'packages/server/src/sdk'],
   ['client', 'packages/client/src/pages'],
   ['tests/server', 'packages/server/test/codespace'],
   ['tests/client', 'packages/client/src/pages/__tests__'],

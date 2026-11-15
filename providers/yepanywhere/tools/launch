@@ -1,0 +1,14 @@
+#!/bin/sh
+# Copyright 2026 The Gitea Authors. All rights reserved.
+# SPDX-License-Identifier: MIT
+set -eu
+program=$(CDPATH= cd -- "${0%/*}/../.." && pwd)
+case ${0##*/} in
+codex) entry=@openai/codex/bin/codex.js ;;
+pi) entry=@earendil-works/pi-coding-agent/dist/bundle/cli.js ;;
+*)
+  echo "Unknown bundled program: $0" >&2
+  exit 1
+  ;;
+esac
+exec "$program/node/bin/node" "$program/tools/node_modules/$entry" "$@"
