@@ -40,6 +40,7 @@ const (
 var webIDEImageSuggestions = []string{
 	"ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:latest",
 	"ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:latest",
+	"ghcr.io/explodingdragon/gitea-codespace-web-ide-yepanywhere:latest",
 }
 
 type webIDEImageMetadata struct {

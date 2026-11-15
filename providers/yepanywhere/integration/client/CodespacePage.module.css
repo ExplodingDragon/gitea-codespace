@@ -1,0 +1,59 @@
+.content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  min-width: 0;
+}
+.toolbar,
+.row,
+.actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.toolbar,
+.row {
+  justify-content: space-between;
+}
+.toolbar h2,
+.source h2 {
+  font-size: 16px;
+  margin: 12px 0;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+}
+.row {
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+.detail {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.detail span {
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.actions {
+  flex-shrink: 0;
+}
+.form {
+  display: grid;
+  gap: 16px;
+}
+.source + .source {
+  margin-top: 24px;
+}
+@media (max-width: 540px) {
+  .row {
+    flex-wrap: wrap;
+  }
+  .actions {
+    margin-left: auto;
+  }
+}

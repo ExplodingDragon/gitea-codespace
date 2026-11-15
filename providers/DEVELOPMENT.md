@@ -6,7 +6,8 @@ releases can be updated without rebuilding Manager, Agent, or Gateway.
 
 This guide describes provider protocol version 1. The fake provider under
 [`tests/e2e/web-ide`](../tests/e2e/web-ide) is a compact working reference; the
-[`vscode`](vscode) and [`dsh`](dsh) directories show production adapters.
+[`vscode`](vscode), [`dsh`](dsh), and [`yepanywhere`](yepanywhere) directories show
+production adapters.
 
 ## Lifecycle
 
@@ -467,24 +468,23 @@ can receive adapter or plugin fixes for the same editor version; the
 [provider overview](README.md) explains how administrators select updates or
 fixed content.
 
-The official VS Code and DeepSeek Harness providers restart their editor after
+The official providers restart their editor after
 every exit, with a one-second delay to avoid a tight failure loop. They restart
 after both successful and failed exits because their role is to keep the editor
 running. `HUP`, `INT`, and `TERM` are forwarded to the current editor process and
 end the provider loop, which lets Docker stop the Dev Container without the
 provider starting a replacement process.
 
-The VS Code and DSH projects have independent toolchains because their editor
-and plugin builds follow different upstream dependencies. Select Node.js from
-the project's [VS Code](vscode/.node-version) or [DSH](dsh/.node-version) version
-file, and pnpm from its [VS Code](../.github/workflows/provider-vscode.yml) or
-[DSH](../.github/workflows/provider-dsh.yml) workflow.
+Each provider has an independent toolchain because its application and
+integration follow upstream dependencies. Select Node.js from that provider's
+`.node-version` file and pnpm from its `provider-<name>.yml` workflow.
 
 From the repository root, validate the provider being changed:
 
 ```sh
 make -C providers/vscode check
 make -C providers/dsh check
+make -C providers/yepanywhere check
 ```
 
 The DSH check fetches its pinned upstream sources, type-checks and lints the
@@ -500,13 +500,21 @@ version label from the completed bundle manifest so it describes the packaged
 release. Use the [local image verification steps](#test-the-image-locally) to
 check its mounted bundle.
 
+Yep Anywhere follows its pinned upstream bundle build and deploys production
+dependencies from the upstream lockfile, preserving upstream dependency patches
+and bundled binaries. Codespace routes and the management page live together
+under `yepanywhere/integration`; a small patch connects them to upstream routing
+and navigation. Its `check` target compiles the server and client and tests the
+adapter, CLI calls, and management UI. The provider's private Node runs the
+application while the remote user's environment locates additional tools.
+
 Each provider workflow runs for changes to its own source. Changes to the shared
-[build workflow](../.github/workflows/provider-build.yml) trigger both providers;
+[build workflow](../.github/workflows/provider-build.yml) trigger all providers;
 the [platform workflow](../.github/workflows/ci.yml) handles core changes separately.
 
 ### Implementation acceptance criteria
 
-- Both official providers restart the editor after a successful or failed exit,
+- The official providers restart the editor after a successful or failed exit,
   with a one-second delay between attempts.
 - `HUP`, `INT`, and `TERM` reach the running editor and end its restart loop.
 - Each provider passes its own `check` target and supplies a valid bundle for
@@ -515,3 +523,6 @@ the [platform workflow](../.github/workflows/ci.yml) handles core changes separa
   building VS Code with a version override.
 - Both platform records have the same version before publishing, and `latest`
   and the bundle-version tag resolve to the same multi-platform index.
+- Yep Anywhere preserves UI settings across resume, registers the current
+  workspace, and exposes Codespace management only to the full user. Its USB
+  tab follows Runtime capability and its CLI calls use validated argument arrays.

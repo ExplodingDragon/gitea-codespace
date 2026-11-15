@@ -100,8 +100,10 @@ a timeout, inspect `status` before repeating an attach or detach because the
 action may already have completed.
 
 The bundled [VS Code](../providers/vscode/README.md#usb-devices) and
-[DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins provide the
-same operations. Both confirm a UI detach and refresh status after an operation.
+[DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins, and the
+[Yep Anywhere](../providers/yepanywhere/README.md#ports-and-usb) management page
+provide the same operations. They confirm a UI detach and refresh status after
+an operation.
 If status cannot be refreshed, the previous data remains visible but device
 actions wait for a successful refresh. DSH also exposes conversation commands
 and tools through the same non-interactive CLI.

@@ -1,0 +1,27 @@
+#!/bin/sh
+# Copyright 2026 The Gitea Authors. All rights reserved.
+# SPDX-License-Identifier: MIT
+set -eu
+root=${CODESPACE_WEB_IDE_PROGRAM_DIR:?}
+cd "${CODESPACE_WEB_IDE_WORKSPACE:?}"
+child=
+stopping=
+stop() {
+  stopping=$1
+  [ -z "$child" ] || kill -s "$1" "$child" 2>/dev/null || :
+}
+trap 'stop HUP' HUP
+trap 'stop INT' INT
+trap 'stop TERM' TERM
+while :; do
+  "$root/program/node/bin/node" "$root/lib/launch.mjs" &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+  sleep 1 &
+  child=$!
+  wait "$child" || :
+  child=
+  [ -z "$stopping" ] || exit 0
+done

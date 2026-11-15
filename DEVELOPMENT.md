@@ -76,7 +76,7 @@ Service first. Add user-visible administration text to every catalog under
 `make images` builds the platform image. Web IDEs have independent images so an
 editor release can be updated without rebuilding the platform services.
 
-Use `make -C providers/vscode check` or `make -C providers/dsh check` for
+Use `make -C providers/<provider> check` (`vscode`, `dsh`, or `yepanywhere`) for
 focused provider validation. Follow the [official provider maintenance guide](providers/DEVELOPMENT.md#maintain-the-official-providers)
 for toolchain setup, image builds, and publishing. The same guide documents the
 [third-party integration contract](providers/DEVELOPMENT.md).

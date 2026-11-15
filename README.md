@@ -19,7 +19,7 @@ configuration and can be used from a browser, a desktop editor, SSH, or SFTP.
 - Connects remote USB devices to compatible Kata environments through the
   existing authenticated SSH endpoint.
 - Supports persistent build caching and registry mirrors for repeated builds.
-- Supplies official VS Code and DeepSeek Harness Web IDE providers while
+- Supplies official VS Code, DeepSeek Harness, and Yep Anywhere Web IDE providers while
   allowing compatible third-party providers.
 - Manages multiple Gitea sites and their workspaces from one administration
   service.
@@ -105,7 +105,7 @@ retaining the workspace for its next start.
 
 ## Publish application ports
 
-VS Code and DeepSeek Harness include a Ports interface. The same operations are
+The official Web IDE providers include a Ports interface. The same operations are
 available from any Dev Container through `gitea-codespace-endpoint`, which is
 useful for scripts and other editors:
 
