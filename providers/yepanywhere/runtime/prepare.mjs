@@ -22,6 +22,7 @@ await mkdir(dataDir, {recursive: true});
 process.env.YEP_DATA_DIR = dataDir;
 const app = pathToFileURL(`${path.join(root, 'program/app/dist')}/`);
 const {CODESPACE_PROVIDERS} = await import(new URL('../bundled/@yep-anywhere/shared/dist/codespace.js', app));
+const {parseCodespaceConnections} = await import(new URL('../bundled/@yep-anywhere/shared/dist/codespace-connections.js', app));
 const {openDiscoveryDatabase} = await import(new URL('storage/discovery-sqlite.js', app));
 openDiscoveryDatabase({dataDir}).close();
 
@@ -40,7 +41,8 @@ if (!initialized) {
   const settings = new ServerSettingsService({dataDir});
   await settings.initialize();
   await settings.updateSettings({...template.settings, ...repository.settings, codexUpdatePolicy: 'off'});
-  await writeFile(path.join(dataDir, 'codespace-options.json'), `${JSON.stringify({providers: repository.providers ?? template.providers ?? CODESPACE_PROVIDERS})}\n`, {mode: 0o600});
+  const connections = {...template.connections, ...repository.connections};
+  await writeFile(path.join(dataDir, 'codespace-options.json'), `${JSON.stringify({providers: repository.providers ?? template.providers ?? CODESPACE_PROVIDERS, connections})}\n`, {mode: 0o600});
   await writeFile(marker, '1\n', {mode: 0o600});
 }
 
@@ -56,7 +58,7 @@ function parseOptions(value) {
   if (value === undefined || value === null) return {};
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Yep Anywhere options must be an object');
   for (const key of Object.keys(value)) {
-    if (key !== 'providers' && key !== 'settings') throw new Error(`unsupported Yep Anywhere option: ${key}`);
+    if (!['providers', 'settings', 'connections'].includes(key)) throw new Error(`unsupported Yep Anywhere option: ${key}`);
   }
   if (value.providers !== undefined && (!Array.isArray(value.providers) || value.providers.length === 0 ||
       new Set(value.providers).size !== value.providers.length || value.providers.some((item) => typeof item !== 'string'))) {
@@ -71,5 +73,5 @@ function parseOptions(value) {
   for (const name of ['allowedHosts', 'codexUpdatePolicy', 'publicSharesEnabled', 'limitedUsersEnabled']) {
     if (Object.hasOwn(value.settings ?? {}, name)) throw new Error(`Yep Anywhere setting ${name} is managed by the Provider`);
   }
-  return value;
+  return {...value, connections: parseCodespaceConnections(value.connections)};
 }

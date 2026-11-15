@@ -9,7 +9,9 @@ import path from 'node:path';
 import {createInterface} from 'node:readline';
 import {fileURLToPath} from 'node:url';
 import test from 'node:test';
+import {stripTypeScriptTypes} from 'node:module';
 import {CODESPACE_PROVIDERS} from './integration/shared/codespace.ts';
+import {codespaceConnectionsSchema} from './integration/shared/codespace-connections.ts';
 
 const runtime = fileURLToPath(new URL('runtime/', import.meta.url));
 
@@ -22,6 +24,7 @@ async function fixture(t) {
   }
   await writeFile(path.join(app, 'package.json'), '{"type":"module"}');
   await writeFile(path.join(app, 'bundled/@yep-anywhere/shared/dist/codespace.js'), `export const CODESPACE_PROVIDERS = ${JSON.stringify(CODESPACE_PROVIDERS)};`);
+  await writeFile(path.join(app, 'bundled/@yep-anywhere/shared/dist/codespace-connections.js'), stripTypeScriptTypes(await readFile(new URL('integration/shared/codespace-connections.ts', import.meta.url), 'utf8')));
   await symlink(process.execPath, path.join(root, 'program/node/bin/node'));
   const env = {...process.env, CODESPACE_WEB_IDE_PROGRAM_DIR: root, CODESPACE_WEB_IDE_DATA_DIR: path.join(root, 'data'),
     CODESPACE_WEB_IDE_WORKSPACE: path.join(root, 'workspace'), CODESPACE_WEB_IDE_ADDRESS: '127.0.0.1:13337'};
@@ -44,6 +47,7 @@ test('prepare initializes options once and registers the canonical workspace on 
   const dockerfile = await readFile(new URL('Dockerfile', import.meta.url), 'utf8');
   const metadata = JSON.parse(dockerfile.match(/dev\.gitea\.codespace\.web-ide\.metadata='(.*)'/)[1]);
   assert.deepEqual(metadata.optionsSchema.properties.providers.items.enum, CODESPACE_PROVIDERS);
+  assert.deepEqual(metadata.optionsSchema.properties.connections, codespaceConnectionsSchema);
   const {app, env} = await fixture(t);
   await writeFile(path.join(app, 'dist/storage/discovery-sqlite.js'), 'export function openDiscoveryDatabase() { return {close() {}}; }');
   await writeFile(path.join(app, 'dist/services/ServerSettingsService.js'), `
@@ -65,28 +69,35 @@ test('prepare initializes options once and registers the canonical workspace on 
   `);
   await writeFile(path.join(app, 'dist/projects/paths.js'), 'export const encodeProjectId = value => value; export const canonicalizeProjectPath = value => value;');
   const request = {protocolVersion: 1, initialize: true, templateOptions: {providers: ['claude'], settings: {codexReasoningSummary: 'auto'}}, repositoryOptions: {providers: ['codex'], settings: {codexReasoningSummary: 'detailed'}}};
+  const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: [{id: 'example'}]};
+  env.TEST_SECRET = 'private-test-credential';
+  request.templateOptions.connections = {codex: connection, claude: connection, pi: {...connection, api: 'openai-responses'}};
+  request.repositoryOptions.connections = {codex: {...connection, baseUrl: 'http://127.0.0.1:8080/api', apiKeyEnv: undefined}, claude: null};
   const invalid = await run(path.join(runtime, 'prepare.mjs'), env, {...request, repositoryOptions: {providers: ['not-a-backend']}});
   assert.notEqual(invalid.code, 0);
   assert.match(invalid.output, /unsupported Yep Anywhere backend: not-a-backend; supported backends: claude/);
   const first = await run(path.join(runtime, 'prepare.mjs'), env, request);
   assert.equal(first.code, 0, first.output);
   const data = env.CODESPACE_WEB_IDE_DATA_DIR;
-  assert.deepEqual(JSON.parse(await readFile(path.join(data, 'codespace-options.json'))), {providers: ['codex']});
+  const expected = {providers: ['codex'], connections: {codex: {baseUrl: 'http://127.0.0.1:8080/api', models: [{id: 'example'}], defaultModel: 'example'}, claude: null, pi: {...connection, api: 'openai-responses', models: [{id: 'example', contextWindow: 128000, maxTokens: 16384}], defaultModel: 'example'}}};
+  assert.deepEqual(JSON.parse(await readFile(path.join(data, 'codespace-options.json'))), expected);
   assert.deepEqual(JSON.parse(await readFile(path.join(data, 'settings.json'))), {codexReasoningSummary: 'detailed', codexUpdatePolicy: 'off'});
   await writeFile(path.join(data, 'settings.json'), '{"userChanged":true}');
-  const second = await run(path.join(runtime, 'prepare.mjs'), env, {...request, initialize: false});
+  const second = await run(path.join(runtime, 'prepare.mjs'), env, {...request, initialize: false, repositoryOptions: {connections: {codex: connection}}});
   assert.equal(second.code, 0, second.output);
   assert.equal(await readFile(path.join(data, 'settings.json'), 'utf8'), '{"userChanged":true}');
+  assert.deepEqual(JSON.parse(await readFile(path.join(data, 'codespace-options.json'))), expected);
   assert.equal(Object.keys(JSON.parse(await readFile(path.join(data, 'project.json')))).length, 1);
 });
 
 test('serve inherits user tools and secrets, restarts successful exits, and stops on termination', {timeout: 10_000}, async (t) => {
   const {root, app, env} = await fixture(t);
-  await writeFile(path.join(root, 'data/codespace-options.json'), '{"providers":["codex"]}');
+  const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: [{id: 'example'}], defaultModel: 'example'};
+  await writeFile(path.join(root, 'data/codespace-options.json'), JSON.stringify({providers: ['codex'], connections: {codex: connection}}));
   await writeFile(path.join(app, 'dist/index.js'), `
     import {writeFile} from 'node:fs/promises';
     await writeFile(process.env.CODESPACE_WEB_IDE_DATA_DIR + '/launch.json', JSON.stringify(Object.fromEntries(
-      ['HOME','PATH','TEST_SECRET','HTTPS_PROXY','NODE_EXTRA_CA_CERTS','NODE_ENV','HOST','PORT','AUTH_DISABLED','YEP_PEER_API_ENABLED','ENABLED_PROVIDERS'].map(key => [key,process.env[key]])
+      ['HOME','PATH','TEST_SECRET','HTTPS_PROXY','NODE_EXTRA_CA_CERTS','NODE_ENV','HOST','PORT','AUTH_DISABLED','YEP_PEER_API_ENABLED','ENABLED_PROVIDERS','CODESPACE_YEP_CONNECTIONS'].map(key => [key,process.env[key]])
     )));
     console.log('started');
   `);
@@ -116,4 +127,5 @@ test('serve inherits user tools and secrets, restarts successful exits, and stop
   assert.equal(actual.AUTH_DISABLED, 'true');
   assert.equal(actual.YEP_PEER_API_ENABLED, 'false');
   assert.equal(actual.ENABLED_PROVIDERS, 'codex');
+  assert.deepEqual(JSON.parse(actual.CODESPACE_YEP_CONNECTIONS), {codex: connection});
 });

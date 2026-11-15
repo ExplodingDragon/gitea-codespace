@@ -494,20 +494,23 @@ commit, pnpm version, and Node archive checksums; update the checksums with
 [`.node-version`](dsh/.node-version) so the toolchain and verified downloads
 stay consistent. VS Code uses its [version file](vscode/version.env) as the
 default and accepts `CODE_SERVER_VERSION` for a different code-server release.
-`make version` reports the configured editor version. Each provider's `image`
-target builds for the current architecture; local builds and CI read the image
-version label from the completed bundle manifest so it describes the packaged
-release. Use the [local image verification steps](#test-the-image-locally) to
-check its mounted bundle.
+`make -C providers/<provider> version` reports the configured editor version.
+Each provider's `image` target builds for the current architecture; local builds
+and CI read the image version label from the completed bundle manifest so it
+describes the packaged release. Use the
+[local image verification steps](#test-the-image-locally) to check its mounted
+bundle.
 
 Yep Anywhere follows its pinned upstream bundle build and deploys production
 dependencies from the upstream lockfile, preserving upstream dependency patches
-and bundled binaries. Codespace routes and the management page live together
-under `yepanywhere/integration`; a small patch connects them to upstream routing
-and navigation. Its `check` target compiles the server and client, runs the
-integration tests, and assembles the same tool bundle as publication. Both
-`check` and `bundle` verify the programs' versions and offline protocol startup
-with isolated user data so missing native dependencies fail before publication.
+and bundled binaries. Its `integration` directory and upstream patch adapt
+Gateway access, the management UI, tool selection and model connections within
+the Provider. Its `check` target builds the server and client, runs integration
+tests, and assembles the publication bundle. Both `check` and `bundle` verify
+native tool startup and model API requests against a local mock service with
+isolated user data, catching packaging and connection errors without production
+credentials.
+
 Codex, OpenCode and Pi versions are pinned in
 [`tools/package.json`](yepanywhere/tools/package.json) and its lockfile to the
 versions qualified by the selected Yep Anywhere release. Their package licenses
@@ -520,7 +523,7 @@ make -C providers/yepanywhere image IMAGE=registry.example.com/yepanywhere:test
 
 See the
 [provider guide](yepanywhere/README.md) for backend selection, executable
-priority, and Gateway access behavior.
+priority, model API connections, and Gateway access behavior.
 
 Each provider workflow runs for changes to its own source. Changes to the shared
 [build workflow](../.github/workflows/provider-build.yml) trigger all providers;
@@ -537,15 +540,11 @@ the [platform workflow](../.github/workflows/ci.yml) handles core changes separa
   building VS Code with a version override.
 - Both platform records have the same version before publishing, and `latest`
   and the bundle-version tag resolve to the same multi-platform index.
-- Yep Anywhere preserves UI settings across resume, registers the current
-  workspace, and uses Gateway identity for HTTP and direct WebSocket access,
-  including after restoring saved app settings. Its USB tab follows Runtime
-  capability and its CLI calls use validated argument arrays.
-- Restoring Yep Anywhere data preserves ordinary app settings while keeping
-  external relay connections inactive. Model and tool credentials come from
-  the remote user's environment and the tools' own configuration.
-- Bundled Codex, OpenCode and Pi start from a read-only Provider mount as the
-  remote user without a system Node installation; credentials and sessions use
-  user storage. Both published architectures pass version and protocol checks.
-- External installations retain discovery priority, and configured backend
-  subsets agree between the image schema, discovery, UI and execution.
+- Yep Anywhere restores user settings and registers the workspace while keeping
+  browser access authenticated by Gateway. USB controls follow Runtime capability.
+- Model connection settings follow the merge, persistence and credential rules
+  in the [provider guide](yepanywhere/README.md#model-api-connections), and local
+  mock API checks verify the selected protocol, model and authentication.
+- Bundled tools start from a read-only Provider mount as the remote user without
+  a system Node installation. External installations retain discovery priority,
+  and sessions and credentials stay in user storage.

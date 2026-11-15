@@ -16,8 +16,8 @@ Dev Container and can be used by processes with the required device permissions.
 - Obtain the SSH user, host, and port from the Codespace page in Gitea, or use
   the bundled IDE's USB tunnel command described below.
 
-The bundled IDEs show **USB Devices** when the runtime provides USB/IP support.
-The Dev Container also receives `gitea-codespace-usbip` for command-line use.
+The bundled IDEs show USB management controls when the runtime provides USB/IP
+support. The Dev Container also receives `gitea-codespace-usbip` for command-line use.
 
 ## Connect a source
 

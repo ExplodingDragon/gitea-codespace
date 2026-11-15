@@ -11,6 +11,7 @@ if (!root || !dataDir || !address) throw new Error('Web IDE program, data and ad
 const endpoint = new URL(`http://${address}`);
 const options = JSON.parse(await readFile(path.join(dataDir, 'codespace-options.json'), 'utf8'));
 const {CODESPACE_PROVIDERS} = await import(pathToFileURL(path.join(root, 'program/app/bundled/@yep-anywhere/shared/dist/codespace.js')));
+const {parseCodespaceConnections} = await import(pathToFileURL(path.join(root, 'program/app/bundled/@yep-anywhere/shared/dist/codespace-connections.js')));
 if (!Array.isArray(options.providers) || !options.providers.length || options.providers.some((name) => !CODESPACE_PROVIDERS.includes(name))) {
   throw new Error('Invalid Yep Anywhere backend selection');
 }
@@ -29,6 +30,7 @@ Object.assign(process.env, {
   SERVE_FRONTEND: 'true',
   MAINTENANCE_PORT: '0',
   ENABLED_PROVIDERS: options.providers.join(','),
+  CODESPACE_YEP_CONNECTIONS: JSON.stringify(parseCodespaceConnections(options.connections)),
 });
 // The private Node runs the app; Features retain ownership of PATH and HOME.
 await import(pathToFileURL(path.join(root, 'program/app/dist/index.js')));

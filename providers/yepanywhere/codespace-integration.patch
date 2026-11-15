@@ -348,6 +348,345 @@ index 67015d5..20ed3ec 100644
          }
 
          if (attempt === 0) {
+diff --git a/packages/server/src/sdk/providers/claude.ts b/packages/server/src/sdk/providers/claude.ts
+index 9aac6cd..8fe8c64 100644
+--- a/packages/server/src/sdk/providers/claude.ts
++++ b/packages/server/src/sdk/providers/claude.ts
+@@ -1,3 +1,10 @@
++import {
++  codespaceAuthStatus,
++  codespaceConnection,
++  codespaceEnvironment,
++  codespaceModel,
++  codespaceModels,
++} from "../codespace-connections.js";
+ import {
+   captureClaudeCopyBoundary,
+   type ClaudeCopyBoundary,
+@@ -580,6 +587,7 @@ export class ClaudeProvider implements AgentProvider {
+   }
+
+   resolveLaunchModel(model: string | undefined): string | undefined {
++    if (codespaceConnection(this.name)) return codespaceModel(this.name, model);
+     const resolved = this.cachedModels?.find(
+       (entry) => entry.id === model,
+     )?.resolvedModel;
+@@ -674,6 +682,8 @@ export class ClaudeProvider implements AgentProvider {
+    */
+   async getAuthStatus(): Promise<AuthStatus> {
+     const installed = await this.isClaudeCliInstalled();
++    const configured = codespaceAuthStatus(this.name, installed);
++    if (configured) return configured;
+     if (!installed) {
+       return this.withLoginCommand({
+         installed: false,
+@@ -747,6 +757,7 @@ export class ClaudeProvider implements AgentProvider {
+   }
+
+   async getLoginLaunch(): Promise<ProviderLoginLaunch | null> {
++    if (codespaceConnection(this.name)) return null;
+     // Gateway and Ollama variants authenticate through their own services.
+     if (this.name !== "claude") return null;
+     const executable = await resolveClaudeLoginExecutable();
+@@ -847,6 +858,8 @@ export class ClaudeProvider implements AgentProvider {
+   async getAvailableModels(options?: {
+     forceRefresh?: boolean;
+   }): Promise<ModelInfo[]> {
++    const configured = codespaceModels(this.name);
++    if (configured) return configured;
+     const forceRefresh = options?.forceRefresh === true;
+     if (
+       !forceRefresh &&
+@@ -942,10 +955,10 @@ export class ClaudeProvider implements AgentProvider {
+   }
+
+   protected getEnv(_model?: string): Record<string, string | undefined> {
+-    return {
++    return codespaceEnvironment(this.name, {
+       ...filterEnvForChildProcess(),
+       ...this.getSubagentDepthEnvironment(),
+-    };
++    });
+   }
+
+   /**
+@@ -953,7 +966,11 @@ export class ClaudeProvider implements AgentProvider {
+    * user/project/local settings without replacing the lower layers.
+    */
+   protected getSettings(_model?: string): Settings | undefined {
+-    return undefined;
++    if (!codespaceConnection(this.name)) return undefined;
++    return {
++      apiKeyHelper: "",
++      env: codespaceEnvironment(this.name, {}) as Record<string, string>,
++    };
+   }
+
+   /** Built-in tools removed from this Claude launch before model context. */
+@@ -1196,7 +1213,9 @@ export class ClaudeProvider implements AgentProvider {
+       };
+     }
+
+-    const helperModel = model === HELPER_SIDE_MODEL_CHEAPEST ? "haiku" : model;
++    const helperModel = model === HELPER_SIDE_MODEL_CHEAPEST
++      ? codespaceModel(this.name) ?? "haiku"
++      : codespaceModel(this.name, model);
+
+     try {
+       const sdkQuery = query({
+@@ -1366,7 +1385,9 @@ export class ClaudeProvider implements AgentProvider {
+           pathToClaudeCodeExecutable: resolveLocalClaudeCodeExecutable(),
+           env: summaryEnv,
+           ...this.getSessionToolOptions(request.model, request.sessionSandbox),
+-          model: normalizeClaudeLaunchModel(request.model),
++          model: normalizeClaudeLaunchModel(
++            codespaceModel(this.name, request.model),
++          ),
+           resume: request.generatorSessionId,
+           maxTurns: 1,
+           spawnClaudeCodeProcess: request.sessionSandbox
+@@ -1534,7 +1555,9 @@ export class ClaudeProvider implements AgentProvider {
+           persistSession: false,
+           maxTurns: 1,
+           maxBudgetUsd: CLAUDE_PROMPT_CACHE_KEEPALIVE_MAX_BUDGET_USD,
+-          model: normalizeClaudeLaunchModel(options.model),
++          model: normalizeClaudeLaunchModel(
++            codespaceModel(this.name, options.model),
++          ),
+           thinking: options.thinking,
+           effort: options.effort,
+           pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable,
+@@ -1980,7 +2003,9 @@ export class ClaudeProvider implements AgentProvider {
+           agentProgressSummaries:
+             providerSessionOptions.sdk.agentProgressSummaries,
+           // Model, thinking, and effort options
+-          model: normalizeClaudeLaunchModel(options.model),
++          model: normalizeClaudeLaunchModel(
++            codespaceModel(this.name, options.model),
++          ),
+           thinking: options.thinking,
+           effort: options.effort,
+           pathToClaudeCodeExecutable,
+@@ -2135,7 +2160,9 @@ export class ClaudeProvider implements AgentProvider {
+         this.refreshPromptCache({
+           sessionId: options.nativeResumeSource?.native.id ?? sessionId,
+           cwd: effectiveCwd,
+-          model: normalizeClaudeLaunchModel(options.model),
++          model: normalizeClaudeLaunchModel(
++            codespaceModel(this.name, options.model),
++          ),
+           thinking: options.thinking,
+           effort: options.effort,
+           globalInstructions: options.globalInstructions,
+@@ -2229,7 +2256,9 @@ export class ClaudeProvider implements AgentProvider {
+           !options.routerLaunch.models.some((m) => m.id === model)
+         )
+           throw new Error("Model unavailable for the pinned account");
+-        await sdkQuery.setModel(normalizeClaudeLaunchModel(model));
++        await sdkQuery.setModel(
++          normalizeClaudeLaunchModel(codespaceModel(this.name, model)),
++        );
+         selectedModel = model;
+       },
+     };
+diff --git a/packages/server/src/sdk/providers/codex-app-server-client.ts b/packages/server/src/sdk/providers/codex-app-server-client.ts
+index 1adda5d..4944fa0 100644
+--- a/packages/server/src/sdk/providers/codex-app-server-client.ts
++++ b/packages/server/src/sdk/providers/codex-app-server-client.ts
+@@ -1,3 +1,7 @@
++import {
++  codespaceCodexArguments,
++  codespaceEnvironment,
++} from "../codespace-connections.js";
+ import { type ChildProcess, execFile, spawn } from "node:child_process";
+ import type { SessionSandboxRuntime } from "../../session-sandbox.js";
+ import type { ProviderActivitySnapshot } from "../types.js";
+@@ -282,12 +286,14 @@ export class CodexAppServerClient {
+       "app-server",
+       "--listen",
+       "stdio://",
++      ...codespaceCodexArguments("codex"),
+       ...this.launchArguments,
+     ];
++    const env = codespaceEnvironment("codex", this.env);
+     const sandboxed = this.sessionSandbox?.wrapSpawn(
+       this.command,
+       commandArgs,
+-      this.env,
++      env,
+     );
+     const child = (() => {
+       try {
+@@ -298,7 +304,7 @@ export class CodexAppServerClient {
+             cwd: sandboxed?.cwd ?? this.cwd,
+             detached: process.platform !== "win32",
+             stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
+-            env: sandboxed?.env ?? this.env,
++            env: sandboxed?.env ?? env,
+             shell: sandboxed
+               ? false
+               : process.platform === "win32" &&
+diff --git a/packages/server/src/sdk/providers/codex-oss.ts b/packages/server/src/sdk/providers/codex-oss.ts
+index 93bc595..de4341b 100644
+--- a/packages/server/src/sdk/providers/codex-oss.ts
++++ b/packages/server/src/sdk/providers/codex-oss.ts
+@@ -1,3 +1,11 @@
++import {
++  codespaceAuthStatus,
++  codespaceCodexArguments,
++  codespaceConnection,
++  codespaceEnvironment,
++  codespaceModel,
++  codespaceModels,
++} from "../codespace-connections.js";
+ import { nativeStorageScope } from "./native-storage-scope.js";
+ /**
+  * CodexOSS Provider - Local models via Codex CLI with --oss flag.
+@@ -302,6 +310,8 @@ export class CodexOSSProvider implements AgentProvider {
+    * Check that something can serve a model: a configured endpoint, or Ollama.
+    */
+   async isAuthenticated(): Promise<boolean> {
++    const configured = codespaceAuthStatus(this.name, true);
++    if (configured) return configured.authenticated;
+     if (this.codexServices().length > 0) return true;
+     // For OSS mode, we just need Ollama running
+     if (this.localProvider === "ollama") {
+@@ -321,6 +331,8 @@ export class CodexOSSProvider implements AgentProvider {
+    */
+   async getAuthStatus(): Promise<AuthStatus> {
+     const installed = await this.isInstalled();
++    const configured = codespaceAuthStatus(this.name, installed);
++    if (configured) return configured;
+     if (!installed) {
+       return { installed: false, authenticated: false, enabled: false };
+     }
+@@ -340,6 +352,8 @@ export class CodexOSSProvider implements AgentProvider {
+    * launch and a Claude Gateway launch name their source the same way.
+    */
+   async getAvailableModels(): Promise<ModelInfo[]> {
++    const configured = codespaceModels(this.name);
++    if (configured) return configured;
+     const services = this.codexServices();
+     const perSource = await Promise.all([
+       ...services.map(async (service) => ({
+@@ -509,6 +523,7 @@ export class CodexOSSProvider implements AgentProvider {
+   async resolveLaunchGatewayRoute(
+     model: string | undefined,
+   ): Promise<ModelCatalogRoute | null> {
++    if (codespaceConnection(this.name)) return null;
+     if (
+       model &&
+       this.codexServices().length > 0 &&
+@@ -706,6 +721,8 @@ export class CodexOSSProvider implements AgentProvider {
+   }
+
+   async startSession(options: StartSessionOptions): Promise<AgentSession> {
++    options = { ...options, model: codespaceModel(this.name, options.model) };
++    codespaceEnvironment(this.name, process.env);
+     const source = options.nativeResumeSource;
+     if (source) {
+       if (
+@@ -972,7 +989,9 @@ export class CodexOSSProvider implements AgentProvider {
+         codexProcess = spawn(codexPath, args, {
+           cwd: options.cwd,
+           stdio: ["pipe", "pipe", "pipe"],
+-          env: stripYaControlPlaneCredentials(process.env),
++          env: codespaceEnvironment(
++            this.name, stripYaControlPlaneCredentials(process.env),
++          ),
+           shell: process.platform === "win32",
+         });
+         runtime.process = codexProcess;
+@@ -1185,7 +1204,9 @@ export class CodexOSSProvider implements AgentProvider {
+     route: CodexModelRoute,
+   ): string[] {
+     const service = this.serviceById(route.serviceId);
+-    const args: string[] = service
++    const args: string[] = codespaceConnection(this.name)
++      ? ["exec", ...codespaceCodexArguments("codex-oss"), "--json"]
++      : service
+       ? // A configured endpoint replaces `--oss`, which only ever meant
+         // "whichever local provider Codex is configured for".
+         ["exec", ...this.serviceLaunchArgs(service), "--json"]
+@@ -1233,7 +1254,9 @@ export class CodexOSSProvider implements AgentProvider {
+       sessionId,
+       prompt,
+       "--json",
+-      ...(service
++      ...(codespaceConnection(this.name)
++        ? codespaceCodexArguments("codex-oss")
++        : service
+         ? this.serviceLaunchArgs(service)
+         : ["-c", `model_provider=${tomlString(this.localProvider)}`]),
+     ];
+diff --git a/packages/server/src/sdk/providers/codex-session.ts b/packages/server/src/sdk/providers/codex-session.ts
+index 0f966e5..016edc5 100644
+--- a/packages/server/src/sdk/providers/codex-session.ts
++++ b/packages/server/src/sdk/providers/codex-session.ts
+@@ -20,6 +20,7 @@ import {
+ } from "@yep-anywhere/shared";
+ import type { ProviderInstallationLease } from "../../services/ProviderInstallationCoordinator.js";
+ import { withSessionSandboxAgentContext } from "../../session-sandbox-agent-context.js";
++import { codespaceModel } from "../codespace-connections.js";
+ import { MessageQueue } from "../messageQueue.js";
+ import type {
+   ProviderActivitySnapshot,
+@@ -1030,6 +1031,7 @@ export class CodexSession {
+   }
+
+   async setModel(model?: string): Promise<void> {
++    model = codespaceModel("codex", model);
+     if (
+       this.options.routerLaunch?.models &&
+       !routerModelSupportsThinking(
+diff --git a/packages/server/src/sdk/providers/codex.ts b/packages/server/src/sdk/providers/codex.ts
+index fa2efaa..15c6429 100644
+--- a/packages/server/src/sdk/providers/codex.ts
++++ b/packages/server/src/sdk/providers/codex.ts
+@@ -1,3 +1,9 @@
++import {
++  codespaceAuthStatus,
++  codespaceConnection,
++  codespaceModel,
++  codespaceModels,
++} from "../codespace-connections.js";
+ import { nativeStorageScope } from "./native-storage-scope.js";
+ import { parseNativeSessionId, toUrlProjectId } from "@yep-anywhere/shared";
+ import { resolveNativeSessionRef } from "../../sessions/SessionIdentityStore.js";
+@@ -401,6 +407,8 @@ export class CodexProvider implements AgentProvider {
+       this.installationCoordinator,
+     );
+     const installed = codexPath !== null;
++    const configured = codespaceAuthStatus(this.name, installed);
++    if (configured) return configured;
+     const codexEnv = this.getCodexEnv();
+     const hasEnvironmentAuth = Boolean(
+       ["OPENAI_API_KEY", "CODEX_API_KEY", "CODEX_ACCESS_TOKEN"].some((name) =>
+@@ -428,6 +436,7 @@ export class CodexProvider implements AgentProvider {
+
+   /** Sign in with the same CLI and CODEX_HOME that sessions use. */
+   async getLoginLaunch(): Promise<ProviderLoginLaunch | null> {
++    if (codespaceConnection(this.name)) return null;
+     const codexPath = await findCodexCliPath(
+       this.config.codexPath,
+       this.installationCoordinator,
+@@ -451,6 +460,8 @@ export class CodexProvider implements AgentProvider {
+   async getAvailableModels(options?: {
+     forceRefresh?: boolean;
+   }): Promise<ModelInfo[]> {
++    const configured = codespaceModels(this.name);
++    if (configured) return configured;
+     return this.installationCoordinator.withReadLease(
+       CODEX_INSTALLATION_FAMILY,
+       () => this.getAvailableModelsWithLease(options?.forceRefresh === true),
+@@ -735,6 +746,7 @@ export class CodexProvider implements AgentProvider {
+    * Start a new Codex session.
+    */
+   async startSession(options: StartSessionOptions): Promise<AgentSession> {
++    options = { ...options, model: codespaceModel(this.name, options.model) };
+     return startAgentSelfSession(this.name, options, (resolved) =>
+       this.startSessionInternal(resolved),
+     );
 diff --git a/packages/server/src/sdk/providers/index.ts b/packages/server/src/sdk/providers/index.ts
 index 2978a8f..31b6bad 100644
 --- a/packages/server/src/sdk/providers/index.ts
@@ -424,16 +763,76 @@ index 2978a8f..31b6bad 100644
      case "claude":
        return claudeProvider;
 diff --git a/packages/server/src/sdk/providers/opencode.ts b/packages/server/src/sdk/providers/opencode.ts
-index 65f5934..8942f77 100644
+index 65f5934..23c4ea1 100644
 --- a/packages/server/src/sdk/providers/opencode.ts
 +++ b/packages/server/src/sdk/providers/opencode.ts
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,11 @@
++import {
++  codespaceAuthStatus,
++  codespaceEnvironment,
++  codespaceModel,
++  codespaceModels,
++} from "../codespace-connections.js";
  import { nativeStorageScope } from "./native-storage-scope.js";
 +import { bundledCodespaceBinary } from "../codespace-binaries.js";
  /**
   * OpenCode Provider implementation using `opencode serve`.
   *
-@@ -1922,8 +1923,8 @@ export class OpenCodeProvider implements AgentProvider {
+@@ -317,7 +324,8 @@ export class OpenCodeProvider implements AgentProvider {
+    */
+   async isAuthenticated(): Promise<boolean> {
+     // OpenCode is authenticated if installed - it has built-in free models
+-    return this.isInstalled();
++    const installed = await this.isInstalled();
++    return codespaceAuthStatus(this.name, installed)?.authenticated ?? installed;
+   }
+
+   /**
+@@ -325,6 +333,8 @@ export class OpenCodeProvider implements AgentProvider {
+    */
+   async getAuthStatus(): Promise<AuthStatus> {
+     const installed = await this.isInstalled();
++    const configured = codespaceAuthStatus(this.name, installed);
++    if (configured) return configured;
+     if (!installed) {
+       return {
+         installed: false,
+@@ -350,6 +360,8 @@ export class OpenCodeProvider implements AgentProvider {
+    * Queries the OpenCode CLI for available models.
+    */
+   async getAvailableModels(): Promise<ModelInfo[]> {
++    const configured = codespaceModels(this.name);
++    if (configured) return configured;
+     const opencodePath = await this.findOpenCodePath();
+     if (!opencodePath) {
+       return [];
+@@ -460,6 +472,7 @@ export class OpenCodeProvider implements AgentProvider {
+    * to the Supervisor; public YA identity remains separate.
+    */
+   async startSession(options: StartSessionOptions): Promise<AgentSession> {
++    options = { ...options, model: codespaceModel(this.name, options.model) };
+     if (options.resumeSessionId) {
+       const id = parseNativeSessionId(options.resumeSessionId);
+       if (!id.startsWith("ses_"))
+@@ -529,7 +542,7 @@ export class OpenCodeProvider implements AgentProvider {
+         {
+           cwd: options.cwd,
+           stdio: ["pipe", "pipe", "pipe"],
+-          env: stripYaControlPlaneCredentials({
++          env: codespaceEnvironment(this.name, stripYaControlPlaneCredentials({
+             ...process.env,
+             ...(password
+               ? {
+@@ -537,7 +550,7 @@ export class OpenCodeProvider implements AgentProvider {
+                   OPENCODE_SERVER_PASSWORD: password,
+                 }
+               : {}),
+-          }),
++          })),
+           shell: process.platform === "win32",
+         },
+       );
+@@ -1922,8 +1935,8 @@ export class OpenCodeProvider implements AgentProvider {
     */
    private async findOpenCodePath(): Promise<string | null> {
      // Use configured path if provided
@@ -444,7 +843,7 @@ index 65f5934..8942f77 100644
      }
 
      // Check common locations. `~/.opencode/bin` is the official installer
-@@ -1955,7 +1956,7 @@ export class OpenCodeProvider implements AgentProvider {
+@@ -1955,7 +1968,7 @@ export class OpenCodeProvider implements AgentProvider {
        // Not in PATH
      }
 
@@ -453,11 +852,58 @@ index 65f5934..8942f77 100644
    }
  }
 
+diff --git a/packages/server/src/sdk/providers/pi-yep-anywhere-extension.mjs b/packages/server/src/sdk/providers/pi-yep-anywhere-extension.mjs
+index b748752..2712ec3 100644
+--- a/packages/server/src/sdk/providers/pi-yep-anywhere-extension.mjs
++++ b/packages/server/src/sdk/providers/pi-yep-anywhere-extension.mjs
+@@ -1,7 +1,7 @@
+ /**
+  * Yep Anywhere's pi extension, loaded into every pi session YA launches
+  * (`pi --extension <this file>`). It registers one command, which only YA
+- * sends, and changes nothing else about the session.
++ * sends, and registers an optional Codespace model connection.
+  *
+  * `/yep-anywhere-effort-retry <json>` sets aside a turn the model server
+  * refused over its thinking level, so YA can send the prompt again without
+@@ -25,6 +25,23 @@ const EFFORT_RETRY_COMMAND = "yep-anywhere-effort-retry";
+ const EFFORT_RETRY_ENTRY_TYPE = "yep-anywhere.effort-retry";
+
+ export default function yepAnywherePiExtension(pi) {
++  const connection = JSON.parse(process.env.CODESPACE_YEP_CONNECTIONS || "{}").pi;
++  if (connection) {
++    pi.registerProvider("codespace", {
++      baseUrl: connection.baseUrl,
++      api: connection.api,
++      apiKey: connection.apiKeyEnv ? `$${connection.apiKeyEnv}` : "codespace-no-auth",
++      models: connection.models.map((model) => ({
++        id: model.id,
++        name: model.name ?? model.id,
++        reasoning: false,
++        input: ["text"],
++        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
++        contextWindow: model.contextWindow,
++        maxTokens: model.maxTokens,
++      })),
++    });
++  }
+   pi.registerCommand(EFFORT_RETRY_COMMAND, {
+     description:
+       "Yep Anywhere: set aside a turn refused over its thinking level",
 diff --git a/packages/server/src/sdk/providers/pi.ts b/packages/server/src/sdk/providers/pi.ts
-index 46686db..af8615e 100644
+index 46686db..26e109a 100644
 --- a/packages/server/src/sdk/providers/pi.ts
 +++ b/packages/server/src/sdk/providers/pi.ts
-@@ -4,6 +4,7 @@ import {
+@@ -1,9 +1,17 @@
++import {
++  codespaceAuthStatus,
++  codespaceConnection,
++  codespaceEnvironment,
++  codespaceModel,
++  codespaceModels,
++} from "../codespace-connections.js";
+ import {
+   fromUrlProjectId,
+   parseNativeSessionId,
    toUrlProjectId,
  } from "@yep-anywhere/shared";
  import { resolveNativeSessionRef } from "../../sessions/SessionIdentityStore.js";
@@ -465,7 +911,69 @@ index 46686db..af8615e 100644
  import { assertProviderForkSource } from "./types.js";
  /**
   * pi provider — Plan A: subprocess RPC mode (`pi --mode rpc`).
-@@ -1482,11 +1483,13 @@ export class PiProvider implements AgentProvider {
+@@ -320,11 +328,14 @@ export class PiProvider implements AgentProvider {
+   async isAuthenticated(): Promise<boolean> {
+     // pi resolves credentials per-model (auth.json / env keys). Treat "installed"
+     // as usable; a missing key surfaces as a turn error, like opencode.
+-    return this.isInstalled();
++    const installed = await this.isInstalled();
++    return codespaceAuthStatus(this.name, installed)?.authenticated ?? installed;
+   }
+
+   async getAuthStatus(): Promise<AuthStatus> {
+     const installed = await this.isInstalled();
++    const configured = codespaceAuthStatus(this.name, installed);
++    if (configured) return configured;
+     return {
+       installed,
+       authenticated: installed,
+@@ -346,6 +357,8 @@ export class PiProvider implements AgentProvider {
+   async getAvailableModels(options?: {
+     forceRefresh?: boolean;
+   }): Promise<ModelInfo[]> {
++    const configured = codespaceModels(this.name);
++    if (configured) return configured;
+     const fresh =
+       options?.forceRefresh !== true &&
+       this.cachedModels &&
+@@ -522,11 +535,12 @@ export class PiProvider implements AgentProvider {
+   }
+
+   async startSession(options: StartSessionOptions): Promise<AgentSession> {
++    options = { ...options, model: codespaceModel(this.name, options.model) };
+     const log = getLogger();
+-    const env = stripYaControlPlaneCredentials({
++    const env = codespaceEnvironment(this.name, stripYaControlPlaneCredentials({
+       ...process.env,
+       ...options.remoteEnv,
+-    });
++    }));
+     if (options.publicSessionId && !options.resumeSessionId) {
+       if (
+         env.PI_CODING_AGENT_DIR !== process.env.PI_CODING_AGENT_DIR ||
+@@ -553,6 +567,12 @@ export class PiProvider implements AgentProvider {
+     }
+
+     const args = ["--mode", "rpc", "--extension", yepAnywherePiExtensionPath()];
++    const connection = codespaceConnection(this.name);
++    if (connection) {
++      // Runtime credentials take precedence over native auth.json without
++      // changing that file or the session storage directory.
++      args.push("--api-key", connection.apiKeyEnv ? env[connection.apiKeyEnv] ?? "" : "codespace-no-auth");
++    }
+     if (options.model && options.model !== "default") {
+       args.push("--model", options.model);
+     }
+@@ -685,7 +705,7 @@ export class PiProvider implements AgentProvider {
+       }),
+       supportedModels: () => this.getAvailableModels(),
+       setModel: async (model?: string) => {
+-        const sel = parsePiModelSelection(model);
++        const sel = parsePiModelSelection(codespaceModel(this.name, model));
+         if (!sel) return;
+         const response = await client.request({
+           type: "set_model",
+@@ -1482,11 +1502,13 @@ export class PiProvider implements AgentProvider {
        const { stdout } = await execAsync(whichCommand("pi"), {
          encoding: "utf-8",
        });
@@ -516,10 +1024,12 @@ index 7df6ea0..7204845 100644
        // The services list and the legacy single-gateway keys are two views of
        // one configuration, so an edit to either has to settle both before the
 diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
-index 60b06bb..5a44522 100644
+index 60b06bb..3eb827e 100644
 --- a/packages/shared/src/index.ts
 +++ b/packages/shared/src/index.ts
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,7 @@
++export { parseCodespaceConnections } from "./codespace-connections.js";
++export type { CodespaceBackend, CodespaceConnection, CodespaceConnections } from "./codespace-connections.js";
 +export type { CodespaceCapabilities, CodespaceEndpoint, CodespaceUSBDevice, CodespaceUSBState } from "./codespace.js";
 +export { CODESPACE_PROVIDERS, isCodespaceProvider } from "./codespace.js";
  export {

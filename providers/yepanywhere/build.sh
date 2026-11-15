@@ -45,7 +45,7 @@ node "$source_root/integrate.mjs" "$work/source"
   [ "$(node -p "require('./package.json').packageManager")" = "pnpm@$YEP_PNPM_VERSION" ] || fail "unexpected upstream pnpm version"
   CI=1 pnpm --filter yep-anywhere --filter '@yep-anywhere/server...' --filter '@yep-anywhere/client...' install --frozen-lockfile
   pnpm --filter @yep-anywhere/shared build
-  node scripts/biome.cjs check packages/shared/src/codespace.ts packages/server/src/routes/codespace*.ts packages/server/src/sdk/codespace-binaries.ts \
+  node scripts/biome.cjs check packages/shared/src/codespace*.ts packages/server/src/routes/codespace*.ts packages/server/src/sdk/codespace*.ts \
     packages/client/src/pages/CodespacePage.tsx packages/client/src/pages/CodespacePage.module.css \
     packages/server/test/codespace packages/client/src/pages/__tests__/Codespace*.test.tsx
   pnpm --filter @yep-anywhere/server exec vitest run test/codespace
@@ -78,3 +78,4 @@ printf '{"schemaVersion":1,"provider":"yepanywhere","architecture":"%s","version
 chmod -R a+rX "$output"
 "$output/program/node/bin/node" "$output/program/app/dist/cli.js" --version
 "$output/program/node/bin/node" "$source_root/tools/smoke.mjs" "$output"
+"$output/program/node/bin/node" "$source_root/tools/connections-smoke.mjs" "$output"
