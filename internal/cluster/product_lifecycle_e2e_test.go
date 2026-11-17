@@ -152,7 +152,7 @@ func (s *lifecycleRemote) CheckManager(_ context.Context, request *codespacev1.C
 	if request.ProtocolVersion != 1 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported protocol")
 	}
-	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL, ManagerName: "Kubernetes lifecycle E2E"}, nil
+	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL}, nil
 }
 
 func (s *lifecycleRemote) RegisterManager(_ context.Context, request *codespacev1.RegisterManagerRequest) (*codespacev1.RegisterManagerResponse, error) {

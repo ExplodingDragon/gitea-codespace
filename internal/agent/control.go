@@ -111,6 +111,11 @@ func (c *ControlClient) startExecution(
 			}
 		}
 		output.FlushLines()
+		done <- executionErr
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
 		// Output transport is independent of the execution outcome.
 		timer := time.NewTimer(5 * time.Second)
 		select {
@@ -121,17 +126,12 @@ func (c *ControlClient) startExecution(
 		timer.Stop()
 		cancelUpload()
 		<-uploadDone
-		done <- executionErr
-		select {
-		case wake <- struct{}{}:
-		default:
-		}
 	}()
 	return cancel, done
 }
 
-// Run retains completed facts until Manager has moved to another operation. A
-// lost result acknowledgement therefore cannot replay a completed create.
+// Run retains completed facts until Manager has moved to another operation,
+// so reconnecting cannot replay a completed create.
 func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 	if c.Journal == nil || c.Remote == nil || c.Execute == nil {
 		return fmt.Errorf("agent control dependencies are incomplete")

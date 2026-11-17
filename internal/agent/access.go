@@ -12,6 +12,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"maps"
 	"net/http"
 	"strings"
@@ -192,8 +193,7 @@ func prepareAccessExec(ctx context.Context, state *devcontainer.State, secrets m
 	if err != nil {
 		return "", container.ExecOptions{}, err
 	}
-	err = engine.RunPostAttach(ctx, state, secrets)
-	if err == nil && capability != agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
+	if capability != agentv1.AccessCapability_ACCESS_CAPABILITY_SFTP {
 		var loginShell string
 		loginShell, err = engine.ResolveRemoteUserShell(ctx, state)
 		if capability == agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL {
@@ -274,6 +274,9 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	if err := stream.Send(&agentv1.AccessResponse{Frame: &agentv1.AccessResponse_Accepted{Accepted: true}}); err != nil {
 		return err
 	}
+	attachCtx, cancelAttach := context.WithCancel(ctx)
+	defer cancelAttach()
+	runtime.startPostAttach(attachCtx, state, secrets, target.Version)
 	writeErr := make(chan error, 1)
 	go func() {
 		writeErr <- receiveAccessInput(ctx, stream, apiClient, created.ID, &attached, options.Tty)
@@ -293,6 +296,44 @@ func runAccess(ctx context.Context, stream agentv1connect.AgentAccessServiceAcce
 	default:
 	}
 	return inspectErr
+}
+
+func (r *Runtime) startPostAttach(ctx context.Context, state *devcontainer.State, secrets map[string]string, version int64) {
+	if len(state.LifecycleCommands.PostAttach) == 0 {
+		return
+	}
+	r.mu.Lock()
+	if r.target == nil || r.target.Version != version || r.target.PrimaryContainerId != state.PrimaryContainerID {
+		r.mu.Unlock()
+		return
+	}
+	if r.networkCtx == nil {
+		r.networkCtx, r.cancelNetwork = context.WithCancel(context.Background())
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	stop := context.AfterFunc(r.networkCtx, cancel)
+	lifecycleDone := r.lifecycleDone
+	r.postAttachTasks.Add(1)
+	r.mu.Unlock()
+	go func() {
+		defer r.postAttachTasks.Done()
+		defer cancel()
+		defer stop()
+		if lifecycleDone != nil {
+			select {
+			case <-ctx.Done():
+				return
+			case <-lifecycleDone:
+			}
+		}
+		engine, err := containerdocker.New(ctx, io.Discard, io.Discard)
+		if err == nil {
+			err = errors.Join(engine.RunPostAttach(ctx, state, secrets), engine.Close())
+		}
+		if err != nil && ctx.Err() == nil {
+			slog.Warn("Dev Container postAttachCommand failed", "operation", version, "error", err)
+		}
+	}()
 }
 
 func receiveAccessInput(ctx context.Context, stream agentv1connect.AgentAccessServiceAccessServerStream, apiClient *client.Client, execID string, attached *dockertypes.HijackedResponse, tty bool) error {

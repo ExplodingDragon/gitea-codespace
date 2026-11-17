@@ -5,6 +5,7 @@ package cluster
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -13,11 +14,12 @@ import (
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/workqueue"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
-// Slow result or metadata RPCs must not delay the site's lease renewal loop.
+// A workqueue serializes each runtime without blocking other runtimes or lease renewal.
 func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types.UID, interval *atomic.Int64) {
 	defer c.Samples.RetainSite(uid, nil)
 	namespace, err := api.SiteNamespace(name, c.ManagementNamespace)
@@ -25,6 +27,57 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 		return
 	}
 	logger := log.FromContext(ctx).WithValues("site", name)
+	queue := workqueue.NewTyped[types.NamespacedName]()
+	var workers sync.WaitGroup
+	var reported sync.Map
+	for range 4 {
+		workers.Go(func() {
+			for {
+				key, shutdown := queue.Get()
+				if shutdown {
+					return
+				}
+				err := func() error {
+					defer queue.Done(key)
+					var cs api.Codespace
+					if err := c.Client.Get(ctx, key, &cs); err != nil {
+						return client.IgnoreNotFound(err)
+					}
+					if cs.Spec.Site.UID != uid || !cs.Status.Bound {
+						return nil
+					}
+					var site api.GiteaSite
+					if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, &site); err != nil {
+						return client.IgnoreNotFound(err)
+					}
+					ready := meta.FindStatusCondition(site.Status.Conditions, "InfrastructureReady")
+					if site.UID != uid || !site.Spec.Enabled || !site.DeletionTimestamp.IsZero() || ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != site.Generation {
+						return nil
+					}
+					remote, err := c.Connections.ForSite(ctx, &site)
+					if err != nil {
+						return err
+					}
+					generation := cs.Status.MetadataGeneration
+					if err := c.Flush(ctx, &cs, remote); err != nil {
+						return err
+					}
+					reported.Store(cs.UID, generation)
+					return nil
+				}()
+				if err != nil && ctx.Err() == nil {
+					logger.Error(err, "Report runtime", "codespace", key.Name)
+				}
+			}
+		})
+	}
+	defer func() { queue.ShutDown(); workers.Wait() }()
+	var changes <-chan struct{}
+	if c.Changes != nil {
+		var unsubscribe func()
+		changes, unsubscribe = c.Changes.Subscribe(uid)
+		defer unsubscribe()
+	}
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	var metadataAt time.Time
@@ -33,6 +86,7 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+		case <-changes:
 		}
 		refresh := time.Since(metadataAt) >= time.Duration(interval.Load())
 		var observed api.CodespaceList
@@ -42,12 +96,13 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 			}
 			continue
 		}
-		needsReport := false
+		current := make(map[types.UID]bool, len(observed.Items))
 		for i := range observed.Items {
 			cs := &observed.Items[i]
 			if cs.Spec.Site.UID != uid {
 				continue
 			}
+			current[cs.UID] = true
 			if c.Logs != nil {
 				stage, message, err := managerProgress(ctx, c.ObservationReader, cs)
 				if err != nil && ctx.Err() == nil {
@@ -56,56 +111,19 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 					_ = c.Logs.Append(cs, stage, []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}})
 				}
 			}
+			generation, _ := reported.Load(cs.UID)
 			pending := cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (cs.Status.Result != nil || meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-			if cs.Status.Bound && (refresh || pending) {
-				needsReport = true
+			if cs.Status.Bound && (refresh || pending || generation != cs.Status.MetadataGeneration) {
+				queue.Add(client.ObjectKeyFromObject(cs))
 			}
 		}
-		if !needsReport {
-			c.Samples.RetainSite(uid, observed.Items)
-			continue
-		}
-		// Cached observations only schedule work; reporting uses current ownership and credentials.
-		var site api.GiteaSite
-		if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, &site); err != nil {
-			if ctx.Err() == nil {
-				logger.Error(err, "Read site for runtime reporting")
+		reported.Range(func(key, _ any) bool {
+			if !current[key.(types.UID)] {
+				reported.Delete(key)
 			}
-			continue
-		}
-		if site.UID != uid || !site.Spec.Enabled || !site.DeletionTimestamp.IsZero() {
-			return
-		}
-		ready := meta.FindStatusCondition(site.Status.Conditions, "InfrastructureReady")
-		if ready == nil || ready.Status != metav1.ConditionTrue || ready.ObservedGeneration != site.Generation {
-			continue
-		}
-		remote, err := c.Connections.ForSite(ctx, &site)
-		if err != nil {
-			logger.Error(err, "Read Gitea reporting identity")
-			continue
-		}
-		var rows api.CodespaceList
-		if err := c.Client.List(ctx, &rows, client.InNamespace(namespace)); err != nil {
-			if ctx.Err() == nil {
-				logger.Error(err, "List runtimes for reporting")
-			}
-			continue
-		}
-		c.Samples.RetainSite(uid, rows.Items)
-		for i := range rows.Items {
-			cs := &rows.Items[i]
-			if cs.Spec.Site.UID != uid || !cs.Status.Bound {
-				continue
-			}
-			pending := cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (cs.Status.Result != nil || meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-			if !refresh && !pending {
-				continue
-			}
-			if err := c.Flush(ctx, cs, remote); err != nil && ctx.Err() == nil {
-				logger.Error(err, "Report runtime", "codespace", cs.Name)
-			}
-		}
+			return true
+		})
+		c.Samples.RetainSite(uid, observed.Items)
 		if refresh {
 			metadataAt = time.Now()
 		}

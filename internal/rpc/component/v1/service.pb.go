@@ -1428,7 +1428,8 @@ type CacheControlRequest struct {
 	CacheId         string                 `protobuf:"bytes,2,opt,name=cache_id,json=cacheId,proto3" json:"cache_id,omitempty"`
 	SessionId       string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Sequence        uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	Status          *CacheStatus           `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
+	// Present on heartbeats to replace statistics; maintenance requests leave them unchanged.
+	Status *CacheStatus `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
 	// Types that are valid to be assigned to Maintenance:
 	//
 	//	*CacheControlRequest_BeginGc
@@ -1927,15 +1928,12 @@ func (x *CacheUpstreamConfiguration) GetAllow() []string {
 }
 
 type CacheStatus struct {
-	state                       protoimpl.MessageState `protogen:"open.v1"`
-	ConfigRevision              int64                  `protobuf:"varint,1,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
-	CacheBytes                  int64                  `protobuf:"varint,2,opt,name=cache_bytes,json=cacheBytes,proto3" json:"cache_bytes,omitempty"`
-	MirrorBytes                 int64                  `protobuf:"varint,3,opt,name=mirror_bytes,json=mirrorBytes,proto3" json:"mirror_bytes,omitempty"`
-	ScannedAtUnixMilliseconds   int64                  `protobuf:"varint,4,opt,name=scanned_at_unix_milliseconds,json=scannedAtUnixMilliseconds,proto3" json:"scanned_at_unix_milliseconds,omitempty"`
-	LastCleanupUnixMilliseconds int64                  `protobuf:"varint,5,opt,name=last_cleanup_unix_milliseconds,json=lastCleanupUnixMilliseconds,proto3" json:"last_cleanup_unix_milliseconds,omitempty"`
-	CleanupResult               string                 `protobuf:"bytes,6,opt,name=cleanup_result,json=cleanupResult,proto3" json:"cleanup_result,omitempty"`
-	unknownFields               protoimpl.UnknownFields
-	sizeCache                   protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	CacheBytes    int64                  `protobuf:"varint,2,opt,name=cache_bytes,json=cacheBytes,proto3" json:"cache_bytes,omitempty"`
+	MirrorBytes   int64                  `protobuf:"varint,3,opt,name=mirror_bytes,json=mirrorBytes,proto3" json:"mirror_bytes,omitempty"`
+	CleanupResult string                 `protobuf:"bytes,6,opt,name=cleanup_result,json=cleanupResult,proto3" json:"cleanup_result,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *CacheStatus) Reset() {
@@ -1968,13 +1966,6 @@ func (*CacheStatus) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
-func (x *CacheStatus) GetConfigRevision() int64 {
-	if x != nil {
-		return x.ConfigRevision
-	}
-	return 0
-}
-
 func (x *CacheStatus) GetCacheBytes() int64 {
 	if x != nil {
 		return x.CacheBytes
@@ -1985,20 +1976,6 @@ func (x *CacheStatus) GetCacheBytes() int64 {
 func (x *CacheStatus) GetMirrorBytes() int64 {
 	if x != nil {
 		return x.MirrorBytes
-	}
-	return 0
-}
-
-func (x *CacheStatus) GetScannedAtUnixMilliseconds() int64 {
-	if x != nil {
-		return x.ScannedAtUnixMilliseconds
-	}
-	return 0
-}
-
-func (x *CacheStatus) GetLastCleanupUnixMilliseconds() int64 {
-	if x != nil {
-		return x.LastCleanupUnixMilliseconds
 	}
 	return 0
 }
@@ -2014,7 +1991,6 @@ type CacheGCGrant struct {
 	state                     protoimpl.MessageState `protogen:"open.v1"`
 	CacheId                   string                 `protobuf:"bytes,1,opt,name=cache_id,json=cacheId,proto3" json:"cache_id,omitempty"`
 	Id                        string                 `protobuf:"bytes,2,opt,name=id,proto3" json:"id,omitempty"`
-	ConfigRevision            int64                  `protobuf:"varint,3,opt,name=config_revision,json=configRevision,proto3" json:"config_revision,omitempty"`
 	ExpiresAtUnixMilliseconds int64                  `protobuf:"varint,4,opt,name=expires_at_unix_milliseconds,json=expiresAtUnixMilliseconds,proto3" json:"expires_at_unix_milliseconds,omitempty"`
 	ReadyAtUnixMilliseconds   int64                  `protobuf:"varint,5,opt,name=ready_at_unix_milliseconds,json=readyAtUnixMilliseconds,proto3" json:"ready_at_unix_milliseconds,omitempty"`
 	unknownFields             protoimpl.UnknownFields
@@ -2063,13 +2039,6 @@ func (x *CacheGCGrant) GetId() string {
 		return x.Id
 	}
 	return ""
-}
-
-func (x *CacheGCGrant) GetConfigRevision() int64 {
-	if x != nil {
-		return x.ConfigRevision
-	}
-	return 0
 }
 
 func (x *CacheGCGrant) GetExpiresAtUnixMilliseconds() int64 {
@@ -2341,21 +2310,17 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x06prefix\x18\x04 \x01(\tR\x06prefix\x12(\n" +
 	"\x10force_path_style\x18\x05 \x01(\bR\x0eforcePathStyle\"2\n" +
 	"\x1aCacheUpstreamConfiguration\x12\x14\n" +
-	"\x05allow\x18\x01 \x03(\tR\x05allow\"\xa7\x02\n" +
-	"\vCacheStatus\x12'\n" +
-	"\x0fconfig_revision\x18\x01 \x01(\x03R\x0econfigRevision\x12\x1f\n" +
+	"\x05allow\x18\x01 \x03(\tR\x05allow\"\xd9\x01\n" +
+	"\vCacheStatus\x12\x1f\n" +
 	"\vcache_bytes\x18\x02 \x01(\x03R\n" +
 	"cacheBytes\x12!\n" +
-	"\fmirror_bytes\x18\x03 \x01(\x03R\vmirrorBytes\x12?\n" +
-	"\x1cscanned_at_unix_milliseconds\x18\x04 \x01(\x03R\x19scannedAtUnixMilliseconds\x12C\n" +
-	"\x1elast_cleanup_unix_milliseconds\x18\x05 \x01(\x03R\x1blastCleanupUnixMilliseconds\x12%\n" +
-	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResult\"\xe0\x01\n" +
+	"\fmirror_bytes\x18\x03 \x01(\x03R\vmirrorBytes\x12%\n" +
+	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResultJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x0fconfig_revisionR\x1cscanned_at_unix_millisecondsR\x1elast_cleanup_unix_milliseconds\"\xce\x01\n" +
 	"\fCacheGCGrant\x12\x19\n" +
 	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\tR\x02id\x12'\n" +
-	"\x0fconfig_revision\x18\x03 \x01(\x03R\x0econfigRevision\x12?\n" +
+	"\x02id\x18\x02 \x01(\tR\x02id\x12?\n" +
 	"\x1cexpires_at_unix_milliseconds\x18\x04 \x01(\x03R\x19expiresAtUnixMilliseconds\x12;\n" +
-	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"\x10\n" +
+	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMillisecondsJ\x04\b\x03\x10\x04R\x0fconfig_revision\"\x10\n" +
 	"\x0eCacheGCRequest\",\n" +
 	"\x0fCacheGCComplete\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x89\x04\n" +

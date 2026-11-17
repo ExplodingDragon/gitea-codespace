@@ -60,6 +60,7 @@ type Request struct {
 	RunLifecycle         containerdocker.RunLifecycleFunc
 	RunTemplateLifecycle RunTemplateLifecycleFunc
 	BeforeContainerStop  func()
+	Ready                func(*Outcome) error
 }
 
 // Validate checks action-specific identity and state requirements.

@@ -55,6 +55,8 @@ type Runtime struct {
 	forwards                   reverseForwards
 	networkCtx                 context.Context
 	cancelNetwork              context.CancelFunc
+	lifecycleDone              <-chan struct{}
+	postAttachTasks            sync.WaitGroup
 	systemCABundlePath         string
 	proxyCABundlePath          string
 	outboundCABundlePath       string
@@ -71,7 +73,15 @@ type Runtime struct {
 }
 
 func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse, update func(*agentv1.AgentReport), stdout, stderr io.Writer) (returnErr error) {
+	lifecycleDone := make(chan struct{})
+	r.mu.Lock()
+	r.lifecycleDone = lifecycleDone
+	r.mu.Unlock()
+	defer close(lifecycleDone)
 	defer func() {
+		if returnErr != nil {
+			r.closeNetworkAccess()
+		}
 		if returnErr != nil && r.Debug {
 			writeFailureDiagnostics(stderr, r.Cgroup, r.Isolation == "kata")
 		}
@@ -269,6 +279,16 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 		}
 	}
 	outcome, applyErr := executor.Apply(ctx, devcontainerruntime.Request{
+		Ready: func(outcome *devcontainerruntime.Outcome) error {
+			endpoints, _, err := devcontainerruntime.ConfiguredEndpoints(outcome.Environment)
+			if err == nil {
+				err = r.replaceConfiguredEndpoints(endpoints)
+			}
+			if err != nil {
+				return err
+			}
+			return r.publishAccess(operation.OperationRversion, outcome, secrets, report, stdout)
+		},
 		Debug: r.Debug, HostCgroup: &r.Cgroup,
 		Action: "create", CodespaceUUID: operation.RuntimeUuid,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
@@ -279,15 +299,10 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 	if applyErr != nil || cleanupErr != nil {
 		return errors.Join(applyErr, cleanupErr)
 	}
-	state := outcome.Environment
-	endpoints, _, err := devcontainerruntime.ConfiguredEndpoints(state)
-	if err == nil {
-		err = r.replaceConfiguredEndpoints(endpoints)
+	if outcome.WebIDEStarted {
+		r.startPostAttach(context.WithoutCancel(ctx), outcome.Environment, secrets, operation.OperationRversion)
 	}
-	if err != nil {
-		return err
-	}
-	return r.publishAccess(operation.OperationRversion, outcome, secrets, report, stdout)
+	return nil
 }
 
 func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agentv1.ControlResponse, trust runtimeTrust, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget)) error {
@@ -313,6 +328,9 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_PREPARE_WORKSPACE, nil)
 	report(codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_START_ENVIRONMENT, nil)
 	outcome, err := executor.Apply(ctx, devcontainerruntime.Request{
+		Ready: func(outcome *devcontainerruntime.Outcome) error {
+			return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report, executor.Stdout)
+		},
 		Debug:  r.Debug,
 		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
 		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
@@ -320,7 +338,10 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 	if err != nil {
 		return err
 	}
-	return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report, executor.Stdout)
+	if outcome.WebIDEStarted {
+		r.startPostAttach(context.WithoutCancel(ctx), outcome.Environment, secrets, response.Operation.OperationRversion)
+	}
+	return nil
 }
 
 func (r *Runtime) publishAccess(version int64, outcome *devcontainerruntime.Outcome, secrets map[string]string, report func(codespacev1.RuntimeBootStage, *agentv1.AccessTarget), stdout io.Writer) error {
@@ -351,13 +372,14 @@ func (r *Runtime) usbIPContainerConfiguration() devcontainerruntime.USBIPContain
 
 func (r *Runtime) closeNetworkAccess() {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.target = nil
 	if r.cancelNetwork != nil {
 		r.cancelNetwork()
 		r.networkCtx, r.cancelNetwork = nil, nil
 	}
 	r.forwards.close()
+	r.mu.Unlock()
+	r.postAttachTasks.Wait()
 }
 
 func (r *Runtime) setAccessState(target *agentv1.AccessTarget, secrets map[string]string) {

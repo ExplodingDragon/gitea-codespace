@@ -73,7 +73,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 			}
 		}
 	})
-	r := &SiteReconciler{Client: c, ManagementNamespace: cluster.managementNamespace}
+	r := &SiteReconciler{Client: c, ManagementNamespace: cluster.managementNamespace, Connections: newSiteConnectionStore(c, cluster.managementNamespace)}
 	require.Eventually(t, func() bool {
 		if _, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(site)}); err != nil {
 			return false
@@ -238,7 +238,8 @@ func TestKubernetesE2EAgentCertificate(t *testing.T) {
 	require.NoError(t, c.Create(ctx, pod))
 	require.NotEmpty(t, pod.UID)
 	r := &RuntimeReconciler{Client: c, Identity: authority}
-	require.NoError(t, r.ensureIdentity(ctx, cs, pod))
+	_, err = r.ensureIdentity(ctx, cs, pod)
+	require.NoError(t, err)
 	var secret corev1.Secret
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, types.NamespacedName{Namespace: ns.Name, Name: runtimeIdentitySecretName(cs)}, &secret) == nil && len(secret.Data["tls.crt"]) > 0
@@ -252,14 +253,16 @@ func TestKubernetesE2EAgentCertificate(t *testing.T) {
 	var ca corev1.Secret
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: cluster.managementNamespace, Name: caName}, &ca))
 	require.Equal(t, ca.Data[identitypkg.RootCertificateKey], secret.Data[identitypkg.RootCertificateKey])
-	require.NoError(t, r.ensureIdentity(ctx, cs, pod))
+	_, err = r.ensureIdentity(ctx, cs, pod)
+	require.NoError(t, err)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, client.ObjectKeyFromObject(pod), pod) == nil && pod.Status.Phase == corev1.PodRunning
 	}, time.Minute, 200*time.Millisecond)
 	// A Pod replacement must receive a different identity, even at the same name.
 	replacement := pod.DeepCopy()
 	replacement.UID = "replacement-uid"
-	require.Error(t, r.ensureIdentity(ctx, cs, replacement))
+	_, err = r.ensureIdentity(ctx, cs, replacement)
+	require.Error(t, err)
 	require.NoError(t, c.Delete(ctx, pod, client.Preconditions{UID: &pod.UID}))
 	require.Eventually(t, func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(&secret), &corev1.Secret{}))

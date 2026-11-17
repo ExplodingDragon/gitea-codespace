@@ -302,7 +302,7 @@ func (s *adminRegistrationService) RegisterManager(_ context.Context, request *c
 }
 
 func (s *adminRegistrationService) CheckManager(context.Context, *codespacev1.CheckManagerRequest) (*codespacev1.CheckManagerResponse, error) {
-	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.webURL, ManagerName: s.name}, nil
+	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.webURL}, nil
 }
 
 func TestAdminStopsRuntimeByExactIdentity(t *testing.T) {

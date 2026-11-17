@@ -46,6 +46,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	var executions, results, payloads atomic.Int32
 	resultReceived := make(chan struct{}, 8)
 	uploaded := make(chan *agentv1.UploadLogsRequest, 8)
+	logAcknowledgement := make(chan struct{})
 	operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
 	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
@@ -79,9 +80,14 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 			}
 		}
 	}}
-	service.upload = func(_ context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
+	service.upload = func(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
 		uploaded <- request
-		return &agentv1.UploadLogsResponse{}, nil
+		select {
+		case <-logAcknowledgement:
+			return &agentv1.UploadLogsResponse{}, nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 	rpcServer := connect.NewServer()
 	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
@@ -93,7 +99,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	server.StartTLS()
 	defer server.Close()
 	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC())))
-	for range 2 {
+	for attempt := range 2 {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		client := &ControlClient{Journal: journal, Remote: remote, Execute: func(_ context.Context, response *agentv1.ControlResponse, report func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
 			executions.Add(1)
@@ -106,6 +112,9 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 		go func() { done <- client.Run(ctx) }()
 		select {
 		case <-resultReceived:
+			if attempt == 0 {
+				close(logAcknowledgement)
+			}
 		case <-ctx.Done():
 			t.Fatal("Agent did not report its result")
 		}
@@ -120,8 +129,8 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 		require.EqualValues(t, 1, batch.OperationRversion)
 		require.Len(t, batch.Lines, 1)
 		require.Equal(t, "build [redacted]", batch.Lines[0].Message)
-	default:
-		t.Fatal("Agent result was reported without uploading its available output")
+	case <-time.After(time.Second):
+		t.Fatal("Agent output was not uploaded")
 	}
 }
 

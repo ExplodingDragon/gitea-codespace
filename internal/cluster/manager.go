@@ -23,14 +23,17 @@ import (
 	"k8s.io/client-go/kubernetes/scheme"
 	coreclient "k8s.io/client-go/kubernetes/typed/core/v1"
 	"k8s.io/client-go/rest"
-	kcache "k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/retry"
 	metricsclient "k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/healthz"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 )
 
 const managerLeaderLabel = "codespace.gitea.dev/manager-leader"
@@ -272,42 +275,8 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}
 	componentChanges := &ChangeNotifier{}
 	siteChanges := &ChangeNotifier{}
-	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}, &api.CodespaceComponent{}, &corev1.Pod{}} {
-		informer, err := mgr.GetCache().GetInformer(context.Background(), object)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := informer.AddEventHandler(kcache.ResourceEventHandlerFuncs{
-			AddFunc: func(any) {
-				componentChanges.Notify()
-				siteChanges.Notify()
-			},
-			UpdateFunc: func(previous, current any) {
-				if coordinationUpdateChanged(previous, current) {
-					componentChanges.Notify()
-					siteChanges.Notify()
-				}
-			},
-			DeleteFunc: func(any) {
-				componentChanges.Notify()
-				siteChanges.Notify()
-			},
-		}); err != nil {
-			return nil, err
-		}
-	}
-	for _, object := range []client.Object{&api.EnvironmentTemplate{}, &corev1.Namespace{}, &corev1.Secret{}, &corev1.PersistentVolumeClaim{}, &corev1.ResourceQuota{}} {
-		informer, err := mgr.GetCache().GetInformer(context.Background(), object)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := informer.AddEventHandler(kcache.ResourceEventHandlerFuncs{
-			AddFunc:    func(any) { siteChanges.Notify() },
-			UpdateFunc: func(any, any) { siteChanges.Notify() },
-			DeleteFunc: func(any) { siteChanges.Notify() },
-		}); err != nil {
-			return nil, err
-		}
+	if err := watchCoordinationChanges(mgr, componentChanges, siteChanges); err != nil {
+		return nil, err
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges, Connections: connections}
 	logs := &operationLogs{remote: func(ctx context.Context, ref api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
@@ -337,13 +306,39 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	if err := mgr.Add(&SiteCoordinator{Operations: Operations{Client: liveClient, Authority: &control.Authority, Samples: &control.Samples, Activity: activity, Connections: connections, Logs: logs, ManagementNamespace: options.Namespace, PlatformImage: options.PlatformImage}, Changes: siteChanges, ObservationReader: mgr.GetClient()}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, HTTPClient: &http.Client{Timeout: 15 * time.Second}}); err != nil {
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.GiteaSite{}).Complete(&SiteReconciler{Client: liveClient, ManagementNamespace: options.Namespace, ImagePullSecrets: options.ImagePullSecrets, Connections: connections}); err != nil {
 		return nil, err
 	}
 	if err := ctrl.NewControllerManagedBy(mgr).For(&api.EnvironmentTemplate{}).Complete(&TemplateReconciler{Client: liveClient}); err != nil {
 		return nil, err
 	}
-	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).Owns(&corev1.Secret{}).Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets, Diagnostics: diagnostics}); err != nil {
+	runtimeDependency := handler.EnqueueRequestsFromMapFunc(func(ctx context.Context, object client.Object) []ctrl.Request {
+		index, uid, namespace := IdentityUIDIndex, object.GetLabels()[RuntimeUIDLabel], object.GetNamespace()
+		switch object.(type) {
+		case *api.GiteaSite:
+			index, uid = RuntimeSiteUIDIndex, string(object.GetUID())
+		case *corev1.Namespace:
+			index, uid, namespace = RuntimeSiteUIDIndex, object.GetLabels()[SiteUIDLabel], object.GetName()
+		}
+		if uid == "" {
+			return nil
+		}
+		var runtimes api.CodespaceList
+		if err := mgr.GetClient().List(ctx, &runtimes, client.InNamespace(namespace), client.MatchingFields{index: uid}); err != nil {
+			return nil
+		}
+		requests := make([]ctrl.Request, 0, len(runtimes.Items))
+		for i := range runtimes.Items {
+			requests = append(requests, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(&runtimes.Items[i])})
+		}
+		return requests
+	})
+	if err := ctrl.NewControllerManagedBy(mgr).For(&api.Codespace{}).Owns(&corev1.Pod{}).
+		Watches(&corev1.Secret{}, runtimeDependency).Watches(&corev1.PersistentVolumeClaim{}, runtimeDependency).
+		Watches(&api.GiteaSite{}, runtimeDependency, builder.WithPredicates(predicate.Funcs{UpdateFunc: func(e event.UpdateEvent) bool {
+			return coordinationUpdateChanged(e.ObjectOld, e.ObjectNew)
+		}})).Watches(&corev1.Namespace{}, runtimeDependency).
+		Complete(&RuntimeReconciler{Client: liveClient, Authority: &control.Authority, Identity: identityAuthority, ManagementNamespace: options.Namespace, ManagerURL: options.ManagerURL, ManagerIdentity: identityAuthority.ManagerIdentity(), ImagePullSecrets: options.ImagePullSecrets, Diagnostics: diagnostics}); err != nil {
 		return nil, err
 	}
 	componentController := ctrl.NewControllerManagedBy(mgr).For(&api.CodespaceComponent{}).

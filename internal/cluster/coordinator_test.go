@@ -126,7 +126,7 @@ func (s *coordinatorRemote) FetchOperations(_ context.Context, request *codespac
 		response.Operations = append(response.Operations, &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: s.runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
 	}
 	for _, observed := range request.ObservedOperations {
-		response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 60000})
+		response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 120000})
 	}
 	return response, nil
 }
@@ -195,6 +195,9 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	var cs api.Codespace
 	require.Eventually(t, func() bool {
 		return c.Get(t.Context(), key, &cs) == nil && cs.Status.Bound && coordinator.Authority.Remaining(cs.UID, 1) > 0
+	}, 5*time.Second, 10*time.Millisecond)
+	require.Eventually(t, func() bool {
+		return coordinator.Authority.Remaining(cs.UID, 1) > time.Minute
 	}, 5*time.Second, 10*time.Millisecond)
 	control := &AgentControlServer{Client: c}
 	require.NoError(t, control.saveReport(t.Context(), &cs, &agentv1.AgentReport{

@@ -82,13 +82,19 @@ the service implements OpenAI Chat Completions, or `openai-responses` when it
 implements the OpenAI Responses API. The `baseURL` and every model `id` must
 match the service's API documentation.
 
-Before creating the codespace:
+When creating the Codespace:
 
-1. Open **User settings → Codespaces → Secrets** in Gitea.
-2. Create `COMPANY_OPENAI_TOKEN` and grant it access to the repository. The
-   create page also offers a declared secret that has not been configured yet.
-3. Create the codespace and confirm the secret selection.
-4. Open DSH and select `company-openai` and the configured model.
+1. Select an available saved `COMPANY_OPENAI_TOKEN`, or enter a custom value on
+   the creation page. To save a reusable value first, open **User settings →
+   Codespaces → Secrets** and add the name and value.
+2. Confirm the secret selection and create the Codespace. An empty custom value
+   leaves the variable out, so an authenticated model service needs a value.
+3. Once the workspace is available, open DSH and select `company-openai` and the
+   configured model.
+
+The selected value is saved for this instance; later changes to a personal
+saved secret do not change it. See the [creation guide](../../README.md#create-a-codespace)
+for selection permissions and how values are retained.
 
 Place all required model providers in the same `llm-pi-ai.providers` object,
 following the [configuration merge rules](#configuration). Create a new codespace

@@ -12,7 +12,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 	"unicode/utf8"
 
 	"connectrpc.com/connect/v2"
@@ -95,7 +94,7 @@ func TestRuntimeDiagnosticsUploadContainerLogsAndResourceFacts(t *testing.T) {
 	d.capture(t.Context(), cs, pod, "state")
 	require.EqualValues(t, 8, calls.Load())
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "output after diagnostics"}}))
-	require.Eventually(t, func() bool { return logs.Finish(cs) }, 5*time.Second, 10*time.Millisecond)
+	awaitOperationLogDelivery(t, logs, cs)
 	mu.Lock()
 	output := strings.Join(received, "\n")
 	mu.Unlock()

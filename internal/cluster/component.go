@@ -286,7 +286,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	changes := (<-chan struct{})(nil)
 	unsubscribe := func() {}
 	if s.Changes != nil {
-		changes, unsubscribe = s.Changes.Subscribe()
+		changes, unsubscribe = s.Changes.Subscribe(types.UID(identity.UID))
 	}
 	defer unsubscribe()
 	permitTicker := time.NewTicker(10 * time.Second)

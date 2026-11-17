@@ -65,7 +65,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 			ready: make(chan struct{}), waiters: make(map[uint64]chan *componentv1.CacheControlResponse),
 		}
 		go client.receive(t.Context(), stream, "")
-		owner := cachepkg.Owner{CacheID: "cache", ID: "session", ConfigRevision: 1}
+		owner := cachepkg.Owner{CacheID: "cache", ID: "session"}
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() {
@@ -73,6 +73,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 			done <- err
 		}()
 		request := <-stream.requests
+		require.Nil(t, request.Status)
 		cancel()
 		require.ErrorIs(t, <-done, context.Canceled)
 		synctest.Wait()
@@ -80,12 +81,13 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 
 		// A late acknowledgment cannot complete the next maintenance request.
 		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
-		grant := cachepkg.GCGrant{CacheID: "cache", ID: "grant", ConfigRevision: 1}
+		grant := cachepkg.GCGrant{CacheID: "cache", ID: "grant"}
 		go func() { done <- client.CompleteCacheGC(t.Context(), grant) }()
 		request = <-stream.requests
 		synctest.Wait()
 		require.Empty(t, done)
 		require.Equal(t, grant.ID, request.GetCompleteGc().GrantId)
+		require.Nil(t, request.Status)
 		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		require.NoError(t, <-done)
 
@@ -98,7 +100,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		request = <-stream.requests
 		stream.responses <- &componentv1.CacheControlResponse{
 			ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000,
-			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ConfigRevision: 1, ReadyAtUnixMilliseconds: time.Now().UnixMilli(), ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},
+			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ReadyAtUnixMilliseconds: time.Now().UnixMilli(), ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},
 		}
 		require.NoError(t, <-done)
 		require.Equal(t, "next-grant", issued.ID)
@@ -129,10 +131,11 @@ func TestCachePermitUsesAcknowledgedRequestSendTime(t *testing.T) {
 		done := make(chan error, 1)
 		sent := time.Now()
 		go func() {
-			_, err := client.HeartbeatCache(t.Context(), cachepkg.Owner{}, cachepkg.Status{})
+			_, err := client.HeartbeatCache(t.Context(), cachepkg.Owner{}, cachepkg.Status{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"})
 			done <- err
 		}()
 		request := <-stream.requests
+		require.Equal(t, &componentv1.CacheStatus{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"}, request.Status)
 		time.Sleep(4 * time.Second)
 		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		require.NoError(t, <-done)
@@ -146,6 +149,7 @@ func TestCachePermitUsesAcknowledgedRequestSendTime(t *testing.T) {
 			done <- err
 		}()
 		request = <-stream.requests
+		require.Equal(t, &componentv1.CacheStatus{}, request.Status)
 		require.ErrorIs(t, <-done, context.DeadlineExceeded)
 		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		close(stream.responses)

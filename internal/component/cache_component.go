@@ -227,16 +227,15 @@ func (c *CacheComponentClient) GetCache(ctx context.Context, id string) (cachepk
 
 // ClaimCache returns the ownership established by the active control stream.
 func (c *CacheComponentClient) ClaimCache(ctx context.Context, id string) (cachepkg.Owner, error) {
-	config, err := c.GetCache(ctx, id)
-	if err != nil {
+	if _, err := c.GetCache(ctx, id); err != nil {
 		return cachepkg.Owner{}, err
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return cachepkg.Owner{CacheID: id, ID: c.sessionID, ConfigRevision: config.Config.Revision, ExpiresAt: c.permitUntil}, nil
+	return cachepkg.Owner{CacheID: id, ID: c.sessionID, ExpiresAt: c.permitUntil}, nil
 }
 
-func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status, request *componentv1.CacheControlRequest) (*componentv1.CacheControlResponse, error) {
+func (c *CacheComponentClient) send(ctx context.Context, request *componentv1.CacheControlRequest) (*componentv1.CacheControlResponse, error) {
 	c.sendMu.Lock()
 	defer c.sendMu.Unlock()
 	if err := ctx.Err(); err != nil {
@@ -249,7 +248,6 @@ func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status,
 	}
 	c.sequence++
 	request.ProtocolVersion, request.CacheId, request.SessionId, request.Sequence = componentProtocolVersion, c.cacheID, c.sessionID, c.sequence
-	request.Status = cacheStatusToProto(status)
 	waiter := make(chan *componentv1.CacheControlResponse, 1)
 	c.waiters[c.sequence] = waiter
 	if c.sent == nil {
@@ -309,7 +307,9 @@ func (c *CacheComponentClient) send(ctx context.Context, status cachepkg.Status,
 
 // HeartbeatCache reports registry status and returns the renewed execution deadline.
 func (c *CacheComponentClient) HeartbeatCache(ctx context.Context, _ cachepkg.Owner, status cachepkg.Status) (time.Time, error) {
-	_, err := c.send(ctx, status, &componentv1.CacheControlRequest{})
+	_, err := c.send(ctx, &componentv1.CacheControlRequest{Status: &componentv1.CacheStatus{
+		CacheBytes: status.CacheBytes, MirrorBytes: status.MirrorBytes, CleanupResult: status.CleanupResult,
+	}})
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.permitUntil, err
@@ -334,7 +334,7 @@ func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) err
 
 // BeginCacheGC obtains a time-bounded maintenance grant from Manager.
 func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.Owner) (cachepkg.GCGrant, error) {
-	response, err := c.send(ctx, cachepkg.Status{ConfigRevision: owner.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
+	response, err := c.send(ctx, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
 	if err != nil {
 		return cachepkg.GCGrant{}, err
 	}
@@ -345,12 +345,12 @@ func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.
 	if grant.CacheId != owner.CacheID || grant.Id == "" || grant.ReadyAtUnixMilliseconds <= 0 || grant.ExpiresAtUnixMilliseconds <= grant.ReadyAtUnixMilliseconds {
 		return cachepkg.GCGrant{}, fmt.Errorf("cache GC grant is incomplete")
 	}
-	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ConfigRevision: grant.ConfigRevision, ReadyAt: time.UnixMilli(grant.ReadyAtUnixMilliseconds), ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
+	return cachepkg.GCGrant{CacheID: grant.CacheId, ID: grant.Id, ReadyAt: time.UnixMilli(grant.ReadyAtUnixMilliseconds), ExpiresAt: time.UnixMilli(grant.ExpiresAtUnixMilliseconds)}, nil
 }
 
 // CompleteCacheGC releases a maintenance grant after cleanup.
 func (c *CacheComponentClient) CompleteCacheGC(ctx context.Context, grant cachepkg.GCGrant) error {
-	_, err := c.send(ctx, cachepkg.Status{ConfigRevision: grant.ConfigRevision}, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_CompleteGc{CompleteGc: &componentv1.CacheGCComplete{GrantId: grant.ID}}})
+	_, err := c.send(ctx, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_CompleteGc{CompleteGc: &componentv1.CacheGCComplete{GrantId: grant.ID}}})
 	return err
 }
 

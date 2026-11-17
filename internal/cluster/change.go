@@ -4,29 +4,94 @@
 package cluster
 
 import (
+	"context"
 	"sync"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
+	"k8s.io/apimachinery/pkg/types"
+	kcache "k8s.io/client-go/tools/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/manager"
 )
+
+func watchCoordinationChanges(mgr manager.Manager, componentChanges, siteChanges *ChangeNotifier) error {
+	notify := func(value any) {
+		if tombstone, ok := value.(kcache.DeletedFinalStateUnknown); ok {
+			value = tombstone.Obj
+		}
+		object, ok := value.(client.Object)
+		if !ok {
+			return
+		}
+		if component, ok := object.(*api.CodespaceComponent); ok {
+			componentChanges.Notify(component.UID)
+			return
+		}
+		if uid := object.GetLabels()[ComponentUIDLabel]; uid != "" {
+			componentChanges.Notify(types.UID(uid))
+		}
+		var site *api.GiteaSite
+		if current, ok := object.(*api.GiteaSite); ok {
+			site = current
+			siteChanges.Notify("")
+		} else {
+			uid := object.GetLabels()[SiteUIDLabel]
+			if runtime, ok := object.(*api.Codespace); ok {
+				uid = string(runtime.Spec.Site.UID)
+			}
+			if uid == "" {
+				return
+			}
+			var sites api.GiteaSiteList
+			if err := mgr.GetClient().List(context.Background(), &sites, client.MatchingFields{IdentityUIDIndex: uid}); err != nil || len(sites.Items) != 1 {
+				return
+			}
+			site = &sites.Items[0]
+		}
+		siteChanges.Notify(site.UID)
+		componentChanges.Notify(site.Spec.Gateway.UID)
+		for _, cache := range site.Spec.Caches {
+			componentChanges.Notify(cache.UID)
+		}
+	}
+	for _, object := range []client.Object{&api.GiteaSite{}, &api.Codespace{}, &api.CodespaceComponent{}, &corev1.Pod{}, &corev1.Secret{}} {
+		informer, err := mgr.GetCache().GetInformer(context.Background(), object)
+		if err != nil {
+			return err
+		}
+		if _, err := informer.AddEventHandler(kcache.ResourceEventHandlerFuncs{
+			AddFunc: notify,
+			UpdateFunc: func(previous, current any) {
+				if coordinationUpdateChanged(previous, current) {
+					notify(previous)
+					notify(current)
+				}
+			},
+			DeleteFunc: notify,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
 // ChangeNotifier coalesces Kubernetes watch events for connected components.
 // Subscribers always rebuild an authoritative snapshot, so event payloads are
 // deliberately unnecessary.
 type ChangeNotifier struct {
 	mu          sync.Mutex
-	subscribers map[chan struct{}]struct{}
+	subscribers map[chan struct{}]types.UID
 }
 
-func (n *ChangeNotifier) Subscribe() (<-chan struct{}, func()) {
+func (n *ChangeNotifier) Subscribe(uid types.UID) (<-chan struct{}, func()) {
 	channel := make(chan struct{}, 1)
 	n.mu.Lock()
 	if n.subscribers == nil {
-		n.subscribers = make(map[chan struct{}]struct{})
+		n.subscribers = make(map[chan struct{}]types.UID)
 	}
-	n.subscribers[channel] = struct{}{}
+	n.subscribers[channel] = uid
 	n.mu.Unlock()
 	return channel, func() {
 		n.mu.Lock()
@@ -35,10 +100,13 @@ func (n *ChangeNotifier) Subscribe() (<-chan struct{}, func()) {
 	}
 }
 
-func (n *ChangeNotifier) Notify() {
+func (n *ChangeNotifier) Notify(uid types.UID) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
-	for channel := range n.subscribers {
+	for channel, scope := range n.subscribers {
+		if scope != uid {
+			continue
+		}
 		select {
 		case channel <- struct{}{}:
 		default:

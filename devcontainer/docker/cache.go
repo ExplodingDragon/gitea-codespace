@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/compose-spec/compose-go/v2/types"
 	cerrdefs "github.com/containerd/errdefs"
@@ -138,6 +139,8 @@ func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bo
 	if strings.TrimSpace(imageName) == "" {
 		return false
 	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Checking %s image cache\n", stage)
 	if err := e.pullImageReference(ctx, imageName); err != nil {
 		if cerrdefs.IsNotFound(err) {
@@ -155,6 +158,8 @@ func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImag
 	if strings.TrimSpace(targetImage) == "" {
 		return
 	}
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
 	if err := e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
 		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot tag %s image cache; built image remains usable: %v\n", stage, err)
 		return

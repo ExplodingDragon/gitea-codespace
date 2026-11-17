@@ -140,7 +140,7 @@ func (f *fakeCacheControl) ClaimCache(_ context.Context, id string) (Owner, erro
 	if duration == 0 {
 		duration = 15 * time.Second
 	}
-	f.owner = Owner{CacheID: id, ID: "owner", ConfigRevision: f.config.Config.Revision, ExpiresAt: time.Now().Add(duration)}
+	f.owner = Owner{CacheID: id, ID: "owner", ExpiresAt: time.Now().Add(duration)}
 	return f.owner, nil
 }
 
@@ -201,7 +201,7 @@ func TestCacheMaintenanceWaitsForReadyAt(t *testing.T) {
 	control := &fakeCacheControl{
 		config:      ControlConfig{Config: config},
 		gcGrantSet:  true,
-		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ConfigRevision: 1, ReadyAt: readyAt, ExpiresAt: readyAt.Add(time.Minute)},
+		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ReadyAt: readyAt, ExpiresAt: readyAt.Add(time.Minute)},
 		beginSignal: make(chan struct{}), completeSignal: make(chan struct{}),
 	}
 	beginSignal, completeSignal := control.beginSignal, control.completeSignal
@@ -238,7 +238,7 @@ func TestCacheMaintenanceCancellationKeepsPendingGrant(t *testing.T) {
 	control := &fakeCacheControl{
 		config:      ControlConfig{Config: config},
 		gcGrantSet:  true,
-		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ConfigRevision: 1, ReadyAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(2 * time.Minute)},
+		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ReadyAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(2 * time.Minute)},
 		beginSignal: make(chan struct{}),
 	}
 	beginSignal := control.beginSignal

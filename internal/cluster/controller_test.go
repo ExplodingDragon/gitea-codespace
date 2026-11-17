@@ -178,7 +178,7 @@ func TestSiteOwnershipAndCleanup(t *testing.T) {
 	ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: "other-ns", Labels: map[string]string{SiteUIDLabel: "other-site"}}}
 	pullSecret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "registry", Namespace: "codespace-system"}, Type: corev1.SecretTypeDockerConfigJson, Data: map[string][]byte{corev1.DockerConfigJsonKey: []byte(`{"auths":{}}`)}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.GiteaSite{}).WithObjects(site, ns, pullSecret).Build()
-	r := &SiteReconciler{Client: c, ManagementNamespace: "codespace-system", ImagePullSecrets: []string{pullSecret.Name}}
+	r := &SiteReconciler{Client: c, ManagementNamespace: "codespace-system", ImagePullSecrets: []string{pullSecret.Name}, Connections: newSiteConnectionStore(c, "codespace-system")}
 	_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(site)})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(site), site))
@@ -525,7 +525,7 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			} else {
 				require.NotNil(t, cs.Status.Result)
 				require.False(t, cs.Status.Result.Succeeded)
-				require.Eventually(t, func() bool { return logs.Finish(cs) }, time.Second, time.Millisecond)
+				awaitOperationLogDelivery(t, logs, cs)
 				logs.CloseSite(site.UID)
 				require.Contains(t, messages, "[ERROR] [kubernetes] Container runtime terminated: reason=OOMKilled exitCode=137 signal=9")
 				require.Contains(t, messages, "[ERROR] [operation] resume #3 failed; see preceding output")
@@ -717,14 +717,18 @@ func TestRuntimeCertificateOwnership(t *testing.T) {
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "runtime-pod", Namespace: cs.Namespace, UID: "pod-uid"}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).Build()
 	r := &RuntimeReconciler{Client: c, Identity: newTestIdentityAuthority(t)}
-	require.NoError(t, r.ensureIdentity(t.Context(), cs, pod))
-	require.NoError(t, r.ensureIdentity(t.Context(), cs, pod))
+	_, err := r.ensureIdentity(t.Context(), cs, pod)
+	require.NoError(t, err)
+	renewAfter, err := r.ensureIdentity(t.Context(), cs, pod)
+	require.NoError(t, err)
+	require.Greater(t, renewAfter, time.Hour)
 	var secret corev1.Secret
 	require.NoError(t, c.Get(t.Context(), types.NamespacedName{Namespace: cs.Namespace, Name: runtimeIdentitySecretName(cs)}, &secret))
 	require.Equal(t, pod.UID, secret.OwnerReferences[0].UID)
 	secret.OwnerReferences[0].UID = "another-pod"
 	require.NoError(t, c.Update(t.Context(), &secret))
-	require.ErrorContains(t, r.ensureIdentity(t.Context(), cs, pod), "does not belong")
+	_, err = r.ensureIdentity(t.Context(), cs, pod)
+	require.ErrorContains(t, err, "does not belong")
 }
 
 func TestGiteaCredentialRedirect(t *testing.T) {
@@ -742,7 +746,7 @@ func TestGiteaCredentialRedirect(t *testing.T) {
 	site.Spec.URL, site.Status.CanonicalURL = origin.URL, origin.URL
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: site.Spec.Credential.Name, Namespace: "codespace-system", UID: site.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("secret")}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(site).WithObjects(site, secret).Build()
-	r := &SiteReconciler{Client: c, ManagementNamespace: secret.Namespace}
+	r := &SiteReconciler{Client: c, ManagementNamespace: secret.Namespace, Connections: newSiteConnectionStore(c, secret.Namespace)}
 	_, err := r.Reconcile(t.Context(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(site)})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(site), site))

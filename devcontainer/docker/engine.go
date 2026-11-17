@@ -72,7 +72,7 @@ type ImageCustomization struct {
 type CustomizeImageFunc func(ImageCustomization) error
 
 // ReadyFunc reports the first lifecycle stage selected by waitFor.
-type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage)
+type ReadyFunc func(*devcontainer.State, devcontainer.LifecycleStage) error
 
 // RunLifecycleFunc durably executes one lifecycle stage. Callers may leave it
 // nil when no external journal is used.

@@ -229,21 +229,30 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		r.Diagnostics.emit(ctx, &cs, "failure", lines)
 		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
-	err = updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
-		if !runtimePodStatusIsCurrent(current, operationVersion, operationType, podName, podUID) {
-			return errObservedResourceChanged
+	if cs.Status.Pod.UID != podUID || cs.Status.LastNodeName != nodeName {
+		err = updateCodespaceStatus(ctx, r.Client, &cs, func(current *api.Codespace) error {
+			if !runtimePodStatusIsCurrent(current, operationVersion, operationType, podName, podUID) {
+				return errObservedResourceChanged
+			}
+			current.Status.Pod.UID = podUID
+			current.Status.LastNodeName = nodeName
+			return nil
+		})
+		if err != nil {
+			return reconcileStatusError(err)
 		}
-		current.Status.Pod.UID = podUID
-		current.Status.LastNodeName = nodeName
-		return nil
-	})
-	if err != nil {
-		return reconcileStatusError(err)
 	}
-	if err := r.ensureIdentity(ctx, &cs, &pod); err != nil {
+	renewAfter, err := r.ensureIdentity(ctx, &cs, &pod)
+	if err != nil {
 		return r.condition(ctx, &cs, "IdentityUnavailable", err)
 	}
-	return r.condition(ctx, &cs, "ResourcesPrepared", nil)
+	if result, err := r.condition(ctx, &cs, "ResourcesPrepared", nil); err != nil || result.RequeueAfter != 0 {
+		return result, err
+	}
+	if pod.Status.Phase != corev1.PodRunning || cs.Status.SettledOperationVersion < operationVersion {
+		return ctrl.Result{RequeueAfter: min(5*time.Second, renewAfter)}, nil
+	}
+	return ctrl.Result{RequeueAfter: renewAfter}, nil
 }
 
 func runtimePodStatusIsCurrent(cs *api.Codespace, operationVersion int64, operationType, podName string, podUID types.UID) bool {
@@ -269,6 +278,9 @@ func (r *RuntimeReconciler) condition(ctx context.Context, cs *api.Codespace, re
 		condition.Status = metav1.ConditionFalse
 		condition.Message = problem.Error()
 	}
+	if previous := meta.FindStatusCondition(cs.Status.Conditions, condition.Type); problem == nil && previous != nil && previous.Status == condition.Status && previous.Reason == reason && previous.Message == condition.Message && previous.ObservedGeneration == observedGeneration {
+		return ctrl.Result{}, nil
+	}
 	err := updateCodespaceStatus(ctx, r.Client, cs, func(current *api.Codespace) error {
 		if current.Generation != observedGeneration || current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType {
 			return errObservedResourceChanged
@@ -292,6 +304,9 @@ func (r *RuntimeReconciler) condition(ctx context.Context, cs *api.Codespace, re
 	}
 	if problem != nil && cs.Status.Result != nil && cs.Status.Result.Version == operationVersion && !cs.Status.Result.Succeeded {
 		r.Diagnostics.emit(ctx, cs, "failure", []string{"Runtime infrastructure preparation failed: " + reason})
+	}
+	if problem == nil {
+		return ctrl.Result{}, nil
 	}
 	return ctrl.Result{RequeueAfter: 5 * time.Second}, nil
 }
@@ -320,6 +335,9 @@ func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace)
 	}
 	operationVersion, operationType := cs.Spec.Operation.Version, cs.Spec.Operation.Type
 	observed := api.ObservedResource{Name: volume.Name, UID: volume.UID}
+	if cs.Status.Volume == observed {
+		return nil
+	}
 	return updateCodespaceStatus(ctx, r.Client, cs, func(current *api.Codespace) error {
 		if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || (current.Status.Volume.UID != "" && current.Status.Volume.UID != volume.UID) {
 			return errObservedResourceChanged
@@ -480,16 +498,15 @@ func configureNativeRuntimePod(pod *corev1.Pod, configuration *runtimeplatform.N
 	}
 }
 
-func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespace, pod *corev1.Pod) error {
+func (r *RuntimeReconciler) ensureIdentity(ctx context.Context, cs *api.Codespace, pod *corev1.Pod) (time.Duration, error) {
 	if pod.UID == "" || cs.UID == "" || cs.Spec.Site.UID == "" {
-		return fmt.Errorf("agent identity requires assigned Kubernetes UIDs")
+		return 0, fmt.Errorf("agent identity requires assigned Kubernetes UIDs")
 	}
 	identity := identitypkg.AgentURI(string(cs.Spec.Site.UID), string(cs.UID), string(pod.UID))
-	_, err := reconcileIdentitySecret(ctx, r.Client, r.Identity, pod, pod.Namespace, runtimeIdentitySecretName(cs), "agent", identity,
+	return reconcileIdentitySecret(ctx, r.Client, r.Identity, pod, pod.Namespace, runtimeIdentitySecretName(cs), "agent", identity,
 		[]x509.ExtKeyUsage{x509.ExtKeyUsageClientAuth, x509.ExtKeyUsageServerAuth},
 		map[string]string{RuntimeUIDLabel: string(cs.UID), SiteUIDLabel: string(cs.Spec.Site.UID)},
 	)
-	return err
 }
 
 func runtimeIdentitySecretName(cs *api.Codespace) string { return cs.Status.Pod.Name + "-identity" }

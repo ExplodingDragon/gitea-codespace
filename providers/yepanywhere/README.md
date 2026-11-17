@@ -47,11 +47,12 @@ data, including its SQLite database, is stored in the Codespace provider data
 directory. Use storage supported by upstream SQLite; network filesystems such
 as NFS are rejected during preparation rather than causing slow database access.
 
-The app inherits the remote user's environment, declared secrets, proxy and CA
-configuration. Tools can use their native configuration or the connection
-initialization below. Provider startup sets its own data directory, Gateway listener
-and authentication mode. On first initialization, Codex automatic updates are
-set to off; subsequent starts preserve the saved update preference.
+The app inherits the remote user's environment, the secrets selected for this
+instance, and proxy and CA configuration. Tools can use their native configuration
+or the connection initialization below. Provider startup sets its own data
+directory, Gateway listener and authentication mode. On first initialization,
+Codex automatic updates are set to off; subsequent starts preserve the saved
+update preference.
 Bundled programs update with the Provider image; Features and the tools' own
 configuration manage external installations. The `settings` block accepts app
 settings except `allowedHosts`, `codexUpdatePolicy`, `publicSharesEnabled`, and
@@ -62,7 +63,7 @@ and access configuration; supplying them makes preparation fail with an error.
 
 Use `connections` to initialize the model services used by Yep Anywhere. Store
 tokens in Gitea Codespace secrets and reference their environment variable names
-with `apiKeyEnv`. This works with any declared name, including `CODEX_API_TOKEN`;
+with `apiKeyEnv`. This works with any injected name, including `CODEX_API_TOKEN`;
 the Provider passes it to the selected tool using that tool's native interface.
 
 ```jsonc
@@ -140,8 +141,12 @@ model selection on the intended service even when restoring old app data.
 Omitting `apiKeyEnv` explicitly selects an unauthenticated endpoint. Tools that
 require a non-empty API key receive the fixed, non-secret `codespace-no-auth`
 placeholder. A named but missing or empty secret makes only that backend
-unavailable; the IDE and other backends still start. Secrets are read from the
-current environment on each tool launch, so a restart uses refreshed credentials.
+unavailable; the IDE and other backends still start. Each tool launch reads the
+current process environment. Codespace restores the secret values selected when
+the instance was created, so changing a personal saved secret and restarting
+the instance does not update those values. Platform access tokens are issued
+separately for the runtime lifecycle. See the
+[creation guide](../../README.md#create-a-codespace) for secret selection and retention.
 
 Template connections provide defaults. Each repository backend entry replaces
 the corresponding template entry in full, keeping its URL and credential choice

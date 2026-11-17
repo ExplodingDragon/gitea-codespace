@@ -926,9 +926,7 @@ type ControlResponse struct {
 	PermitValidForMilliseconds int64                   `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
 	Operation                  *v1.OperationPayload    `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
 	Access                     *v1.RuntimeAccessBundle `protobuf:"bytes,5,opt,name=access,proto3" json:"access,omitempty"`
-	// A durable Manager result permits Agent to retire this pending result.
-	AcknowledgedResultVersion int64 `protobuf:"varint,6,opt,name=acknowledged_result_version,json=acknowledgedResultVersion,proto3" json:"acknowledged_result_version,omitempty"`
-	CancelExecution           bool  `protobuf:"varint,7,opt,name=cancel_execution,json=cancelExecution,proto3" json:"cancel_execution,omitempty"`
+	CancelExecution            bool                    `protobuf:"varint,7,opt,name=cancel_execution,json=cancelExecution,proto3" json:"cancel_execution,omitempty"`
 	// Pinned platform options, applied before the Docker daemon starts.
 	Runtime *RuntimeOptions `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Ed25519 verification key for Manager-issued, limited access tickets.
@@ -1002,13 +1000,6 @@ func (x *ControlResponse) GetAccess() *v1.RuntimeAccessBundle {
 		return x.Access
 	}
 	return nil
-}
-
-func (x *ControlResponse) GetAcknowledgedResultVersion() int64 {
-	if x != nil {
-		return x.AcknowledgedResultVersion
-	}
-	return 0
 }
 
 func (x *ControlResponse) GetCancelExecution() bool {
@@ -2756,20 +2747,19 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x0fOperationResult\x12-\n" +
 	"\x12operation_rversion\x18\x01 \x01(\x03R\x11operationRversion\x121\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x19.codespace.v1.FinalStatusR\x06status\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\x8e\x04\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xf1\x03\n" +
 	"\x0fControlResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
 	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x12<\n" +
 	"\toperation\x18\x04 \x01(\v2\x1e.codespace.v1.OperationPayloadR\toperation\x129\n" +
-	"\x06access\x18\x05 \x01(\v2!.codespace.v1.RuntimeAccessBundleR\x06access\x12>\n" +
-	"\x1backnowledged_result_version\x18\x06 \x01(\x03R\x19acknowledgedResultVersion\x12)\n" +
+	"\x06access\x18\x05 \x01(\v2!.codespace.v1.RuntimeAccessBundleR\x06access\x12)\n" +
 	"\x10cancel_execution\x18\a \x01(\bR\x0fcancelExecution\x122\n" +
 	"\aruntime\x18\b \x01(\v2\x18.agent.v1.RuntimeOptionsR\aruntime\x126\n" +
 	"\x17access_verification_key\x18\t \x01(\fR\x15accessVerificationKey\x12-\n" +
 	"\x12operation_rversion\x18\n" +
-	" \x01(\x03R\x11operationRversion\"\xac\x01\n" +
+	" \x01(\x03R\x11operationRversionJ\x04\b\x06\x10\aR\x1backnowledged_result_version\"\xac\x01\n" +
 	"\x0eRuntimeOptions\x12'\n" +
 	"\x10git_ssh_key_type\x18\x01 \x01(\tR\rgitSshKeyType\x12,\n" +
 	"\x05cache\x18\x02 \x01(\v2\x16.agent.v1.RuntimeCacheR\x05cache\x12\x1b\n" +

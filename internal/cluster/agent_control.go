@@ -272,14 +272,10 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		case cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" || cs.Status.RecoveryAction != "":
 			response.CancelExecution = true
 		case currentReport:
-			result := request.Report.Result
 			if err := s.saveReport(ctx, cs, request.Report); err != nil {
 				return err
 			}
 			s.Samples.Record(cs, request.Report.ResourceUsage)
-			if result != nil {
-				response.AcknowledgedResultVersion = result.OperationRversion
-			}
 		case request.Report.OperationRversion == 0 && (request.Report.Result != nil || request.Report.Boot != nil || request.Report.Target != nil):
 			return connect.NewError(connect.CodeInvalidArgument, "agent facts require an operation version")
 		}
@@ -450,7 +446,7 @@ func (s *AgentControlServer) UploadLogs(ctx context.Context, request *agentv1.Up
 	if request.ProtocolVersion != 1 || request.OperationRversion <= 0 || request.OperationRversion > cs.Spec.Operation.Version {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log operation")
 	}
-	if request.OperationRversion < cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= request.OperationRversion {
+	if request.OperationRversion < cs.Spec.Operation.Version {
 		return &agentv1.UploadLogsResponse{Closed: true}, nil
 	}
 	if len(request.Lines) == 0 || len(request.Lines) > logbuffer.MaxBatchLines {

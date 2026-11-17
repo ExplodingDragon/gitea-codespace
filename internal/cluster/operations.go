@@ -146,9 +146,8 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	}
 	input := proto.Clone(payload).(*codespacev1.OperationPayload)
 	input.RuntimeUuid = cs.Spec.RuntimeUUID
-	// Lease grants and the current log tail are observations, not execution inputs.
+	// Lease grants are observations, not execution inputs.
 	input.LeaseValidForMilliseconds = 0
-	input.LogOffset = 0
 	encoded, err := protojson.Marshal(input)
 	if err != nil {
 		return err
@@ -161,7 +160,6 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		if err := protojson.Unmarshal(cs.Spec.Operation.Payload.Raw, previous); err != nil {
 			return fmt.Errorf("%w: decode saved operation: %w", errOperationRejected, err)
 		}
-		previous.LogOffset = 0
 		aborting := (operationType == "abort_create" && cs.Spec.Operation.Type == "create") || (operationType == "abort_resume" && cs.Spec.Operation.Type == "resume")
 		if !aborting && !proto.Equal(previous, input) {
 			return fmt.Errorf("%w: Gitea changed an already persisted operation", errOperationRejected)
@@ -404,9 +402,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if result == nil || result.Version != cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= result.Version {
 		return nil
 	}
-	if !o.Logs.Finish(cs) {
-		return nil
-	}
+	o.Logs.Finish(cs)
 	var finalOperationType codespacev1.OperationType
 	switch operationType {
 	case "create", "abort_create":

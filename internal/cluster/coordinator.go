@@ -56,7 +56,7 @@ func (c *SiteCoordinator) Start(ctx context.Context) error {
 	var changes <-chan struct{}
 	removeSubscriber := func() {}
 	if c.Changes != nil {
-		changes, removeSubscriber = c.Changes.Subscribe()
+		changes, removeSubscriber = c.Changes.Subscribe("")
 	}
 	defer removeSubscriber()
 	for {
@@ -126,14 +126,8 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 		c.reportSite(reportCtx, name, uid, &metadataInterval)
 	}()
 	defer func() { cancelReports(); <-reportsDone }()
-	ticker := time.NewTicker(time.Second)
-	defer ticker.Stop()
-	var changes <-chan struct{}
-	removeSubscriber := func() {}
-	if c.Changes != nil {
-		changes, removeSubscriber = c.Changes.Subscribe()
-	}
-	defer removeSubscriber()
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
 	defer func() {
 		// The site may already be deleted. Grants also have a finite deadline.
 		cleanupCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -152,6 +146,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 		}
 	}()
 	for {
+		nextPoll := time.Now().Add(time.Second)
 		err := func() error {
 			var site api.GiteaSite
 			if err := c.Client.Get(ctx, types.NamespacedName{Name: name}, &site); err != nil {
@@ -264,8 +259,11 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				}
 			}
 			c.requestIdleStops(ctx, &site, rows.Items, remote)
-			request := &codespacev1.FetchOperationsRequest{ProtocolVersion: 1, WaitTimeoutMilliseconds: 5000}
-			for _, cs := range rows.Items {
+			request := &codespacev1.FetchOperationsRequest{ProtocolVersion: 1}
+			runtimesByUUID := make(map[string]*api.Codespace, len(rows.Items))
+			for i := range rows.Items {
+				cs := &rows.Items[i]
+				runtimesByUUID[cs.Spec.RuntimeUUID] = cs
 				accepted := c.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) > 0
 				if cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" {
 					accepted = true
@@ -289,13 +287,20 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				if renewal == nil || renewal.LeaseValidForMilliseconds <= 0 || renewal.LeaseValidForMilliseconds > int64(24*time.Hour/time.Millisecond) {
 					return fmt.Errorf("invalid operation renewal")
 				}
-				for _, cs := range rows.Items {
-					if cs.Spec.RuntimeUUID == renewal.RuntimeUuid && cs.Spec.Operation.Version == renewal.OperationRversion && cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Spec.Operation.Type != "abort_create" && cs.Spec.Operation.Type != "abort_resume" {
-						c.Authority.Grant(cs.UID, renewal.OperationRversion, sent.Add(time.Duration(renewal.LeaseValidForMilliseconds)*time.Millisecond))
-					}
+				if deadline := sent.Add(time.Duration(renewal.LeaseValidForMilliseconds) * time.Millisecond / 3); deadline.Before(nextPoll) {
+					nextPoll = deadline
+				}
+				cs := runtimesByUUID[renewal.RuntimeUuid]
+				if cs != nil && cs.Spec.Operation.Version == renewal.OperationRversion && cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Spec.Operation.Type != "abort_create" && cs.Spec.Operation.Type != "abort_resume" {
+					c.Authority.Grant(cs.UID, renewal.OperationRversion, sent.Add(time.Duration(renewal.LeaseValidForMilliseconds)*time.Millisecond))
 				}
 			}
 			for _, operation := range response.Operations {
+				if operation != nil && operation.LeaseValidForMilliseconds > 0 {
+					if deadline := sent.Add(time.Duration(operation.LeaseValidForMilliseconds) * time.Millisecond / 3); deadline.Before(nextPoll) {
+						nextPoll = deadline
+					}
+				}
 				if err := c.Accept(ctx, &site, remote, operation, sent); err != nil {
 					if isPermanentOperationError(err) {
 						logger.Error(err, "Reject operation")
@@ -319,11 +324,11 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 		if err != nil && ctx.Err() == nil {
 			logger.Error(err, "Coordinate Gitea site")
 		}
+		timer.Reset(max(10*time.Millisecond, time.Until(nextPoll)))
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
-		case <-changes:
+		case <-timer.C:
 		}
 	}
 }

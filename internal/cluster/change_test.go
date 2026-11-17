@@ -14,6 +14,21 @@ import (
 )
 
 func TestCoordinationUpdates(t *testing.T) {
+	notifier := &ChangeNotifier{}
+	matching, unsubscribe := notifier.Subscribe("site-a")
+	defer unsubscribe()
+	other, unsubscribeOther := notifier.Subscribe("site-b")
+	defer unsubscribeOther()
+	for range 10 {
+		notifier.Notify("site-a")
+	}
+	require.Len(t, matching, 1)
+	require.Empty(t, other)
+	<-matching
+	unsubscribe()
+	notifier.Notify("site-a")
+	require.Empty(t, matching)
+
 	for _, testCase := range []struct {
 		name   string
 		object client.Object

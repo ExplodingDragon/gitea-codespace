@@ -61,6 +61,21 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		return nil, err
 	}
 	defer func() { returnErr = errors.Join(returnErr, engine.Close()) }()
+	outcome := &Outcome{}
+	ready := func(state *devcontainer.State, _ devcontainer.LifecycleStage) error {
+		outcome.Environment = state
+		if request.DevContainer.WebIDE.Enabled() {
+			if err := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer.WebIDE, request.Action == "create", stdout); err != nil {
+				_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider startup failed; continuing without Web IDE: %v\n", err)
+			} else {
+				outcome.WebIDEStarted = true
+			}
+		}
+		if request.Ready != nil {
+			return request.Ready(outcome)
+		}
+		return nil
+	}
 	var state *devcontainer.State
 	switch request.Action {
 	case "create":
@@ -71,6 +86,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		options.CustomizeImage = imageCustomization(request.DevContainer.LifecycleScript)
 		options.Debug = request.Debug
 		options.HostCgroup = request.HostCgroup
+		options.Ready = ready
 		options.PrepareLifecycle = func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			if err := prepareContainerStart(ctx, engine, state, request, stdout); err != nil {
 				return err
@@ -85,7 +101,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 	case "resume":
 		state, err = engine.Start(ctx, request.Environment, request.HostUser, request.LocalEnvironment, request.Secrets, func(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 			return prepareContainerStart(ctx, engine, state, request, stdout)
-		}, request.RunLifecycle)
+		}, request.RunLifecycle, ready)
 		if err != nil {
 			// Start may have started some or all containers before preparing
 			// Runtime-owned mounts and lifecycle hooks. Always stop the saved
@@ -123,17 +139,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		state, err := engine.Inspect(ctx, request.Environment)
 		return &Outcome{Environment: state}, err
 	}
-	outcome := &Outcome{Environment: state}
-	if request.DevContainer.WebIDE.Enabled() {
-		if err := startWebIDE(ctx, engine, state, request.Secrets, request.DevContainer.WebIDE, request.Action == "create", stdout); err != nil {
-			_, _ = fmt.Fprintf(stderr, "[WARN] [webide] Provider startup failed; continuing without Web IDE: %v\n", err)
-		} else {
-			outcome.WebIDEStarted = true
-			if err := engine.RunPostAttach(ctx, state, request.Secrets); err != nil {
-				_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Web IDE postAttachCommand failed; Codespace access is unaffected: %v\n", err)
-			}
-		}
-	}
+	outcome.Environment = state
 	return outcome, nil
 }
 

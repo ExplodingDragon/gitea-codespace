@@ -91,7 +91,7 @@ func (l *operationLogs) RetainSite(uid types.UID, rows []api.Codespace) {
 	active := make(map[types.UID]int64, len(rows))
 	for i := range rows {
 		cs := &rows[i]
-		if cs.Spec.Site.UID == uid && cs.DeletionTimestamp.IsZero() && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Status.RecoveryAction == "" {
+		if cs.Spec.Site.UID == uid && cs.DeletionTimestamp.IsZero() && cs.Status.RecoveryAction == "" {
 			active[cs.UID] = cs.Spec.Operation.Version
 		}
 	}
@@ -118,7 +118,7 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 	if ctx == nil || ctx.Err() != nil {
 		return connect.NewError(connect.CodeUnavailable, "operation log site is not active")
 	}
-	if !cs.Status.Bound || !cs.DeletionTimestamp.IsZero() || cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version || cs.Status.RecoveryAction != "" {
+	if !cs.Status.Bound || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
 		return errOperationLogClosed
 	}
 	sender := l.senders[cs.UID]
@@ -126,6 +126,9 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 		return errOperationLogClosed
 	}
 	if sender == nil || sender.version != cs.Spec.Operation.Version {
+		if cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version {
+			return errOperationLogClosed
+		}
 		// Cached progress only supplements a live accepted operation. A stale
 		// observation must not reopen a sender that live inventory has retired.
 		if stage != "" {
@@ -141,7 +144,7 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 		l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[INFO] [operation] Accepted %s #%d", strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version)}}, maxManagerLogBytes-l.bytes)
 		go l.send(workerCtx, sender)
 	}
-	if sender.closed || !sender.finishAt.IsZero() {
+	if sender.closed || (!sender.finishAt.IsZero() && !time.Now().Before(sender.finishAt)) {
 		return errOperationLogClosed
 	}
 	if stage == "" || stage == diagnosticLogStage || stage != sender.progress {
@@ -157,17 +160,16 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 	return nil
 }
 
-// Finish is polled by the existing result-reporting loop. Logs get a bounded
-// opportunity to drain without blocking finalization of another runtime.
-func (l *operationLogs) Finish(cs *api.Codespace) bool {
+// Finish allows same-version output to arrive briefly after finalization.
+func (l *operationLogs) Finish(cs *api.Codespace) {
 	if l == nil {
-		return true
+		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	sender := l.senders[cs.UID]
 	if sender == nil || sender.version != cs.Spec.Operation.Version || sender.closed {
-		return true
+		return
 	}
 	if sender.finishAt.IsZero() {
 		if result := cs.Status.Result; result != nil && result.Version == sender.version {
@@ -183,17 +185,12 @@ func (l *operationLogs) Finish(cs *api.Codespace) bool {
 			l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}}, maxManagerLogBytes-l.bytes)
 		}
 		sender.finishAt = time.Now().Add(5 * time.Second)
-	}
-	if sender.buffer.Bytes() == 0 || !time.Now().Before(sender.finishAt) {
-		sender.closed = true
-		sender.cancel()
-		return true
+		time.AfterFunc(time.Until(sender.finishAt), sender.cancel)
 	}
 	select {
 	case sender.wake <- struct{}{}:
 	default:
 	}
-	return false
 }
 
 func (l *operationLogs) send(ctx context.Context, sender *operationLogSender) {

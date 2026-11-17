@@ -47,27 +47,22 @@ type ControlConfig struct {
 // Owner is an opaque Manager lease handle. The cache must return it
 // unchanged for heartbeats and release; it cannot create or extend a lease.
 type Owner struct {
-	CacheID        string
-	ID             string
-	ConfigRevision int64
-	ExpiresAt      time.Time
+	CacheID   string
+	ID        string
+	ExpiresAt time.Time
 }
 
 // Status is the small, manager-visible status snapshot for one cache.
 type Status struct {
-	ConfigRevision int64
-	CacheBytes     int64
-	MirrorBytes    int64
-	ScannedAt      time.Time
-	LastCleanup    time.Time
-	CleanupResult  string
+	CacheBytes    int64
+	MirrorBytes   int64
+	CleanupResult string
 }
 
 // GCGrant authorizes one local storage collection pass.
 type GCGrant struct {
-	CacheID        string
-	ID             string
-	ConfigRevision int64
+	CacheID string
+	ID      string
 	// ReadyAt is the earliest time at which credentials issued before the
 	// maintenance freeze have expired. Until then, an in-flight push may still
 	// submit its manifest after uploading a blob.

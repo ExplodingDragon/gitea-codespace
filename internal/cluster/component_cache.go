@@ -302,7 +302,7 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 	changes := (<-chan struct{})(nil)
 	unsubscribe := func() {}
 	if s.Changes != nil {
-		changes, unsubscribe = s.Changes.Subscribe()
+		changes, unsubscribe = s.Changes.Subscribe(types.UID(identity.UID))
 	}
 	defer unsubscribe()
 	lifetime := time.NewTimer(45 * time.Minute)

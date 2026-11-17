@@ -76,10 +76,13 @@ func (c *creationCompose) Down(ctx context.Context, _ string, options composeapi
 }
 
 func TestCreateResourceCleanup(t *testing.T) {
-	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "diagnostics unavailable", "logs unavailable", "compose start", "compose empty", "compose service user", "compose repository user", "compose metadata user", "success"} {
+	for _, scenario := range []string{"start", "runArgs", "prepare", "cancel", "cleanup error", "diagnostics unavailable", "logs unavailable", "compose start", "compose empty", "compose service user", "compose repository user", "compose metadata user", "ready failure", "post-ready failure", "success"} {
 		t.Run(scenario, func(t *testing.T) {
 			workspace := t.TempDir()
 			configuration := map[string]any{"image": "alpine:latest", "remoteUser": "root", "userEnvProbe": "none"}
+			if scenario == "post-ready failure" {
+				configuration["postCreateCommand"] = "true"
+			}
 			useCompose := strings.HasPrefix(scenario, "compose")
 			success := scenario == "success" || strings.HasSuffix(scenario, " user")
 			wantUser := "image-user"
@@ -187,6 +190,7 @@ func TestCreateResourceCleanup(t *testing.T) {
 			}
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
+			ready := false
 			state, err := engine.Create(ctx, CreateOptions{
 				Debug:   true,
 				OwnerID: "owner", Workspace: workspace, Source: devcontainer.Source{Path: "devcontainer.json"},
@@ -194,12 +198,27 @@ func TestCreateResourceCleanup(t *testing.T) {
 					mu.Lock()
 					prepared = true
 					mu.Unlock()
-					if success {
+					if success || scenario == "ready failure" || scenario == "post-ready failure" {
 						return nil
 					}
 					if scenario == "cancel" {
 						cancel()
 					}
+					return failure
+				},
+				Ready: func(_ *devcontainer.State, stage devcontainer.LifecycleStage) error {
+					require.True(t, prepared)
+					require.False(t, ready)
+					require.Equal(t, devcontainer.LifecycleStageUpdateContent, stage)
+					ready = true
+					if scenario == "ready failure" {
+						return failure
+					}
+					return nil
+				},
+				RunLifecycle: func(_ context.Context, stage devcontainer.LifecycleStage, _ func(context.Context) error) error {
+					require.Equal(t, devcontainer.LifecycleStagePostCreate, stage)
+					require.True(t, ready)
 					return failure
 				},
 			})

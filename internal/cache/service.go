@@ -182,7 +182,7 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	_, _ = fmt.Fprintf(output, "codespace cache registry listening on %s\n", listener.Addr())
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	status := Status{ConfigRevision: config.Revision}
+	var status Status
 	var nextScan time.Time
 	running := true
 	for running {
@@ -202,12 +202,11 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 			if cacheErr == nil {
 				status.CacheBytes = cacheBytes
 				status.MirrorBytes = mirrorBytes
-				status.ScannedAt = time.Now().UTC()
 			}
 			nextScan = time.Now().Add(5 * time.Minute)
 		}
 		cache.cleanupMu.Lock()
-		status.LastCleanup, status.CleanupResult = cache.lastCleanup, cache.cleanupResult
+		status.CleanupResult = cache.cleanupResult
 		cache.cleanupMu.Unlock()
 		deadline, heartbeatErr := control.HeartbeatCache(ctx, owner, status)
 		if heartbeatErr != nil {

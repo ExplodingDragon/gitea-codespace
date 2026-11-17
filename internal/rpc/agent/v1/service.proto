@@ -125,14 +125,15 @@ message OperationResult {
 }
 
 message ControlResponse {
+  reserved 6;
+  reserved "acknowledged_result_version";
+
   string session_id = 1;
   uint64 sequence = 2;
   // Measured from the caller's request send time, not reply receipt time.
   int64 permit_valid_for_milliseconds = 3;
   codespace.v1.OperationPayload operation = 4;
   codespace.v1.RuntimeAccessBundle access = 5;
-  // A durable Manager result permits Agent to retire this pending result.
-  int64 acknowledged_result_version = 6;
   bool cancel_execution = 7;
   // Pinned platform options, applied before the Docker daemon starts.
   RuntimeOptions runtime = 8;

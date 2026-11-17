@@ -55,15 +55,15 @@ running inside it. Provider process recovery is described under
   configuration validates the image metadata and options; unrelated edits
   preserve that configuration without a registry request.
 - New Pods refresh tags and reuse fixed digests; running Pods retain their image.
-- Starting a codespace mounts the selected bundle, prepares it as the remote
-  user, starts `bin/serve`, and publishes one browser endpoint.
+- Creation and resume use the same sequence: mount the bundle, prepare it as
+  the remote user, submit `bin/serve`, and publish one browser endpoint.
 - The editor process runs inside the Dev Container and can use the workspace,
   declared environment, and persistent provider data.
 - An image-volume failure blocks Runtime startup; a later editor preparation
   or launch failure only withholds Web IDE access.
-- Creation and resume use the same startup sequence. After a successful launch,
-  `postAttachCommand` runs; a command failure is logged while editor access remains
-  available.
+- A successful launch schedules `postAttachCommand` after the required Dev
+  Container lifecycle commands finish; its failure is logged while editor access
+  remains available.
 
 ## Provider identity and image metadata
 
@@ -214,10 +214,10 @@ following environment:
 | `CODESPACE_SSH_PORT`            | Public SSH port as a decimal number                      |
 | `CODESPACE_SSH_USER`            | Gateway login for the workspace: `cs-<runtime UUID>`      |
 
-The normal Dev Container remote environment and declared secrets are also
-available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`; the program
-bundle is read-only and comes from the image reference in the Codespace runtime
-snapshot, following the pull policy described in [Lifecycle](#lifecycle).
+The normal Dev Container remote environment and the secrets selected for this
+instance are also available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`.
+The program bundle is read-only and comes from the image reference in the
+Codespace runtime snapshot, following the pull policy described in [Lifecycle](#lifecycle).
 The SSH variables let providers generate local connection instructions; their
 refresh behavior and usage examples are documented in the [SSH guide](../docs/ssh.md).
 Expose only these public fields to a browser interface; the complete process
@@ -298,9 +298,8 @@ and WebSocket traffic from the same address. A simple Provider can use `exec` as
 shown above. A Provider that needs automatic restart owns that behavior in a
 foreground process manager behind `bin/serve`.
 
-Docker accepting the detached execution completes the platform launch contract.
-Once the endpoint is published, later requests can reach a restarted editor
-without changing the Codespace lifecycle state.
+Endpoint publication and startup failures follow the [lifecycle table](#lifecycle),
+so process recovery remains the provider's responsibility.
 
 ### Implementation acceptance criteria
 
@@ -309,9 +308,6 @@ without changing the Codespace lifecycle state.
   provider data directory.
 - Adapter processes receive the current Pod's SSH connection information;
   browser connection APIs return only the public user, host, and port.
-- A valid bundle whose `prepare` program succeeds receives a browser endpoint
-  as soon as Docker accepts its detached `bin/serve` execution; editor listen
-  timing does not determine Endpoint publication or Codespace lifecycle state.
 - Requests made before the editor listens receive the temporary Gateway error;
   requests made after it listens succeed without resuming the codespace.
 - Exiting `bin/serve` does not stop SSH, the Dev Container, or other endpoints.
@@ -463,10 +459,8 @@ use that configuration.
 On `main`, each official provider publishes `latest` and its actual bundle
 version to the same `linux/amd64` + `linux/arm64` index. Publishing verifies
 both platform build records use the same version before creating the index.
-PRs and manual runs on other branches validate without publishing. Version tags
-can receive adapter or plugin fixes for the same editor version; the
-[provider overview](README.md) explains how administrators select updates or
-fixed content.
+PRs and manual runs on other branches validate without publishing. Image update
+and pinning behavior is documented in the [provider overview](README.md).
 
 The official providers restart their editor after
 every exit, with a one-second delay to avoid a tight failure loop. They restart
@@ -487,43 +481,25 @@ make -C providers/dsh check
 make -C providers/yepanywhere check
 ```
 
-The DSH check fetches its pinned upstream sources, type-checks and lints the
-Codespace plugin, then bundles and tests it against that version. Its
-[version file](dsh/version.env) pins the source release,
-commit, pnpm version, and Node archive checksums; update the checksums with
-[`.node-version`](dsh/.node-version) so the toolchain and verified downloads
-stay consistent. VS Code uses its [version file](vscode/version.env) as the
-default and accepts `CODE_SERVER_VERSION` for a different code-server release.
+Update upstream versions in the provider's `version.env`. For DSH and Yep Anywhere,
+keep Node archive checksums aligned with `.node-version` so verified downloads
+match the selected toolchain. VS Code also accepts `CODE_SERVER_VERSION` for a
+different code-server release. Yep Anywhere's additional tool versions are
+pinned in [`tools/package.json`](yepanywhere/tools/package.json) and its lockfile.
+
 `make -C providers/<provider> version` reports the configured editor version.
-Each provider's `image` target builds for the current architecture; local builds
-and CI read the image version label from the completed bundle manifest so it
-describes the packaged release. Use the
-[local image verification steps](#test-the-image-locally) to check its mounted
-bundle.
-
-Yep Anywhere follows its pinned upstream bundle build and deploys production
-dependencies from the upstream lockfile, preserving upstream dependency patches
-and bundled binaries. Its `integration` directory and upstream patch adapt
-Gateway access, the management UI, tool selection and model connections within
-the Provider. Its `check` target builds the server and client, runs integration
-tests, and assembles the publication bundle. Both `check` and `bundle` verify
-native tool startup and model API requests against a local mock service with
-isolated user data, catching packaging and connection errors without production
-credentials.
-
-Codex, OpenCode and Pi versions are pinned in
-[`tools/package.json`](yepanywhere/tools/package.json) and its lockfile to the
-versions qualified by the selected Yep Anywhere release. Their package licenses
-remain alongside the installed files. Build on the target architecture because
-the dependencies include native code. From the repository root:
+Each provider's `image` target builds for the current architecture and uses the
+completed bundle manifest for its version label. Build on the target architecture
+because dependencies include native code. For example, from the repository root:
 
 ```sh
 make -C providers/yepanywhere image IMAGE=registry.example.com/yepanywhere:test
 ```
 
-See the
-[provider guide](yepanywhere/README.md) for backend selection, executable
-priority, model API connections, and Gateway access behavior.
+Use the [local image verification steps](#test-the-image-locally) to check the
+mounted bundle. The [VS Code](vscode/README.md), [DSH](dsh/README.md), and
+[Yep Anywhere](yepanywhere/README.md) guides describe user configuration;
+their Makefiles define the checks and build steps for each toolchain.
 
 Each provider workflow runs for changes to its own source. Changes to the shared
 [build workflow](../.github/workflows/provider-build.yml) trigger all providers;
@@ -540,11 +516,5 @@ the [platform workflow](../.github/workflows/ci.yml) handles core changes separa
   building VS Code with a version override.
 - Both platform records have the same version before publishing, and `latest`
   and the bundle-version tag resolve to the same multi-platform index.
-- Yep Anywhere restores user settings and registers the workspace while keeping
-  browser access authenticated by Gateway. USB controls follow Runtime capability.
-- Model connection settings follow the merge, persistence and credential rules
-  in the [provider guide](yepanywhere/README.md#model-api-connections), and local
-  mock API checks verify the selected protocol, model and authentication.
-- Bundled tools start from a read-only Provider mount as the remote user without
-  a system Node installation. External installations retain discovery priority,
-  and sessions and credentials stay in user storage.
+- Built images pass the mounted-bundle verification and their provider-specific
+  configuration and integration checks.

@@ -25,21 +25,24 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 		Workspace: "/workspaces/repo", WorkspaceFolder: "/workspaces/repo", RemoteUser: "developer", RemoteWorkdir: "/workspaces/repo",
 	}
 	require.NoError(t, state.Validate())
-	require.NoError(t, j.RunOnce(t.Context(), 1, "create", func(context.Context) error {
-		data, err := json.Marshal(state)
-		require.NoError(t, err)
-		require.NoError(t, j.write(environmentStatePath, data))
-		data, err = json.Marshal(savedPlatformOutcome{WebIDEStarted: true})
-		require.NoError(t, err)
-		return j.write(platformOutcomePath, data)
-	}))
 	executor := &Executor{Journal: j, PodUID: "new-pod", Stdout: io.Discard, Stderr: io.Discard}
+	require.NoError(t, j.RunOnce(t.Context(), 1, "create", func(context.Context) error {
+		return executor.saveOutcome(&devcontainerruntime.Outcome{Environment: state, WebIDEStarted: true})
+	}))
+	readyCalls := 0
 	request := devcontainerruntime.Request{
+		Ready: func(outcome *devcontainerruntime.Outcome) error {
+			readyCalls++
+			require.Equal(t, state.PrimaryContainerID, outcome.Environment.PrimaryContainerID)
+			require.True(t, outcome.WebIDEStarted)
+			return nil
+		},
 		Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", GiteaURL: "https://gitea.example.com",
 		DevContainer: devcontainerruntime.Configuration{},
 	}
 	recovered, err := executor.Apply(t.Context(), request)
 	require.NoError(t, err)
+	require.Equal(t, 1, readyCalls)
 	want, err := json.Marshal(state)
 	require.NoError(t, err)
 	got, err := json.Marshal(recovered.Environment)

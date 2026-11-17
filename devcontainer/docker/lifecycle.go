@@ -37,16 +37,15 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 			return fmt.Errorf("prepare Dev Container lifecycle: %w", err)
 		}
 	}
-	readySent := false
-	emitReady := func(stage devcontainer.LifecycleStage) {
-		if !readySent && environment.Configuration.WaitFor == stage {
-			readySent = true
-			if ready != nil {
-				ready(environment, stage)
-			}
+	emitReady := func(stage devcontainer.LifecycleStage) error {
+		if ready != nil && environment.Configuration.WaitFor == stage {
+			return ready(environment, stage)
 		}
+		return nil
 	}
-	emitReady(devcontainer.LifecycleStageInitialize)
+	if err := emitReady(devcontainer.LifecycleStageInitialize); err != nil {
+		return err
+	}
 	commands := []struct {
 		name     devcontainer.LifecycleStage
 		commands []devcontainer.Command
@@ -60,7 +59,9 @@ func (e *Engine) initializeContainer(ctx context.Context, environment *devcontai
 		if err := e.executeLifecycleStage(ctx, environment, item.name, item.commands, secrets, runLifecycle); err != nil {
 			return err
 		}
-		emitReady(item.name)
+		if err := emitReady(item.name); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -82,7 +83,7 @@ func (e *Engine) refreshRemoteEnvironment(ctx context.Context, environment *devc
 }
 
 // Start resumes an existing environment and runs postStartCommand.
-func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hostUser devcontainer.HostUser, localEnvironment, secrets map[string]string, prepare PrepareLifecycleFunc, runLifecycle RunLifecycleFunc) (*devcontainer.State, error) {
+func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hostUser devcontainer.HostUser, localEnvironment, secrets map[string]string, prepare PrepareLifecycleFunc, runLifecycle RunLifecycleFunc, ready ReadyFunc) (*devcontainer.State, error) {
 	if err := environment.Validate(); err != nil {
 		return nil, err
 	}
@@ -118,8 +119,18 @@ func (e *Engine) Start(ctx context.Context, environment *devcontainer.State, hos
 			return nil, err
 		}
 	}
+	if ready != nil && environment.Configuration.WaitFor != devcontainer.LifecycleStagePostStart {
+		if err := ready(environment, devcontainer.LifecycleStageInitialize); err != nil {
+			return nil, err
+		}
+	}
 	if err := e.executeLifecycleStage(ctx, environment, devcontainer.LifecycleStagePostStart, environment.LifecycleCommands.PostStart, secrets, runLifecycle); err != nil {
 		return nil, err
+	}
+	if ready != nil && environment.Configuration.WaitFor == devcontainer.LifecycleStagePostStart {
+		if err := ready(environment, devcontainer.LifecycleStagePostStart); err != nil {
+			return nil, err
+		}
 	}
 	return e.Inspect(ctx, environment)
 }

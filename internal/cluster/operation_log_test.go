@@ -45,6 +45,16 @@ func testOperationLogs(t *testing.T, remote *operationLogRemote) (*operationLogs
 	return logs, cs
 }
 
+func awaitOperationLogDelivery(t *testing.T, logs *operationLogs, cs *api.Codespace) {
+	t.Helper()
+	logs.Finish(cs)
+	require.Eventually(t, func() bool {
+		logs.mu.Lock()
+		defer logs.mu.Unlock()
+		return logs.senders[cs.UID].buffer.Bytes() == 0
+	}, 4*time.Second, time.Millisecond)
+}
+
 func TestOperationLogsReplayAndRestart(t *testing.T) {
 	var mu sync.Mutex
 	offset := int64(10)
@@ -83,7 +93,7 @@ func TestOperationLogsReplayAndRestart(t *testing.T) {
 	require.NoError(t, logs.Append(cs, "pod", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "Creating Pod"}}))
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 2, Message: "Agent started"}}))
 	cs.Status.Result = &api.OperationResult{Version: 2, Succeeded: true}
-	require.Eventually(t, func() bool { return logs.Finish(cs) }, 4*time.Second, 10*time.Millisecond)
+	awaitOperationLogDelivery(t, logs, cs)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
 	require.Equal(t, []string{"[INFO] [operation] Accepted create #2", "Creating Pod", "Pod snapshot", "Agent started", "[INFO] [operation] create #2 completed"}, messages)
@@ -93,7 +103,7 @@ func TestOperationLogsReplayAndRestart(t *testing.T) {
 	logs.OpenSite(t.Context(), cs.Spec.Site.UID)
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 3, Message: "After restart"}}))
 	cs.Status.Result.Succeeded = false
-	require.Eventually(t, func() bool { return logs.Finish(cs) }, time.Second, 10*time.Millisecond)
+	awaitOperationLogDelivery(t, logs, cs)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
 	defer mu.Unlock()
@@ -137,7 +147,7 @@ func TestOperationLogsResynchronizeConflictingOffset(t *testing.T) {
 	}
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "later output"}}))
 	close(release)
-	require.Eventually(t, func() bool { return logs.Finish(cs) }, 4*time.Second, 10*time.Millisecond)
+	awaitOperationLogDelivery(t, logs, cs)
 	logs.CloseSite(cs.Spec.Site.UID)
 	require.Equal(t, 2, queries)
 	require.Equal(t, []string{"later output", "[WARN] [logging] Operation output omitted: 1 lines lost"}, received)
@@ -160,7 +170,7 @@ func TestOperationLogsCloseOnPermanentFailure(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("sender did not close")
 			}
-			require.True(t, logs.Finish(cs))
+			logs.Finish(cs)
 			require.ErrorIs(t, logs.Append(cs, "", nil), errOperationLogClosed)
 		})
 	}
@@ -187,11 +197,13 @@ func TestOperationLogsBoundMemoryAndFinalDrain(t *testing.T) {
 	}
 	logs.mu.Unlock()
 	cs.UID = "runtime-0"
-	require.False(t, logs.Finish(cs))
+	logs.Finish(cs)
+	cs.Status.SettledOperationVersion = cs.Spec.Operation.Version
+	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{line}))
 	logs.mu.Lock()
 	logs.senders[cs.UID].finishAt = time.Now().Add(-time.Second)
 	logs.mu.Unlock()
-	require.True(t, logs.Finish(cs))
+	require.ErrorIs(t, logs.Append(cs, "", []*codespacev1.LogLine{line}), errOperationLogClosed)
 	logs.CloseSite(cs.Spec.Site.UID)
 	require.Zero(t, logs.bytes)
 }

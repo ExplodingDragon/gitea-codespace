@@ -18,7 +18,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 )
 
-func TestSiteConnectionStoreReusesConnectionWithinTTL(t *testing.T) {
+func TestSiteConnectionReuseAndCredentialRotation(t *testing.T) {
 	site := testSite("example", "site-uid")
 	site.Status.CanonicalURL = "https://gitea.example.com"
 	credential := &corev1.Secret{
@@ -53,18 +53,32 @@ func TestSiteConnectionStoreReusesConnectionWithinTTL(t *testing.T) {
 		require.NoError(t, err)
 	}
 	require.EqualValues(t, 1, reads.Load())
+	first, err := store.ForSite(t.Context(), site)
+	require.NoError(t, err)
 
 	store.mu.Lock()
 	store.entries[site.UID].expires = time.Now().Add(-time.Second)
 	store.mu.Unlock()
-	_, err := store.ForSite(t.Context(), site)
+	refreshed, err := store.ForSite(t.Context(), site)
 	require.NoError(t, err)
+	require.Same(t, first, refreshed)
 	require.EqualValues(t, 2, reads.Load())
 
 	site.Spec.ManagerID++
-	_, err = store.ForSite(t.Context(), site)
+	changed, err := store.ForSite(t.Context(), site)
 	require.NoError(t, err)
+	require.NotSame(t, first, changed)
 	require.EqualValues(t, 3, reads.Load())
+
+	credential.Data["managerSecret"] = []byte("rotated-secret")
+	require.NoError(t, c.Update(t.Context(), credential))
+	store.mu.Lock()
+	store.entries[site.UID].expires = time.Now().Add(-time.Second)
+	store.mu.Unlock()
+	rotated, err := store.ForSite(t.Context(), site)
+	require.NoError(t, err)
+	require.NotSame(t, changed, rotated)
+	require.EqualValues(t, 4, reads.Load())
 }
 
 func TestSiteConnectionRequiresOwnedCredential(t *testing.T) {

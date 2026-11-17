@@ -97,7 +97,22 @@ After the site is enabled:
 1. Open a repository, commit, or pull request in Gitea.
 2. Select **Create Codespace**.
 3. Choose a Dev Container configuration and environment.
-4. Open the workspace after creation completes.
+4. Review repository permissions and select secrets to inject. Reuse an available
+   saved secret, enter a value for this instance, or leave it out. You can also
+   add names that the configuration does not declare; an empty custom value
+   means that variable is not injected.
+5. Confirm creation, then open the workspace when access becomes available.
+
+The configuration can recommend an environment with
+`customizations.gitea.environmentTag`. Gitea preselects a matching environment
+available to you; your explicit selection takes priority.
+
+Selected secret values are saved with the instance and retained across stop and
+resume. Changes to personal saved secrets affect future selections, not existing
+instances. Reusing saved secrets requires repository write access and is
+unavailable for fork pull requests; manual values remain available to anyone
+allowed to create the Codespace. The code running in the environment can read
+the injected values.
 
 The Codespace page lists the available Web IDE, SSH connection, and forwarded
 application URLs. Stopping a Codespace releases its runtime resources while

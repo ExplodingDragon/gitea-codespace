@@ -54,42 +54,72 @@ func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Reques
 	if stage == "resume" {
 		stage += "/" + e.PodUID
 	}
+	ready := request.Ready
+	readyCalled := false
+	var outcome *devcontainerruntime.Outcome
 	err := e.Journal.RunOnce(ctx, request.OperationVersion, stage, func(ctx context.Context) error {
+		request.Ready = func(outcome *devcontainerruntime.Outcome) error {
+			if err := e.saveOutcome(outcome); err != nil {
+				return err
+			}
+			readyCalled = true
+			if ready != nil {
+				return ready(outcome)
+			}
+			return nil
+		}
 		request.RunLifecycle = func(ctx context.Context, lifecycle devcontainer.LifecycleStage, run func(context.Context) error) error {
 			return e.Journal.runActiveStep(ctx, request.OperationVersion, fmt.Sprintf("lifecycle/%s", lifecycle), run)
 		}
 		request.RunTemplateLifecycle = func(ctx context.Context, action string, run func(context.Context) error) error {
 			return e.Journal.runActiveStep(ctx, request.OperationVersion, "template-lifecycle/"+action, run)
 		}
-		outcome, err := devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
+		var err error
+		outcome, err = devcontainerruntime.Apply(ctx, request, e.Stdout, e.Stderr)
 		if err != nil {
 			return err
 		}
-		state := outcome.Environment
-		if err := state.Validate(); err != nil {
-			return err
-		}
-		data, err := json.Marshal(state)
-		if err != nil {
-			return err
-		}
-		if len(data) > maxEnvironmentStateBytes {
-			return fmt.Errorf("dev container recovery state exceeds the size limit")
-		}
-		// Request.Secrets and cache credentials remain outside recovery State.
-		if err := e.Journal.write(environmentStatePath, data); err != nil {
-			return err
-		}
-		data, err = json.Marshal(savedPlatformOutcome{WebIDEStarted: outcome.WebIDEStarted})
-		if err != nil {
-			return err
-		}
-		return e.Journal.write(platformOutcomePath, data)
+		return e.saveOutcome(outcome)
 	})
 	if err != nil {
 		return nil, err
 	}
-	return e.readSavedOutcome()
+	if outcome == nil {
+		outcome, err = e.readSavedOutcome()
+		if err != nil {
+			return nil, err
+		}
+	}
+	// Completed journal stages still need to publish access for this Agent process.
+	if !readyCalled && ready != nil {
+		if err := ready(outcome); err != nil {
+			return nil, err
+		}
+	}
+	return outcome, nil
+}
+
+func (e *Executor) saveOutcome(outcome *devcontainerruntime.Outcome) error {
+	state := outcome.Environment
+	if err := state.Validate(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		return err
+	}
+	if len(data) > maxEnvironmentStateBytes {
+		return fmt.Errorf("dev container recovery state exceeds the size limit")
+	}
+	// Request.Secrets and cache credentials remain outside recovery State.
+	if err := e.Journal.write(environmentStatePath, data); err != nil {
+		return err
+	}
+	data, err = json.Marshal(savedPlatformOutcome{WebIDEStarted: outcome.WebIDEStarted})
+	if err != nil {
+		return err
+	}
+	return e.Journal.write(platformOutcomePath, data)
 }
 
 func (e *Executor) Environment() (*devcontainer.State, error) {

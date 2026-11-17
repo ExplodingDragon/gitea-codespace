@@ -132,7 +132,7 @@ func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentId
 		}
 		_, grantID, _ := strings.Cut(ptr.Deref(lease.Spec.HolderIdentity, ""), "/")
 		grant = &componentv1.CacheGCGrant{
-			CacheId: material.component.Name, Id: grantID, ConfigRevision: material.config.Revision,
+			CacheId: material.component.Name, Id: grantID,
 			ReadyAtUnixMilliseconds: readyAt.UnixMilli(), ExpiresAtUnixMilliseconds: cacheLeaseDeadline(lease).UnixMilli(),
 		}
 		return nil

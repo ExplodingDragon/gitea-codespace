@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"time"
 
-	cachepkg "gitea.dev/codespace/internal/cache"
 	configpkg "gitea.dev/codespace/internal/config"
 	componentv1 "gitea.dev/codespace/internal/rpc/component/v1"
 )
@@ -58,12 +57,4 @@ func cacheConfigFromProto(config *componentv1.CacheConfiguration) (configpkg.Cac
 		result.Upstreams[host] = configpkg.RuntimeCacheUpstreamConfig{Allow: append([]string(nil), upstream.Allow...)}
 	}
 	return result, nil
-}
-
-func cacheStatusToProto(status cachepkg.Status) *componentv1.CacheStatus {
-	return &componentv1.CacheStatus{
-		ConfigRevision: status.ConfigRevision, CacheBytes: status.CacheBytes,
-		MirrorBytes: status.MirrorBytes, ScannedAtUnixMilliseconds: status.ScannedAt.UnixMilli(),
-		LastCleanupUnixMilliseconds: status.LastCleanup.UnixMilli(), CleanupResult: status.CleanupResult,
-	}
 }

@@ -127,12 +127,16 @@ func TestNamedLifecycleCommands(t *testing.T) {
 		{name: "postCreateCommand.configure", arguments: []string{"/bin/sh", "-c", "exit 17"}},
 		{name: "postCreateCommand.install", arguments: []string{"/bin/sh", "-c", "exit 17"}},
 	}, commands)
-	var output bytes.Buffer
+	output, err := os.CreateTemp(t.TempDir(), "lifecycle-output")
+	require.NoError(t, err)
+	defer output.Close()
 	user := devcontainer.HostUser{UID: uint32(os.Geteuid()), GID: uint32(os.Getegid())}
-	err = runInitializeCommand(t.Context(), command, user, t.TempDir(), nil, &output, io.Discard)
+	err = runInitializeCommand(t.Context(), command, user, t.TempDir(), nil, output, io.Discard)
 	require.ErrorContains(t, err, "run initializeCommand.")
-	require.Contains(t, output.String(), "[INFO] [lifecycle] Running initializeCommand.configure")
-	require.Contains(t, output.String(), "[INFO] [lifecycle] Running initializeCommand.install")
+	data, err := os.ReadFile(output.Name())
+	require.NoError(t, err)
+	require.Contains(t, string(data), "[INFO] [lifecycle] Running initializeCommand.configure")
+	require.Contains(t, string(data), "[INFO] [lifecycle] Running initializeCommand.install")
 }
 
 func execForTest(engine *Engine, ctx context.Context, containerID, user, workdir string, command []string, environment map[string]string) ([]byte, []byte, error) {

@@ -215,7 +215,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		require.NoError(t, index.Get(ctx, client.ObjectKeyFromObject(cs), updated))
 		updated.Status.Target.Version++
 		require.NoError(t, index.Update(ctx, updated))
-		server.Changes.Notify()
+		server.Changes.Notify(component.UID)
 		response, err = stream.Receive()
 		require.NoError(t, err)
 		require.True(t, response.Snapshot)
@@ -404,8 +404,23 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.True(t, metav1.IsControlledBy(&ownerLease, component))
 	err = server.claimCache(cacheContext, identity, material, "22222222-2222-4222-8222-222222222222")
 	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
-	err = server.renewCache(cacheContext, identity, material, sessionID, &componentv1.CacheStatus{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"})
-	require.NoError(t, err)
+	for _, step := range []struct {
+		name   string
+		status *componentv1.CacheStatus
+		bytes  string
+		mirror string
+		result string
+	}{
+		{"heartbeat", &componentv1.CacheStatus{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"}, "10", "20", "ok"},
+		{"maintenance", nil, "10", "20", "ok"},
+		{"empty heartbeat", &componentv1.CacheStatus{}, "0", "0", ""},
+	} {
+		require.NoError(t, server.renewCache(cacheContext, identity, material, sessionID, step.status), step.name)
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(&ownerLease), &ownerLease))
+		require.Equal(t, step.bytes, ownerLease.Annotations[cacheBytesAnnotation], step.name)
+		require.Equal(t, step.mirror, ownerLease.Annotations[cacheMirrorBytesAnnotation], step.name)
+		require.Equal(t, step.result, ownerLease.Annotations[cacheCleanupResultAnnotation], step.name)
+	}
 	material.config.Enabled = false
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.renewCache(cacheContext, identity, material, sessionID, nil)))
 	material.config.Enabled = true

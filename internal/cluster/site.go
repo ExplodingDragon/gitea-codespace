@@ -6,7 +6,6 @@ package cluster
 import (
 	"context"
 	"fmt"
-	"net/http"
 	"strings"
 	"time"
 
@@ -38,7 +37,7 @@ type SiteReconciler struct {
 	Client              client.Client
 	ManagementNamespace string
 	ImagePullSecrets    []string
-	HTTPClient          *http.Client
+	Connections         *siteConnectionStore
 }
 
 func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (ctrl.Result, error) {
@@ -75,13 +74,14 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if !site.Spec.Enabled {
 		return r.condition(ctx, &site, "Disabled", fmt.Errorf("site is disabled"))
 	}
-	connection, err := newSiteManagerConnection(ctx, r.Client, r.ManagementNamespace, &site, r.HTTPClient)
+	remote, err := r.Connections.connection(ctx, &site)
 	if err != nil {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("read site credential: %w", err))
 	}
-	defer connection.close()
 	check := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
-	response, err := connection.client.CheckManager(ctx, check)
+	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	response, err := remote.CheckManager(checkCtx, check)
 	if err != nil {
 		return r.condition(ctx, &site, "IdentityUnavailable", fmt.Errorf("gitea identity check failed: %w", err))
 	}
