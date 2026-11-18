@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"uuid"
 
 	"gitea.dev/codespace/internal/runtimeplatform"
 	"golang.org/x/crypto/ssh"
@@ -144,22 +145,23 @@ func gatewaySSHAuthFromPermissions(permissions *ssh.Permissions) (gatewaySSHAuth
 	if permissions == nil {
 		return gatewaySSHAuthContext{}, false
 	}
-	codespaceUUID := permissions.Extensions["codespace_uuid"]
+	runtimeKey := permissions.Extensions["runtime_key"]
 	siteUID := permissions.Extensions["site_uid"]
 	userID, err := strconv.ParseInt(strings.TrimSpace(permissions.Extensions["user_id"]), 10, 64)
-	if err != nil || codespaceUUID == "" || siteUID == "" || userID <= 0 {
+	if err != nil || runtimeKey == "" || siteUID == "" || userID <= 0 {
 		return gatewaySSHAuthContext{}, false
 	}
-	return gatewaySSHAuthContext{codespaceUUID: codespaceUUID, siteUID: siteUID, userID: userID}, true
+	return gatewaySSHAuthContext{runtimeKey: runtimeKey, siteUID: siteUID, userID: userID}, true
 }
 
-func codespaceUUIDFromGatewaySSHUser(user string) (string, bool) {
-	codespaceUUID, ok := strings.CutPrefix(user, runtimeplatform.SSHUserPrefix)
+func runtimeAliasFromGatewaySSHUser(user string) (string, bool) {
+	alias, ok := strings.CutPrefix(user, runtimeplatform.SSHUserPrefix)
 	if !ok {
 		return "", false
 	}
-	if err := validateRuntimeUUID(codespaceUUID); err != nil {
+	parsed, err := uuid.Parse(alias)
+	if err != nil || parsed[6]>>4 != 4 || parsed.String() != alias {
 		return "", false
 	}
-	return codespaceUUID, true
+	return alias, true
 }

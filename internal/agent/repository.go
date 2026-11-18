@@ -58,7 +58,7 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 		if cloneURL == "" || (index == 1 && cloneURL == urls[0]) {
 			continue
 		}
-		temporary := filepath.Join(workspaceRoot, ".create-"+operation.RuntimeUuid)
+		temporary := filepath.Join(workspaceRoot, fmt.Sprintf(".create-%d", operation.CodespaceId))
 		if err := os.RemoveAll(temporary); err != nil {
 			return err
 		}

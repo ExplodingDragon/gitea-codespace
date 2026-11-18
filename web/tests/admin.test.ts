@@ -106,7 +106,6 @@ test('administration workflows preserve resource identity and validate cluster-b
       spec: {
         site: {name: 'production', uid: 'site-uid'},
         codespaceID: '42',
-        runtimeUUID: '24d0874b-ad2a-4569-82ee-204ca30fb288',
         environmentTag: 'standard',
         operation: 'resume',
         version: 3,

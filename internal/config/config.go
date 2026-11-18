@@ -131,7 +131,7 @@ func (c GatewayHTTPConfig) validate() error {
 	if err := validateListenAddress(c.Listen); err != nil {
 		return fmt.Errorf("gateway.http.listen: %w", err)
 	}
-	if _, err := normalizeGatewayURL(c.PublicURL); err != nil {
+	if _, err := NormalizeGatewayURL(c.PublicURL); err != nil {
 		return fmt.Errorf("gateway.http.public_url: %w", err)
 	}
 	if len(c.TrustedProxyCIDRs) > 64 {
@@ -149,7 +149,7 @@ func (c GatewaySSHConfig) validate() error {
 	if err := validateListenAddress(c.Listen); err != nil {
 		return fmt.Errorf("gateway.ssh.listen: %w", err)
 	}
-	if _, err := normalizeGatewaySSHAddress(c.PublicAddr); err != nil {
+	if _, err := NormalizeGatewaySSHAddress(c.PublicAddr); err != nil {
 		return fmt.Errorf("gateway.ssh.public_addr: %w", err)
 	}
 	if c.MaxChannelsPerConnection < 1 || c.MaxChannelsPerConnection > 1024 {
@@ -211,7 +211,7 @@ func validateListenAddress(value string) error {
 	return nil
 }
 
-func normalizeGatewayURL(value string) (string, error) {
+func NormalizeGatewayURL(value string) (string, error) {
 	parsed, err := url.Parse(strings.TrimSpace(value))
 	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
 		return "", fmt.Errorf("must be an absolute HTTP or HTTPS URL")
@@ -231,6 +231,8 @@ func normalizeGatewayURL(value string) (string, error) {
 		}
 		if parsed.Scheme == "http" && number == 80 || parsed.Scheme == "https" && number == 443 {
 			port = ""
+		} else {
+			port = strconv.Itoa(number)
 		}
 	}
 	normalized := parsed.Scheme + "://" + host
@@ -240,7 +242,7 @@ func normalizeGatewayURL(value string) (string, error) {
 	return normalized, nil
 }
 
-func normalizeGatewaySSHAddress(value string) (string, error) {
+func NormalizeGatewaySSHAddress(value string) (string, error) {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
 	if err != nil {
 		return "", fmt.Errorf("must use host:port")

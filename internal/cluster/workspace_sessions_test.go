@@ -15,7 +15,7 @@ import (
 func TestWorkspaceSessionActivityAcrossGatewayReplicas(t *testing.T) {
 	start := time.Unix(100, 0)
 	tracker := &workspaceSessionTracker{}
-	identity := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 42, RuntimeUuid: "runtime"}
+	identity := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 42, RuntimeKey: "site/42"}
 	entry := &componentv1.WorkspaceSessionActivity{Identity: identity, Active: true, LastActiveUnixMilliseconds: start.UnixMilli()}
 	first := &workspaceSessionReport{idleTimeout: time.Minute}
 	second := &workspaceSessionReport{idleTimeout: time.Minute}
@@ -35,7 +35,7 @@ func TestWorkspaceSessionActivityAcrossGatewayReplicas(t *testing.T) {
 	renewable, err = tracker.lookup("other-gateway", identity, now)
 	require.NoError(t, err)
 	require.False(t, renewable)
-	other := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 43, RuntimeUuid: "runtime"}
+	other := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 43, RuntimeKey: "site/42"}
 	renewable, err = tracker.lookup("gateway", other, now)
 	require.NoError(t, err)
 	require.False(t, renewable)
@@ -67,7 +67,7 @@ func TestWorkspaceSessionActivityRecoveryAndPermitExpiry(t *testing.T) {
 	start := time.Unix(100, 0)
 	tracker := &workspaceSessionTracker{}
 	key := gatewayActivityKey{componentUID: "gateway", instance: "a"}
-	identity := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 42, RuntimeUuid: "runtime"}
+	identity := &componentv1.WorkspaceSessionIdentity{SessionId: "browser", SiteUid: "site", UserId: 42, RuntimeKey: "site/42"}
 	owner := &workspaceSessionReport{idleTimeout: time.Minute}
 	require.NoError(t, tracker.replace(key, owner, nil, start))
 	_, err := tracker.lookup("gateway", identity, start.Add(time.Second))

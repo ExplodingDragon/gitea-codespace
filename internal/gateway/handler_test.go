@@ -134,17 +134,10 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 			upstreamAddress := upstream.Listener.Addr().String()
 			routes := newRouteStore(gatewayTestBackend{address: upstreamAddress})
 			t.Cleanup(routes.Close)
-			const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-			if err := routes.Put(endpointRoute{
-				SiteUID:       "site-1",
-				GiteaWebURL:   "https://gitea.example.test",
-				CodespaceUUID: runtimeUUID,
-				EndpointID:    endpointID,
-				Label:         "Workspace",
-				Public:        endpointID != "workspace",
-			}); err != nil {
-				t.Fatal(err)
-			}
+			const runtimeKey = "site-1/42"
+			snapshot := testGatewayRuntime()
+			snapshot.Endpoints = []endpointSnapshot{{EndpointID: endpointID, Label: "Workspace", Public: endpointID != "workspace"}}
+			require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
 			policy, err := newOriginPolicy("http://gateway.example.test")
 			if err != nil {
 				t.Fatal(err)
@@ -159,7 +152,7 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 				ValidationMaxInflight:           4,
 			})
 			sessions := newGatewaySessionRegistry(t)
-			token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: runtimeUUID, EndpointID: endpointID}, time.Now())
+			token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, RuntimeKey: runtimeKey, EndpointID: endpointID}, time.Now())
 			require.NoError(t, err)
 			control := gatewayHandlerTestControlPlane{endpointDecision: gatewayAccessDecision{Allowed: true}}
 			gateway := httptest.NewServer(newHandler(sessions.sessionRegistry, access, control, policy, nil, routes))
@@ -195,7 +188,7 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 				sessions.sessions[ticket.ID].lastActive = past
 				sessions.sessions[ticket.ID].expires = past.Add(time.Hour)
 				sessions.mu.Unlock()
-				require.Equal(t, map[string]int64{runtimeUUID: 1}, sessions.Activity(time.Now()).runtimes)
+				require.Equal(t, map[string]int64{runtimeKey: 1}, sessions.Activity(time.Now()).runtimes)
 				followup, err := http.NewRequest(http.MethodGet, gateway.URL+"/status", nil)
 				require.NoError(t, err)
 				followup.Host = externalHost
@@ -229,7 +222,7 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 }
 
 func TestGatewayWorkspaceRenewalRequiresAuthorization(t *testing.T) {
-	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	const runtimeKey = "site-1/42"
 	const host = "11111111111141118111111111111111.gateway.example.test"
 	policy, err := newOriginPolicy("http://gateway.example.test")
 	require.NoError(t, err)
@@ -246,11 +239,11 @@ func TestGatewayWorkspaceRenewalRequiresAuthorization(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			sessions := newGatewaySessionRegistry(t)
-			token, err := sessions.Create(openTokenBinding{SiteUID: "site", UserID: 42, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now().Add(-time.Hour))
+			token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, RuntimeKey: runtimeKey, EndpointID: "workspace"}, time.Now().Add(-time.Hour))
 			require.NoError(t, err)
 			routes := newRouteStore(gatewayTestBackend{endpointError: errors.New("provider not listening")})
 			t.Cleanup(routes.Close)
-			require.NoError(t, routes.Put(endpointRoute{SiteUID: "site", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: runtimeUUID, EndpointID: "workspace", Label: "Workspace"}))
+			require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{testGatewayRuntime()}))
 			control := gatewayHandlerTestControlPlane{
 				endpointDecision: gatewayAccessDecision{Allowed: tc.allowed, DeniedCategory: "permission_revoked"},
 				lookupWorkspace: func(context.Context, *componentv1.WorkspaceSessionIdentity) (bool, error) {
@@ -278,18 +271,10 @@ func TestGatewayWorkspaceRenewalRequiresAuthorization(t *testing.T) {
 func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	t.Parallel()
 
-	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	const runtimeKey = "site-1/42"
 	routes := newRouteStore(gatewayTestBackend{})
 	t.Cleanup(routes.Close)
-	if err := routes.Put(endpointRoute{
-		SiteUID:       "site-1",
-		GiteaWebURL:   "https://gitea.example.test",
-		CodespaceUUID: runtimeUUID,
-		EndpointID:    runtimeendpoint.WorkspaceEndpointID,
-		Label:         runtimeendpoint.WorkspaceEndpointLabel,
-	}); err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{testGatewayRuntime()}))
 	policy, err := newOriginPolicy("https://gateway.example.test")
 	if err != nil {
 		t.Fatal(err)
@@ -300,7 +285,7 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	t.Run("open code for another site", func(t *testing.T) {
 		control := gatewayHandlerTestControlPlane{openDecision: gatewayOpenTokenDecision{
 			Allowed: true,
-			Binding: openTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
+			Binding: openTokenBinding{SiteUID: "site-2", UserID: 1, RuntimeKey: runtimeKey, EndpointID: runtimeendpoint.WorkspaceEndpointID},
 		}}
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/.gitea-codespace/open?code=secret", nil)
 		response := httptest.NewRecorder()
@@ -311,7 +296,7 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	})
 
 	t.Run("browser session for another site", func(t *testing.T) {
-		token, err := sessions.Create(openTokenBinding{SiteUID: "site-2", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
+		token, err := sessions.Create(openTokenBinding{SiteUID: "site-2", UserID: 1, RuntimeKey: runtimeKey, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -325,16 +310,16 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	})
 
 	t.Run("open code without a route", func(t *testing.T) {
-		const missingRuntimeUUID = "22222222-2222-4222-8222-222222222222"
+		const missingRuntimeKey = "site-1/43"
 		control := gatewayHandlerTestControlPlane{openDecision: gatewayOpenTokenDecision{
 			Allowed: true,
-			Binding: openTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: missingRuntimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID},
+			Binding: openTokenBinding{SiteUID: "site-1", UserID: 1, RuntimeKey: missingRuntimeKey, EndpointID: runtimeendpoint.WorkspaceEndpointID},
 		}}
 		request := httptest.NewRequest(http.MethodGet, "https://22222222222242228222222222222222.gateway.example.test/.gitea-codespace/open?code=secret", nil)
 		response := httptest.NewRecorder()
 		newHandler(sessions.sessionRegistry, access, control, policy, nil, routes).ServeHTTP(response, request)
-		if response.Code != http.StatusForbidden {
-			t.Fatalf("status = %d, want %d", response.Code, http.StatusForbidden)
+		if response.Code != http.StatusNotFound {
+			t.Fatalf("status = %d, want %d", response.Code, http.StatusNotFound)
 		}
 		for _, cookie := range response.Result().Cookies() {
 			if cookie.Name == secureSessionCookieName {
@@ -344,12 +329,12 @@ func TestGatewayEnforcesRouteSiteBinding(t *testing.T) {
 	})
 
 	t.Run("browser session after route removal", func(t *testing.T) {
-		token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
+		token, err := sessions.Create(openTokenBinding{SiteUID: "site-1", UserID: 1, RuntimeKey: runtimeKey, EndpointID: runtimeendpoint.WorkspaceEndpointID}, time.Now())
 		if err != nil {
 			t.Fatal(err)
 		}
-		routes.Delete(runtimeUUID, runtimeendpoint.WorkspaceEndpointID)
-		if _, ok := sessions.Authenticate(token, runtimeUUID, runtimeendpoint.WorkspaceEndpointID, time.Now()); !ok {
+		require.NoError(t, routes.ReplaceSharedGatewayRuntimes(nil))
+		if _, ok := sessions.Authenticate(token, runtimeKey, runtimeendpoint.WorkspaceEndpointID, time.Now()); !ok {
 			t.Fatal("route removal invalidated the browser session")
 		}
 		request := httptest.NewRequest(http.MethodGet, "https://11111111111141118111111111111111.gateway.example.test/", nil)
@@ -422,13 +407,11 @@ func TestGatewayProxyClientCancellationDoesNotWriteGatewayError(t *testing.T) {
 
 	routes := newRouteStore(gatewayTestBackend{endpointError: context.Canceled})
 	t.Cleanup(routes.Close)
-	route := endpointRoute{
-		SiteUID: "site-1", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: "codespace-1",
-		EndpointID: "app", Label: "App", Public: true,
-	}
-	if err := routes.Put(route); err != nil {
-		t.Fatal(err)
-	}
+	snapshot := testGatewayRuntime()
+	snapshot.Endpoints = []endpointSnapshot{{EndpointID: "app", Label: "App", Public: true}}
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
+	route, ok := routes.Get(snapshot.RuntimeKey, "app")
+	require.True(t, ok)
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
 	request := httptest.NewRequest(http.MethodGet, "https://app.gateway.example.test/", nil).WithContext(ctx)
@@ -443,7 +426,7 @@ func TestGatewayEndpointPreservesApplicationRequests(t *testing.T) {
 	t.Parallel()
 
 	const externalHost = "app-3000-11111111111141118111111111111111.gateway.example.test"
-	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
+	const runtimeKey = "site-1/42"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil || r.Host != externalHost {
@@ -460,12 +443,11 @@ func TestGatewayEndpointPreservesApplicationRequests(t *testing.T) {
 		t.Run(fmt.Sprintf("public=%t", public), func(t *testing.T) {
 			routes := newRouteStore(gatewayTestBackend{address: upstream.Listener.Addr().String()})
 			t.Cleanup(routes.Close)
-			require.NoError(t, routes.Put(endpointRoute{
-				SiteUID: "site", GiteaWebURL: "https://gitea.example.test", CodespaceUUID: runtimeUUID,
-				EndpointID: "app-3000", Public: public,
-			}))
+			snapshot := testGatewayRuntime()
+			snapshot.Endpoints = []endpointSnapshot{{EndpointID: "app-3000", Public: public}}
+			require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
 			sessions := newGatewaySessionRegistry(t)
-			binding := openTokenBinding{SiteUID: "site", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "app-3000"}
+			binding := openTokenBinding{SiteUID: "site-1", UserID: 1, RuntimeKey: runtimeKey, EndpointID: "app-3000"}
 			token, err := sessions.Create(binding, time.Now())
 			require.NoError(t, err)
 			control := gatewayHandlerTestControlPlane{

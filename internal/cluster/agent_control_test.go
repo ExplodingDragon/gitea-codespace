@@ -62,7 +62,7 @@ func TestAgentControlRecovery(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: ns.Name, UID: "runtime-uid"},
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, Operation: api.Operation{Type: "stop", Version: 3}},
-		Status:     api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: "runtime", UID: "pod-uid"}},
+		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime", UID: "pod-uid"}},
 	}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: cs.Status.Pod.Name, Namespace: ns.Name, UID: cs.Status.Pod.UID, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(site, ns, cs, pod).
@@ -161,10 +161,10 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.NoError(t, c.Create(t.Context(), credential))
 	server.ManagementNamespace = credential.Namespace
 	cs.Spec.Operation.Type, cs.Spec.Operation.Version = "create", 4
-	cs.Spec.CodespaceID, cs.Spec.RuntimeUUID = 1, "933ef4a9-54c7-4f36-aad9-32ea72c4c986"
+	cs.Spec.CodespaceID = 1
 	cs.Spec.Runtime = testRuntime()
 	cs.Spec.Runtime.GitSSHKeyType = "rsa-4096"
-	cs.Spec.Operation.Payload.Raw, err = protojson.Marshal(&codespacev1.OperationPayload{OperationRversion: 4, CodespaceId: cs.Spec.CodespaceID, RuntimeUuid: cs.Spec.RuntimeUUID, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}})
+	cs.Spec.Operation.Payload.Raw, err = protojson.Marshal(&codespacev1.OperationPayload{OperationRversion: 4, CodespaceId: cs.Spec.CodespaceID, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}})
 	require.NoError(t, err)
 	require.NoError(t, c.Update(t.Context(), cs))
 	server.Authority.Grant(cs.UID, 4, time.Now().Add(time.Minute))

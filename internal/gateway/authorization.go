@@ -25,10 +25,10 @@ type gatewayAccessDecision struct {
 
 // A browser open code authorizes exactly one user and Runtime binding.
 type openTokenBinding struct {
-	SiteUID       string
-	UserID        int64
-	CodespaceUUID string
-	EndpointID    string
+	SiteUID    string
+	UserID     int64
+	RuntimeKey string
+	EndpointID string
 }
 
 type gatewayOpenTokenDecision struct {

@@ -76,7 +76,7 @@ func (t *AccessTickets) Issue(cs *api.Codespace, capability agentv1.AccessCapabi
 	}
 	now := time.Now()
 	return accessticket.Sign(t.privateKey, &agentv1.AccessTicketClaims{
-		SiteUid: string(cs.Spec.Site.UID), ResourceUid: string(cs.UID), RuntimeUuid: cs.Spec.RuntimeUUID, PodUid: string(cs.Status.Pod.UID),
+		SiteUid: string(cs.Spec.Site.UID), ResourceUid: string(cs.UID), CodespaceId: cs.Spec.CodespaceID, PodUid: string(cs.Status.Pod.UID),
 		TargetVersion: cs.Status.Target.Version, Capability: capability, EndpointId: endpointID, ExpiresUnix: now.Add(lifetime).Unix(),
 	}, now)
 }

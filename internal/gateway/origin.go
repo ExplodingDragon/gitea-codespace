@@ -20,8 +20,8 @@ type originPolicy struct {
 }
 
 type gatewayEndpointHost struct {
-	codespaceUUID string
-	endpointID    string
+	resourceUID string
+	endpointID  string
 }
 
 func newOriginPolicy(gatewayURL string) (originPolicy, error) {
@@ -82,8 +82,8 @@ func (p originPolicy) bindingForRequest(request *http.Request) (gatewayEndpointH
 func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 	if len(label) == 32 && isGatewayUUID32(label) {
 		return gatewayEndpointHost{
-			codespaceUUID: uuid32ToCanonical(label),
-			endpointID:    runtimeendpoint.WorkspaceEndpointID,
+			resourceUID: uuid32ToCanonical(label),
+			endpointID:  runtimeendpoint.WorkspaceEndpointID,
 		}, true
 	}
 	if !strings.Contains(label, "-") {
@@ -99,8 +99,8 @@ func parseGatewayEndpointLabel(label string) (gatewayEndpointHost, bool) {
 		return gatewayEndpointHost{}, false
 	}
 	return gatewayEndpointHost{
-		codespaceUUID: uuid32ToCanonical(uuid32),
-		endpointID:    prefix,
+		resourceUID: uuid32ToCanonical(uuid32),
+		endpointID:  prefix,
 	}, true
 }
 

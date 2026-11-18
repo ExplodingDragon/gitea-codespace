@@ -81,7 +81,7 @@ func TestCleanupCompletesAfterCancellation(t *testing.T) {
 			ctx, cancel := context.WithCancel(t.Context())
 			defer cancel()
 			outcome, err := Apply(ctx, Request{
-				Action: action, CodespaceUUID: "runtime", OperationVersion: 2, Environment: state,
+				Action: action, OwnerID: "runtime", OperationVersion: 2, Environment: state,
 				DevContainer: Configuration{LifecycleScript: "exit 1"},
 				RunTemplateLifecycle: func(context.Context, string, func(context.Context) error) error {
 					lifecycleCalled = true

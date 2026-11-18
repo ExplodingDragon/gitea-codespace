@@ -98,7 +98,7 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 	}
 	mutateUSBIP := usbIPContainerMutator(request.USBIP)
 	return containerdocker.CreateOptions{
-		OwnerID:             request.CodespaceUUID,
+		OwnerID:             request.OwnerID,
 		Workspace:           request.Workspace,
 		Source:              request.Source,
 		AllowedPathRoot:     request.Workspace,
@@ -110,7 +110,7 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 		RunLifecycle:        request.RunLifecycle,
 		InjectedFeatures:    injected,
 		AdditionalMounts:    mounts,
-		Labels:              map[string]string{"dev.gitea.codespace.uuid": request.CodespaceUUID},
+		Labels:              map[string]string{"dev.gitea.codespace.resource-uid": request.OwnerID},
 		PlatformDevices: containerdocker.PlatformDevices{
 			CDI: request.Native.CDIDeviceIDs, Mappings: deviceMappings, Capabilities: request.Native.Capabilities, ProvidesGPU: request.Native.ProvidesGPU,
 		},

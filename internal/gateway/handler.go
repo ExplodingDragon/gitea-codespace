@@ -34,12 +34,12 @@ func newHandler(
 			handleGatewayOpen(writer, request, sessions, routeStore, access, controlPlane, originPolicy)
 			return
 		}
-		binding, ok := originPolicy.bindingForRequest(request)
+		binding, ok := routeStore.bindingForRequest(request, originPolicy)
 		if !ok {
 			writeGatewayNotFound(writer, request, "Codespace gateway")
 			return
 		}
-		route, found := routeStore.Get(binding.codespaceUUID, binding.endpointID)
+		route, found := routeStore.Get(binding.runtimeKey, binding.endpointID)
 		if !found {
 			writeGatewayNotFound(writer, request, "Codespace endpoint")
 			return
@@ -71,7 +71,7 @@ func handleGatewayOpen(
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
-	hostBinding, hasHostBinding := originPolicy.bindingForRequest(request)
+	hostBinding, hasHostBinding := routes.bindingForRequest(request, originPolicy)
 	if !hasHostBinding {
 		writeGatewayNotFound(writer, request, "Open codespace")
 		return
@@ -90,13 +90,13 @@ func handleGatewayOpen(
 	}
 	defer reservation.Release()
 
-	decision, err := controlPlane.ValidateOpenToken(request.Context(), code, hostBinding.codespaceUUID, hostBinding.endpointID)
+	decision, err := controlPlane.ValidateOpenToken(request.Context(), code, hostBinding.runtimeKey, hostBinding.endpointID)
 	if err != nil {
 		attrs := gatewayRequestLogAttrs(request)
 		attrs = append(attrs,
 			slog.String("stage", "authorization"),
 			slog.Int("status_code", http.StatusServiceUnavailable),
-			slog.String("codespace_uuid", hostBinding.codespaceUUID),
+			slog.String("runtime_key", hostBinding.runtimeKey),
 			slog.String("endpoint_id", hostBinding.endpointID),
 			slog.Any("error", err),
 		)
@@ -110,12 +110,12 @@ func handleGatewayOpen(
 		writeGatewayError(writer, request, http.StatusForbidden, "Codespace cannot be opened", "Gitea rejected this open link because the codespace is not currently available for this request.", decision.deniedCategory)
 		return
 	}
-	if hostBinding.codespaceUUID != decision.Binding.CodespaceUUID || hostBinding.endpointID != decision.Binding.EndpointID {
+	if hostBinding.runtimeKey != decision.Binding.RuntimeKey || hostBinding.endpointID != decision.Binding.EndpointID {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		writeGatewayError(writer, request, http.StatusForbidden, "Open link does not match this host", "This open link belongs to a different codespace endpoint. Open the codespace again from Gitea.", "gateway host binding mismatch")
 		return
 	}
-	route, found := routes.Get(decision.Binding.CodespaceUUID, decision.Binding.EndpointID)
+	route, found := routes.Get(decision.Binding.RuntimeKey, decision.Binding.EndpointID)
 	if !found || route.SiteUID != decision.Binding.SiteUID {
 		clearGatewayReturnToIfPresent(writer, request, originPolicy)
 		writeGatewayError(writer, request, http.StatusForbidden, "Open link does not match this runtime", "This open link belongs to a different codespace runtime. Open the codespace again from Gitea.", "gateway route site mismatch")
@@ -185,16 +185,16 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
-	binding, ok := originPolicy.bindingForRequest(request)
+	binding, ok := routes.bindingForRequest(request, originPolicy)
 	if !ok {
 		writeGatewayNotFound(writer, request, "Codespace workspace")
 		return
 	}
-	codespaceUUID, endpointID := binding.codespaceUUID, binding.endpointID
+	runtimeKey, endpointID := binding.runtimeKey, binding.endpointID
 	if !isGatewayAuthenticatedSourceAllowed(request, originPolicy) {
 		attrs := gatewaySourceRejectionLogAttrs(request, originPolicy)
 		attrs = append(attrs,
-			slog.String("codespace_uuid", codespaceUUID),
+			slog.String("runtime_key", runtimeKey),
 			slog.String("endpoint_id", endpointID),
 			slog.String("access", "authenticated"),
 			slog.String("reason", gatewaySourceRejectionReason(request, originPolicy)),
@@ -206,15 +206,15 @@ func handleGatewayWorkspace(
 	}
 	sessionIDs := gatewaySessionIDsFromRequest(request, originPolicy)
 	if len(sessionIDs) == 0 {
-		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
+		if handleGatewayAuthenticationRequired(writer, request, runtimeKey, endpointID, originPolicy, browserAuth) {
 			return
 		}
 		writeGatewayError(writer, request, http.StatusUnauthorized, "Sign in required", "Open this codespace from Gitea to create a gateway session.", "gateway session is required")
 		return
 	}
-	session, ok, ambiguous, err := sessions.ResolveAny(request.Context(), sessionIDs, codespaceUUID, endpointID, time.Now(), controlPlane.LookupWorkspaceSession)
+	session, ok, ambiguous, err := sessions.ResolveAny(request.Context(), sessionIDs, runtimeKey, endpointID, time.Now(), controlPlane.LookupWorkspaceSession)
 	if err != nil {
-		gatewayLog(request.Context(), slog.LevelWarn, "gateway_session_lookup_failed", slog.String("codespace_uuid", codespaceUUID), slog.String("endpoint_id", endpointID), slog.Any("error", err))
+		gatewayLog(request.Context(), slog.LevelWarn, "gateway_session_lookup_failed", slog.String("runtime_key", runtimeKey), slog.String("endpoint_id", endpointID), slog.Any("error", err))
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Session is temporarily unavailable", "Workspace session activity cannot be confirmed right now. Try again shortly.", "gateway session activity unavailable")
 		return
 	}
@@ -223,13 +223,13 @@ func handleGatewayWorkspace(
 		return
 	}
 	if !ok {
-		if handleGatewayAuthenticationRequired(writer, request, codespaceUUID, endpointID, originPolicy, browserAuth) {
+		if handleGatewayAuthenticationRequired(writer, request, runtimeKey, endpointID, originPolicy, browserAuth) {
 			return
 		}
 		writeGatewayError(writer, request, http.StatusUnauthorized, "Session expired", "This gateway session is no longer valid. Open the codespace again from Gitea.", "gateway session is invalid")
 		return
 	}
-	route, found := routes.Get(session.codespaceUUID, session.endpointID)
+	route, found := routes.Get(session.runtimeKey, session.endpointID)
 	if !found {
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Endpoint is not ready", "The runtime endpoint is not ready yet. Try again after the service starts.", "gateway route unavailable")
 		return
@@ -253,11 +253,11 @@ func handleGatewayWorkspace(
 		request.Context(),
 		session.siteUID,
 		session.userID,
-		session.codespaceUUID,
+		session.runtimeKey,
 		session.endpointID,
 		time.Now(),
 		func(ctx context.Context) (gatewayAccessDecision, error) {
-			return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.codespaceUUID, session.endpointID)
+			return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.runtimeKey, session.endpointID)
 		},
 	)
 	if validationFull {
@@ -291,10 +291,10 @@ func handleGatewayWorkspace(
 			ctx,
 			session.siteUID,
 			session.userID,
-			session.codespaceUUID,
+			session.runtimeKey,
 			session.endpointID,
 			func(ctx context.Context) (gatewayAccessDecision, error) {
-				return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.codespaceUUID, session.endpointID)
+				return controlPlane.RevalidateEndpointSession(ctx, session.siteUID, session.userID, session.runtimeKey, session.endpointID)
 			},
 		)
 		if validationFull {
@@ -303,14 +303,14 @@ func handleGatewayWorkspace(
 		return decision, err
 	}
 	proxyContext := gatewayProxyRequestContext{
-		codespaceUUID:  session.codespaceUUID,
+		runtimeKey:     session.runtimeKey,
 		endpointID:     session.endpointID,
 		access:         "authenticated",
 		userID:         session.userID,
 		externalScheme: gatewayExternalScheme(request, originPolicy),
 		externalHost:   request.Host,
 	}
-	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.codespaceUUID, session.endpointID)
+	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, session.runtimeKey, session.endpointID)
 	if !ok || route.SiteUID != session.siteUID {
 		if ok {
 			releaseRoute()
@@ -334,7 +334,7 @@ func handleGatewayWorkspace(
 		writeGatewayError(writer, request, status, "Session is unavailable", "Codespace Gateway cannot accept this session right now. Try again shortly.", "gateway session unavailable")
 		return
 	}
-	end := sessions.BeginSessionCancelable(session.id, session.codespaceUUID, cancelRequest)
+	end := sessions.BeginSessionCancelable(session.id, session.runtimeKey, cancelRequest)
 	defer end()
 	if err := sessions.waitWorkspaceActivity(routeRequest.Context(), session.id); err != nil {
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Session is temporarily unavailable", "Workspace session activity is synchronizing. Try again shortly.", "gateway session activity unavailable")
@@ -359,20 +359,20 @@ func handleGatewayPublicEndpoint(
 		writeGatewayError(writer, request, http.StatusServiceUnavailable, "Gateway is starting", "Codespace Gateway is not ready yet. Try again after the manager finishes startup.", "gateway is not ready")
 		return
 	}
-	binding, ok := originPolicy.bindingForRequest(request)
+	binding, ok := routes.bindingForRequest(request, originPolicy)
 	if !ok || binding.endpointID == runtimeendpoint.WorkspaceEndpointID {
 		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
-	codespaceUUID, endpointID := binding.codespaceUUID, binding.endpointID
+	runtimeKey, endpointID := binding.runtimeKey, binding.endpointID
 	clearGatewayReservedCookies(writer)
-	route, ok := routes.Get(codespaceUUID, endpointID)
+	route, ok := routes.Get(runtimeKey, endpointID)
 	if !ok || !route.Public {
 		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
 	siteUID := route.SiteUID
-	reservation, limitStatus := access.reservePublic(siteUID, codespaceUUID, endpointID, gatewayPeerIP(request))
+	reservation, limitStatus := access.reservePublic(siteUID, runtimeKey, endpointID, gatewayPeerIP(request))
 	if limitStatus != 0 {
 		if limitStatus == http.StatusTooManyRequests {
 			writeGatewayError(writer, request, http.StatusTooManyRequests, "Connection limit reached", "This public endpoint has too many active connections. Try again shortly.", "gateway public connection limit reached")
@@ -386,11 +386,11 @@ func handleGatewayPublicEndpoint(
 	decision, validationFull, err := access.ValidatePublicEndpoint(
 		request.Context(),
 		siteUID,
-		codespaceUUID,
+		runtimeKey,
 		endpointID,
 		time.Now(),
 		func(ctx context.Context) (gatewayAccessDecision, error) {
-			return controlPlane.ValidatePublicEndpoint(ctx, siteUID, codespaceUUID, endpointID)
+			return controlPlane.ValidatePublicEndpoint(ctx, siteUID, runtimeKey, endpointID)
 		},
 	)
 	if validationFull {
@@ -414,7 +414,7 @@ func handleGatewayPublicEndpoint(
 		writeGatewayNotFound(writer, request, "Codespace endpoint")
 		return
 	}
-	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, codespaceUUID, endpointID)
+	route, routeRequest, releaseRoute, ok := routes.BeginProxy(request, runtimeKey, endpointID)
 	if !ok || !route.Public || route.SiteUID != siteUID {
 		if ok {
 			releaseRoute()
@@ -424,7 +424,7 @@ func handleGatewayPublicEndpoint(
 	}
 	defer releaseRoute()
 	proxyContext := gatewayProxyRequestContext{
-		codespaceUUID: codespaceUUID, endpointID: endpointID, access: "public",
+		runtimeKey: runtimeKey, endpointID: endpointID, access: "public",
 		externalScheme: gatewayExternalScheme(request, originPolicy), externalHost: request.Host,
 	}
 	proxyRequest, cancelProxyRevalidation := withGatewayProxyRevalidation(
@@ -435,10 +435,10 @@ func handleGatewayPublicEndpoint(
 			decision, validationFull, err := access.revalidatePublicEndpoint(
 				ctx,
 				siteUID,
-				codespaceUUID,
+				runtimeKey,
 				endpointID,
 				func(ctx context.Context) (gatewayAccessDecision, error) {
-					return controlPlane.ValidatePublicEndpoint(ctx, siteUID, codespaceUUID, endpointID)
+					return controlPlane.ValidatePublicEndpoint(ctx, siteUID, runtimeKey, endpointID)
 				},
 			)
 			if validationFull {

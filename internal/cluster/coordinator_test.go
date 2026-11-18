@@ -42,7 +42,6 @@ type coordinatorRemote struct {
 	claimed      bool
 	finalized    bool
 	stopping     bool
-	runtimeUUID  string
 	url          string
 	inventory    func(*codespacev1.ReportInstancesRequest)
 	idleStop     func(*codespacev1.RequestIdleStopRequest) *codespacev1.RequestIdleStopResponse
@@ -65,7 +64,7 @@ func (s *coordinatorRemote) ReportInstances(_ context.Context, request *codespac
 	}
 	response := &codespacev1.ReportInstancesResponse{}
 	for _, instance := range request.Instances {
-		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{RuntimeUuid: instance.RuntimeUuid})
+		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{CodespaceId: instance.CodespaceId})
 	}
 	return response, nil
 }
@@ -74,7 +73,7 @@ func TestInventoryMissingPodRetainsRuntime(t *testing.T) {
 	site := testSite("example", "site-uid")
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{UID: site.UID}, CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 1}},
 		Status:     api.CodespaceStatus{SettledOperationVersion: 1, Pod: api.ObservedResource{Name: "missing-pod", UID: "pod-uid"}},
 	}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(site, cs).WithObjects(site, cs).Build()
@@ -93,16 +92,16 @@ func TestCoordinatorRequestsIdleStopAfterObservedInactivity(t *testing.T) {
 	tracker := &RuntimeActivityTracker{}
 	now := time.Now()
 	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 1, InteractionGeneration: 2}
-	require.NoError(t, tracker.ObserveSettings(string(site.UID), "runtime", settings, now.Add(-2*time.Second)))
+	require.NoError(t, tracker.ObserveSettings(string(site.UID), "site-uid/1", settings, now.Add(-2*time.Second)))
 	require.NoError(t, tracker.ReplaceGateway(string(site.Spec.Gateway.UID), "gateway-pod", nil, false, now.Add(-2*time.Second)))
-	_, ready := tracker.IdleRequest(string(site.UID), "runtime", string(site.Spec.Gateway.UID), true, now.Add(-2*time.Second))
+	_, ready := tracker.IdleRequest(string(site.UID), "site-uid/1", string(site.Spec.Gateway.UID), true, now.Add(-2*time.Second))
 	require.False(t, ready)
 
-	cs := api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", UID: "runtime-uid"}, Spec: api.CodespaceSpec{RuntimeUUID: "runtime", Operation: api.Operation{Version: 1}}, Status: api.CodespaceStatus{Bound: true, SettledOperationVersion: 1, Pod: api.ObservedResource{UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}}}
+	cs := api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{UID: site.UID}, CodespaceID: 1, Operation: api.Operation{Version: 1}}, Status: api.CodespaceStatus{SettledOperationVersion: 1, Pod: api.ObservedResource{UID: "pod-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"}}}
 	requests := 0
 	remote := &coordinatorRemote{idleStop: func(request *codespacev1.RequestIdleStopRequest) *codespacev1.RequestIdleStopResponse {
 		requests++
-		require.Equal(t, "runtime", request.RuntimeUuid)
+		require.EqualValues(t, 1, request.CodespaceId)
 		require.Equal(t, settings, request.ObservedSettings)
 		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: 2}}}
 	}}
@@ -123,22 +122,16 @@ func (s *coordinatorRemote) FetchOperations(_ context.Context, request *codespac
 	}
 	if s.finalized && !s.stopping && request.CleanupCapacityAvailable > 0 {
 		s.stopping = true
-		response.Operations = append(response.Operations, &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: s.runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
+		response.Operations = append(response.Operations, &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
 	}
 	for _, observed := range request.ObservedOperations {
-		response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 120000})
+		response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{CodespaceId: observed.CodespaceId, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 120000})
 	}
 	return response, nil
 }
 
 func TestSiteCoordinatorLifecycle(t *testing.T) {
 	remote := &coordinatorRemote{}
-	remote.bind = func(request *codespacev1.BindRuntimeIdentityRequest) (*codespacev1.BindRuntimeIdentityResponse, error) {
-		remote.mu.Lock()
-		remote.runtimeUUID = request.RuntimeUuid
-		remote.mu.Unlock()
-		return &codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: request.RuntimeUuid}, nil
-	}
 	remote.metadata = func(*codespacev1.ReportRuntimeMetadataRequest) error { return nil }
 	remote.final = func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
 		remote.mu.Lock()
@@ -174,8 +167,8 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	block, err := ssh.MarshalPrivateKey(private, "")
 	require.NoError(t, err)
 	gateway := testGatewayComponent("gateway", "gateway-uid")
-	gateway.Spec.Gateway.EndpointBaseURL = "https://workspace.example"
-	gateway.Spec.Gateway.SSHExternalAddress = "workspace.example:2222"
+	gateway.Spec.Gateway.EndpointBaseURL = "https://WORKSPACE.example:443/"
+	gateway.Spec.Gateway.SSHExternalAddress = "WORKSPACE.example:02222"
 	hostKey := testComponentCredential(gateway, map[string][]byte{"hostKey": pem.EncodeToMemory(block)})
 	hostKey.CreationTimestamp = metav1.Now()
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: "site-credential", Namespace: "codespace-system", UID: "credential-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("test-secret")}}
@@ -194,11 +187,13 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	key := types.NamespacedName{Namespace: ns.Name, Name: "codespace-1"}
 	var cs api.Codespace
 	require.Eventually(t, func() bool {
-		return c.Get(t.Context(), key, &cs) == nil && cs.Status.Bound && coordinator.Authority.Remaining(cs.UID, 1) > 0
+		return c.Get(t.Context(), key, &cs) == nil && coordinator.Authority.Remaining(cs.UID, 1) > 0
 	}, 5*time.Second, 10*time.Millisecond)
 	require.Eventually(t, func() bool {
 		return coordinator.Authority.Remaining(cs.UID, 1) > time.Minute
 	}, 5*time.Second, 10*time.Millisecond)
+	require.NoError(t, c.Get(t.Context(), key, &cs))
+	require.Equal(t, api.RuntimeAccess{GatewayURL: "https://workspace.example", SSHAddress: "workspace.example:2222"}, cs.Status.Access)
 	control := &AgentControlServer{Client: c}
 	require.NoError(t, control.saveReport(t.Context(), &cs, &agentv1.AgentReport{
 		OperationRversion: 1, Result: &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},

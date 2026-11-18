@@ -18,7 +18,7 @@ import (
 )
 
 func TestRuntimeUsagePublication(t *testing.T) {
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{UID: "site-uid"}, CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()
 	control := &AgentControlServer{Client: c}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))

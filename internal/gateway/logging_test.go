@@ -25,7 +25,7 @@ func TestGatewayLogFieldsIdentifyRouteWithoutCredentials(t *testing.T) {
 	request.Header.Set("Cookie", "gitea_codespace_session=session-secret")
 	request = request.WithContext(context.WithValue(request.Context(), gatewayClientIPContextKey{}, "203.0.113.10"))
 	route := endpointRoute{
-		SiteUID: "site-1", ResourceUID: "resource-1", CodespaceUUID: "codespace-1",
+		SiteUID: "site-1", ResourceUID: "resource-1", RuntimeKey: "site-1/1",
 		EndpointID: "workspace", Label: "Web IDE", PodUID: "pod-1", AgentAddress: "agent:8444", TargetVersion: 9,
 	}
 	attrs := gatewayProxyLogAttrs(request, route, gatewayProxyRequestContext{access: "authenticated", userID: 42})
@@ -66,7 +66,7 @@ func TestGatewaySourceRejectionFieldsAreBounded(t *testing.T) {
 
 func TestGatewayUpstreamErrorPreservesStageAndTarget(t *testing.T) {
 	err := wrapGatewayUpstreamTargetError("agent_connect", runtimeSnapshot{
-		SiteUID: "site-1", ResourceUID: "resource-1", RuntimeUUID: "codespace-1",
+		SiteUID: "site-1", ResourceUID: "resource-1", RuntimeKey: "site-1/1",
 		PodUID: "pod-1", AgentAddress: "agent:8444", TargetVersion: 5,
 	}, errors.New("connection failed"))
 	require.Equal(t, "agent_connect", gatewayUpstreamStage(err, "proxy_stream"))

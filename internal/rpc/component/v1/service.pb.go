@@ -103,7 +103,7 @@ type WorkspaceSessionIdentity struct {
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	SiteUid       string                 `protobuf:"bytes,2,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	UserId        int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RuntimeUuid   string                 `protobuf:"bytes,4,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,4,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -159,9 +159,9 @@ func (x *WorkspaceSessionIdentity) GetUserId() int64 {
 	return 0
 }
 
-func (x *WorkspaceSessionIdentity) GetRuntimeUuid() string {
+func (x *WorkspaceSessionIdentity) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -630,7 +630,7 @@ type GatewayRuntimeRoute struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SiteUid       string                 `protobuf:"bytes,1,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	ResourceUid   string                 `protobuf:"bytes,2,opt,name=resource_uid,json=resourceUid,proto3" json:"resource_uid,omitempty"`
-	RuntimeUuid   string                 `protobuf:"bytes,3,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,3,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	PodUid        string                 `protobuf:"bytes,4,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
 	AgentAddress  string                 `protobuf:"bytes,5,opt,name=agent_address,json=agentAddress,proto3" json:"agent_address,omitempty"`
 	TargetVersion int64                  `protobuf:"varint,6,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
@@ -684,9 +684,9 @@ func (x *GatewayRuntimeRoute) GetResourceUid() string {
 	return ""
 }
 
-func (x *GatewayRuntimeRoute) GetRuntimeUuid() string {
+func (x *GatewayRuntimeRoute) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -928,8 +928,8 @@ type OpenCodeAuthorization struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// code is the one-time authorization code issued by Gitea.
 	Code string `protobuf:"bytes,1,opt,name=code,proto3" json:"code,omitempty"`
-	// runtime_uuid and endpoint_id are parsed from the canonical Gateway host.
-	RuntimeUuid   string `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	// runtime_key is the site UID and numeric Codespace ID resolved by Gateway.
+	RuntimeKey    string `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	EndpointId    string `protobuf:"bytes,3,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -972,9 +972,9 @@ func (x *OpenCodeAuthorization) GetCode() string {
 	return ""
 }
 
-func (x *OpenCodeAuthorization) GetRuntimeUuid() string {
+func (x *OpenCodeAuthorization) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -988,7 +988,7 @@ func (x *OpenCodeAuthorization) GetEndpointId() string {
 
 type PublicEndpointAuthorization struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	RuntimeUuid   string                 `protobuf:"bytes,1,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,1,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	EndpointId    string                 `protobuf:"bytes,2,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1024,9 +1024,9 @@ func (*PublicEndpointAuthorization) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
-func (x *PublicEndpointAuthorization) GetRuntimeUuid() string {
+func (x *PublicEndpointAuthorization) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -1040,7 +1040,7 @@ func (x *PublicEndpointAuthorization) GetEndpointId() string {
 
 type SSHPublicKeyAuthorization struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	RuntimeUuid   string                 `protobuf:"bytes,1,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,1,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	PublicKey     []byte                 `protobuf:"bytes,2,opt,name=public_key,json=publicKey,proto3" json:"public_key,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1076,9 +1076,9 @@ func (*SSHPublicKeyAuthorization) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
-func (x *SSHPublicKeyAuthorization) GetRuntimeUuid() string {
+func (x *SSHPublicKeyAuthorization) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -1093,7 +1093,7 @@ func (x *SSHPublicKeyAuthorization) GetPublicKey() []byte {
 type EndpointSessionAuthorization struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RuntimeUuid   string                 `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	EndpointId    string                 `protobuf:"bytes,3,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	SiteUid       string                 `protobuf:"bytes,4,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -1137,9 +1137,9 @@ func (x *EndpointSessionAuthorization) GetUserId() int64 {
 	return 0
 }
 
-func (x *EndpointSessionAuthorization) GetRuntimeUuid() string {
+func (x *EndpointSessionAuthorization) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -1161,7 +1161,7 @@ func (x *EndpointSessionAuthorization) GetSiteUid() string {
 type SSHSessionAuthorization struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        int64                  `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RuntimeUuid   string                 `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey    string                 `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	SiteUid       string                 `protobuf:"bytes,3,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1204,9 +1204,9 @@ func (x *SSHSessionAuthorization) GetUserId() int64 {
 	return 0
 }
 
-func (x *SSHSessionAuthorization) GetRuntimeUuid() string {
+func (x *SSHSessionAuthorization) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -1223,7 +1223,7 @@ type AuthorizeGatewayResponse struct {
 	Allowed        bool                   `protobuf:"varint,1,opt,name=allowed,proto3" json:"allowed,omitempty"`
 	DeniedCategory string                 `protobuf:"bytes,2,opt,name=denied_category,json=deniedCategory,proto3" json:"denied_category,omitempty"`
 	UserId         int64                  `protobuf:"varint,3,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	RuntimeUuid    string                 `protobuf:"bytes,4,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey     string                 `protobuf:"bytes,4,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	EndpointId     string                 `protobuf:"bytes,5,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	SiteUid        string                 `protobuf:"bytes,6,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	unknownFields  protoimpl.UnknownFields
@@ -1281,9 +1281,9 @@ func (x *AuthorizeGatewayResponse) GetUserId() int64 {
 	return 0
 }
 
-func (x *AuthorizeGatewayResponse) GetRuntimeUuid() string {
+func (x *AuthorizeGatewayResponse) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -1305,7 +1305,7 @@ func (x *AuthorizeGatewayResponse) GetSiteUid() string {
 type IssueAgentAccessRequest struct {
 	state           protoimpl.MessageState `protogen:"open.v1"`
 	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	RuntimeUuid     string                 `protobuf:"bytes,2,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	RuntimeKey      string                 `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
 	Capability      v1.AccessCapability    `protobuf:"varint,3,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
 	EndpointId      string                 `protobuf:"bytes,4,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
@@ -1349,9 +1349,9 @@ func (x *IssueAgentAccessRequest) GetProtocolVersion() uint32 {
 	return 0
 }
 
-func (x *IssueAgentAccessRequest) GetRuntimeUuid() string {
+func (x *IssueAgentAccessRequest) GetRuntimeKey() string {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.RuntimeKey
 	}
 	return ""
 }
@@ -2149,13 +2149,14 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x12workspace_sessions\x18\x05 \x03(\v2&.component.v1.WorkspaceSessionActivityR\x11workspaceSessions\x1aA\n" +
 	"\x13ActiveSessionsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\x90\x01\n" +
+	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\"\x8e\x01\n" +
 	"\x18WorkspaceSessionIdentity\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x19\n" +
 	"\bsite_uid\x18\x02 \x01(\tR\asiteUid\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12!\n" +
-	"\fruntime_uuid\x18\x04 \x01(\tR\vruntimeUuid\"\xb9\x01\n" +
+	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12\x1f\n" +
+	"\vruntime_key\x18\x04 \x01(\tR\n" +
+	"runtimeKey\"\xb9\x01\n" +
 	"\x18WorkspaceSessionActivity\x12B\n" +
 	"\bidentity\x18\x01 \x01(\v2&.component.v1.WorkspaceSessionIdentityR\bidentity\x12\x16\n" +
 	"\x06active\x18\x02 \x01(\bR\x06active\x12A\n" +
@@ -2200,11 +2201,12 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"$ssh_auth_failure_window_milliseconds\x18\x13 \x01(\x03R sshAuthFailureWindowMilliseconds\x12L\n" +
 	"#public_max_connections_per_endpoint\x18\x14 \x01(\x05R\x1fpublicMaxConnectionsPerEndpoint\x12@\n" +
 	"\x1dpublic_max_connections_per_ip\x18\x15 \x01(\x05R\x19publicMaxConnectionsPerIp\x126\n" +
-	"\x17validation_max_inflight\x18\x16 \x01(\x05R\x15validationMaxInflight\"\xbc\x02\n" +
+	"\x17validation_max_inflight\x18\x16 \x01(\x05R\x15validationMaxInflight\"\xba\x02\n" +
 	"\x13GatewayRuntimeRoute\x12\x19\n" +
 	"\bsite_uid\x18\x01 \x01(\tR\asiteUid\x12!\n" +
-	"\fresource_uid\x18\x02 \x01(\tR\vresourceUid\x12!\n" +
-	"\fruntime_uuid\x18\x03 \x01(\tR\vruntimeUuid\x12\x17\n" +
+	"\fresource_uid\x18\x02 \x01(\tR\vresourceUid\x12\x1f\n" +
+	"\vruntime_key\x18\x03 \x01(\tR\n" +
+	"runtimeKey\x12\x17\n" +
 	"\apod_uid\x18\x04 \x01(\tR\x06podUid\x12#\n" +
 	"\ragent_address\x18\x05 \x01(\tR\fagentAddress\x12%\n" +
 	"\x0etarget_version\x18\x06 \x01(\x03R\rtargetVersion\x12;\n" +
@@ -2223,41 +2225,48 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x10endpoint_session\x18\x05 \x01(\v2*.component.v1.EndpointSessionAuthorizationH\x00R\x0fendpointSession\x12H\n" +
 	"\vssh_session\x18\x06 \x01(\v2%.component.v1.SSHSessionAuthorizationH\x00R\n" +
 	"sshSessionB\t\n" +
-	"\arequest\"o\n" +
+	"\arequest\"m\n" +
 	"\x15OpenCodeAuthorization\x12\x12\n" +
-	"\x04code\x18\x01 \x01(\tR\x04code\x12!\n" +
-	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12\x1f\n" +
+	"\x04code\x18\x01 \x01(\tR\x04code\x12\x1f\n" +
+	"\vruntime_key\x18\x02 \x01(\tR\n" +
+	"runtimeKey\x12\x1f\n" +
 	"\vendpoint_id\x18\x03 \x01(\tR\n" +
-	"endpointId\"a\n" +
-	"\x1bPublicEndpointAuthorization\x12!\n" +
-	"\fruntime_uuid\x18\x01 \x01(\tR\vruntimeUuid\x12\x1f\n" +
+	"endpointId\"_\n" +
+	"\x1bPublicEndpointAuthorization\x12\x1f\n" +
+	"\vruntime_key\x18\x01 \x01(\tR\n" +
+	"runtimeKey\x12\x1f\n" +
 	"\vendpoint_id\x18\x02 \x01(\tR\n" +
-	"endpointId\"]\n" +
-	"\x19SSHPublicKeyAuthorization\x12!\n" +
-	"\fruntime_uuid\x18\x01 \x01(\tR\vruntimeUuid\x12\x1d\n" +
+	"endpointId\"[\n" +
+	"\x19SSHPublicKeyAuthorization\x12\x1f\n" +
+	"\vruntime_key\x18\x01 \x01(\tR\n" +
+	"runtimeKey\x12\x1d\n" +
 	"\n" +
-	"public_key\x18\x02 \x01(\fR\tpublicKey\"\x96\x01\n" +
+	"public_key\x18\x02 \x01(\fR\tpublicKey\"\x94\x01\n" +
 	"\x1cEndpointSessionAuthorization\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12!\n" +
-	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12\x1f\n" +
+	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x1f\n" +
+	"\vruntime_key\x18\x02 \x01(\tR\n" +
+	"runtimeKey\x12\x1f\n" +
 	"\vendpoint_id\x18\x03 \x01(\tR\n" +
 	"endpointId\x12\x19\n" +
-	"\bsite_uid\x18\x04 \x01(\tR\asiteUid\"p\n" +
+	"\bsite_uid\x18\x04 \x01(\tR\asiteUid\"n\n" +
 	"\x17SSHSessionAuthorization\x12\x17\n" +
-	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12!\n" +
-	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12\x19\n" +
-	"\bsite_uid\x18\x03 \x01(\tR\asiteUid\"\xd5\x01\n" +
+	"\auser_id\x18\x01 \x01(\x03R\x06userId\x12\x1f\n" +
+	"\vruntime_key\x18\x02 \x01(\tR\n" +
+	"runtimeKey\x12\x19\n" +
+	"\bsite_uid\x18\x03 \x01(\tR\asiteUid\"\xd3\x01\n" +
 	"\x18AuthorizeGatewayResponse\x12\x18\n" +
 	"\aallowed\x18\x01 \x01(\bR\aallowed\x12'\n" +
 	"\x0fdenied_category\x18\x02 \x01(\tR\x0edeniedCategory\x12\x17\n" +
-	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12!\n" +
-	"\fruntime_uuid\x18\x04 \x01(\tR\vruntimeUuid\x12\x1f\n" +
+	"\auser_id\x18\x03 \x01(\x03R\x06userId\x12\x1f\n" +
+	"\vruntime_key\x18\x04 \x01(\tR\n" +
+	"runtimeKey\x12\x1f\n" +
 	"\vendpoint_id\x18\x05 \x01(\tR\n" +
 	"endpointId\x12\x19\n" +
-	"\bsite_uid\x18\x06 \x01(\tR\asiteUid\"\xc4\x01\n" +
+	"\bsite_uid\x18\x06 \x01(\tR\asiteUid\"\xc2\x01\n" +
 	"\x17IssueAgentAccessRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12!\n" +
-	"\fruntime_uuid\x18\x02 \x01(\tR\vruntimeUuid\x12:\n" +
+	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1f\n" +
+	"\vruntime_key\x18\x02 \x01(\tR\n" +
+	"runtimeKey\x12:\n" +
 	"\n" +
 	"capability\x18\x03 \x01(\x0e2\x1a.agent.v1.AccessCapabilityR\n" +
 	"capability\x12\x1f\n" +

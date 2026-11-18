@@ -21,17 +21,20 @@ func TestGatewayProxyUpstreamCancellationReturnsBadGateway(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			routes := newRouteStore(gatewayTestBackend{endpointError: context.Canceled})
 			defer routes.Close()
-			route := endpointRoute{SiteUID: "site", CodespaceUUID: "runtime", GiteaWebURL: "https://gitea.test", EndpointID: "app", Public: true}
-			require.NoError(t, routes.Put(route))
+			snapshot := testGatewayRuntime()
+			snapshot.Endpoints = []endpointSnapshot{{EndpointID: "app", Public: true}}
+			require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
+			route, ok := routes.Get(snapshot.RuntimeKey, "app")
+			require.True(t, ok)
 			request := httptest.NewRequest(http.MethodGet, "http://workspace.test/", nil)
 			if routeChanged {
-				_, changed, release, ok := routes.BeginProxy(request, route.CodespaceUUID, route.EndpointID)
+				_, changed, release, ok := routes.BeginProxy(request, route.RuntimeKey, route.EndpointID)
 				require.True(t, ok)
 				defer release()
-				routes.Delete(route.CodespaceUUID, route.EndpointID)
+				require.NoError(t, routes.ReplaceSharedGatewayRuntimes(nil))
 				<-changed.Context().Done()
 				request = changed
-				require.NoError(t, routes.Put(route))
+				require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
 			}
 			response := httptest.NewRecorder()
 			proxyGatewayEndpoint(response, request, routes, route, gatewayProxyRequestContext{})
@@ -46,7 +49,7 @@ func TestGatewayProxyRequestInjectsAuthenticatedContext(t *testing.T) {
 
 	request := httptest.NewRequest(http.MethodGet, "https://11111111-1111-4111-8111-111111111111.gateway.example.test/work", nil)
 	request.RemoteAddr = "198.51.100.44:3000"
-	request.Header.Set(proxyHeaderCodespaceUUID, "spoofed")
+	request.Header.Set(proxyHeaderCodespaceID, "spoofed")
 	request.Header.Set(proxyHeaderEndpointID, "spoofed")
 	request.Header.Set(proxyHeaderAccess, "public")
 	request.Header.Set(proxyHeaderUserID, "7")
@@ -56,14 +59,14 @@ func TestGatewayProxyRequestInjectsAuthenticatedContext(t *testing.T) {
 	request.Header.Set("X-Forwarded-Host", "evil.example.test")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
-		codespaceUUID:  "11111111-1111-4111-8111-111111111111",
+		runtimeKey:     "site/123",
 		endpointID:     "workspace",
 		access:         "authenticated",
 		userID:         42,
 		externalScheme: "https",
 	})
-	if got := request.Header.Get(proxyHeaderCodespaceUUID); got != "11111111-1111-4111-8111-111111111111" {
-		t.Fatalf("codespace uuid header = %q", got)
+	if got := request.Header.Get(proxyHeaderCodespaceID); got != "123" {
+		t.Fatalf("codespace id header = %q", got)
 	}
 	if got := request.Header.Get(proxyHeaderEndpointID); got != "workspace" {
 		t.Fatalf("endpoint id header = %q", got)
@@ -96,7 +99,7 @@ func TestGatewayProxyRequestInjectsPublicContextWithoutUser(t *testing.T) {
 	request.Header.Set(proxyHeaderUserID, "42")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
-		codespaceUUID:  "codespace-uuid",
+		runtimeKey:     "site-1/1",
 		endpointID:     "web",
 		access:         "public",
 		externalScheme: "http",
@@ -128,7 +131,7 @@ func TestGatewayProxyRequestRebuildsCookieHeader(t *testing.T) {
 	request.Header.Add("Cookie", returnToCookieName+"=%2Fdeep; "+secureReturnToCookieName+"=%2Fsecure; theme=dark; broken")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
-		codespaceUUID:  "codespace-uuid",
+		runtimeKey:     "site-1/1",
 		endpointID:     "web",
 		access:         "authenticated",
 		userID:         42,
@@ -148,7 +151,7 @@ func TestGatewayProxyRequestDeletesCookieHeaderWhenOnlyReservedOrInvalid(t *test
 	request.Header.Add("Cookie", secureReturnToCookieName+"=%2F")
 
 	prepareGatewayProxyRequest(request, gatewayProxyRequestContext{
-		codespaceUUID:  "codespace-uuid",
+		runtimeKey:     "site-1/1",
 		endpointID:     "web",
 		access:         "public",
 		externalScheme: "https",

@@ -74,7 +74,7 @@ func newGatewaySSHAuthLimiter(config gatewaySSHAuthLimitConfig) *gatewaySSHAuthL
 	}
 }
 
-func (l *gatewaySSHAuthLimiter) Allow(sourceIP, codespaceUUID, publicKeyHash string, now time.Time) bool {
+func (l *gatewaySSHAuthLimiter) Allow(sourceIP, runtimeKey, publicKeyHash string, now time.Time) bool {
 	if l == nil {
 		return true
 	}
@@ -82,7 +82,7 @@ func (l *gatewaySSHAuthLimiter) Allow(sourceIP, codespaceUUID, publicKeyHash str
 	defer l.mu.Unlock()
 
 	l.pruneExpired(now)
-	for _, item := range l.items(sourceIP, codespaceUUID, publicKeyHash) {
+	for _, item := range l.items(sourceIP, runtimeKey, publicKeyHash) {
 		record := l.records[item.key]
 		if record == nil {
 			if len(l.records) >= l.config.maxKeys {
@@ -103,7 +103,7 @@ func (l *gatewaySSHAuthLimiter) Allow(sourceIP, codespaceUUID, publicKeyHash str
 	return true
 }
 
-func (l *gatewaySSHAuthLimiter) RecordFailure(sourceIP, codespaceUUID, publicKeyHash, category string, now time.Time) {
+func (l *gatewaySSHAuthLimiter) RecordFailure(sourceIP, runtimeKey, publicKeyHash, category string, now time.Time) {
 	if l == nil {
 		return
 	}
@@ -114,7 +114,7 @@ func (l *gatewaySSHAuthLimiter) RecordFailure(sourceIP, codespaceUUID, publicKey
 	defer l.mu.Unlock()
 
 	l.pruneExpired(now)
-	for _, item := range l.items(sourceIP, codespaceUUID, publicKeyHash) {
+	for _, item := range l.items(sourceIP, runtimeKey, publicKeyHash) {
 		record := l.records[item.key]
 		if record == nil {
 			if len(l.records) >= l.config.maxKeys {
@@ -155,7 +155,7 @@ func (l *gatewaySSHAuthLimiter) backoffDuration(failures int) time.Duration {
 	return backoff
 }
 
-func (l *gatewaySSHAuthLimiter) items(sourceIP, codespaceUUID, publicKeyHash string) []gatewaySSHAuthLimitItem {
+func (l *gatewaySSHAuthLimiter) items(sourceIP, runtimeKey, publicKeyHash string) []gatewaySSHAuthLimitItem {
 	items := make([]gatewaySSHAuthLimitItem, 0, 4)
 	if sourceIP != "" {
 		items = append(items, gatewaySSHAuthLimitItem{
@@ -163,15 +163,15 @@ func (l *gatewaySSHAuthLimiter) items(sourceIP, codespaceUUID, publicKeyHash str
 			limit: l.config.maxPerIP,
 		})
 	}
-	if codespaceUUID != "" {
+	if runtimeKey != "" {
 		items = append(items, gatewaySSHAuthLimitItem{
-			key:   gatewaySSHAuthLimitKey{kind: "codespace_uuid", value: codespaceUUID},
+			key:   gatewaySSHAuthLimitKey{kind: "runtime_key", value: runtimeKey},
 			limit: l.config.maxPerCodespace,
 		})
 	}
-	if sourceIP != "" && codespaceUUID != "" {
+	if sourceIP != "" && runtimeKey != "" {
 		items = append(items, gatewaySSHAuthLimitItem{
-			key:   gatewaySSHAuthLimitKey{kind: "source_ip_codespace_uuid", value: sourceIP + "\x00" + codespaceUUID},
+			key:   gatewaySSHAuthLimitKey{kind: "source_ip_runtime_key", value: sourceIP + "\x00" + runtimeKey},
 			limit: l.config.maxPerIPCodespace,
 		})
 	}

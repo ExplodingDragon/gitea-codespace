@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/runtimeidentity"
 )
 
 const gatewayAgentEndpointHost = "runtime.endpoint"
@@ -28,7 +29,7 @@ type gatewayProxyResponseContext struct {
 }
 
 type gatewayProxyRequestContext struct {
-	codespaceUUID  string
+	runtimeKey     string
 	endpointID     string
 	access         string
 	userID         int64
@@ -37,10 +38,10 @@ type gatewayProxyRequestContext struct {
 }
 
 const (
-	proxyHeaderCodespaceUUID = "X-Gitea-Codespace-UUID"
-	proxyHeaderEndpointID    = "X-Gitea-Codespace-Endpoint-ID"
-	proxyHeaderAccess        = "X-Gitea-Codespace-Access"
-	proxyHeaderUserID        = "X-Gitea-Codespace-User-ID"
+	proxyHeaderCodespaceID = "X-Gitea-Codespace-ID"
+	proxyHeaderEndpointID  = "X-Gitea-Codespace-Endpoint-ID"
+	proxyHeaderAccess      = "X-Gitea-Codespace-Access"
+	proxyHeaderUserID      = "X-Gitea-Codespace-User-ID"
 
 	sessionCookieName        = "gitea_codespace_session"
 	secureSessionCookieName  = "__Host-gitea_codespace_session"
@@ -116,7 +117,7 @@ func proxyGatewayEndpoint(
 
 func prepareGatewayProxyRequest(request *http.Request, proxyContext gatewayProxyRequestContext) {
 	header := request.Header
-	header.Del(proxyHeaderCodespaceUUID)
+	header.Del(proxyHeaderCodespaceID)
 	header.Del(proxyHeaderEndpointID)
 	header.Del(proxyHeaderAccess)
 	header.Del(proxyHeaderUserID)
@@ -126,7 +127,9 @@ func prepareGatewayProxyRequest(request *http.Request, proxyContext gatewayProxy
 	header.Del("X-Forwarded-Host")
 	rebuildGatewayProxyCookieHeader(request)
 
-	header.Set(proxyHeaderCodespaceUUID, proxyContext.codespaceUUID)
+	if _, id, valid := runtimeidentity.Parse(proxyContext.runtimeKey); valid {
+		header.Set(proxyHeaderCodespaceID, formatInt64(id))
+	}
 	header.Set(proxyHeaderEndpointID, proxyContext.endpointID)
 	header.Set(proxyHeaderAccess, proxyContext.access)
 	if proxyContext.userID > 0 {

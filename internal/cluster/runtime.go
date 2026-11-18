@@ -87,9 +87,6 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		}
 		return ctrl.Result{RequeueAfter: time.Millisecond}, nil
 	}
-	if !cs.Status.Bound && cs.Status.RecoveryAction != "delete" {
-		return r.condition(ctx, &cs, "AwaitingBinding", fmt.Errorf("gitea has not confirmed the runtime identity"))
-	}
 	if cs.Spec.Operation.Type == "delete" || cs.Status.RecoveryAction == "delete" || !cs.DeletionTimestamp.IsZero() {
 		if cs.Spec.Operation.Type != "delete" && cs.Status.RecoveryAction != "delete" {
 			return r.condition(ctx, &cs, "CleanupAuthorizationRequired", fmt.Errorf("gitea delete authorization is required before removing runtime data"))
@@ -182,7 +179,7 @@ func (r *RuntimeReconciler) Reconcile(ctx context.Context, request ctrl.Request)
 		created.Spec.Containers[0].Env = append(created.Spec.Containers[0].Env,
 			corev1.EnvVar{Name: "CODESPACE_SSH_HOST", Value: strings.ToLower(strings.TrimSpace(host))},
 			corev1.EnvVar{Name: "CODESPACE_SSH_PORT", Value: strconv.Itoa(portNumber)},
-			corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: runtimeplatform.SSHUserPrefix + cs.Spec.RuntimeUUID},
+			corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: runtimeplatform.SSHUserPrefix + string(cs.UID)},
 		)
 		pod = *created
 		if err := r.Client.Create(ctx, &pod); err != nil {
@@ -312,7 +309,7 @@ func (r *RuntimeReconciler) condition(ctx context.Context, cs *api.Codespace, re
 }
 
 func (r *RuntimeReconciler) ensureVolume(ctx context.Context, cs *api.Codespace) error {
-	name := "data-" + cs.Spec.RuntimeUUID
+	name := fmt.Sprintf("data-%d", cs.Spec.CodespaceID)
 	var volume corev1.PersistentVolumeClaim
 	err := r.Client.Get(ctx, types.NamespacedName{Namespace: cs.Namespace, Name: name}, &volume)
 	if apierrors.IsNotFound(err) {
@@ -390,7 +387,7 @@ func runtimePod(cs *api.Codespace, managerURL, managerIdentity string, pullSecre
 					{Name: "CODESPACE_DEBUG", Value: strconv.FormatBool(runtime.Debug)},
 					{Name: "CODESPACE_MANAGER_URL", Value: managerURL},
 					{Name: "CODESPACE_MANAGER_IDENTITY", Value: managerIdentity},
-					{Name: "CODESPACE_RUNTIME_UUID", Value: cs.Spec.RuntimeUUID},
+					{Name: "CODESPACE_ID", Value: strconv.FormatInt(cs.Spec.CodespaceID, 10)},
 					{Name: "CODESPACE_SITE_UID", Value: string(cs.Spec.Site.UID)},
 					{Name: "CODESPACE_RESOURCE_UID", Value: string(cs.UID)},
 					{Name: "CODESPACE_POD_UID", ValueFrom: &corev1.EnvVarSource{FieldRef: &corev1.ObjectFieldSelector{FieldPath: "metadata.uid"}}},

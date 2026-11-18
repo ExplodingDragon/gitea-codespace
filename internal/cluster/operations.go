@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"uuid"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
@@ -40,8 +39,8 @@ type Operations struct {
 	PlatformImage       string
 }
 
-// Accept persists identity and inputs before binding or granting execution.
-func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote codespacev1connect.ManagerServiceClient, payload *codespacev1.OperationPayload, sent time.Time) error {
+// Accept persists identity and inputs before granting execution.
+func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, payload *codespacev1.OperationPayload, sent time.Time) error {
 	if payload == nil || payload.CodespaceId <= 0 || payload.OperationRversion <= 0 {
 		return fmt.Errorf("%w: invalid Gitea operation identity", errOperationRejected)
 	}
@@ -74,9 +73,6 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			return fmt.Errorf("%w: %s operation has invalid effective Runtime settings: %w", errOperationRejected, operationType, err)
 		}
 	}
-	if operationType != "create" && payload.RuntimeUuid == "" {
-		return fmt.Errorf("%w: operation requires the bound runtime UUID", errOperationRejected)
-	}
 	namespace, err := api.SiteNamespace(site.Name, o.ManagementNamespace)
 	if err != nil {
 		return err
@@ -96,9 +92,6 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		return err
 	}
 	if isNew {
-		if payload.RuntimeUuid != "" {
-			return fmt.Errorf("%w: bound runtime record is missing", errOperationRejected)
-		}
 		if operationType != "create" || payload.GetCreate() == nil {
 			return fmt.Errorf("%w: %s requires an existing runtime record", errOperationRejected, operationType)
 		}
@@ -129,23 +122,19 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 		cs = api.Codespace{
 			ObjectMeta: metav1.ObjectMeta{Name: key.Name, Namespace: key.Namespace, Labels: map[string]string{SiteUIDLabel: string(site.UID)}, Finalizers: []string{RuntimeFinalizer}},
 			Spec: api.CodespaceSpec{
-				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, RuntimeUUID: payload.RuntimeUuid, EnvironmentTag: selected.Name,
+				Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: payload.CodespaceId, EnvironmentTag: selected.Name,
 				Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: *selected.Spec.Runtime.DeepCopy(), Image: o.PlatformImage},
 			},
-		}
-		if cs.Spec.RuntimeUUID == "" {
-			cs.Spec.RuntimeUUID = uuid.NewV4().String()
 		}
 	} else {
 		if cs.Spec.Site.UID != site.UID || cs.Spec.CodespaceID != payload.CodespaceId || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction == "delete" {
 			return fmt.Errorf("%w: runtime ownership or deletion conflicts with operation", errOperationRejected)
 		}
-		if payload.OperationRversion < cs.Spec.Operation.Version || (payload.RuntimeUuid != "" && payload.RuntimeUuid != cs.Spec.RuntimeUUID) {
+		if payload.OperationRversion < cs.Spec.Operation.Version {
 			return fmt.Errorf("%w: Gitea operation identity regressed or changed", errOperationRejected)
 		}
 	}
 	input := proto.Clone(payload).(*codespacev1.OperationPayload)
-	input.RuntimeUuid = cs.Spec.RuntimeUUID
 	// Lease grants are observations, not execution inputs.
 	input.LeaseValidForMilliseconds = 0
 	encoded, err := protojson.Marshal(input)
@@ -185,27 +174,6 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 			return err
 		}
 	}
-	if !cs.Status.Bound {
-		if operationType == "create" {
-			if err := o.bind(ctx, &cs, remote); err != nil {
-				return err
-			}
-		} else {
-			if payload.RuntimeUuid != cs.Spec.RuntimeUUID {
-				return fmt.Errorf("a subsequent operation must confirm the persisted runtime identity")
-			}
-			operationVersion := cs.Spec.Operation.Version
-			if err := updateCodespaceStatus(ctx, o.Client, &cs, func(current *api.Codespace) error {
-				if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Spec.RuntimeUUID != payload.RuntimeUuid {
-					return errObservedResourceChanged
-				}
-				current.Status.Bound = true
-				return nil
-			}); err != nil {
-				return err
-			}
-		}
-	}
 	if cs.Status.RecoveryAction == "stop" && newVersion {
 		operationVersion := cs.Spec.Operation.Version
 		if err := updateCodespaceStatus(ctx, o.Client, &cs, func(current *api.Codespace) error {
@@ -227,7 +195,7 @@ func (o *Operations) Accept(ctx context.Context, site *api.GiteaSite, remote cod
 	}
 	_ = o.Logs.Append(&cs, "", nil)
 	if o.Activity != nil && settings != nil {
-		return o.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, settings, time.Now())
+		return o.Activity.ObserveSettings(string(site.UID), cs.RuntimeKey(), settings, time.Now())
 	}
 	return nil
 }
@@ -254,27 +222,6 @@ func (o *Operations) ensureRuntimeProxySecret(ctx context.Context, site *api.Git
 		return fmt.Errorf("%w: runtime proxy Secret ownership changed", errOperationRejected)
 	}
 	return nil
-}
-
-func (o *Operations) bind(ctx context.Context, cs *api.Codespace, remote codespacev1connect.ManagerServiceClient) error {
-	if cs.Spec.Operation.Type != "create" || !cs.DeletionTimestamp.IsZero() {
-		return fmt.Errorf("%w: unbound runtime has no create operation", errOperationRejected)
-	}
-	response, err := remote.BindRuntimeIdentity(ctx, &codespacev1.BindRuntimeIdentityRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version})
-	if err != nil {
-		return fmt.Errorf("bind persisted runtime identity: %w", err)
-	}
-	if response.RuntimeUuid != cs.Spec.RuntimeUUID {
-		return fmt.Errorf("%w: Gitea binding conflicts with persisted runtime identity", errOperationRejected)
-	}
-	operationVersion, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.RuntimeUUID
-	return updateCodespaceStatus(ctx, o.Client, cs, func(current *api.Codespace) error {
-		if current.Spec.Operation.Type != "create" || current.Spec.Operation.Version != operationVersion || current.Spec.RuntimeUUID != runtimeUUID || !current.DeletionTimestamp.IsZero() {
-			return errObservedResourceChanged
-		}
-		current.Status.Bound = true
-		return nil
-	})
 }
 
 func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.GiteaSite, remote codespacev1connect.ManagerServiceClient, payload *codespacev1.OperationPayload) error {
@@ -308,14 +255,9 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 	if local {
 		o.Authority.Revoke(cs.UID)
 	}
-	runtimeUUID := payload.RuntimeUuid
-	if runtimeUUID == "" && local && cs.Status.Bound {
-		runtimeUUID = cs.Spec.RuntimeUUID
-	}
 	_, err = remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{
 		ProtocolVersion:   1,
 		CodespaceId:       payload.CodespaceId,
-		RuntimeUuid:       runtimeUUID,
 		OperationRversion: payload.OperationRversion,
 		OperationType:     operationType,
 		Status:            codespacev1.FinalStatus_FINAL_STATUS_FAILED,
@@ -323,24 +265,16 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 	if err != nil || !local {
 		return err
 	}
-	operationVersion, localRuntimeUUID := cs.Spec.Operation.Version, cs.Spec.RuntimeUUID
+	operationVersion := cs.Spec.Operation.Version
 	if operationVersion != payload.OperationRversion {
 		return nil
 	}
 	err = updateCodespaceStatus(ctx, o.Client, &cs, func(current *api.Codespace) error {
-		if current.Spec.Site.UID != site.UID || current.Spec.CodespaceID != payload.CodespaceId || current.Spec.Operation.Version != operationVersion || current.Spec.RuntimeUUID != localRuntimeUUID {
+		if current.Spec.Site.UID != site.UID || current.Spec.CodespaceID != payload.CodespaceId || current.Spec.Operation.Version != operationVersion {
 			return errObservedResourceChanged
 		}
-		action := recoveryAction
-		if operationType == codespacev1.OperationType_OPERATION_TYPE_RESUME && !current.Status.Bound {
-			if payload.RuntimeUuid == current.Spec.RuntimeUUID {
-				current.Status.Bound = true
-			} else {
-				action = "delete"
-			}
-		}
 		current.Status.SettledOperationVersion = operationVersion
-		current.Status.RecoveryAction = action
+		current.Status.RecoveryAction = recoveryAction
 		return nil
 	})
 	return err
@@ -348,7 +282,7 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 
 // Flush publishes ready metadata before final and keeps acknowledgements durable.
 func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codespacev1connect.ManagerServiceClient) error {
-	if !cs.Status.Bound || !cs.DeletionTimestamp.IsZero() {
+	if !cs.DeletionTimestamp.IsZero() {
 		return nil
 	}
 	if cs.Status.RecoveryAction != "" {
@@ -369,7 +303,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 				return fmt.Errorf("build runtime metadata: %w", err)
 			}
 			metadata.ResourceUsage = o.Samples.Load(cs)
-			_, err = remote.ReportRuntimeMetadata(ctx, &codespacev1.ReportRuntimeMetadataRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata})
+			_, err = remote.ReportRuntimeMetadata(ctx, &codespacev1.ReportRuntimeMetadataRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata})
 			if err != nil {
 				return err
 			}
@@ -420,7 +354,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if result.Succeeded {
 		status = codespacev1.FinalStatus_FINAL_STATUS_DONE
 	}
-	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: result.Version, OperationType: finalOperationType, Status: status})
+	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, OperationRversion: result.Version, OperationType: finalOperationType, Status: status})
 	if err != nil {
 		return err
 	}

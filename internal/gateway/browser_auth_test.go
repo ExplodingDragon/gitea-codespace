@@ -7,41 +7,36 @@ import (
 	"strings"
 	"testing"
 
-	"gitea.dev/codespace/internal/runtimeendpoint"
+	"github.com/stretchr/testify/require"
 )
-
-func newTestGatewayBrowserAuth(t *testing.T, address string) *browserAuth {
-	t.Helper()
-	routes := newRouteStore(nil)
-	t.Cleanup(routes.Close)
-	if err := routes.Put(endpointRoute{SiteUID: "site-1", GiteaWebURL: address, CodespaceUUID: "11111111-1111-4111-8111-111111111111", EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
-		t.Fatal(err)
-	}
-	return newBrowserAuth(routes)
-}
 
 func TestGatewayBrowserAuthOpenURLUsesCodespaceDetail(t *testing.T) {
 	t.Parallel()
 
-	auth := newTestGatewayBrowserAuth(t, "https://gitea.example.test/git/")
+	routes := newRouteStore(nil)
+	t.Cleanup(routes.Close)
+	runtime := testGatewayRuntime()
+	runtime.GiteaWebURL = "https://gitea.example.test/git/"
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{runtime}))
+	auth := newBrowserAuth(routes)
 
-	got, ok := auth.openURL("11111111-1111-4111-8111-111111111111", "app-3000")
+	got, ok := auth.openURL("site-1/42", "app-3000")
 	if !ok {
 		t.Fatal("open URL is unavailable")
 	}
-	want := "https://gitea.example.test/git/-/codespaces/11111111-1111-4111-8111-111111111111?open_endpoint=app-3000"
+	want := "https://gitea.example.test/git/-/codespaces/42?open_endpoint=app-3000"
 	if got != want {
 		t.Fatalf("open URL = %q, want %q", got, want)
 	}
-	otherID := "22222222-2222-4222-8222-222222222222"
+	otherID := "site-2/42"
 	otherURL := "https://other.example.test/"
-	if err := auth.routes.Put(endpointRoute{SiteUID: "site-2", GiteaWebURL: otherURL, CodespaceUUID: otherID, EndpointID: runtimeendpoint.WorkspaceEndpointID, Label: runtimeendpoint.WorkspaceEndpointLabel}); err != nil {
-		t.Fatal(err)
-	}
+	other := runtime
+	other.SiteUID, other.ResourceUID, other.RuntimeKey, other.GiteaWebURL = "site-2", "22222222-2222-4222-8222-222222222222", otherID, otherURL
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{runtime, other}))
 	if target, ok := auth.openURL(otherID, "workspace"); !ok || !strings.HasPrefix(target, otherURL) {
 		t.Fatal("browser recovery used the wrong Gitea site")
 	}
-	if _, ok := auth.openURL("33333333-3333-4333-8333-333333333333", "workspace"); ok {
+	if _, ok := auth.openURL("site-3/42", "workspace"); ok {
 		t.Fatal("browser recovery redirected an unknown runtime")
 	}
 }

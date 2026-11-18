@@ -40,14 +40,14 @@ func (s controlService) UploadLogs(ctx context.Context, request *agentv1.UploadL
 }
 
 func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, journal.Close()) }()
 	var executions, results, payloads atomic.Int32
 	resultReceived := make(chan struct{}, 8)
 	uploaded := make(chan *agentv1.UploadLogsRequest, 8)
 	logAcknowledgement := make(chan struct{})
-	operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+	operation := &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
 	service := controlService{control: func(ctx context.Context, stream agentv1connect.AgentControlServiceControlServerStream) error {
 		for {
 			request, err := stream.Receive()
@@ -135,7 +135,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 }
 
 func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, journal.Close()) }()
 	started := make(chan struct{})
@@ -153,7 +153,7 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 			default:
 			}
 			response := &agentv1.ControlResponse{SessionId: request.SessionId, Sequence: request.Sequence, OperationRversion: 1,
-				Operation: &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}},
+				Operation: &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}},
 				Runtime:   &agentv1.RuntimeOptions{GitSshKeyType: "ed25519"}, CancelExecution: len(request.Report.GitSshPublicKey) == 0,
 				Access: &codespacev1.RuntimeAccessBundle{}, PermitValidForMilliseconds: 500,
 			}
@@ -198,7 +198,7 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 }
 
 func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, journal.Close()) }()
 	var version atomic.Int64
@@ -213,7 +213,7 @@ func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			operation := &codespacev1.OperationPayload{RuntimeUuid: "runtime", OperationRversion: version.Load(), Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
+			operation := &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: version.Load(), Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
 			if operation.OperationRversion == 2 {
 				operation.Command = &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{}}
 			}

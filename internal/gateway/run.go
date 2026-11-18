@@ -414,7 +414,7 @@ func gatewayRuntimes(routes []*componentv1.GatewayRuntimeRoute) []runtimeSnapsho
 			continue
 		}
 		item := runtimeSnapshot{
-			SiteUID: route.SiteUid, ResourceUID: route.ResourceUid, RuntimeUUID: route.RuntimeUuid,
+			SiteUID: route.SiteUid, ResourceUID: route.ResourceUid, RuntimeKey: route.RuntimeKey,
 			GiteaWebURL: route.GiteaWebUrl, PodUID: route.PodUid, AgentAddress: route.AgentAddress,
 			TargetVersion: route.TargetVersion,
 		}

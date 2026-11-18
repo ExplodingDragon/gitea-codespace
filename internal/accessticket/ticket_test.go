@@ -19,7 +19,7 @@ func TestTicketBindsCurrentAccessTarget(t *testing.T) {
 	require.NoError(t, err)
 	now := time.Unix(1000, 0)
 	encoded, err := Sign(privateKey, &agentv1.AccessTicketClaims{
-		SiteUid: "site", ResourceUid: "resource", RuntimeUuid: "runtime", PodUid: "pod", TargetVersion: 7,
+		SiteUid: "site", ResourceUid: "resource", CodespaceId: 1, PodUid: "pod", TargetVersion: 7,
 		Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace", ExpiresUnix: now.Add(time.Minute).Unix(),
 	}, now)
 	require.NoError(t, err)

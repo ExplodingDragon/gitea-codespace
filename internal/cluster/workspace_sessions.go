@@ -34,7 +34,7 @@ func (s *ComponentServer) replaceWorkspaceActivity(key gatewayActivityKey, owner
 	filtered := make([]*componentv1.WorkspaceSessionActivity, 0, len(entries))
 	for _, entry := range entries {
 		identity := entry.GetIdentity()
-		if site, ok := authorizedSites[identity.GetRuntimeUuid()]; ok && site == identity.GetSiteUid() {
+		if site, ok := authorizedSites[identity.GetRuntimeKey()]; ok && site == identity.GetSiteUid() {
 			filtered = append(filtered, entry)
 		}
 	}
@@ -45,7 +45,7 @@ func (t *workspaceSessionTracker) replace(key gatewayActivityKey, owner *workspa
 	sessions := make(map[string]*componentv1.WorkspaceSessionActivity, len(entries))
 	for _, entry := range entries {
 		identity := entry.GetIdentity()
-		if identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeUuid() == "" || entry.LastActiveUnixMilliseconds <= 0 {
+		if identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeKey() == "" || entry.LastActiveUnixMilliseconds <= 0 {
 			return connect.NewError(connect.CodeInvalidArgument, "workspace session activity is incomplete")
 		}
 		if _, duplicate := sessions[identity.SessionId]; duplicate {
@@ -142,10 +142,10 @@ func (s *ComponentServer) LookupWorkspaceSession(ctx context.Context, request *c
 		return nil, err
 	}
 	identity := request.GetIdentity()
-	if request.ProtocolVersion != 1 || identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeUuid() == "" {
+	if request.ProtocolVersion != 1 || identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeKey() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "workspace session identity is incomplete")
 	}
-	_, site, err := s.runtimeForGateway(ctx, component, identity.RuntimeUuid)
+	_, site, err := s.runtimeForGateway(ctx, component, identity.RuntimeKey)
 	if err != nil {
 		if apierrors.IsNotFound(err) || connect.CodeOf(err) == connect.CodeNotFound {
 			return &componentv1.LookupWorkspaceSessionResponse{}, nil

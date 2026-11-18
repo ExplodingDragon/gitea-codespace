@@ -1793,7 +1793,7 @@ type AccessTicketClaims struct {
 	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	SiteUid         string                 `protobuf:"bytes,2,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
 	ResourceUid     string                 `protobuf:"bytes,3,opt,name=resource_uid,json=resourceUid,proto3" json:"resource_uid,omitempty"`
-	RuntimeUuid     string                 `protobuf:"bytes,4,opt,name=runtime_uuid,json=runtimeUuid,proto3" json:"runtime_uuid,omitempty"`
+	CodespaceId     int64                  `protobuf:"varint,4,opt,name=codespace_id,json=codespaceId,proto3" json:"codespace_id,omitempty"`
 	PodUid          string                 `protobuf:"bytes,5,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
 	TargetVersion   int64                  `protobuf:"varint,6,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
 	Capability      AccessCapability       `protobuf:"varint,7,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
@@ -1855,11 +1855,11 @@ func (x *AccessTicketClaims) GetResourceUid() string {
 	return ""
 }
 
-func (x *AccessTicketClaims) GetRuntimeUuid() string {
+func (x *AccessTicketClaims) GetCodespaceId() int64 {
 	if x != nil {
-		return x.RuntimeUuid
+		return x.CodespaceId
 	}
-	return ""
+	return 0
 }
 
 func (x *AccessTicketClaims) GetPodUid() string {
@@ -2821,7 +2821,7 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x19\n" +
 	"\bsite_uid\x18\x02 \x01(\tR\asiteUid\x12!\n" +
 	"\fresource_uid\x18\x03 \x01(\tR\vresourceUid\x12!\n" +
-	"\fruntime_uuid\x18\x04 \x01(\tR\vruntimeUuid\x12\x17\n" +
+	"\fcodespace_id\x18\x04 \x01(\x03R\vcodespaceId\x12\x17\n" +
 	"\apod_uid\x18\x05 \x01(\tR\x06podUid\x12%\n" +
 	"\x0etarget_version\x18\x06 \x01(\x03R\rtargetVersion\x12:\n" +
 	"\n" +

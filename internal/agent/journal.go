@@ -28,7 +28,7 @@ import (
 type VolumeIdentity struct {
 	SiteUID     string `json:"site_uid"`
 	ResourceUID string `json:"resource_uid"`
-	RuntimeUUID string `json:"runtime_uuid"`
+	CodespaceID int64  `json:"codespace_id"`
 }
 
 type stageResult struct {
@@ -54,7 +54,7 @@ type Journal struct {
 }
 
 func OpenJournal(directory string, identity VolumeIdentity) (_ *Journal, err error) {
-	if identity.SiteUID == "" || identity.ResourceUID == "" || identity.RuntimeUUID == "" {
+	if identity.SiteUID == "" || identity.ResourceUID == "" || identity.CodespaceID <= 0 {
 		return nil, fmt.Errorf("runtime volume identity is incomplete")
 	}
 	root, err := os.OpenRoot(directory)

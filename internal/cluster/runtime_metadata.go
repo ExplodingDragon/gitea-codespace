@@ -5,11 +5,16 @@ package cluster
 
 import (
 	"fmt"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/runtimeplatform"
 )
 
 var runtimeBootStages = map[codespacev1.RuntimeBootStage]string{
@@ -60,12 +65,43 @@ func runtimeMetadata(cs *api.Codespace) (*codespacev1.RuntimeMetadata, error) {
 			return nil, fmt.Errorf("ready Runtime target has an invalid workspace folder")
 		}
 		metadata.WorkspaceFolder = cs.Status.Target.WorkspaceFolder
+		gateway, err := url.Parse(cs.Status.Access.GatewayURL)
+		if err != nil || gateway.Host == "" {
+			return nil, fmt.Errorf("runtime gateway address is unavailable")
+		}
+		alias := strings.ReplaceAll(string(cs.UID), "-", "")
 		for _, endpoint := range cs.Status.Target.Endpoints {
 			port := uint32(endpoint.Port)
 			if endpoint.ID == runtimeendpoint.WorkspaceEndpointID {
 				port = 0
 			}
-			metadata.Endpoints = append(metadata.Endpoints, &codespacev1.RuntimeEndpoint{EndpointId: endpoint.ID, Label: endpoint.Label, Port: port, Public: endpoint.Public})
+			host := alias + "." + gateway.Host
+			if endpoint.ID != runtimeendpoint.WorkspaceEndpointID {
+				host = endpoint.ID + "-" + host
+			}
+			address := &url.URL{Scheme: gateway.Scheme, Host: host, Path: "/"}
+			open := *address
+			open.Path = "/.gitea-codespace/open"
+			metadata.Endpoints = append(metadata.Endpoints, &codespacev1.RuntimeEndpoint{EndpointId: endpoint.ID, Label: endpoint.Label, Port: port, Public: endpoint.Public, Url: address.String(), OpenUrl: open.String()})
+		}
+		host, port, err := net.SplitHostPort(cs.Status.Access.SSHAddress)
+		if err != nil {
+			return nil, fmt.Errorf("parse runtime SSH address: %w", err)
+		}
+		number, err := strconv.ParseUint(port, 10, 16)
+		if err != nil || number == 0 {
+			return nil, fmt.Errorf("invalid runtime SSH port")
+		}
+		user := runtimeplatform.SSHUserPrefix + string(cs.UID)
+		remoteHost := host
+		if number != 22 {
+			remoteHost = net.JoinHostPort(host, port)
+		}
+		remote := user + "@" + remoteHost
+		folder := strings.TrimPrefix(metadata.WorkspaceFolder, "/")
+		metadata.Ssh = &codespacev1.RuntimeSSH{Host: host, Port: uint32(number), User: user,
+			VscodeUrl: (&url.URL{Scheme: "vscode", Host: "vscode-remote", Path: "/ssh-remote+" + remote + "/" + folder}).String(),
+			ZedUrl:    (&url.URL{Scheme: "zed", Host: "ssh", Path: "/" + remote + "/" + folder}).String(),
 		}
 	}
 	return metadata, nil

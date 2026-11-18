@@ -245,8 +245,8 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: "namespace-uid", Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
 			cs := &api.Codespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "test", Namespace: ns.Name, UID: "codespace-uid", Finalizers: []string{RuntimeFinalizer}},
-				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "create", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
-				Status:     api.CodespaceStatus{Bound: true},
+				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "create", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
+				Status:     api.CodespaceStatus{},
 			}
 			cs.Spec.Runtime.Isolation = isolation
 			if isolation == api.IsolationNative {
@@ -282,7 +282,7 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 			require.Equal(t, "agent", pod.Spec.Containers[0].Command[1])
 			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_HOST", Value: "ssh.example.com"})
 			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_PORT", Value: "2222"})
-			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: "cs-" + cs.Spec.RuntimeUUID})
+			require.Contains(t, pod.Spec.Containers[0].Env, corev1.EnvVar{Name: "CODESPACE_SSH_USER", Value: "cs-" + string(cs.UID)})
 			var volume corev1.PersistentVolumeClaim
 			require.NoError(t, c.Get(ctx, types.NamespacedName{Name: cs.Status.Volume.Name, Namespace: cs.Namespace}, &volume))
 			require.Empty(t, volume.OwnerReferences)
@@ -354,7 +354,7 @@ func TestKataRuntimePodUsesRawBlockVolume(t *testing.T) {
 	runtime.RuntimeClassName = "kata-qemu-runtime-rs"
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, CodespaceID: 1, Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
@@ -381,7 +381,7 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 	}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, CodespaceID: 1, Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
@@ -409,7 +409,7 @@ func TestRuntimePodUsesProxySecret(t *testing.T) {
 	runtime.Proxy = &api.OutboundProxy{HTTPProxy: "http://proxy.example:3128", CABundle: "certificate"}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtime},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, CodespaceID: 1, Runtime: runtime},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
 	pod, err := runtimePod(cs, "https://manager.example", "spiffe://codespace/manager/namespace-uid", nil)
@@ -434,7 +434,7 @@ func TestRuntimePodDeliversSelectedWebIDEProvider(t *testing.T) {
 	}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", Runtime: runtimeConfiguration},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: "example", UID: "site-uid"}, CodespaceID: 1, Runtime: runtimeConfiguration},
 		Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "runtime-pod"}, Volume: api.ObservedResource{Name: "runtime-data"}},
 	}
 	for _, isolation := range []string{api.IsolationNative, api.IsolationSysbox, api.IsolationKata} {
@@ -486,8 +486,8 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "codespace-example", UID: site.Status.NamespaceUID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}}
 			cs := &api.Codespace{
 				ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: ns.Name, UID: "runtime-uid", Finalizers: []string{RuntimeFinalizer}},
-				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986", EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Type: "resume", Version: 3, Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
-				Status:     api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "data-933ef4a9-54c7-4f36-aad9-32ea72c4c986", UID: "volume-uid"}},
+				Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Type: "resume", Version: 3, Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
+				Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod", UID: "pod-uid"}, Volume: api.ObservedResource{Name: "data-1", UID: "volume-uid"}},
 			}
 			if settled {
 				cs.Status.SettledOperationVersion = 3
@@ -650,12 +650,11 @@ func TestMissingRuntimePodConvergesToStopped(t *testing.T) {
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: ns.Name, UID: "runtime-uid", Generation: 3, Finalizers: []string{RuntimeFinalizer}},
 		Spec: api.CodespaceSpec{
-			Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986",
-			EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Type: "resume", Version: 3, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
+			Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Type: "resume", Version: 3, Payload: runtime.RawExtension{Raw: []byte(`{}`)}},
 		},
 		Status: api.CodespaceStatus{
-			Bound: true, SettledOperationVersion: 2, Pod: api.ObservedResource{Name: "lost-pod", UID: "lost-pod-uid"},
-			Volume: api.ObservedResource{Name: "data-933ef4a9-54c7-4f36-aad9-32ea72c4c986", UID: "volume-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"},
+			SettledOperationVersion: 2, Pod: api.ObservedResource{Name: "lost-pod", UID: "lost-pod-uid"},
+			Volume: api.ObservedResource{Name: "data-1", UID: "volume-uid"}, Target: &api.AgentTarget{Ready: true, WorkspaceFolder: "/workspaces/project"},
 			Conditions: []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionFalse, Reason: "WriterUnconfirmed", Message: "waiting for kubelet to confirm runtime process termination", ObservedGeneration: 3}},
 		},
 	}
@@ -699,7 +698,6 @@ func TestCleanupCompletesAfterAgentFailure(t *testing.T) {
 			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
 			require.Equal(t, &api.OperationResult{Version: 4, Succeeded: true}, cs.Status.Result)
 			finalized := false
-			cs.Status.Bound = true
 			require.NoError(t, c.Status().Update(t.Context(), cs))
 			o := &Operations{Client: c, Authority: r.Authority}
 			require.NoError(t, o.Flush(t.Context(), cs, &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {

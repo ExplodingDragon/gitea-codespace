@@ -292,7 +292,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		if err := protojson.Unmarshal(cs.Spec.Operation.Payload.Raw, operation); err != nil {
 			return connect.NewError(connect.CodeInternal, "invalid persisted operation")
 		}
-		if operation.OperationRversion != cs.Spec.Operation.Version || operation.RuntimeUuid != cs.Spec.RuntimeUUID || operation.CodespaceId != cs.Spec.CodespaceID {
+		if operation.OperationRversion != cs.Spec.Operation.Version || operation.CodespaceId != cs.Spec.CodespaceID {
 			return connect.NewError(connect.CodeFailedPrecondition, "persisted operation identity does not match Codespace")
 		}
 		if request.AcceptedOperationRversion != cs.Spec.Operation.Version {
@@ -323,7 +323,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			if err != nil {
 				return err
 			}
-			access := &codespacev1.RequestRuntimeAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version, GitSshKey: &codespacev1.RuntimeGitSSHKey{PublicKey: request.Report.GitSshPublicKey}}
+			access := &codespacev1.RequestRuntimeAccessRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, OperationRversion: cs.Spec.Operation.Version, GitSshKey: &codespacev1.RuntimeGitSSHKey{PublicKey: request.Report.GitSshPublicKey}}
 			reply, err := remote.RequestRuntimeAccess(ctx, access)
 			if err != nil {
 				return err

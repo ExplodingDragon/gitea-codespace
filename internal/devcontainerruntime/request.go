@@ -41,7 +41,7 @@ type USBIPContainerConfiguration struct {
 type Request struct {
 	Debug                bool
 	Action               string
-	CodespaceUUID        string
+	OwnerID              string
 	OperationVersion     int64
 	Workspace            string
 	Source               devcontainer.Source
@@ -65,8 +65,8 @@ type Request struct {
 
 // Validate checks action-specific identity and state requirements.
 func (r Request) Validate() error {
-	if strings.TrimSpace(r.CodespaceUUID) == "" {
-		return fmt.Errorf("codespace uuid is empty")
+	if strings.TrimSpace(r.OwnerID) == "" {
+		return fmt.Errorf("runtime owner identity is empty")
 	}
 	if r.Action == "create" || r.Action == "resume" {
 		if r.USBIP.Enabled && (strings.TrimSpace(r.USBIP.DeviceRoot) == "" || strings.TrimSpace(r.USBIP.DevptsRoot) == "") {
@@ -98,7 +98,7 @@ func (r Request) Validate() error {
 		if err := r.Environment.Validate(); err != nil {
 			return err
 		}
-		if r.Environment.OwnerID != r.CodespaceUUID {
+		if r.Environment.OwnerID != r.OwnerID {
 			return fmt.Errorf("runtime environment does not belong to codespace")
 		}
 		if r.Action == "resume" || r.Action == "stop" {

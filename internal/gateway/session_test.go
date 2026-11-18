@@ -53,8 +53,8 @@ func (r *testGatewaySessionRegistry) CreateReplacing(binding openTokenBinding, r
 	return r.CreateReplacingAny(binding, []string{replaceID}, now)
 }
 
-func (r *testGatewaySessionRegistry) Authenticate(token, codespaceUUID, endpointID string, now time.Time) (gatewaySession, bool) {
-	session, ok, ambiguous, err := r.ResolveAny(context.Background(), []string{token}, codespaceUUID, endpointID, now, nil)
+func (r *testGatewaySessionRegistry) Authenticate(token, runtimeKey, endpointID string, now time.Time) (gatewaySession, bool) {
+	session, ok, ambiguous, err := r.ResolveAny(context.Background(), []string{token}, runtimeKey, endpointID, now, nil)
 	if err != nil || !ok || ambiguous {
 		return gatewaySession{}, false
 	}
@@ -85,7 +85,7 @@ func TestGatewaySessionTicketMovesBetweenReplicas(t *testing.T) {
 	first := newGatewaySessionRegistryFromConfigAndKey(t, config, key)
 	second := newGatewaySessionRegistryFromConfigAndKey(t, config, key)
 	now := time.Unix(100, 0)
-	token, err := first.Create(openTokenBinding{SiteUID: "site", UserID: 42, CodespaceUUID: "codespace", EndpointID: "workspace"}, now)
+	token, err := first.Create(openTokenBinding{SiteUID: "site", UserID: 42, RuntimeKey: "codespace", EndpointID: "workspace"}, now)
 	require.NoError(t, err)
 
 	session, ok := second.Authenticate(token, "codespace", "workspace", now.Add(time.Second))
@@ -112,30 +112,30 @@ func TestGatewaySessionTicketMovesBetweenReplicas(t *testing.T) {
 
 func TestGatewayActivityCountsOnlyAuthenticatedLiveConnections(t *testing.T) {
 	registry := newGatewaySessionRegistry(t)
-	const runtimeUUID = "11111111-1111-4111-8111-111111111111"
-	sessionID, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 1, CodespaceUUID: runtimeUUID, EndpointID: "workspace"}, time.Now())
+	const runtimeKey = "11111111-1111-4111-8111-111111111111"
+	sessionID, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 1, RuntimeKey: runtimeKey, EndpointID: "workspace"}, time.Now())
 	require.NoError(t, err)
 	require.Empty(t, registry.Activity(time.Now()).runtimes)
-	session, ok := registry.Authenticate(sessionID, runtimeUUID, "workspace", time.Now())
+	session, ok := registry.Authenticate(sessionID, runtimeKey, "workspace", time.Now())
 	require.True(t, ok)
 
-	releaseRequest := registry.BeginSessionCancelable(session.id, runtimeUUID, nil)
+	releaseRequest := registry.BeginSessionCancelable(session.id, runtimeKey, nil)
 	requireSignal(t, registry.ActivityChanges())
-	require.Equal(t, map[string]int64{runtimeUUID: 1}, registry.Activity(time.Now()).runtimes)
-	releaseSecond := registry.BeginSessionCancelable(session.id, runtimeUUID, nil)
+	require.Equal(t, map[string]int64{runtimeKey: 1}, registry.Activity(time.Now()).runtimes)
+	releaseSecond := registry.BeginSessionCancelable(session.id, runtimeKey, nil)
 	requireNoSignal(t, registry.ActivityChanges())
-	require.Equal(t, map[string]int64{runtimeUUID: 2}, registry.Activity(time.Now()).runtimes)
+	require.Equal(t, map[string]int64{runtimeKey: 2}, registry.Activity(time.Now()).runtimes)
 	releaseSecond()
 	requireNoSignal(t, registry.ActivityChanges())
-	require.Equal(t, map[string]int64{runtimeUUID: 1}, registry.Activity(time.Now()).runtimes)
+	require.Equal(t, map[string]int64{runtimeKey: 1}, registry.Activity(time.Now()).runtimes)
 	releaseRequest()
 	requireSignal(t, registry.ActivityChanges())
 	require.Empty(t, registry.Activity(time.Now()).runtimes)
 
-	releaseSSH, ok := registry.BeginSSHSession("site-1", runtimeUUID, 1, nil, time.Now())
+	releaseSSH, ok := registry.BeginSSHSession("site-1", runtimeKey, 1, nil, time.Now())
 	require.True(t, ok)
 	requireSignal(t, registry.ActivityChanges())
-	require.Equal(t, map[string]int64{runtimeUUID: 1}, registry.Activity(time.Now()).runtimes)
+	require.Equal(t, map[string]int64{runtimeKey: 1}, registry.Activity(time.Now()).runtimes)
 	releaseSSH()
 	requireSignal(t, registry.ActivityChanges())
 	require.Empty(t, registry.Activity(time.Now()).runtimes)
@@ -165,10 +165,10 @@ func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 	registry := newGatewaySessionRegistry(t)
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -177,7 +177,7 @@ func TestGatewaySessionRegistryAuthenticatesGatewaySession(t *testing.T) {
 	if !ok {
 		t.Fatalf("session was not authenticated")
 	}
-	if session.userID != 42 || session.codespaceUUID != "codespace-1" || session.endpointID != "workspace" {
+	if session.userID != 42 || session.runtimeKey != "codespace-1" || session.endpointID != "workspace" {
 		t.Fatalf("session = %#v", session)
 	}
 	if _, ok := registry.Authenticate(sessionID, "codespace-1", "other", now); ok {
@@ -191,10 +191,10 @@ func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create session: %v", err)
@@ -204,7 +204,7 @@ func TestGatewaySessionRegistryDropsExpiredConnectingSession(t *testing.T) {
 		t.Fatalf("expired connecting session authenticated")
 	}
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace",
+		SiteUID: "site-1", UserID: 42, RuntimeKey: "codespace-1", EndpointID: "workspace",
 	}, now.Add(gatewaySessionConnectTimeout+time.Nanosecond)); err != nil {
 		t.Fatalf("create session after connecting timeout: %v", err)
 	}
@@ -216,10 +216,10 @@ func TestGatewaySessionRegistryLimitsEndpointAndSSHSessionTogether(t *testing.T)
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 10))
 	now := time.Unix(100, 0)
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now); err != nil {
 		t.Fatalf("create endpoint session: %v", err)
 	}
@@ -235,10 +235,10 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 1, 1))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create first session: %v", err)
@@ -250,10 +250,10 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 	release := registry.BeginSessionCancelable(session.id, "codespace-1", cancel)
 	defer release()
 	secondID, err := registry.CreateReplacing(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, firstID, now)
 	if err != nil {
 		t.Fatalf("replace session: %v", err)
@@ -269,10 +269,10 @@ func TestGatewaySessionRegistryReplacingSameBindingReleasesSessionLimit(t *testi
 		t.Fatalf("new session does not authenticate")
 	}
 	if _, err := registry.CreateReplacing(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "web",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "web",
 	}, secondID, now); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("replace different endpoint err = %v", err)
 	}
@@ -284,19 +284,19 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	validID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create valid session: %v", err)
 	}
 	otherID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "web",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "web",
 	}, now)
 	if err != nil {
 		t.Fatalf("create other binding session: %v", err)
@@ -306,7 +306,7 @@ func TestGatewaySessionRegistryMatchesOnlyCurrentBindingCandidates(t *testing.T)
 	if !ok || ambiguous {
 		t.Fatalf("authenticate candidates ok=%v ambiguous=%v", ok, ambiguous)
 	}
-	if session.codespaceUUID != "codespace-1" || session.endpointID != "workspace" {
+	if session.runtimeKey != "codespace-1" || session.endpointID != "workspace" {
 		t.Fatalf("matched session = %#v", session)
 	}
 }
@@ -317,19 +317,19 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 10))
 	now := time.Unix(100, 0)
 	firstID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create first session: %v", err)
 	}
 	secondID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create second session: %v", err)
@@ -338,10 +338,10 @@ func TestGatewaySessionRegistryRejectsMultipleCurrentBindingCandidates(t *testin
 		t.Fatalf("authenticate multiple current candidates ok=%v ambiguous=%v", ok, ambiguous)
 	}
 	if _, err := registry.CreateReplacingAny(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, []string{firstID, secondID}, now); !errors.Is(err, errGatewaySessionAmbiguous) {
 		t.Fatalf("replace multiple current candidates err = %v", err)
 	}
@@ -358,10 +358,10 @@ func TestGatewaySessionRegistryLimitsUserAcrossCodespaces(t *testing.T) {
 	}
 	defer release()
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-2",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-2",
+		EndpointID: "workspace",
 	}, now); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("endpoint session over user limit err = %v", err)
 	}
@@ -373,14 +373,14 @@ func TestGatewaySessionRegistrySeparatesUsersBySite(t *testing.T) {
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), 0, 10, 1))
 	now := time.Unix(100, 0)
 	for _, binding := range []openTokenBinding{
-		{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace"},
-		{SiteUID: "site-2", UserID: 42, CodespaceUUID: "codespace-2", EndpointID: "workspace"},
+		{SiteUID: "site-1", UserID: 42, RuntimeKey: "codespace-1", EndpointID: "workspace"},
+		{SiteUID: "site-2", UserID: 42, RuntimeKey: "codespace-2", EndpointID: "workspace"},
 	} {
 		if _, err := registry.Create(binding, now); err != nil {
 			t.Fatalf("create session for %s: %v", binding.SiteUID, err)
 		}
 	}
-	if _, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-3", EndpointID: "workspace"}, now); !errors.Is(err, errGatewaySessionLimitReached) {
+	if _, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, RuntimeKey: "codespace-3", EndpointID: "workspace"}, now); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("same-site user session over limit err = %v", err)
 	}
 }
@@ -391,10 +391,10 @@ func TestGatewaySessionRegistryPortTTLReleasesSessionLimit(t *testing.T) {
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Minute), 0, 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "app-3000",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "app-3000",
 	}, now)
 	if err != nil {
 		t.Fatalf("create endpoint session: %v", err)
@@ -403,18 +403,18 @@ func TestGatewaySessionRegistryPortTTLReleasesSessionLimit(t *testing.T) {
 		t.Fatalf("authenticate endpoint session")
 	}
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now.Add(time.Minute-time.Nanosecond)); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("endpoint session at ttl boundary err = %v", err)
 	}
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now.Add(time.Minute+time.Nanosecond)); err != nil {
 		t.Fatalf("create endpoint session after ttl: %v", err)
 	}
@@ -426,10 +426,10 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create endpoint session: %v", err)
@@ -438,18 +438,18 @@ func TestGatewaySessionRegistryIdleTimeoutReleasesEndpointSession(t *testing.T) 
 		t.Fatalf("authenticate endpoint session")
 	}
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now.Add(time.Minute-time.Nanosecond)); !errors.Is(err, errGatewaySessionLimitReached) {
 		t.Fatalf("endpoint session at idle boundary err = %v", err)
 	}
 	if _, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now.Add(time.Minute+time.Nanosecond)); err != nil {
 		t.Fatalf("create endpoint session after idle timeout: %v", err)
 	}
@@ -463,7 +463,7 @@ func TestGatewayWorkspaceSessionRenewsAcrossReplicas(t *testing.T) {
 	other := newGatewaySessionRegistryFromConfig(t, config)
 	now := time.Now()
 	started := now.Add(-9 * time.Hour)
-	token, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "workspace"}, started)
+	token, err := registry.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, RuntimeKey: "codespace-1", EndpointID: "workspace"}, started)
 	require.NoError(t, err)
 	session, ok := registry.Authenticate(token, "codespace-1", "workspace", started)
 	require.True(t, ok)
@@ -513,7 +513,7 @@ func TestGatewayWorkspaceSessionRenewsAcrossReplicas(t *testing.T) {
 	require.NoError(t, err)
 	require.False(t, ok)
 
-	portToken, err := other.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, CodespaceUUID: "codespace-1", EndpointID: "app-3000"}, now)
+	portToken, err := other.Create(openTokenBinding{SiteUID: "site-1", UserID: 42, RuntimeKey: "codespace-1", EndpointID: "app-3000"}, now)
 	require.NoError(t, err)
 	port, ok := other.Authenticate(portToken, "codespace-1", "app-3000", now)
 	require.True(t, ok)
@@ -533,10 +533,10 @@ func TestGatewaySessionRegistryAuthenticateRefreshesIdleTimeout(t *testing.T) {
 	registry := newGatewaySessionRegistryFromConfig(t, gatewaySessionTestConfig(configpkg.Duration(time.Hour), configpkg.Duration(time.Minute), 1, 1))
 	now := time.Unix(100, 0)
 	sessionID, err := registry.Create(openTokenBinding{
-		SiteUID:       "site-1",
-		UserID:        42,
-		CodespaceUUID: "codespace-1",
-		EndpointID:    "workspace",
+		SiteUID:    "site-1",
+		UserID:     42,
+		RuntimeKey: "codespace-1",
+		EndpointID: "workspace",
 	}, now)
 	if err != nil {
 		t.Fatalf("create endpoint session: %v", err)

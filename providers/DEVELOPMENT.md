@@ -212,7 +212,7 @@ following environment:
 | `CODESPACE_WEB_IDE_ADDRESS`      | Required loopback listen address in `host:port` form     |
 | `CODESPACE_SSH_HOST`            | Public Gateway DNS name for this Runtime Pod             |
 | `CODESPACE_SSH_PORT`            | Public SSH port as a decimal number                      |
-| `CODESPACE_SSH_USER`            | Gateway login for the workspace: `cs-<runtime UUID>`      |
+| `CODESPACE_SSH_USER`            | Platform-assigned Gateway SSH username for the workspace |
 
 The normal Dev Container remote environment and the secrets selected for this
 instance are also available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`.

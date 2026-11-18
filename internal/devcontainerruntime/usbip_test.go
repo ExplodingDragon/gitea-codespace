@@ -14,9 +14,9 @@ import (
 
 func TestRequestRejectsIncompleteUSBIPMounts(t *testing.T) {
 	err := (Request{
-		Action:        "create",
-		CodespaceUUID: "runtime",
-		USBIP:         USBIPContainerConfiguration{Enabled: true, DeviceRoot: "/runtime/dev"},
+		Action:  "create",
+		OwnerID: "runtime",
+		USBIP:   USBIPContainerConfiguration{Enabled: true, DeviceRoot: "/runtime/dev"},
 	}).Validate()
 	require.ErrorContains(t, err, "USB/IP device mounts are incomplete")
 }

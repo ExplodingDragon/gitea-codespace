@@ -242,7 +242,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 			}
 			operation := acceptedOperation
 			if operation != nil {
-				if operation.RuntimeUuid != c.Journal.record.Identity.RuntimeUUID || operation.OperationRversion <= 0 || operation.OperationRversion < report.OperationRversion {
+				if operation.CodespaceId != c.Journal.record.Identity.CodespaceID || operation.OperationRversion <= 0 || operation.OperationRversion < report.OperationRversion {
 					cancelSession()
 					return fmt.Errorf("manager operation does not match the runtime identity or history")
 				}

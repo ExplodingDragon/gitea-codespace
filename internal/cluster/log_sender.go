@@ -38,7 +38,7 @@ type operationLogs struct {
 type operationLogSender struct {
 	site        api.ResourceReference
 	version     int64
-	runtimeUUID string
+	codespaceID int64
 	progress    string
 	buffer      logbuffer.Buffer
 	closed      bool
@@ -118,7 +118,7 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 	if ctx == nil || ctx.Err() != nil {
 		return connect.NewError(connect.CodeUnavailable, "operation log site is not active")
 	}
-	if !cs.Status.Bound || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
+	if !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
 		return errOperationLogClosed
 	}
 	sender := l.senders[cs.UID]
@@ -139,7 +139,7 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 			sender.cancel()
 		}
 		workerCtx, cancel := context.WithCancel(ctx)
-		sender = &operationLogSender{site: cs.Spec.Site, runtimeUUID: cs.Spec.RuntimeUUID, version: cs.Spec.Operation.Version, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
+		sender = &operationLogSender{site: cs.Spec.Site, codespaceID: cs.Spec.CodespaceID, version: cs.Spec.Operation.Version, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
 		l.senders[cs.UID] = sender
 		l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[INFO] [operation] Accepted %s #%d", strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version)}}, maxManagerLogBytes-l.bytes)
 		go l.send(workerCtx, sender)
@@ -203,7 +203,7 @@ func (l *operationLogs) send(ctx context.Context, sender *operationLogSender) {
 		sender.closed = true
 		l.mu.Unlock()
 	}()
-	logger := log.FromContext(ctx).WithValues("site", sender.site.Name, "runtime", sender.runtimeUUID, "operation", sender.version)
+	logger := log.FromContext(ctx).WithValues("site", sender.site.Name, "runtime", sender.codespaceID, "operation", sender.version)
 	var offset int64
 	knownOffset := false
 	var lines []*codespacev1.LogLine
@@ -232,7 +232,7 @@ func (l *operationLogs) send(ctx context.Context, sender *operationLogSender) {
 		remote, err := l.remote(attempt, sender.site)
 		var response *codespacev1.UpdateLogResponse
 		if err == nil {
-			response, err = remote.UpdateLog(attempt, &codespacev1.UpdateLogRequest{ProtocolVersion: 1, RuntimeUuid: sender.runtimeUUID, OperationRversion: sender.version, Offset: offset, Lines: lines})
+			response, err = remote.UpdateLog(attempt, &codespacev1.UpdateLogRequest{ProtocolVersion: 1, CodespaceId: sender.codespaceID, OperationRversion: sender.version, Offset: offset, Lines: lines})
 		}
 		cancel()
 		if err == nil {

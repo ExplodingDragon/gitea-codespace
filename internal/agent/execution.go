@@ -138,12 +138,12 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	case operation.GetResume() != nil:
 		return r.resume(ctx, executor, response, trust, report)
 	case operation.GetStop() != nil:
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "stop", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "stop", OwnerID: r.Journal.record.Identity.ResourceUID, OperationVersion: operation.OperationRversion, DevContainer: r.DevContainer, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	case operation.GetDelete() != nil:
 		// Kubernetes removes the Pod before deleting its PVC. If the control
 		// message arrives first, stopping Docker resources shortens shutdown.
-		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "delete", CodespaceUUID: operation.RuntimeUuid, OperationVersion: operation.OperationRversion, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
+		_, err := executor.Apply(ctx, devcontainerruntime.Request{Debug: r.Debug, Action: "delete", OwnerID: r.Journal.record.Identity.ResourceUID, OperationVersion: operation.OperationRversion, USBIP: r.usbIPContainerConfiguration(), BeforeContainerStop: r.closeNetworkAccess})
 		return err
 	default:
 		return fmt.Errorf("runtime operation is not executable by the Agent")
@@ -290,7 +290,7 @@ func (r *Runtime) create(ctx context.Context, executor *Executor, response *agen
 			return r.publishAccess(operation.OperationRversion, outcome, secrets, report, stdout)
 		},
 		Debug: r.Debug, HostCgroup: &r.Cgroup,
-		Action: "create", CodespaceUUID: operation.RuntimeUuid,
+		Action: "create", OwnerID: r.Journal.record.Identity.ResourceUID,
 		OperationVersion: operation.OperationRversion, Workspace: workspace, Source: source, HostUser: hostUser,
 		GitUserName: strings.TrimSpace(payload.GitIdentity.GiteaUsername), GitUserEmail: strings.TrimSpace(payload.GitIdentity.GitUserEmail),
 		GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, Cache: cache, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
@@ -332,7 +332,7 @@ func (r *Runtime) resume(ctx context.Context, executor *Executor, response *agen
 			return r.publishAccess(response.Operation.OperationRversion, outcome, secrets, report, executor.Stdout)
 		},
 		Debug:  r.Debug,
-		Action: "resume", CodespaceUUID: response.Operation.RuntimeUuid,
+		Action: "resume", OwnerID: r.Journal.record.Identity.ResourceUID,
 		OperationVersion: response.Operation.OperationRversion, HostUser: hostUser, GiteaURL: trust.giteaURL, LocalEnvironment: runtimeLocalEnvironment(hostUser), Secrets: secrets, DevContainer: r.DevContainer, Native: r.nativeContainerConfiguration(), USBIP: r.usbIPContainerConfiguration(),
 	})
 	if err != nil {

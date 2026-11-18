@@ -13,7 +13,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"uuid"
 
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
@@ -586,10 +585,6 @@ func (c *Codespace) Validate(managementNamespace string) error {
 	namespace, err := SiteNamespace(c.Spec.Site.Name, managementNamespace)
 	if err != nil || c.Namespace != namespace || c.Spec.Site.UID == "" {
 		return fmt.Errorf("codespace namespace does not match its site")
-	}
-	id, err := uuid.Parse(c.Spec.RuntimeUUID)
-	if err != nil || id[6]>>4 != 4 || id.String() != c.Spec.RuntimeUUID {
-		return fmt.Errorf("runtime UUID must be a canonical UUID v4")
 	}
 	if c.Spec.CodespaceID <= 0 || c.Spec.Operation.Version <= 0 || !environmentNamePattern.MatchString(c.Spec.EnvironmentTag) {
 		return fmt.Errorf("codespace identity, operation version and environment tag are required")

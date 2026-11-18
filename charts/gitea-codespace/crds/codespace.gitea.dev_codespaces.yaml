@@ -357,13 +357,6 @@ spec:
                 x-kubernetes-validations:
                 - message: runtime configuration is immutable
                   rule: self == oldSelf
-              runtimeUUID:
-                maxLength: 36
-                pattern: ^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$
-                type: string
-                x-kubernetes-validations:
-                - message: runtime identity is immutable
-                  rule: self == oldSelf
               site:
                 description: ResourceReference pins an authorization to an object,
                   rather than a reusable name.
@@ -392,11 +385,18 @@ spec:
             - environmentTag
             - operation
             - runtime
-            - runtimeUUID
             - site
             type: object
           status:
             properties:
+              access:
+                description: RuntimeAccess is versioned with boot and endpoint metadata.
+                properties:
+                  gatewayURL:
+                    type: string
+                  sshAddress:
+                    type: string
+                type: object
               boot:
                 description: RuntimeBoot is the durable, monotonic startup progress
                   reported by Agent.
@@ -418,8 +418,6 @@ spec:
                 - stage
                 - startedUnix
                 type: object
-              bound:
-                type: boolean
               conditions:
                 items:
                   description: Condition contains details for one aspect of the current

@@ -69,8 +69,8 @@ func serveManagerRemote(t *testing.T, remote codespacev1connect.ManagerServiceHa
 }
 
 func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
-	const runtimeUUID = "933ef4a9-54c7-4f36-aad9-32ea72c4c986"
-	target := &openAuthorizationRemote{binding: &codespacev1.OpenTokenBinding{UserId: 1, RuntimeUuid: runtimeUUID, EndpointId: "workspace", InteractionGeneration: 3}}
+	const runtimeKey = "target-site/1"
+	target := &openAuthorizationRemote{binding: &codespacev1.OpenTokenBinding{UserId: 1, CodespaceId: 1, EndpointId: "workspace", InteractionGeneration: 3}}
 	unrelated := &openAuthorizationRemote{}
 	targetServer, unrelatedServer := serveManagerRemote(t, target), serveManagerRemote(t, unrelated)
 
@@ -84,29 +84,29 @@ func TestGatewayOpenCodeUsesOnlyTargetRuntimeSite(t *testing.T) {
 	unrelatedSite.Spec.Credential = api.ResourceReference{Name: "unrelated-credential", UID: "unrelated-credential-uid"}
 	credential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: site.Spec.Credential.Name, Namespace: "codespace-system", UID: site.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID)}}, Data: map[string][]byte{"managerSecret": []byte("target")}}
 	unrelatedCredential := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: unrelatedSite.Spec.Credential.Name, Namespace: "codespace-system", UID: unrelatedSite.Spec.Credential.UID, Labels: map[string]string{SiteUIDLabel: string(unrelatedSite.UID)}}, Data: map[string][]byte{"managerSecret": []byte("unrelated")}}
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-target", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, RuntimeUUID: runtimeUUID}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-target", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1}}
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(site, unrelatedSite, credential, unrelatedCredential, cs).Build()
-	index := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(cs).WithIndex(&api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string {
-		return []string{object.(*api.Codespace).Spec.RuntimeUUID}
+	index := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(cs).WithIndex(&api.Codespace{}, RuntimeKeyIndex, func(object client.Object) []string {
+		return []string{object.(*api.Codespace).RuntimeKey()}
 	}).Build()
 	tracker := &RuntimeActivityTracker{}
 	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Activity: tracker, Connections: newSiteConnectionStore(c, "codespace-system")}
 	ctx := contextWithComponent(t.Context(), componentIdentity{Role: "gateway", UID: "gateway-uid"})
 
-	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
+	response, err := server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeKey: runtimeKey, EndpointId: "workspace"}}})
 	require.NoError(t, err)
 	require.True(t, response.Allowed)
 	require.Equal(t, string(site.UID), response.SiteUid)
 	require.Equal(t, 1, target.calls)
 	require.Zero(t, unrelated.calls)
 
-	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: "another-site", UserId: 1, RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
+	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: "another-site", UserId: 1, RuntimeKey: runtimeKey, EndpointId: "workspace"}}})
 	require.NoError(t, err)
 	require.False(t, response.Allowed)
 	require.Equal(t, "site_mismatch", response.DeniedCategory)
 
 	target.binding.EndpointId = "other"
-	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeUuid: runtimeUUID, EndpointId: "workspace"}}})
+	response, err = server.AuthorizeGateway(ctx, &componentv1.AuthorizeGatewayRequest{ProtocolVersion: 1, Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: "secret", RuntimeKey: runtimeKey, EndpointId: "workspace"}}})
 	require.NoError(t, err)
 	require.False(t, response.Allowed)
 	require.Equal(t, "target_mismatch", response.DeniedCategory)
@@ -128,9 +128,8 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	site.Status.Conditions = []metav1.Condition{{Type: "InfrastructureReady", Status: metav1.ConditionTrue, ObservedGeneration: site.Generation}}
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "resource-uid"},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, RuntimeUUID: "933ef4a9-54c7-4f36-aad9-32ea72c4c986"},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1},
 		Status: api.CodespaceStatus{
-			Bound:  true,
 			Pod:    api.ObservedResource{Name: "runtime-pod", UID: "pod-uid"},
 			Target: &api.AgentTarget{Version: 4, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []api.AgentEndpoint{{ID: "workspace", Label: "Workspace", ContainerID: "container", Port: 13337}}},
 		},
@@ -141,7 +140,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		WithIndex(&api.CodespaceComponent{}, IdentityUIDIndex, func(object client.Object) []string { return []string{string(object.GetUID())} }).
 		WithIndex(&api.GiteaSite{}, SiteGatewayUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.GiteaSite).Spec.Gateway.UID)} }).
 		WithIndex(&api.Codespace{}, RuntimeSiteUIDIndex, func(object client.Object) []string { return []string{string(object.(*api.Codespace).Spec.Site.UID)} }).
-		WithIndex(&api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string { return []string{object.(*api.Codespace).Spec.RuntimeUUID} }).Build()
+		WithIndex(&api.Codespace{}, RuntimeKeyIndex, func(object client.Object) []string { return []string{object.(*api.Codespace).RuntimeKey()} }).Build()
 	_, signingKey, err := ed25519.GenerateKey(rand.Reader)
 	require.NoError(t, err)
 	server := &ComponentServer{Client: c, IdentityIndex: index, ManagementNamespace: "codespace-system", Tickets: &AccessTickets{privateKey: signingKey}, Changes: &ChangeNotifier{}}
@@ -164,7 +163,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 	require.EqualValues(t, 4, route.TargetVersion)
 	require.NotEmpty(t, snapshot.Cursor)
 
-	issued, err := server.IssueAgentAccess(ctx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"})
+	issued, err := server.IssueAgentAccess(ctx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeKey: cs.RuntimeKey(), Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"})
 	require.NoError(t, err)
 	claims, err := accessticket.Verify(signingKey.Public().(ed25519.PublicKey), issued.Ticket, time.Now())
 	require.NoError(t, err)
@@ -198,10 +197,10 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		require.Len(t, response.Runtimes, 1)
 
 		activity := &componentv1.WorkspaceSessionActivity{
-			Identity: &componentv1.WorkspaceSessionIdentity{SessionId: "browser-session", SiteUid: string(site.UID), UserId: 1, RuntimeUuid: cs.Spec.RuntimeUUID},
+			Identity: &componentv1.WorkspaceSessionIdentity{SessionId: "browser-session", SiteUid: string(site.UID), UserId: 1, RuntimeKey: cs.RuntimeKey()},
 			Active:   true, LastActiveUnixMilliseconds: time.Now().Add(-24 * time.Hour).UnixMilli(),
 		}
-		require.NoError(t, stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: "gateway-process", Sequence: 2, ActiveSessions: map[string]int64{cs.Spec.RuntimeUUID: 1}, WorkspaceSessions: []*componentv1.WorkspaceSessionActivity{activity}}))
+		require.NoError(t, stream.Send(&componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: "gateway-process", Sequence: 2, ActiveSessions: map[string]int64{cs.RuntimeKey(): 1}, WorkspaceSessions: []*componentv1.WorkspaceSessionActivity{activity}}))
 		response, err = stream.Receive()
 		require.NoError(t, err)
 		require.False(t, response.Snapshot)
@@ -241,7 +240,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		require.True(t, lookup.Renewable)
 	})
 
-	request := &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"}
+	request := &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeKey: cs.RuntimeKey(), Capability: agentv1.AccessCapability_ACCESS_CAPABILITY_ENDPOINT, EndpointId: "workspace"}
 	current := cs.DeepCopy()
 	current.Status.Target = nil
 	require.NoError(t, c.Update(ctx, current))
@@ -263,7 +262,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 		t.Run(unavailable, func(t *testing.T) {
 			other := cs.DeepCopy()
 			other.Name, other.UID, other.ResourceVersion = "other", "other-resource", ""
-			other.Spec.RuntimeUUID = "044007ce-92b8-43f9-9b5d-5ed6a4dbb005"
+			other.Spec.CodespaceID = 2
 			other.Status.Pod.Name = "other-pod"
 			otherPod := pod.DeepCopy()
 			otherPod.Name, otherPod.ResourceVersion = "other-pod", ""
@@ -285,7 +284,7 @@ func TestGatewaySnapshotAndAccessTicketUseCurrentPodIdentity(t *testing.T) {
 			result, err := server.gatewaySnapshot(ctx, componentIdentity{Role: "gateway", UID: string(component.UID)})
 			require.NoError(t, err)
 			require.Len(t, result.Runtimes, 1)
-			require.Equal(t, cs.Spec.RuntimeUUID, result.Runtimes[0].RuntimeUuid)
+			require.Equal(t, cs.RuntimeKey(), result.Runtimes[0].RuntimeKey)
 			require.NoError(t, index.Delete(ctx, other))
 			if unavailable != "missing pod" {
 				require.NoError(t, index.Delete(ctx, otherPod))

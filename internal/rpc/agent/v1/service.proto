@@ -235,7 +235,7 @@ message AccessTicketClaims {
   uint32 protocol_version = 1;
   string site_uid = 2;
   string resource_uid = 3;
-  string runtime_uuid = 4;
+  int64 codespace_id = 4;
   string pod_uid = 5;
   int64 target_version = 6;
   AccessCapability capability = 7;

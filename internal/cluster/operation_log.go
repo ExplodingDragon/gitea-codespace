@@ -22,7 +22,7 @@ var podWaitingReasonPattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9_-]{0,63}$`
 // managerProgress reports resource facts using bounded, non-secret messages.
 // The runtime controller remains responsible for resource convergence.
 func managerProgress(ctx context.Context, reader client.Reader, cs *api.Codespace) (string, string, error) {
-	if !cs.Status.Bound || cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
+	if cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version || !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
 		return "", "", nil
 	}
 	switch cs.Spec.Operation.Type {

@@ -26,13 +26,13 @@ import (
 
 func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 	directory := t.TempDir()
-	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
+	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1}
 	journal, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
 	runtime := &Runtime{Journal: journal}
 	require.NoError(t, runtime.replaceConfiguredEndpoints([]*codespacev1.RuntimeEndpoint{{EndpointId: "port-3000", Label: "API", Port: 3000}}))
 	state := &devcontainer.State{
-		Version: devcontainer.StateFormatVersion, ID: "environment", OwnerID: "runtime",
+		Version: devcontainer.StateFormatVersion, ID: "environment", OwnerID: "resource",
 		PrimaryContainerID: "container", ConfigurationPath: "/workspaces/project/.devcontainer.json", ConfigurationSHA256: strings.Repeat("a", 64),
 		Workspace: "/workspaces/project", WorkspaceFolder: "/workspaces/project", RemoteWorkdir: "/workspaces/project", RemoteUser: "developer",
 	}
@@ -94,7 +94,7 @@ func TestRuntimeEndpointStateUpdatesPublishedTarget(t *testing.T) {
 }
 
 func TestRuntimeEndpointServiceOverUnixSocket(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, journal.Close()) })
 	rpcServer := connect.NewServer()

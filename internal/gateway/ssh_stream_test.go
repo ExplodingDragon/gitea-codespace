@@ -84,8 +84,12 @@ func (l *reverseTestListener) Close() error {
 	return nil
 }
 
-func (s gatewaySiteTargetStore) RuntimeTarget(runtimeUUID string) (runtimeSnapshot, bool) {
-	return runtimeSnapshot{SiteUID: s.siteUID, RuntimeUUID: runtimeUUID}, true
+func (s gatewaySiteTargetStore) ResolveAlias(alias string) (string, bool) {
+	return s.siteUID + "/1", true
+}
+
+func (s gatewaySiteTargetStore) RuntimeTarget(runtimeKey string) (runtimeSnapshot, bool) {
+	return runtimeSnapshot{SiteUID: s.siteUID, RuntimeKey: runtimeKey}, true
 }
 
 func (s streamTestSession) Stdin() io.WriteCloser { return s.WriteCloser }
@@ -162,7 +166,7 @@ func TestGatewaySSHKeepaliveResetsIdleTimeout(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		defer cancel()
 		server := &sshServer{sessionIdleTimeout: time.Minute}
-		auth := gatewaySSHAuthContext{siteUID: "site-1", codespaceUUID: "runtime-1", userID: 42, clientIP: "192.0.2.1"}
+		auth := gatewaySSHAuthContext{siteUID: "site-1", runtimeKey: "runtime-1", userID: 42, clientIP: "192.0.2.1"}
 		activity := make(chan struct{}, 1)
 		requests := make(chan *ssh.Request)
 		defer close(requests)
@@ -188,7 +192,7 @@ func TestGatewaySSHKeepaliveResetsIdleTimeout(t *testing.T) {
 		require.EqualValues(t, 60000, event["idle_timeout_ms"])
 		require.Equal(t, auth.clientIP, event["client_ip"])
 		require.Equal(t, auth.siteUID, event["site_uid"])
-		require.Equal(t, auth.codespaceUUID, event["codespace_uuid"])
+		require.Equal(t, auth.runtimeKey, event["runtime_key"])
 		require.EqualValues(t, auth.userID, event["user_id"])
 	})
 }
@@ -257,7 +261,7 @@ func dialReverseTestSSH(t *testing.T, backend workspaceBackend) (*ssh.Client, <-
 				_ = channel.Reject(ssh.UnknownChannelType, "unsupported")
 			}
 		}()
-		server.handleGlobalRequests(t.Context(), gatewaySSHAuthContext{codespaceUUID: "runtime", siteUID: "site"}, connection, requests, make(chan struct{}, 1), make(chan struct{}, 4))
+		server.handleGlobalRequests(t.Context(), gatewaySSHAuthContext{runtimeKey: "runtime", siteUID: "site"}, connection, requests, make(chan struct{}, 1), make(chan struct{}, 4))
 		serverDone <- nil
 	}()
 	client, err := ssh.Dial("tcp", transport.Addr().String(), &ssh.ClientConfig{User: "test", HostKeyCallback: ssh.InsecureIgnoreHostKey(), Timeout: 3 * time.Second})

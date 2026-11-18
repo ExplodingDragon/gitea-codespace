@@ -84,7 +84,7 @@ func (d *runtimeDiagnostics) emit(ctx context.Context, cs *api.Codespace, stage 
 		redactor = entry.redactor
 	}
 	d.mu.Unlock()
-	logger := log.FromContext(ctx).WithValues("codespace", cs.Name, "namespace", cs.Namespace, "runtime", cs.Spec.RuntimeUUID, "operation", cs.Spec.Operation.Type, "version", cs.Spec.Operation.Version, "stage", stage)
+	logger := log.FromContext(ctx).WithValues("codespace", cs.Name, "namespace", cs.Namespace, "runtime", cs.RuntimeKey(), "operation", cs.Spec.Operation.Type, "version", cs.Spec.Operation.Version, "stage", stage)
 	batch := make([]*codespacev1.LogLine, 0, len(lines))
 	prefix := "[DEBUG] [kubernetes] " + stage + ": "
 	switch stage {

@@ -104,32 +104,32 @@ func TestGatewayOriginPolicyParsesEndpointHosts(t *testing.T) {
 		t.Fatalf("gateway origin policy: %v", err)
 	}
 	tests := []struct {
-		name          string
-		host          string
-		codespaceUUID string
-		endpointID    string
-		ok            bool
+		name       string
+		host       string
+		runtimeKey string
+		endpointID string
+		ok         bool
 	}{
 		{
-			name:          "workspace",
-			host:          "11111111111141118111111111111111.gateway.example.test",
-			codespaceUUID: "11111111-1111-4111-8111-111111111111",
-			endpointID:    "workspace",
-			ok:            true,
+			name:       "workspace",
+			host:       "11111111111141118111111111111111.gateway.example.test",
+			runtimeKey: "11111111-1111-4111-8111-111111111111",
+			endpointID: "workspace",
+			ok:         true,
 		},
 		{
-			name:          "normal endpoint",
-			host:          "app-3000-11111111111141118111111111111111.gateway.example.test",
-			codespaceUUID: "11111111-1111-4111-8111-111111111111",
-			endpointID:    "app-3000",
-			ok:            true,
+			name:       "normal endpoint",
+			host:       "app-3000-11111111111141118111111111111111.gateway.example.test",
+			runtimeKey: "11111111-1111-4111-8111-111111111111",
+			endpointID: "app-3000",
+			ok:         true,
 		},
 		{
-			name:          "endpoint with repeated hyphen",
-			host:          "my-app-11111111111141118111111111111111.gateway.example.test",
-			codespaceUUID: "11111111-1111-4111-8111-111111111111",
-			endpointID:    "my-app",
-			ok:            true,
+			name:       "endpoint with repeated hyphen",
+			host:       "my-app-11111111111141118111111111111111.gateway.example.test",
+			runtimeKey: "11111111-1111-4111-8111-111111111111",
+			endpointID: "my-app",
+			ok:         true,
 		},
 		{
 			name: "workspace alias is not accepted",
@@ -161,7 +161,7 @@ func TestGatewayOriginPolicyParsesEndpointHosts(t *testing.T) {
 			if !ok {
 				return
 			}
-			if got.codespaceUUID != test.codespaceUUID || got.endpointID != test.endpointID {
+			if got.resourceUID != test.runtimeKey || got.endpointID != test.endpointID {
 				t.Fatalf("endpoint host = %#v", got)
 			}
 		})
@@ -182,7 +182,7 @@ func TestGatewayOriginPolicyParsesEndpointHostPort(t *testing.T) {
 	if !ok {
 		t.Fatalf("host with gateway_url port should be accepted")
 	}
-	if got.codespaceUUID != "11111111-1111-4111-8111-111111111111" || got.endpointID != "workspace" {
+	if got.resourceUID != "11111111-1111-4111-8111-111111111111" || got.endpointID != "workspace" {
 		t.Fatalf("endpoint host = %#v", got)
 	}
 }

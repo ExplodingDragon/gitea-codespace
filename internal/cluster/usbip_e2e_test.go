@@ -30,7 +30,7 @@ var usbIPE2EScript []byte
 //go:embed usbip-devcontainer.Dockerfile
 var usbIPE2EDevContainerDockerfile []byte
 
-func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int32, runtimeUUID string, privateKey ed25519.PrivateKey, runtimePod types.NamespacedName) error {
+func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int32, runtimeAlias string, privateKey ed25519.PrivateKey, runtimePod types.NamespacedName) error {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
@@ -44,7 +44,7 @@ func verifyGatewayUSBIP(t *testing.T, ctx context.Context, node string, port int
 		return err
 	}
 	socketPath := filepath.Join(work, "control.sock")
-	host := "cs-" + runtimeUUID + "@" + node
+	host := "cs-" + runtimeAlias + "@" + node
 	common := []string{"-o", "ControlPath=" + socketPath, "-o", "UserKnownHostsFile=/dev/null", "-o", "StrictHostKeyChecking=no", "-o", "LogLevel=ERROR", "-i", keyPath, "-p", strconv.Itoa(int(port)), host}
 	type forwardProcess struct {
 		command *exec.Cmd

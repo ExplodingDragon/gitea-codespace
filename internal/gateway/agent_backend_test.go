@@ -95,8 +95,12 @@ func TestAgentHTTPReusesConnectionAndRedialsAfterTargetClose(t *testing.T) {
 	})
 	routes := newRouteStore(backend)
 	defer routes.Close()
-	route := endpointRoute{SiteUID: "site", CodespaceUUID: "runtime", GiteaWebURL: "https://gitea.test", EndpointID: "app", Public: true}
-	require.NoError(t, routes.Put(route))
+	require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{{
+		SiteUID: "site", RuntimeKey: "site/42", ResourceUID: "resource", PodUID: "pod", AgentAddress: "agent:8444", TargetVersion: 1,
+		GiteaWebURL: "https://gitea.test", Endpoints: []endpointSnapshot{{EndpointID: "app", Public: true}},
+	}}))
+	route, ok := routes.Get("site/42", "app")
+	require.True(t, ok)
 	transport, err := routes.Transport(route)
 	require.NoError(t, err)
 	client := &http.Client{Transport: transport, Timeout: 3 * time.Second}
@@ -141,7 +145,7 @@ func TestAgentStreamDiagnosticsAndExitStatus(t *testing.T) {
 				}
 				return nil
 			})
-			conn, err := backend.OpenWorkspaceSFTP(t.Context(), workspaceSFTPRequest{RuntimeUUID: "runtime"})
+			conn, err := backend.OpenWorkspaceSFTP(t.Context(), workspaceSFTPRequest{RuntimeKey: "site/42"})
 			require.NoError(t, err)
 			defer func() { _ = conn.Close() }()
 			body, err := io.ReadAll(conn)
@@ -166,9 +170,9 @@ func TestAgentClientCancellationClosesActiveStreams(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	})
-	first, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8000)
+	first, err := backend.OpenWorkspaceTCP(t.Context(), "site/42", 8000)
 	require.NoError(t, err)
-	second, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8001)
+	second, err := backend.OpenWorkspaceTCP(t.Context(), "site/42", 8001)
 	require.NoError(t, err)
 	defer func() { _ = second.Close() }()
 	require.NoError(t, first.Close())
@@ -187,7 +191,7 @@ func TestAgentOpenReportsTargetFailure(t *testing.T) {
 		return connect.NewError(connect.CodeUnavailable, "connection refused")
 	})
 	service.accept = false
-	_, err := backend.OpenWorkspaceTCP(t.Context(), "runtime", 8000)
+	_, err := backend.OpenWorkspaceTCP(t.Context(), "site/42", 8000)
 	require.ErrorContains(t, err, "connection refused")
 }
 
@@ -216,7 +220,7 @@ func TestAgentReverseListenerClaimsIndependentConnection(t *testing.T) {
 		}
 		return nil
 	})
-	listener, err := backend.OpenWorkspaceReverseTCP(t.Context(), "runtime", "usbip.workstation", 3240)
+	listener, err := backend.OpenWorkspaceReverseTCP(t.Context(), "site/42", "usbip.workstation", 3240)
 	require.NoError(t, err)
 	defer listener.Close()
 	accepted, err := listener.Accept(t.Context())
@@ -255,7 +259,7 @@ func (s *backendTestServer) Access(ctx context.Context, stream agentv1connect.Ag
 
 func newBackendTestClient(t *testing.T, handle func(context.Context, agentv1connect.AgentAccessServiceAccessServerStream) error) (*agentBackend, *backendTestServer) {
 	t.Helper()
-	route := &componentv1.GatewayRuntimeRoute{RuntimeUuid: "runtime", SiteUid: "site", ResourceUid: "resource", PodUid: "pod", AgentAddress: "agent:8444"}
+	route := &componentv1.GatewayRuntimeRoute{RuntimeKey: "site/42", SiteUid: "site", ResourceUid: "resource", PodUid: "pod", AgentAddress: "agent:8444"}
 	service := &backendTestServer{
 		route: route, access: handle, accept: true,
 		capability: make(chan agentv1.AccessCapability, 16),
@@ -292,7 +296,7 @@ func TestAgentCommandCloseReleasesBlockedOutput(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	session, err := backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeUUID: "runtime", Command: "test"})
+	session, err := backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeKey: "site/42", Command: "test"})
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = session.Close() })
 	_, err = io.ReadFull(session.Stdout(), make([]byte, 1))
@@ -325,7 +329,7 @@ func TestAgentBackendPreservesSSHProcessKind(t *testing.T) {
 			name:       "shell without terminal",
 			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_SHELL,
 			open: func(ctx context.Context, backend *agentBackend) (workspaceCommandSession, error) {
-				return backend.OpenWorkspaceShell(ctx, workspaceShellRequest{RuntimeUUID: "runtime"})
+				return backend.OpenWorkspaceShell(ctx, workspaceShellRequest{RuntimeKey: "site/42"})
 			},
 			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
 				require.NotNil(t, open.GetShell())
@@ -336,7 +340,7 @@ func TestAgentBackendPreservesSSHProcessKind(t *testing.T) {
 			name:       "command with terminal",
 			capability: agentv1.AccessCapability_ACCESS_CAPABILITY_COMMAND,
 			open: func(ctx context.Context, backend *agentBackend) (workspaceCommandSession, error) {
-				return backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeUUID: "runtime", Command: "printf test", Interactive: true, Cols: 91, Rows: 37})
+				return backend.OpenWorkspaceCommand(ctx, workspaceCommandRequest{RuntimeKey: "site/42", Command: "printf test", Interactive: true, Cols: 91, Rows: 37})
 			},
 			assertOpen: func(t *testing.T, open *agentv1.OpenAccess) {
 				require.Equal(t, "printf test", open.GetCommand().GetCommand())
@@ -384,7 +388,7 @@ func TestAgentTCPHalfCloseReceivesResponse(t *testing.T) {
 	})
 	ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
 	defer cancel()
-	conn, err := backend.OpenWorkspaceTCP(ctx, "runtime", 8000)
+	conn, err := backend.OpenWorkspaceTCP(ctx, "site/42", 8000)
 	require.NoError(t, err)
 	defer func() { _ = conn.Close() }()
 	_, err = conn.Write([]byte("hello"))

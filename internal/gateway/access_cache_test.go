@@ -18,7 +18,7 @@ func TestGatewaySharedAuthorizationHasIndependentWaiters(t *testing.T) {
 	for _, cached := range []bool{false, true} {
 		synctest.Test(t, func(t *testing.T) {
 			controller := newAccessController(accessConfig{ValidationMaxInflight: 1})
-			key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindEndpoint, siteUID: "site", userID: 1, codespaceUUID: "runtime", endpointID: "web"}
+			key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindEndpoint, siteUID: "site", userID: 1, runtimeKey: "runtime", endpointID: "web"}
 			complete := make(chan struct{})
 			calls := 0
 			validate := func(ctx context.Context) (gatewayAccessDecision, error) {
@@ -65,7 +65,7 @@ func TestGatewaySharedAuthorizationHasIndependentWaiters(t *testing.T) {
 func TestGatewaySharedAuthorizationTimeoutReleasesCapacity(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		controller := newAccessController(accessConfig{ValidationMaxInflight: 1})
-		key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindPublic, siteUID: "site", codespaceUUID: "runtime", endpointID: "web"}
+		key := gatewayAuthorizationKey{kind: gatewayAuthorizationKindPublic, siteUID: "site", runtimeKey: "runtime", endpointID: "web"}
 		_, full, err := controller.validateAccessUncached(t.Context(), key, func(ctx context.Context) (gatewayAccessDecision, error) {
 			<-ctx.Done()
 			return gatewayAccessDecision{}, ctx.Err()
@@ -132,22 +132,22 @@ func TestGatewayAccessCachePrunesExpiredBeforeApplyingLimit(t *testing.T) {
 	cache.maxKeys = 2
 	now := time.Unix(100, 0)
 	expiredKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-expired",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-expired",
+		endpointID: "web",
 	}
 	currentKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-current",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-current",
+		endpointID: "web",
 	}
 	newKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-new",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-new",
+		endpointID: "web",
 	}
 	cache.allowed[expiredKey] = now.Add(-time.Second)
 	cache.allowed[currentKey] = now.Add(time.Minute)
@@ -173,22 +173,22 @@ func TestGatewayAccessCacheEvictsOldestWhenFull(t *testing.T) {
 	cache.maxKeys = 2
 	now := time.Unix(100, 0)
 	oldKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-old",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-old",
+		endpointID: "web",
 	}
 	currentKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-current",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-current",
+		endpointID: "web",
 	}
 	newKey := gatewayAuthorizationKey{
-		kind:          gatewayAuthorizationKindEndpoint,
-		userID:        1,
-		codespaceUUID: "codespace-new",
-		endpointID:    "web",
+		kind:       gatewayAuthorizationKindEndpoint,
+		userID:     1,
+		runtimeKey: "codespace-new",
+		endpointID: "web",
 	}
 	cache.allowed[oldKey] = now.Add(10 * time.Second)
 	cache.allowed[currentKey] = now.Add(30 * time.Second)

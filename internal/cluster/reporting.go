@@ -43,7 +43,7 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 					if err := c.Client.Get(ctx, key, &cs); err != nil {
 						return client.IgnoreNotFound(err)
 					}
-					if cs.Spec.Site.UID != uid || !cs.Status.Bound {
+					if cs.Spec.Site.UID != uid {
 						return nil
 					}
 					var site api.GiteaSite
@@ -113,7 +113,7 @@ func (c *SiteCoordinator) reportSite(ctx context.Context, name string, uid types
 			}
 			generation, _ := reported.Load(cs.UID)
 			pending := cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && (cs.Status.Result != nil || meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
-			if cs.Status.Bound && (refresh || pending || generation != cs.Status.MetadataGeneration) {
+			if refresh || pending || generation != cs.Status.MetadataGeneration {
 				queue.Add(client.ObjectKeyFromObject(cs))
 			}
 		}

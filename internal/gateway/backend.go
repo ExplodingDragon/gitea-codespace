@@ -12,7 +12,7 @@ import (
 
 // A shell request carries the terminal settings for one SSH login shell.
 type workspaceShellRequest struct {
-	RuntimeUUID string
+	RuntimeKey  string
 	Interactive bool
 	Cols        int
 	Rows        int
@@ -20,7 +20,7 @@ type workspaceShellRequest struct {
 
 // A command request carries one SSH exec command and its terminal settings.
 type workspaceCommandRequest struct {
-	RuntimeUUID string
+	RuntimeKey  string
 	Command     string
 	Interactive bool
 	Cols        int
@@ -29,7 +29,7 @@ type workspaceCommandRequest struct {
 
 // An SFTP request identifies the Runtime that receives the stream.
 type workspaceSFTPRequest struct {
-	RuntimeUUID string
+	RuntimeKey string
 }
 
 type workspaceReverseConnection struct {

@@ -232,8 +232,8 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 	}); err != nil {
 		return nil, err
 	}
-	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &api.Codespace{}, RuntimeUUIDIndex, func(object client.Object) []string {
-		return []string{object.(*api.Codespace).Spec.RuntimeUUID}
+	if err := mgr.GetFieldIndexer().IndexField(context.Background(), &api.Codespace{}, RuntimeKeyIndex, func(object client.Object) []string {
+		return []string{object.(*api.Codespace).RuntimeKey()}
 	}); err != nil {
 		return nil, err
 	}

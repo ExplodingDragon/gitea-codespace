@@ -20,7 +20,7 @@ import (
 func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	t.Parallel()
 	request := Request{
-		CodespaceUUID: "11111111-2222-4333-8444-555555555555", Workspace: "/workspaces/project", GiteaURL: "https://gitea.example.com",
+		OwnerID: "11111111-2222-4333-8444-555555555555", Workspace: "/workspaces/project", GiteaURL: "https://gitea.example.com",
 		Source: devcontainer.Source{Path: ".devcontainer/devcontainer.json"},
 		DevContainer: Configuration{
 			GiteaCLI: true, WebIDE: WebIDEConfiguration{Provider: "vscode", Image: "ghcr.io/example/web-ide@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
@@ -37,7 +37,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.NoError(t, os.WriteFile(asset, []byte("binary"), 0o555))
 	options, err := buildCreateOptions(request, asset)
 	require.NoError(t, err)
-	require.Equal(t, request.CodespaceUUID, options.OwnerID)
+	require.Equal(t, request.OwnerID, options.OwnerID)
 	require.Equal(t, request.Workspace, options.AllowedPathRoot)
 	require.Equal(t, []devcontainer.InjectedFeature{{Reference: "ghcr.io/example/features/tool:1", Origin: "environment template", Options: map[string]json.RawMessage{}}}, options.InjectedFeatures)
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: webide.ProgramRootPath, Target: webide.ContainerProgramPath, ReadOnly: true})

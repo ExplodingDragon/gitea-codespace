@@ -34,7 +34,7 @@ const (
 )
 
 func (e *Executor) Apply(ctx context.Context, request devcontainerruntime.Request) (*devcontainerruntime.Outcome, error) {
-	if e.Journal == nil || e.PodUID == "" || request.CodespaceUUID != e.Journal.record.Identity.RuntimeUUID {
+	if e.Journal == nil || e.PodUID == "" || request.OwnerID != e.Journal.record.Identity.ResourceUID {
 		return nil, fmt.Errorf("runtime execution identity does not match the volume")
 	}
 	if request.Action != "create" {
@@ -134,7 +134,7 @@ func (e *Executor) Environment() (*devcontainer.State, error) {
 	if err := state.Validate(); err != nil {
 		return nil, err
 	}
-	if state.OwnerID != e.Journal.record.Identity.RuntimeUUID {
+	if state.OwnerID != e.Journal.record.Identity.ResourceUID {
 		return nil, fmt.Errorf("saved Dev Container belongs to another Codespace")
 	}
 	return state, nil

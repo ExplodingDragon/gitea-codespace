@@ -5,6 +5,7 @@ package v1alpha1
 
 import (
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeidentity"
 	"gitea.dev/codespace/internal/runtimeplatform"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -416,10 +417,6 @@ type CodespaceSpec struct {
 	// +kubebuilder:validation:Minimum=1
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="Gitea identity is immutable"
 	CodespaceID int64 `json:"codespaceID"`
-	// +kubebuilder:validation:Pattern=`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`
-	// +kubebuilder:validation:MaxLength=36
-	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="runtime identity is immutable"
-	RuntimeUUID string `json:"runtimeUUID"`
 	// +kubebuilder:validation:Pattern=`^[a-z0-9_-]{1,64}$`
 	EnvironmentTag string `json:"environmentTag"`
 	// +kubebuilder:validation:XValidation:rule="self == oldSelf",message="runtime configuration is immutable"
@@ -462,7 +459,6 @@ type OperationResult struct {
 }
 
 type CodespaceStatus struct {
-	Bound        bool             `json:"bound,omitempty"`
 	Pod          ObservedResource `json:"pod,omitempty"`
 	LastNodeName string           `json:"lastNodeName,omitempty"`
 	// StoppedPodUID records the previous writer identity before the Runtime converges to stopped.
@@ -470,8 +466,9 @@ type CodespaceStatus struct {
 	Volume        ObservedResource `json:"volume,omitempty"`
 	// A started format is never retried when the filesystem is unrecognizable.
 	// +kubebuilder:validation:Enum=started;ready
-	VolumeInitialization string `json:"volumeInitialization,omitempty"`
-	MetadataGeneration   int64  `json:"metadataGeneration,omitempty"`
+	VolumeInitialization string        `json:"volumeInitialization,omitempty"`
+	MetadataGeneration   int64         `json:"metadataGeneration,omitempty"`
+	Access               RuntimeAccess `json:"access,omitempty"`
 	// SettledOperationVersion records Gitea's terminal operation acknowledgement.
 	SettledOperationVersion int64 `json:"settledOperationVersion,omitempty"`
 	// RecoveryAction is an inventory-authorized resource action, not a new Gitea operation.
@@ -493,6 +490,16 @@ type Codespace struct {
 	metav1.ObjectMeta `json:"metadata,omitempty"`
 	Spec              CodespaceSpec   `json:"spec"`
 	Status            CodespaceStatus `json:"status,omitempty"`
+}
+
+// RuntimeAccess is versioned with boot and endpoint metadata.
+type RuntimeAccess struct {
+	GatewayURL string `json:"gatewayURL,omitempty"`
+	SSHAddress string `json:"sshAddress,omitempty"`
+}
+
+func (c *Codespace) RuntimeKey() string {
+	return runtimeidentity.Key(string(c.Spec.Site.UID), c.Spec.CodespaceID)
 }
 
 // +kubebuilder:object:root=true

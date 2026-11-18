@@ -184,15 +184,9 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 			if c.Activity != nil {
 				current := make(map[string]bool, len(rows.Items))
 				for i := range rows.Items {
-					current[rows.Items[i].Spec.RuntimeUUID] = true
+					current[rows.Items[i].RuntimeKey()] = true
 				}
 				c.Activity.RetainSite(string(uid), current)
-			}
-			for i := range rows.Items {
-				if !rows.Items[i].Status.Bound && rows.Items[i].Status.RecoveryAction == "" {
-					recovered = false
-					break
-				}
 			}
 			if !recovered || time.Since(heartbeatAt) >= heartbeat {
 				declaration, tags, err = c.declaration(ctx, &site)
@@ -211,45 +205,30 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				metadataInterval.Store(int64(time.Duration(max(int64(1000), min(response.RuntimeMetadataRefreshIntervalMilliseconds, int64(30000)))) * time.Millisecond))
 				heartbeatAt = time.Now()
 			}
-			bindingsReady := true
+			access := api.RuntimeAccess{GatewayURL: declaration.GatewayUrl, SSHAddress: declaration.GatewaySshAddr}
 			for i := range rows.Items {
 				cs := &rows.Items[i]
-				if cs.Status.Bound || cs.Status.RecoveryAction != "" {
+				if cs.Status.Access == access {
 					continue
 				}
-				if err := c.bind(ctx, cs, remote); err != nil {
-					if isPermanentOperationError(err) {
-						operationVersion, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.RuntimeUUID
-						if updateErr := updateCodespaceStatus(ctx, c.Client, cs, func(current *api.Codespace) error {
-							if current.Status.Bound || current.Spec.Operation.Version != operationVersion || current.Spec.RuntimeUUID != runtimeUUID {
-								return errObservedResourceChanged
-							}
-							current.Status.RecoveryAction = "delete"
-							return nil
-						}); updateErr != nil {
-							bindingsReady = false
-							recovered = false
-							logger.Error(updateErr, "Schedule rejected runtime cleanup", "codespace", cs.Name)
-						} else {
-							c.Authority.Revoke(cs.UID)
+				if err := updateCodespaceStatus(ctx, c.Client, cs, func(current *api.Codespace) error {
+					if current.Status.Access != access {
+						if current.Status.MetadataGeneration == int64(^uint64(0)>>1) {
+							return fmt.Errorf("runtime metadata generation exhausted")
 						}
-						continue
+						current.Status.Access = access
+						current.Status.MetadataGeneration++
 					}
-					bindingsReady = false
-					recovered = false
-					logger.Error(err, "Bind persisted runtime identity", "codespace", cs.Name)
+					return nil
+				}); err != nil {
+					return err
 				}
 			}
-			if bindingsReady && (!recovered || time.Since(inventoryAt) >= 30*time.Second) {
-				boundRows := make([]api.Codespace, 0, len(rows.Items))
-				for i := range rows.Items {
-					if rows.Items[i].Status.Bound {
-						boundRows = append(boundRows, rows.Items[i])
-					}
-				}
-				if err := c.inventory(ctx, &site, boundRows, remote); err != nil {
+			inventoryReady := true
+			if !recovered || time.Since(inventoryAt) >= 30*time.Second {
+				if err := c.inventory(ctx, &site, rows.Items, remote); err != nil {
 					logger.Error(err, "Report complete runtime inventory")
-					bindingsReady = false
+					inventoryReady = false
 					recovered = false
 				} else {
 					inventoryAt = time.Now()
@@ -260,16 +239,16 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 			}
 			c.requestIdleStops(ctx, &site, rows.Items, remote)
 			request := &codespacev1.FetchOperationsRequest{ProtocolVersion: 1}
-			runtimesByUUID := make(map[string]*api.Codespace, len(rows.Items))
+			runtimesByID := make(map[int64]*api.Codespace, len(rows.Items))
 			for i := range rows.Items {
 				cs := &rows.Items[i]
-				runtimesByUUID[cs.Spec.RuntimeUUID] = cs
+				runtimesByID[cs.Spec.CodespaceID] = cs
 				accepted := c.Authority.Remaining(cs.UID, cs.Spec.Operation.Version) > 0
 				if cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" {
 					accepted = true
 				}
-				if cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && accepted {
-					request.ObservedOperations = append(request.ObservedOperations, &codespacev1.ObservedOperation{RuntimeUuid: cs.Spec.RuntimeUUID, OperationRversion: cs.Spec.Operation.Version})
+				if cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && accepted {
+					request.ObservedOperations = append(request.ObservedOperations, &codespacev1.ObservedOperation{CodespaceId: cs.Spec.CodespaceID, OperationRversion: cs.Spec.Operation.Version})
 				}
 			}
 			if recovered {
@@ -290,8 +269,8 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				if deadline := sent.Add(time.Duration(renewal.LeaseValidForMilliseconds) * time.Millisecond / 3); deadline.Before(nextPoll) {
 					nextPoll = deadline
 				}
-				cs := runtimesByUUID[renewal.RuntimeUuid]
-				if cs != nil && cs.Spec.Operation.Version == renewal.OperationRversion && cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Spec.Operation.Type != "abort_create" && cs.Spec.Operation.Type != "abort_resume" {
+				cs := runtimesByID[renewal.CodespaceId]
+				if cs != nil && cs.Spec.Operation.Version == renewal.OperationRversion && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion < cs.Spec.Operation.Version && cs.Spec.Operation.Type != "abort_create" && cs.Spec.Operation.Type != "abort_resume" {
 					c.Authority.Grant(cs.UID, renewal.OperationRversion, sent.Add(time.Duration(renewal.LeaseValidForMilliseconds)*time.Millisecond))
 				}
 			}
@@ -301,7 +280,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 						nextPoll = deadline
 					}
 				}
-				if err := c.Accept(ctx, &site, remote, operation, sent); err != nil {
+				if err := c.Accept(ctx, &site, operation, sent); err != nil {
 					if isPermanentOperationError(err) {
 						logger.Error(err, "Reject operation")
 						if finalErr := c.finalizeRejectedOperation(ctx, &site, remote, operation); finalErr != nil {
@@ -312,7 +291,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 					logger.Error(err, "Accept operation")
 				}
 			}
-			if !recovered && bindingsReady {
+			if !recovered && inventoryReady {
 				declaration.ManagerRuntimeState = codespacev1.ManagerRuntimeState_MANAGER_RUNTIME_STATE_ONLINE
 				if _, err := declareManager(ctx, remote, declaration, site.Status.CanonicalURL); err != nil {
 					return err
@@ -408,14 +387,14 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 
 func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, rows []api.Codespace, remote codespacev1connect.ManagerServiceClient) error {
 	request := &codespacev1.ReportInstancesRequest{ProtocolVersion: 1}
-	states := make(map[string]codespacev1.RuntimeState)
-	runtimes := make(map[string]*api.Codespace, len(rows))
+	states := make(map[int64]codespacev1.RuntimeState)
+	runtimes := make(map[int64]*api.Codespace, len(rows))
 	for i := range rows {
 		cs := &rows[i]
-		if _, duplicate := runtimes[cs.Spec.RuntimeUUID]; duplicate {
+		if _, duplicate := runtimes[cs.Spec.CodespaceID]; duplicate {
 			return fmt.Errorf("site contains duplicate runtime identities")
 		}
-		runtimes[cs.Spec.RuntimeUUID] = cs
+		runtimes[cs.Spec.CodespaceID] = cs
 		state := codespacev1.RuntimeState_RUNTIME_STATE_CREATING
 		if cs.Status.Pod.UID != "" {
 			var pod corev1.Pod
@@ -436,8 +415,8 @@ func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, ro
 		if cs.Status.SettledOperationVersion >= observed {
 			observed = 0
 		}
-		request.Instances = append(request.Instances, &codespacev1.RuntimeInstanceRef{RuntimeUuid: cs.Spec.RuntimeUUID, RuntimeState: state, ObservedOperationRversion: observed})
-		states[cs.Spec.RuntimeUUID] = state
+		request.Instances = append(request.Instances, &codespacev1.RuntimeInstanceRef{CodespaceId: cs.Spec.CodespaceID, RuntimeState: state, ObservedOperationRversion: observed})
+		states[cs.Spec.CodespaceID] = state
 	}
 	observedSiteGeneration := site.Generation
 	if err := updateSiteStatus(ctx, c.Client, site, func(current *api.GiteaSite) error {
@@ -460,34 +439,34 @@ func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, ro
 	if len(response.Results) != len(rows) {
 		return fmt.Errorf("gitea returned an incomplete inventory decision")
 	}
-	seen := make(map[string]bool, len(rows))
+	seen := make(map[int64]bool, len(rows))
 	for _, result := range response.Results {
-		if result == nil || runtimes[result.RuntimeUuid] == nil || seen[result.RuntimeUuid] {
+		if result == nil || runtimes[result.CodespaceId] == nil || seen[result.CodespaceId] {
 			return fmt.Errorf("gitea returned an unknown or duplicate inventory identity")
 		}
-		seen[result.RuntimeUuid] = true
+		seen[result.CodespaceId] = true
 	}
 	for _, result := range response.Results {
-		cs := runtimes[result.RuntimeUuid]
+		cs := runtimes[result.CodespaceId]
 		if err := c.Client.Get(ctx, client.ObjectKeyFromObject(cs), cs); err != nil {
 			return err
 		}
 		if result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_UNSPECIFIED && result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME && result.CurrentOperationRversion < cs.Spec.Operation.Version {
 			return fmt.Errorf("inventory operation history regressed")
 		}
-		if states[cs.Spec.RuntimeUUID] == codespacev1.RuntimeState_RUNTIME_STATE_RUNNING && result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME {
+		if states[cs.Spec.CodespaceID] == codespacev1.RuntimeState_RUNTIME_STATE_RUNNING && result.Action != codespacev1.RuntimeReconcileAction_RUNTIME_RECONCILE_ACTION_CLEANUP_LOCAL_RUNTIME {
 			if validateRuntimeSettings(result.RuntimeSettings) != nil {
 				return fmt.Errorf("gitea returned a running Runtime without valid effective settings")
 			}
 			if c.Activity != nil {
-				if err := c.Activity.ObserveSettings(string(site.UID), cs.Spec.RuntimeUUID, result.RuntimeSettings, time.Now()); err != nil {
+				if err := c.Activity.ObserveSettings(string(site.UID), cs.RuntimeKey(), result.RuntimeSettings, time.Now()); err != nil {
 					return err
 				}
 			}
 		}
-		operationVersion, operationType, runtimeUUID := cs.Spec.Operation.Version, cs.Spec.Operation.Type, cs.Spec.RuntimeUUID
+		operationVersion, operationType, runtimeKey := cs.Spec.Operation.Version, cs.Spec.Operation.Type, cs.RuntimeKey()
 		err := updateCodespaceStatus(ctx, c.Client, cs, func(current *api.Codespace) error {
-			if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.Spec.RuntimeUUID != runtimeUUID {
+			if current.Spec.Operation.Version != operationVersion || current.Spec.Operation.Type != operationType || current.RuntimeKey() != runtimeKey {
 				return errObservedResourceChanged
 			}
 			switch result.Action {
@@ -521,19 +500,19 @@ func (c *SiteCoordinator) requestIdleStops(ctx context.Context, site *api.GiteaS
 	now := time.Now()
 	for i := range rows {
 		cs := &rows[i]
-		eligible := cs.Status.Bound && cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version && cs.Status.Pod.UID != "" && cs.Status.Target != nil && cs.Status.Target.Ready && cs.DeletionTimestamp.IsZero()
-		settings, ready := c.Activity.IdleRequest(string(site.UID), cs.Spec.RuntimeUUID, string(site.Spec.Gateway.UID), eligible, now)
+		eligible := cs.Status.RecoveryAction == "" && cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version && cs.Status.Pod.UID != "" && cs.Status.Target != nil && cs.Status.Target.Ready && cs.DeletionTimestamp.IsZero()
+		settings, ready := c.Activity.IdleRequest(string(site.UID), cs.RuntimeKey(), string(site.Spec.Gateway.UID), eligible, now)
 		if !ready {
 			continue
 		}
-		response, err := remote.RequestIdleStop(ctx, &codespacev1.RequestIdleStopRequest{ProtocolVersion: 1, RuntimeUuid: cs.Spec.RuntimeUUID, ObservedSettings: settings})
+		response, err := remote.RequestIdleStop(ctx, &codespacev1.RequestIdleStopRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, ObservedSettings: settings})
 		if err != nil {
-			c.Activity.IdleStopFailed(cs.Spec.RuntimeUUID, now)
+			c.Activity.IdleStopFailed(cs.RuntimeKey(), now)
 			log.FromContext(ctx).Error(err, "Request idle stop", "codespace", cs.Name)
 			continue
 		}
-		if err := c.Activity.IdleStopResult(string(site.UID), cs.Spec.RuntimeUUID, response, now); err != nil {
-			c.Activity.IdleStopFailed(cs.Spec.RuntimeUUID, now)
+		if err := c.Activity.IdleStopResult(string(site.UID), cs.RuntimeKey(), response, now); err != nil {
+			c.Activity.IdleStopFailed(cs.RuntimeKey(), now)
 			log.FromContext(ctx).Error(err, "Apply idle stop response", "codespace", cs.Name)
 		}
 	}

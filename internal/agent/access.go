@@ -107,7 +107,7 @@ func (r *Runtime) authorize(open *agentv1.OpenAccess) (*agentv1.AccessTarget, *d
 		return nil, nil, nil, capability, nil, err
 	}
 	identity := r.Journal.record.Identity
-	if claims.SiteUid != identity.SiteUID || claims.ResourceUid != identity.ResourceUID || claims.RuntimeUuid != identity.RuntimeUUID || claims.PodUid != r.PodUID || claims.TargetVersion != target.Version || claims.Capability != capability {
+	if claims.SiteUid != identity.SiteUID || claims.ResourceUid != identity.ResourceUID || claims.CodespaceId != identity.CodespaceID || claims.PodUid != r.PodUID || claims.TargetVersion != target.Version || claims.Capability != capability {
 		return nil, nil, nil, capability, nil, fmt.Errorf("access ticket does not match the current runtime target")
 	}
 	var selected *agentv1.EndpointTarget
@@ -131,7 +131,7 @@ func (r *Runtime) authorize(open *agentv1.OpenAccess) (*agentv1.AccessTarget, *d
 		return nil, nil, nil, capability, nil, err
 	}
 	state := &devcontainer.State{}
-	if err := json.Unmarshal(data, state); err != nil || state.Validate() != nil || state.OwnerID != identity.RuntimeUUID || state.PrimaryContainerID != target.PrimaryContainerId {
+	if err := json.Unmarshal(data, state); err != nil || state.Validate() != nil || state.OwnerID != identity.ResourceUID || state.PrimaryContainerID != target.PrimaryContainerId {
 		return nil, nil, nil, capability, nil, fmt.Errorf("saved Dev Container does not match the access target")
 	}
 	return target, state, secrets, capability, selected, nil

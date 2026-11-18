@@ -80,6 +80,8 @@ func gatewayComponentConfig(component *api.CodespaceComponent) (configpkg.Gatewa
 	if err := config.Validate(); err != nil {
 		return configpkg.GatewayConfig{}, fmt.Errorf("invalid Gateway configuration: %w", err)
 	}
+	config.HTTP.PublicURL, _ = configpkg.NormalizeGatewayURL(config.HTTP.PublicURL)
+	config.SSH.PublicAddr, _ = configpkg.NormalizeGatewaySSHAddress(config.SSH.PublicAddr)
 	return config, nil
 }
 

@@ -37,19 +37,19 @@ func (c *componentControlPlane) authorize(ctx context.Context, payload *componen
 	return response, nil
 }
 
-func (c *componentControlPlane) ValidateOpenToken(ctx context.Context, code, runtimeUUID, endpointID string) (gatewayOpenTokenDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: code, RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
+func (c *componentControlPlane) ValidateOpenToken(ctx context.Context, code, runtimeKey, endpointID string) (gatewayOpenTokenDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_OpenCode{OpenCode: &componentv1.OpenCodeAuthorization{Code: code, RuntimeKey: runtimeKey, EndpointId: endpointID}}})
 	if err != nil {
 		return gatewayOpenTokenDecision{}, err
 	}
 	if !result.Allowed {
 		return gatewayOpenTokenDecision{deniedCategory: result.DeniedCategory}, nil
 	}
-	return gatewayOpenTokenDecision{Allowed: true, Binding: openTokenBinding{SiteUID: result.SiteUid, UserID: result.UserId, CodespaceUUID: result.RuntimeUuid, EndpointID: result.EndpointId}}, nil
+	return gatewayOpenTokenDecision{Allowed: true, Binding: openTokenBinding{SiteUID: result.SiteUid, UserID: result.UserId, RuntimeKey: result.RuntimeKey, EndpointID: result.EndpointId}}, nil
 }
 
-func (c *componentControlPlane) ValidatePublicEndpoint(ctx context.Context, siteUID, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_PublicEndpoint{PublicEndpoint: &componentv1.PublicEndpointAuthorization{RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
+func (c *componentControlPlane) ValidatePublicEndpoint(ctx context.Context, siteUID, runtimeKey, endpointID string) (gatewayAccessDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_PublicEndpoint{PublicEndpoint: &componentv1.PublicEndpointAuthorization{RuntimeKey: runtimeKey, EndpointId: endpointID}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
 	}
@@ -59,16 +59,16 @@ func (c *componentControlPlane) ValidatePublicEndpoint(ctx context.Context, site
 	return gatewayAccessDecision{Allowed: result.Allowed, DeniedCategory: result.DeniedCategory}, nil
 }
 
-func (c *componentControlPlane) VerifySSHPublicKey(ctx context.Context, runtimeUUID string, publicKey []byte) (gatewaySSHAuthDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshPublicKey{SshPublicKey: &componentv1.SSHPublicKeyAuthorization{RuntimeUuid: runtimeUUID, PublicKey: append([]byte(nil), publicKey...)}}})
+func (c *componentControlPlane) VerifySSHPublicKey(ctx context.Context, runtimeKey string, publicKey []byte) (gatewaySSHAuthDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshPublicKey{SshPublicKey: &componentv1.SSHPublicKeyAuthorization{RuntimeKey: runtimeKey, PublicKey: append([]byte(nil), publicKey...)}}})
 	if err != nil {
 		return gatewaySSHAuthDecision{}, err
 	}
 	return gatewaySSHAuthDecision{Allowed: result.Allowed, SiteUID: result.SiteUid, UserID: result.UserId, deniedCategory: result.DeniedCategory}, nil
 }
 
-func (c *componentControlPlane) RevalidateEndpointSession(ctx context.Context, siteUID string, userID int64, runtimeUUID, endpointID string) (gatewayAccessDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeUuid: runtimeUUID, EndpointId: endpointID}}})
+func (c *componentControlPlane) RevalidateEndpointSession(ctx context.Context, siteUID string, userID int64, runtimeKey, endpointID string) (gatewayAccessDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_EndpointSession{EndpointSession: &componentv1.EndpointSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeKey: runtimeKey, EndpointId: endpointID}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
 	}
@@ -78,8 +78,8 @@ func (c *componentControlPlane) RevalidateEndpointSession(ctx context.Context, s
 	return gatewayAccessDecision{Allowed: result.Allowed, DeniedCategory: result.DeniedCategory}, nil
 }
 
-func (c *componentControlPlane) RevalidateSSHSession(ctx context.Context, siteUID string, userID int64, runtimeUUID string) (gatewayAccessDecision, error) {
-	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshSession{SshSession: &componentv1.SSHSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeUuid: runtimeUUID}}})
+func (c *componentControlPlane) RevalidateSSHSession(ctx context.Context, siteUID string, userID int64, runtimeKey string) (gatewayAccessDecision, error) {
+	result, err := c.authorize(ctx, &componentv1.AuthorizeGatewayRequest{Request: &componentv1.AuthorizeGatewayRequest_SshSession{SshSession: &componentv1.SSHSessionAuthorization{SiteUid: siteUID, UserId: userID, RuntimeKey: runtimeKey}}})
 	if err != nil {
 		return gatewayAccessDecision{}, err
 	}

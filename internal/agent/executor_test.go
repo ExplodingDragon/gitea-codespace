@@ -16,11 +16,11 @@ import (
 )
 
 func TestExecutorReusesCompletedCreate(t *testing.T) {
-	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, j.Close()) }()
 	state := &devcontainer.State{
-		Version: devcontainer.StateFormatVersion, OwnerID: "runtime", ID: "environment",
+		Version: devcontainer.StateFormatVersion, OwnerID: "resource", ID: "environment",
 		PrimaryContainerID: "container", ConfigurationPath: "/workspaces/repo/.devcontainer/devcontainer.json", ConfigurationSHA256: strings.Repeat("a", 64),
 		Workspace: "/workspaces/repo", WorkspaceFolder: "/workspaces/repo", RemoteUser: "developer", RemoteWorkdir: "/workspaces/repo",
 	}
@@ -37,7 +37,7 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 			require.True(t, outcome.WebIDEStarted)
 			return nil
 		},
-		Action: "create", CodespaceUUID: "runtime", OperationVersion: 1, Workspace: "/workspaces/repo", GiteaURL: "https://gitea.example.com",
+		Action: "create", OwnerID: "resource", OperationVersion: 1, Workspace: "/workspaces/repo", GiteaURL: "https://gitea.example.com",
 		DevContainer: devcontainerruntime.Configuration{},
 	}
 	recovered, err := executor.Apply(t.Context(), request)
@@ -49,11 +49,11 @@ func TestExecutorReusesCompletedCreate(t *testing.T) {
 	require.NoError(t, err)
 	require.JSONEq(t, string(want), string(got))
 	require.True(t, recovered.WebIDEStarted)
-	request.CodespaceUUID = "another-runtime"
+	request.OwnerID = "another-runtime"
 	_, err = executor.Apply(t.Context(), request)
 	require.ErrorContains(t, err, "identity")
 
-	request.CodespaceUUID, request.OperationVersion = "runtime", 2
+	request.OwnerID, request.OperationVersion = "resource", 2
 	j.record.Version = 2
 	j.record.Stages = map[string]stageResult{"create": {}}
 	require.NoError(t, j.save())

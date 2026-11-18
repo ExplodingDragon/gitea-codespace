@@ -20,7 +20,7 @@ import (
 )
 
 func TestRuntimeWritesFirstProgressBeforeTrustPreparation(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, journal.Close()) }()
 	runtime := &Runtime{Journal: journal, PodUID: "pod"}

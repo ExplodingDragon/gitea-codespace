@@ -36,7 +36,7 @@ message WorkspaceSessionIdentity {
   string session_id = 1;
   string site_uid = 2;
   int64 user_id = 3;
-  string runtime_uuid = 4;
+  string runtime_key = 4;
 }
 
 message WorkspaceSessionActivity {
@@ -92,7 +92,7 @@ message GatewayConfigurationSnapshot {
 message GatewayRuntimeRoute {
   string site_uid = 1;
   string resource_uid = 2;
-  string runtime_uuid = 3;
+  string runtime_key = 3;
   string pod_uid = 4;
   string agent_address = 5;
   int64 target_version = 6;
@@ -120,31 +120,31 @@ message AuthorizeGatewayRequest {
 message OpenCodeAuthorization {
   // code is the one-time authorization code issued by Gitea.
   string code = 1;
-  // runtime_uuid and endpoint_id are parsed from the canonical Gateway host.
-  string runtime_uuid = 2;
+  // runtime_key is the site UID and numeric Codespace ID resolved by Gateway.
+  string runtime_key = 2;
   string endpoint_id = 3;
 }
 
 message PublicEndpointAuthorization {
-  string runtime_uuid = 1;
+  string runtime_key = 1;
   string endpoint_id = 2;
 }
 
 message SSHPublicKeyAuthorization {
-  string runtime_uuid = 1;
+  string runtime_key = 1;
   bytes public_key = 2;
 }
 
 message EndpointSessionAuthorization {
   int64 user_id = 1;
-  string runtime_uuid = 2;
+  string runtime_key = 2;
   string endpoint_id = 3;
   string site_uid = 4;
 }
 
 message SSHSessionAuthorization {
   int64 user_id = 1;
-  string runtime_uuid = 2;
+  string runtime_key = 2;
   string site_uid = 3;
 }
 
@@ -152,14 +152,14 @@ message AuthorizeGatewayResponse {
   bool allowed = 1;
   string denied_category = 2;
   int64 user_id = 3;
-  string runtime_uuid = 4;
+  string runtime_key = 4;
   string endpoint_id = 5;
   string site_uid = 6;
 }
 
 message IssueAgentAccessRequest {
   uint32 protocol_version = 1;
-  string runtime_uuid = 2;
+  string runtime_key = 2;
   agent.v1.AccessCapability capability = 3;
   string endpoint_id = 4;
 }

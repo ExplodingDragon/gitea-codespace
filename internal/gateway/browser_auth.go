@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/runtimeidentity"
 )
 
 const (
@@ -26,20 +27,24 @@ func newBrowserAuth(routes *routeStore) *browserAuth {
 	return &browserAuth{routes: routes}
 }
 
-func (a *browserAuth) openURL(codespaceUUID, endpointID string) (string, bool) {
+func (a *browserAuth) openURL(runtimeKey, endpointID string) (string, bool) {
 	if a == nil || a.routes == nil {
 		return "", false
 	}
-	rawURL, ok := a.routes.giteaWebURLForCodespace(codespaceUUID)
+	runtime, ok := a.routes.RuntimeTarget(runtimeKey)
 	if !ok {
 		return "", false
 	}
-	rawURL = strings.TrimRight(rawURL, "/") + "/"
+	rawURL := strings.TrimRight(runtime.GiteaWebURL, "/") + "/"
 	parsed, err := parseGatewayGiteaWebURL(rawURL)
 	if err != nil {
 		return "", false
 	}
-	openPath := strings.TrimRight(parsed.Path, "/") + "/-/codespaces/" + url.PathEscape(codespaceUUID)
+	_, codespaceID, valid := runtimeidentity.Parse(runtimeKey)
+	if !valid {
+		return "", false
+	}
+	openPath := strings.TrimRight(parsed.Path, "/") + fmt.Sprintf("/-/codespaces/%d", codespaceID)
 	if endpointID == "" {
 		endpointID = runtimeendpoint.WorkspaceEndpointID
 	}
@@ -72,7 +77,7 @@ func parseGatewayGiteaWebURL(rawURL string) (*url.URL, error) {
 func handleGatewayAuthenticationRequired(
 	writer http.ResponseWriter,
 	request *http.Request,
-	codespaceUUID string,
+	runtimeKey string,
 	endpointID string,
 	originPolicy originPolicy,
 	browserAuth *browserAuth,
@@ -80,7 +85,7 @@ func handleGatewayAuthenticationRequired(
 	if !isGatewayBrowserAuthNavigation(request) {
 		return false
 	}
-	openURL, ok := browserAuth.openURL(codespaceUUID, endpointID)
+	openURL, ok := browserAuth.openURL(runtimeKey, endpointID)
 	if !ok {
 		return false
 	}

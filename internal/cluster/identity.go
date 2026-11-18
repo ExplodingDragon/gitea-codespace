@@ -68,7 +68,7 @@ func ResolveAgent(ctx context.Context, index, reader client.Reader, certificate 
 	if err := reader.Get(ctx, client.ObjectKeyFromObject(cs), cs); err != nil {
 		return nil, nil, err
 	}
-	if cs.UID != types.UID(identity.RuntimeUID) || cs.Spec.Site.UID != site.UID || cs.Spec.Site.Name != site.Name || !cs.Status.Bound || cs.Status.Pod.UID != types.UID(identity.PodUID) {
+	if cs.UID != types.UID(identity.RuntimeUID) || cs.Spec.Site.UID != site.UID || cs.Spec.Site.Name != site.Name || cs.Status.Pod.UID != types.UID(identity.PodUID) {
 		return nil, nil, fmt.Errorf("agent runtime or Pod identity changed")
 	}
 	var pod corev1.Pod

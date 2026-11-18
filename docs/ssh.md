@@ -18,7 +18,7 @@ lifecycle commands, login shells, and systemd system services:
 | --- | --- |
 | `CODESPACE_SSH_HOST` | Public Gateway DNS name, without a scheme or port |
 | `CODESPACE_SSH_PORT` | Public SSH port as a decimal number |
-| `CODESPACE_SSH_USER` | `cs-` followed by this Codespace's runtime UUID |
+| `CODESPACE_SSH_USER` | The SSH username assigned by the Codespace platform |
 
 Scripts can use these values to generate connection instructions without
 asking users to enter the address again. An independent shell that does not

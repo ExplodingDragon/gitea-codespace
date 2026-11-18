@@ -104,7 +104,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 
 	cs := &api.Codespace{
 		ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: namespace},
-		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, RuntimeUUID: uuid.NewV4().String(), EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
+		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
 	}
 	require.NoError(t, c.Create(ctx, cs))
 	changed := cs.DeepCopy()
@@ -167,18 +167,12 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 		site.Spec.Templates = []api.ResourceReference{{Name: template.Name, UID: template.UID}}
 		return c.Update(ctx, site)
 	}))
-	remote := &operationRemote{bind: func(request *codespacev1.BindRuntimeIdentityRequest) (*codespacev1.BindRuntimeIdentityResponse, error) {
-		return &codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: request.RuntimeUuid}, nil
-	}, final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
-		require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
-		return &codespacev1.FinalizeOperationResponse{}, nil
-	}}
+	remote := &operationRemote{}
 	operations := Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: cluster.managementNamespace, PlatformImage: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE")}
-	require.NoError(t, operations.Accept(ctx, site, remote, &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: template.Name, RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}, time.Now()))
+	require.NoError(t, operations.Accept(ctx, site, &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: template.Name, RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}, time.Now()))
 	var allocated api.Codespace
 	key := types.NamespacedName{Namespace: namespace, Name: "codespace-2"}
 	require.NoError(t, c.Get(ctx, key, &allocated))
-	require.True(t, allocated.Status.Bound)
 	require.Positive(t, operations.Authority.Remaining(allocated.UID, 1))
 	t.Cleanup(func() {
 		cleanup, stop := context.WithTimeout(context.Background(), time.Minute)

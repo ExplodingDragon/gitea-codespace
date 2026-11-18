@@ -50,7 +50,7 @@ func gatewayUpstreamStage(err error, fallback string) string {
 
 func gatewayUpstreamTarget(err error) (runtimeSnapshot, bool) {
 	var upstreamErr *gatewayUpstreamError
-	if !errors.As(err, &upstreamErr) || upstreamErr.target.RuntimeUUID == "" {
+	if !errors.As(err, &upstreamErr) || upstreamErr.target.RuntimeKey == "" {
 		return runtimeSnapshot{}, false
 	}
 	return upstreamErr.target, true
@@ -106,7 +106,7 @@ func gatewayRouteLogAttrs(route endpointRoute) []slog.Attr {
 	attrs := gatewayRuntimeLogAttrs(runtimeSnapshot{
 		SiteUID:       route.SiteUID,
 		ResourceUID:   route.ResourceUID,
-		RuntimeUUID:   route.CodespaceUUID,
+		RuntimeKey:    route.RuntimeKey,
 		PodUID:        route.PodUID,
 		AgentAddress:  route.AgentAddress,
 		TargetVersion: route.TargetVersion,
@@ -122,7 +122,7 @@ func gatewayRuntimeLogAttrs(runtime runtimeSnapshot) []slog.Attr {
 	return []slog.Attr{
 		slog.String("site_uid", runtime.SiteUID),
 		slog.String("resource_uid", runtime.ResourceUID),
-		slog.String("codespace_uuid", runtime.RuntimeUUID),
+		slog.String("runtime_key", runtime.RuntimeKey),
 		slog.String("pod_uid", runtime.PodUID),
 		slog.String("agent_address", runtime.AgentAddress),
 		slog.Int64("target_version", runtime.TargetVersion),
@@ -133,8 +133,8 @@ func gatewaySSHLogAttrs(auth gatewaySSHAuthContext, runtime runtimeSnapshot) []s
 	if runtime.SiteUID == "" {
 		runtime.SiteUID = auth.siteUID
 	}
-	if runtime.RuntimeUUID == "" {
-		runtime.RuntimeUUID = auth.codespaceUUID
+	if runtime.RuntimeKey == "" {
+		runtime.RuntimeKey = auth.runtimeKey
 	}
 	attrs := []slog.Attr{
 		slog.String("client_ip", auth.clientIP),

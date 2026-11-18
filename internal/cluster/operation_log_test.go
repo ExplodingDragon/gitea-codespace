@@ -36,7 +36,7 @@ func (r *operationLogRemote) UpdateLog(ctx context.Context, request *codespacev1
 
 func testOperationLogs(t *testing.T, remote *operationLogRemote) (*operationLogs, *api.Codespace) {
 	t.Helper()
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{UID: "runtime-uid", Namespace: "site"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: "site", UID: "site-uid"}, RuntimeUUID: "runtime", Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{Bound: true}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{UID: "runtime-uid", Namespace: "site"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: "site", UID: "site-uid"}, CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{}}
 	logs := &operationLogs{remote: func(context.Context, api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
 		return remote, nil
 	}}
@@ -209,7 +209,7 @@ func TestOperationLogsBoundMemoryAndFinalDrain(t *testing.T) {
 }
 
 func TestManagerProgressUsesResourceFacts(t *testing.T) {
-	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Namespace: "site", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: "pod"}}}
+	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Namespace: "site", UID: "runtime-uid"}, Spec: api.CodespaceSpec{Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{Pod: api.ObservedResource{Name: "pod"}}}
 	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "pod", Namespace: cs.Namespace, Labels: map[string]string{RuntimeUIDLabel: string(cs.UID)}}, Status: corev1.PodStatus{ContainerStatuses: []corev1.ContainerStatus{{Name: "runtime", State: corev1.ContainerState{Waiting: &corev1.ContainerStateWaiting{Reason: "ErrImagePull", Message: "credentials omitted"}}}}}}
 	kube := fake.NewClientBuilder().WithScheme(testScheme(t)).WithObjects(pod).Build()
 	_, message, err := managerProgress(t.Context(), kube, cs)

@@ -6,13 +6,15 @@ package gateway
 import (
 	"fmt"
 	"strings"
+
+	"gitea.dev/codespace/internal/runtimeidentity"
 )
 
 // A Runtime snapshot contains only the backend coordinates needed by Gateway.
 type runtimeSnapshot struct {
 	SiteUID       string
 	ResourceUID   string
-	RuntimeUUID   string
+	RuntimeKey    string
 	GiteaWebURL   string
 	PodUID        string
 	AgentAddress  string
@@ -28,8 +30,12 @@ type endpointSnapshot struct {
 }
 
 func validateRuntimeSnapshot(snapshot runtimeSnapshot) error {
+	siteUID, _, valid := runtimeidentity.Parse(snapshot.RuntimeKey)
+	if !valid || siteUID != snapshot.SiteUID {
+		return fmt.Errorf("gateway runtime key does not match its site")
+	}
 	if strings.TrimSpace(snapshot.SiteUID) == "" || strings.TrimSpace(snapshot.ResourceUID) == "" ||
-		strings.TrimSpace(snapshot.RuntimeUUID) == "" || strings.TrimSpace(snapshot.GiteaWebURL) == "" ||
+		strings.TrimSpace(snapshot.GiteaWebURL) == "" ||
 		strings.TrimSpace(snapshot.PodUID) == "" || !validAgentAddress(snapshot.AgentAddress) || snapshot.TargetVersion <= 0 {
 		return fmt.Errorf("gateway runtime snapshot is incomplete")
 	}

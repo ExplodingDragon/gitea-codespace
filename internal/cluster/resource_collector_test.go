@@ -43,7 +43,7 @@ func TestResourceCollector(t *testing.T) {
 				codespace := &api.Codespace{
 					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "site", UID: types.UID(name)},
 					Spec:       api.CodespaceSpec{Site: api.ResourceReference{UID: "site-uid"}, Operation: api.Operation{Version: 1}, Runtime: api.RuntimeConfiguration{EnvironmentConfiguration: api.EnvironmentConfiguration{Isolation: isolation}}},
-					Status:     api.CodespaceStatus{Bound: true, Pod: api.ObservedResource{Name: name, UID: types.UID(name + "-pod")}, Volume: api.ObservedResource{Name: name, UID: types.UID(name + "-volume")}},
+					Status:     api.CodespaceStatus{Pod: api.ObservedResource{Name: name, UID: types.UID(name + "-pod")}, Volume: api.ObservedResource{Name: name, UID: types.UID(name + "-volume")}},
 				}
 				pod := &corev1.Pod{
 					ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "site", UID: codespace.Status.Pod.UID, CreationTimestamp: metav1.NewTime(now.Add(-time.Minute))},

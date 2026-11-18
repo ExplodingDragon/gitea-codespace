@@ -107,7 +107,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 			// Runtime-owned mounts and lifecycle hooks. Always stop the saved
 			// environment on failure so a later resume sees a coherent state.
 			if request.Debug {
-				engine.WriteDiagnostics(ctx, request.CodespaceUUID)
+				engine.WriteDiagnostics(ctx, request.OwnerID)
 			}
 			stopContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
 			defer cancel()
@@ -122,7 +122,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		if lifecycleErr != nil {
 			_, _ = fmt.Fprintf(stderr, "[WARN] [lifecycle] Template stop command failed; continuing container cleanup: %v\n", lifecycleErr)
 			if request.Debug {
-				engine.WriteDiagnostics(ctx, request.CodespaceUUID)
+				engine.WriteDiagnostics(ctx, request.OwnerID)
 			}
 		}
 		if request.BeforeContainerStop != nil {
@@ -132,7 +132,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		defer cancel()
 		state, stopErr := engine.Stop(stopContext, request.Environment)
 		if stopErr != nil && lifecycleErr == nil && request.Debug {
-			engine.WriteDiagnostics(ctx, request.CodespaceUUID)
+			engine.WriteDiagnostics(ctx, request.OwnerID)
 		}
 		return &Outcome{Environment: state}, stopErr
 	default:

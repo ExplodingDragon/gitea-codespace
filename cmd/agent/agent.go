@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -65,8 +66,12 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err != nil || endpoint.Scheme != "https" || endpoint.Host == "" || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" || (endpoint.Path != "" && endpoint.Path != "/") {
 		return fmt.Errorf("CODESPACE_MANAGER_URL must be an HTTPS origin")
 	}
+	codespaceID, err := strconv.ParseInt(os.Getenv("CODESPACE_ID"), 10, 64)
+	if err != nil || codespaceID <= 0 {
+		return fmt.Errorf("CODESPACE_ID must be positive")
+	}
 	identity := agentpkg.VolumeIdentity{
-		SiteUID: strings.TrimSpace(os.Getenv("CODESPACE_SITE_UID")), ResourceUID: strings.TrimSpace(os.Getenv("CODESPACE_RESOURCE_UID")), RuntimeUUID: strings.TrimSpace(os.Getenv("CODESPACE_RUNTIME_UUID")),
+		SiteUID: strings.TrimSpace(os.Getenv("CODESPACE_SITE_UID")), ResourceUID: strings.TrimSpace(os.Getenv("CODESPACE_RESOURCE_UID")), CodespaceID: codespaceID,
 	}
 	podUID := strings.TrimSpace(os.Getenv("CODESPACE_POD_UID"))
 	if podUID == "" {

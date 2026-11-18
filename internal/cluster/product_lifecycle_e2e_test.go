@@ -89,7 +89,6 @@ type lifecycleRemote struct {
 	mu              sync.Mutex
 	baseURL         string
 	environmentName string
-	runtimeUUID     string
 	operation       *codespacev1.OperationPayload
 	delivered       bool
 	lastFinalized   int64
@@ -120,9 +119,7 @@ func newLifecycleRemote() *lifecycleRemote {
 func (s *lifecycleRemote) setOperation(operation *codespacev1.OperationPayload) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if operation.RuntimeUuid == "" {
-		operation.RuntimeUuid = s.runtimeUUID
-	}
+
 	s.operation = operation
 	s.delivered = false
 	if create := operation.GetCreate(); create != nil && create.RuntimeSettings != nil {
@@ -186,9 +183,9 @@ func (s *lifecycleRemote) FetchOperations(_ context.Context, request *codespacev
 	defer s.mu.Unlock()
 	response := &codespacev1.FetchOperationsResponse{}
 	for _, observed := range request.ObservedOperations {
-		if s.operation != nil && observed.RuntimeUuid == s.operation.RuntimeUuid && observed.OperationRversion == s.operation.OperationRversion {
+		if s.operation != nil && observed.CodespaceId == s.operation.CodespaceId && observed.OperationRversion == s.operation.OperationRversion {
 			response.RenewedLeases = append(response.RenewedLeases, &codespacev1.RenewedOperationLease{
-				RuntimeUuid: observed.RuntimeUuid, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 60000,
+				CodespaceId: observed.CodespaceId, OperationRversion: observed.OperationRversion, LeaseValidForMilliseconds: 60000,
 			})
 		}
 	}
@@ -213,25 +210,9 @@ func (s *lifecycleRemote) FetchOperations(_ context.Context, request *codespacev
 	return response, nil
 }
 
-func (s *lifecycleRemote) BindRuntimeIdentity(_ context.Context, request *codespacev1.BindRuntimeIdentityRequest) (*codespacev1.BindRuntimeIdentityResponse, error) {
-	if request.ProtocolVersion != 1 || request.CodespaceId != 1 || request.OperationRversion != 1 || request.RuntimeUuid == "" {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime binding")
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.runtimeUUID != "" && s.runtimeUUID != request.RuntimeUuid {
-		return nil, connect.NewError(connect.CodeFailedPrecondition, "runtime identity changed")
-	}
-	s.runtimeUUID = request.RuntimeUuid
-	if s.operation != nil {
-		s.operation.RuntimeUuid = request.RuntimeUuid
-	}
-	return &codespacev1.BindRuntimeIdentityResponse{RuntimeUuid: request.RuntimeUuid}, nil
-}
-
 func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
 	s.mu.Lock()
-	if s.operation == nil || request.RuntimeUuid != s.runtimeUUID || request.OperationRversion != s.operation.OperationRversion || request.OperationRversion <= s.lastFinalized {
+	if s.operation == nil || request.CodespaceId != int64(1) || request.OperationRversion != s.operation.OperationRversion || request.OperationRversion <= s.lastFinalized {
 		s.mu.Unlock()
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "operation identity changed")
 	}
@@ -246,7 +227,7 @@ func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *codespac
 func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID {
+	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "log identity changed")
 	}
 	if len(request.Lines) == 0 {
@@ -265,7 +246,7 @@ func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.Upda
 func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *codespacev1.ReportRuntimeMetadataRequest) (*codespacev1.ReportRuntimeMetadataResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.MetadataGeneration <= 0 || request.Metadata == nil {
+	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || request.MetadataGeneration <= 0 || request.Metadata == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime metadata")
 	}
 	s.metadata = request.Metadata
@@ -275,7 +256,7 @@ func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *code
 func (s *lifecycleRemote) RequestRuntimeAccess(_ context.Context, request *codespacev1.RequestRuntimeAccessRequest) (*codespacev1.RequestRuntimeAccessResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || request.OperationRversion <= 0 || len(request.GetGitSshKey().GetPublicKey()) == 0 {
+	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || request.OperationRversion <= 0 || len(request.GetGitSshKey().GetPublicKey()) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime access request")
 	}
 	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{
@@ -289,7 +270,7 @@ func (s *lifecycleRemote) RequestIdleStop(_ context.Context, request *codespacev
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	observed := request.ObservedSettings
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || observed == nil {
+	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || observed == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid idle stop request")
 	}
 	if observed.AutoStopEnabled != s.runtimeSettings.autoStopEnabled || observed.IdleTimeoutSeconds != s.runtimeSettings.idleTimeoutSeconds || observed.InteractionGeneration != s.runtimeSettings.interactionGeneration {
@@ -297,7 +278,7 @@ func (s *lifecycleRemote) RequestIdleStop(_ context.Context, request *codespacev
 		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}}}, nil
 	}
 	if s.operation == nil {
-		s.operation = &codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: s.runtimeUUID, OperationRversion: s.lastFinalized + 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}}
+		s.operation = &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: s.lastFinalized + 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}}
 		s.delivered = false
 	}
 	return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: s.operation.OperationRversion}}}, nil
@@ -308,11 +289,11 @@ func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev
 	defer s.mu.Unlock()
 	response := &codespacev1.ReportInstancesResponse{}
 	for _, instance := range request.Instances {
-		if instance.RuntimeUuid != s.runtimeUUID {
+		if instance.CodespaceId != int64(1) {
 			return nil, connect.NewError(connect.CodeFailedPrecondition, "unknown runtime inventory")
 		}
 		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{
-			RuntimeUuid:              instance.RuntimeUuid,
+			CodespaceId:              instance.CodespaceId,
 			RuntimeSettings:          &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: s.runtimeSettings.autoStopEnabled, IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration},
 			CurrentOperationRversion: max(s.lastFinalized, instance.ObservedOperationRversion),
 		})
@@ -323,11 +304,11 @@ func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev
 func (s *lifecycleRemote) ValidateOpenToken(_ context.Context, request *codespacev1.ValidateOpenTokenRequest) (*codespacev1.ValidateOpenTokenResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.Code != "lifecycle-e2e" || s.runtimeUUID == "" {
+	if request.ProtocolVersion != 1 || request.Code != "lifecycle-e2e" || s.metadata == nil {
 		return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}, nil
 	}
 	return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: &codespacev1.OpenTokenBinding{
-		UserId: 1, RuntimeUuid: s.runtimeUUID, EndpointId: "workspace", InteractionGeneration: s.interactionGeneration,
+		UserId: 1, CodespaceId: int64(1), EndpointId: "workspace", InteractionGeneration: s.interactionGeneration,
 	}}}, nil
 }
 
@@ -336,8 +317,8 @@ func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *c
 	defer s.mu.Unlock()
 	endpoint := request.GetEndpoint()
 	sshSession := request.GetSsh()
-	endpointAllowed := endpoint != nil && endpoint.UserId == 1 && endpoint.RuntimeUuid == s.runtimeUUID && endpoint.EndpointId == "workspace"
-	sshAllowed := sshSession != nil && sshSession.UserId == 1 && sshSession.RuntimeUuid == s.runtimeUUID
+	endpointAllowed := endpoint != nil && endpoint.UserId == 1 && endpoint.CodespaceId == int64(1) && endpoint.EndpointId == "workspace"
+	sshAllowed := sshSession != nil && sshSession.UserId == 1 && sshSession.CodespaceId == int64(1)
 	if request.ProtocolVersion != 1 || (!endpointAllowed && !sshAllowed) {
 		return &codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_session"}}}, nil
 	}
@@ -347,7 +328,7 @@ func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *c
 func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *codespacev1.ValidatePublicEndpointRequest) (*codespacev1.ValidatePublicEndpointResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion == 1 && request.RuntimeUuid == s.runtimeUUID && s.metadata != nil {
+	if request.ProtocolVersion == 1 && request.CodespaceId == int64(1) && s.metadata != nil {
 		for _, endpoint := range s.metadata.Endpoints {
 			if endpoint.EndpointId == request.EndpointId && endpoint.Public {
 				return &codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{Allowed: &codespacev1.PublicEndpointAllowed{}}}, nil
@@ -360,7 +341,7 @@ func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *cod
 func (s *lifecycleRemote) VerifySSHPublicKey(_ context.Context, request *codespacev1.VerifySSHPublicKeyRequest) (*codespacev1.VerifySSHPublicKeyResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.RuntimeUuid != s.runtimeUUID || !bytes.Equal(request.PublicKey, s.sshPublicKey) {
+	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || !bytes.Equal(request.PublicKey, s.sshPublicKey) {
 		return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_key"}}}, nil
 	}
 	return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{Allowed: &codespacev1.SSHAuthBinding{UserId: 1, InteractionGeneration: s.interactionGeneration}}}, nil
@@ -605,7 +586,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 1 && codespace.Status.Target != nil && codespace.Status.Target.Ready
 	}, time.Minute, time.Second)
-	firstPodUID, volumeUID, runtimeUUID := codespace.Status.Pod.UID, codespace.Status.Volume.UID, codespace.Spec.RuntimeUUID
+	firstPodUID, volumeUID, runtimeAlias := codespace.Status.Pod.UID, codespace.Status.Volume.UID, string(codespace.UID)
 	require.NotEmpty(t, firstPodUID)
 	require.NotEmpty(t, volumeUID)
 	if runtime.isolation == api.IsolationNative {
@@ -613,8 +594,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}, &pod))
 		require.Nil(t, pod.Spec.RuntimeClassName)
 	}
-	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
-	webIDEClient, err := newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID)
+	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias))
+	webIDEClient, err := newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias)
 	require.NoError(t, err)
 	initialWebIDEState, err := webIDEClient.state(ctx)
 	require.NoError(t, err)
@@ -625,29 +606,29 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, "repository", initialWebIDEState.LastRequest.RepositoryOptions["text"])
 	require.NoError(t, webIDEClient.verifyWebSocket(ctx))
 	serveCount := initialWebIDEState.ServeCount
-	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, true, runtime.isolation == api.IsolationNative))
+	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeAlias, sshSigner, true, runtime.isolation == api.IsolationNative))
 	if usbIPE2E {
-		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeAlias, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
 	}
-	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
+	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias, true))
 
-	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
+	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
 	remote.waitFinal(t, 2, codespacev1.OperationType_OPERATION_TYPE_STOP, 3*time.Minute)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 2 && meta.IsStatusConditionTrue(codespace.Status.Conditions, "Stopped") && codespace.Status.Pod.UID == ""
 	}, time.Minute, time.Second)
 	require.Equal(t, volumeUID, codespace.Status.Volume.UID)
-	require.NoError(t, verifyGatewayOpenRejected(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
+	require.NoError(t, verifyGatewayOpenRejected(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias))
 
-	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 3, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 2}}}})
+	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 2}}}})
 	remote.waitFinal(t, 3, codespacev1.OperationType_OPERATION_TYPE_RESUME, 8*time.Minute)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 3 && codespace.Status.Target != nil && codespace.Status.Target.Ready
 	}, time.Minute, time.Second)
 	require.NotEqual(t, firstPodUID, codespace.Status.Pod.UID)
 	require.Equal(t, volumeUID, codespace.Status.Volume.UID)
-	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID))
-	webIDEClient, err = newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID)
+	require.NoError(t, verifyGatewayWorkspace(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias))
+	webIDEClient, err = newGatewayWebIDEClient(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias)
 	require.NoError(t, err)
 	resumedWebIDEState, err := webIDEClient.state(ctx)
 	require.NoError(t, err)
@@ -655,12 +636,12 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.Equal(t, 1, resumedWebIDEState.InitializeCount)
 	require.False(t, resumedWebIDEState.LastRequest.Initialize)
 	require.Equal(t, serveCount+1, resumedWebIDEState.ServeCount)
-	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, true))
-	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, sshSigner, false, runtime.isolation == api.IsolationNative))
+	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias, true))
+	require.NoError(t, verifyGatewaySSH(ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeAlias, sshSigner, false, runtime.isolation == api.IsolationNative))
 	if usbIPE2E {
-		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeUUID, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
+		require.NoError(t, verifyGatewayUSBIP(t, ctx, nodeAddress, nodePortService.Spec.Ports[1].NodePort, runtimeAlias, privateKey, types.NamespacedName{Namespace: namespace, Name: codespace.Status.Pod.Name}))
 	}
-	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeUUID, false))
+	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias, false))
 
 	remote.setRuntimeSettings(&codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 2, InteractionGeneration: 3})
 	remote.waitFinal(t, 4, codespacev1.OperationType_OPERATION_TYPE_STOP, time.Minute)
@@ -668,11 +649,11 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 4 && meta.IsStatusConditionTrue(codespace.Status.Conditions, "Stopped") && codespace.Status.Pod.UID == ""
 	}, time.Minute, time.Second)
 
-	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, RuntimeUuid: runtimeUUID, OperationRversion: 5, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Delete{Delete: &codespacev1.DeleteOperationPayload{}}})
+	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 5, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Delete{Delete: &codespacev1.DeleteOperationPayload{}}})
 	remote.waitFinal(t, 5, codespacev1.OperationType_OPERATION_TYPE_DELETE, 3*time.Minute)
 	require.Eventually(t, func() bool { return apierrors.IsNotFound(c.Get(ctx, key, &api.Codespace{})) }, 2*time.Minute, time.Second)
 	require.Eventually(t, func() bool {
-		return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "data-" + runtimeUUID}, &corev1.PersistentVolumeClaim{}))
+		return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "data-1"}, &corev1.PersistentVolumeClaim{}))
 	}, 2*time.Minute, time.Second)
 }
 
@@ -706,8 +687,8 @@ func lifecycleGitRepository(t *testing.T, usbIPE2E bool, devContainerContent str
 	return bare, commit
 }
 
-func verifyGatewayWorkspace(ctx context.Context, node string, port int32, domain, runtimeUUID string) error {
-	host := strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
+func verifyGatewayWorkspace(ctx context.Context, node string, port int32, domain, runtimeAlias string) error {
+	host := strings.ReplaceAll(runtimeAlias, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
 	client := &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	var lastError error
@@ -760,10 +741,10 @@ type gatewayWebIDEClient struct {
 	client  *http.Client
 }
 
-func newGatewayWebIDEClient(ctx context.Context, node string, port int32, domain, runtimeUUID string) (*gatewayWebIDEClient, error) {
+func newGatewayWebIDEClient(ctx context.Context, node string, port int32, domain, runtimeAlias string) (*gatewayWebIDEClient, error) {
 	client := &gatewayWebIDEClient{
 		address: net.JoinHostPort(node, strconv.Itoa(int(port))),
-		host:    strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port)),
+		host:    strings.ReplaceAll(runtimeAlias, "-", "") + "." + domain + ":" + strconv.Itoa(int(port)),
 		client:  &http.Client{Timeout: 20 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }},
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+client.address+"/.gitea-codespace/open?code=lifecycle-e2e", nil)
@@ -838,8 +819,8 @@ func (c *gatewayWebIDEClient) verifyWebSocket(ctx context.Context) error {
 	return nil
 }
 
-func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, domain, runtimeUUID string) error {
-	host := strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
+func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, domain, runtimeAlias string) error {
+	host := strings.ReplaceAll(runtimeAlias, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	var session *http.Cookie
@@ -883,7 +864,7 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 	return fmt.Errorf("gateway continued accepting opens after the Runtime stopped; last response was %s", lastResult)
 }
 
-func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID string, signer ssh.Signer, initialize, verifyNativeDevice bool) error {
+func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeAlias string, signer ssh.Signer, initialize, verifyNativeDevice bool) error {
 	address := net.JoinHostPort(node, strconv.Itoa(int(port)))
 	var dialer net.Dialer
 	connection, err := dialer.DialContext(ctx, "tcp", address)
@@ -895,7 +876,7 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 		_ = connection.SetDeadline(deadline)
 	}
 	clientConnection, channels, requests, err := ssh.NewClientConn(connection, address, &ssh.ClientConfig{
-		User:            "cs-" + runtimeUUID,
+		User:            "cs-" + runtimeAlias,
 		Auth:            []ssh.AuthMethod{ssh.PublicKeys(signer)},
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), // The E2E uses an ephemeral Gateway host key.
 	})
@@ -1108,8 +1089,8 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeUUID 
 	return nil
 }
 
-func verifyGatewayPublicEndpoint(ctx context.Context, node string, port int32, domain, runtimeUUID string, available bool) error {
-	host := "port-13337-" + strings.ReplaceAll(runtimeUUID, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
+func verifyGatewayPublicEndpoint(ctx context.Context, node string, port int32, domain, runtimeAlias string, available bool) error {
+	host := "port-13337-" + strings.ReplaceAll(runtimeAlias, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
 	var lastStatus string

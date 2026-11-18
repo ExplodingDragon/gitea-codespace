@@ -78,7 +78,7 @@ func Verify(publicKey ed25519.PublicKey, token string, now time.Time) (*agentv1.
 }
 
 func validate(claims *agentv1.AccessTicketClaims, now time.Time) error {
-	if claims.ProtocolVersion != ProtocolVersion || claims.SiteUid == "" || claims.ResourceUid == "" || claims.RuntimeUuid == "" || claims.PodUid == "" || claims.TargetVersion <= 0 || claims.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED || len(claims.Nonce) != 16 {
+	if claims.ProtocolVersion != ProtocolVersion || claims.SiteUid == "" || claims.ResourceUid == "" || claims.CodespaceId <= 0 || claims.PodUid == "" || claims.TargetVersion <= 0 || claims.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED || len(claims.Nonce) != 16 {
 		return fmt.Errorf("access ticket identity is incomplete")
 	}
 	expires := time.Unix(claims.ExpiresUnix, 0)

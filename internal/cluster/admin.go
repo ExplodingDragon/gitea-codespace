@@ -279,10 +279,10 @@ func (s *AdminServer) listResources(ctx context.Context, kind string) ([]adminRe
 			canStop := !deleting && !stopping && !stopped && item.Status.Pod.UID != ""
 			// Operation payloads and raw metadata are not administration responses.
 			items = append(items, newAdminResource(&item, adminRuntimeSpec{
-				Site: item.Spec.Site, CodespaceID: strconv.FormatInt(item.Spec.CodespaceID, 10), RuntimeUUID: item.Spec.RuntimeUUID,
+				Site: item.Spec.Site, CodespaceID: strconv.FormatInt(item.Spec.CodespaceID, 10),
 				EnvironmentTag: item.Spec.EnvironmentTag, Operation: item.Spec.Operation.Type, Version: item.Spec.Operation.Version,
 			}, adminRuntimeStatus{
-				Bound: item.Status.Bound, Pod: item.Status.Pod, Volume: item.Status.Volume,
+				Pod: item.Status.Pod, Volume: item.Status.Volume,
 				Ready: ready, CanStop: canStop, Stopping: stopping, Stopped: stopped, Deleting: deleting, Conditions: item.Status.Conditions,
 			}))
 		}

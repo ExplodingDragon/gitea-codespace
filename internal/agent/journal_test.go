@@ -16,7 +16,7 @@ import (
 
 func TestJournalRecovery(t *testing.T) {
 	directory := t.TempDir()
-	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
+	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1}
 	j, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
 	_, err = OpenJournal(directory, identity)
@@ -33,7 +33,7 @@ func TestJournalRecovery(t *testing.T) {
 	require.NoError(t, j.RunOnce(t.Context(), 1, "onCreateCommand", run))
 	require.NoError(t, j.Close())
 
-	_, err = OpenJournal(directory, VolumeIdentity{SiteUID: "other", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	_, err = OpenJournal(directory, VolumeIdentity{SiteUID: "other", ResourceUID: "resource", CodespaceID: 1})
 	require.ErrorContains(t, err, "another Codespace")
 	j, err = OpenJournal(directory, identity)
 	require.NoError(t, err)
@@ -62,7 +62,7 @@ func TestJournalRecovery(t *testing.T) {
 }
 
 func TestJournalSerialExecution(t *testing.T) {
-	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, j.Close()) }()
 	started, finish := make(chan struct{}), make(chan struct{})
@@ -83,7 +83,7 @@ func TestJournalSerialExecution(t *testing.T) {
 }
 
 func TestJournalReplacementPodReusesLifecycleResult(t *testing.T) {
-	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"})
+	j, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
 	defer func() { require.NoError(t, j.Close()) }()
 
@@ -120,7 +120,7 @@ func TestJournalReplacementPodReusesLifecycleResult(t *testing.T) {
 
 func TestJournalRejectsInvalidRecoveryFiles(t *testing.T) {
 	directory := t.TempDir()
-	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
+	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1}
 	j, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
 	j.record.Version = -1
@@ -136,7 +136,7 @@ func TestJournalRejectsInvalidRecoveryFiles(t *testing.T) {
 
 func TestJournalMissingRecordPreservesExistingIdentity(t *testing.T) {
 	directory := t.TempDir()
-	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", RuntimeUUID: "runtime"}
+	identity := VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1}
 	j, err := OpenJournal(directory, identity)
 	require.NoError(t, err)
 	_, err = j.GitSSHKey("ed25519", true)

@@ -292,7 +292,6 @@ export type ComponentStatus = {
 export type RuntimeInstance = {
   site: ResourceReference;
   codespaceID: string;
-  runtimeUUID: string;
   environmentTag: string;
   operation: string;
   version: number;

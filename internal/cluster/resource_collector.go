@@ -90,7 +90,7 @@ func (collector *ResourceCollector) collect(ctx context.Context, volumes bool) {
 	nodes := make(map[string][]resourceTarget)
 	for index := range codespaces.Items {
 		codespace := &codespaces.Items[index]
-		if !codespace.DeletionTimestamp.IsZero() || !codespace.Status.Bound || codespace.Status.Pod.UID == "" {
+		if !codespace.DeletionTimestamp.IsZero() || codespace.Status.Pod.UID == "" {
 			continue
 		}
 		var pod corev1.Pod

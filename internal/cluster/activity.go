@@ -49,23 +49,23 @@ type RuntimeActivityTracker struct {
 	runtimes map[string]*runtimeActivity
 }
 
-func (t *RuntimeActivityTracker) ObserveSettings(siteUID, runtimeUUID string, settings *codespacev1.EffectiveCodespaceRuntimeSettings, now time.Time) error {
-	if siteUID == "" || runtimeUUID == "" || validateRuntimeSettings(settings) != nil {
+func (t *RuntimeActivityTracker) ObserveSettings(siteUID, runtimeKey string, settings *codespacev1.EffectiveCodespaceRuntimeSettings, now time.Time) error {
+	if siteUID == "" || runtimeKey == "" || validateRuntimeSettings(settings) != nil {
 		return fmt.Errorf("invalid effective Runtime settings")
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.runtimeLocked(siteUID, runtimeUUID).applySettings(settings, now)
+	t.runtimeLocked(siteUID, runtimeKey).applySettings(settings, now)
 	return nil
 }
 
-func (t *RuntimeActivityTracker) ObserveInteraction(siteUID, runtimeUUID string, generation int64, now time.Time) {
-	if siteUID == "" || runtimeUUID == "" || generation < 0 {
+func (t *RuntimeActivityTracker) ObserveInteraction(siteUID, runtimeKey string, generation int64, now time.Time) {
+	if siteUID == "" || runtimeKey == "" || generation < 0 {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state := t.runtimeLocked(siteUID, runtimeUUID)
+	state := t.runtimeLocked(siteUID, runtimeKey)
 	if generation <= state.interactionGeneration {
 		return
 	}
@@ -90,12 +90,12 @@ func (t *RuntimeActivityTracker) ReplaceGateway(componentUID, instance string, c
 		return nil
 	}
 	copyCounts := make(map[string]int64, len(counts))
-	for runtimeUUID, count := range counts {
-		if runtimeUUID == "" || count < 0 {
+	for runtimeKey, count := range counts {
+		if runtimeKey == "" || count < 0 {
 			return fmt.Errorf("gateway activity count is invalid")
 		}
 		if count > 0 {
-			copyCounts[runtimeUUID] = count
+			copyCounts[runtimeKey] = count
 		}
 	}
 	if t.gateways == nil {
@@ -118,10 +118,10 @@ func (t *RuntimeActivityTracker) RenewGatewayPermit(componentUID, instance strin
 	}
 }
 
-func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeUUID, gatewayUID string, eligible bool, now time.Time) (*codespacev1.EffectiveCodespaceRuntimeSettings, bool) {
+func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeKey, gatewayUID string, eligible bool, now time.Time) (*codespacev1.EffectiveCodespaceRuntimeSettings, bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state := t.runtimes[runtimeUUID]
+	state := t.runtimes[runtimeKey]
 	if state == nil || state.siteUID != siteUID || !state.hasPolicy || !state.autoStopEnabled || !eligible {
 		if state != nil {
 			state.idleSince = time.Time{}
@@ -144,7 +144,7 @@ func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeUUID, gatewayUID st
 		}
 		if !report.reported.Before(state.activityAfter) {
 			fresh = true
-			sessions += report.counts[runtimeUUID]
+			sessions += report.counts[runtimeKey]
 		}
 	}
 	if uncertain || !fresh || sessions > 0 {
@@ -167,13 +167,13 @@ func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeUUID, gatewayUID st
 	}, true
 }
 
-func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeUUID string, response *codespacev1.RequestIdleStopResponse, now time.Time) error {
+func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeKey string, response *codespacev1.RequestIdleStopResponse, now time.Time) error {
 	if response == nil {
 		return fmt.Errorf("idle stop response is missing")
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	state := t.runtimes[runtimeUUID]
+	state := t.runtimes[runtimeKey]
 	if state == nil || state.siteUID != siteUID {
 		return nil
 	}
@@ -225,10 +225,10 @@ func validateRuntimeSettings(settings *codespacev1.EffectiveCodespaceRuntimeSett
 	return nil
 }
 
-func (t *RuntimeActivityTracker) IdleStopFailed(runtimeUUID string, now time.Time) {
+func (t *RuntimeActivityTracker) IdleStopFailed(runtimeKey string, now time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if state := t.runtimes[runtimeUUID]; state != nil {
+	if state := t.runtimes[runtimeKey]; state != nil {
 		state.retryAt = now.Add(idleStopRetryDelay)
 	}
 }
@@ -236,21 +236,21 @@ func (t *RuntimeActivityTracker) IdleStopFailed(runtimeUUID string, now time.Tim
 func (t *RuntimeActivityTracker) RetainSite(siteUID string, current map[string]bool) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	for runtimeUUID, state := range t.runtimes {
-		if state.siteUID == siteUID && !current[runtimeUUID] {
-			delete(t.runtimes, runtimeUUID)
+	for runtimeKey, state := range t.runtimes {
+		if state.siteUID == siteUID && !current[runtimeKey] {
+			delete(t.runtimes, runtimeKey)
 		}
 	}
 }
 
-func (t *RuntimeActivityTracker) runtimeLocked(siteUID, runtimeUUID string) *runtimeActivity {
+func (t *RuntimeActivityTracker) runtimeLocked(siteUID, runtimeKey string) *runtimeActivity {
 	if t.runtimes == nil {
 		t.runtimes = make(map[string]*runtimeActivity)
 	}
-	state := t.runtimes[runtimeUUID]
+	state := t.runtimes[runtimeKey]
 	if state == nil || state.siteUID != siteUID {
 		state = &runtimeActivity{siteUID: siteUID}
-		t.runtimes[runtimeUUID] = state
+		t.runtimes[runtimeKey] = state
 	}
 	return state
 }

@@ -28,18 +28,18 @@ func TestReportingIsolatesSlowRuntimeAndPreservesNewGeneration(t *testing.T) {
 		c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(&api.Codespace{}).WithObjects(site).Build()
 		slow := &api.Codespace{
 			ObjectMeta: metav1.ObjectMeta{Name: "slow", Namespace: "codespace-example", UID: "slow"},
-			Spec:       api.CodespaceSpec{Site: api.ResourceReference{UID: site.UID}, RuntimeUUID: "slow", Operation: api.Operation{Type: "create", Version: 1}},
-			Status:     api.CodespaceStatus{Bound: true, MetadataGeneration: 1, Boot: &api.RuntimeBoot{OperationVersion: 1, Stage: "prepare-runtime", StartedUnix: 1, LastUpdateUnix: 1}},
+			Spec:       api.CodespaceSpec{Site: api.ResourceReference{UID: site.UID}, CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 1}},
+			Status:     api.CodespaceStatus{MetadataGeneration: 1, Boot: &api.RuntimeBoot{OperationVersion: 1, Stage: "prepare-runtime", StartedUnix: 1, LastUpdateUnix: 1}},
 		}
 		require.NoError(t, c.Create(t.Context(), slow))
 		var mu sync.Mutex
-		reports := map[string][]int64{}
+		reports := map[int64][]int64{}
 		release := make(chan struct{})
 		remote := &operationRemote{metadata: func(request *codespacev1.ReportRuntimeMetadataRequest) error {
 			mu.Lock()
-			reports[request.RuntimeUuid] = append(reports[request.RuntimeUuid], request.MetadataGeneration)
+			reports[request.CodespaceId] = append(reports[request.CodespaceId], request.MetadataGeneration)
 			mu.Unlock()
-			if request.RuntimeUuid == "slow" && request.MetadataGeneration == 1 {
+			if request.CodespaceId == 1 && request.MetadataGeneration == 1 {
 				<-release
 			}
 			return nil
@@ -55,20 +55,20 @@ func TestReportingIsolatesSlowRuntimeAndPreservesNewGeneration(t *testing.T) {
 		defer func() { cancel(); close(release); <-done }()
 		time.Sleep(time.Second)
 		synctest.Wait()
-		require.Equal(t, map[string][]int64{"slow": {1}}, reports)
+		require.Equal(t, map[int64][]int64{1: {1}}, reports)
 		fast := slow.DeepCopy()
-		fast.Name, fast.UID, fast.ResourceVersion, fast.Spec.RuntimeUUID = "fast", "fast", "", "fast"
+		fast.Name, fast.UID, fast.ResourceVersion, fast.Spec.CodespaceID = "fast", "fast", "", 2
 		require.NoError(t, c.Create(ctx, fast))
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(slow), slow))
 		slow.Status.MetadataGeneration = 2
 		require.NoError(t, c.Status().Update(ctx, slow))
 		time.Sleep(time.Second)
 		synctest.Wait()
-		require.Equal(t, map[string][]int64{"slow": {1}, "fast": {1}}, reports)
+		require.Equal(t, map[int64][]int64{1: {1}, 2: {1}}, reports)
 		release <- struct{}{}
 		synctest.Wait()
-		require.Equal(t, []int64{1, 2}, reports["slow"])
-		require.Equal(t, []int64{1}, reports["fast"])
+		require.Equal(t, []int64{1, 2}, reports[1])
+		require.Equal(t, []int64{1}, reports[2])
 	})
 }
 
@@ -94,7 +94,7 @@ func TestReportingObservesCacheBeforeReadingLiveState(t *testing.T) {
 		time.Sleep(2 * time.Second)
 		synctest.Wait()
 		require.Zero(t, reads)
-		cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}}, Status: api.CodespaceStatus{Bound: true}}
+		cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}}, Status: api.CodespaceStatus{}}
 		require.NoError(t, observations.Create(ctx, cs))
 		time.Sleep(time.Second)
 		synctest.Wait()

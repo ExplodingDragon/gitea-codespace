@@ -26,14 +26,12 @@ type adminRuntimeStop struct {
 type adminRuntimeSpec struct {
 	Site           api.ResourceReference `json:"site"`
 	CodespaceID    string                `json:"codespaceID"`
-	RuntimeUUID    string                `json:"runtimeUUID"`
 	EnvironmentTag string                `json:"environmentTag"`
 	Operation      string                `json:"operation"`
 	Version        int64                 `json:"version"`
 }
 
 type adminRuntimeStatus struct {
-	Bound      bool                 `json:"bound"`
 	Pod        api.ObservedResource `json:"pod"`
 	Volume     api.ObservedResource `json:"volume"`
 	Ready      bool                 `json:"ready"`

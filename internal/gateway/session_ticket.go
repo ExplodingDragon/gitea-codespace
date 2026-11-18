@@ -24,7 +24,7 @@ type gatewaySessionTicket struct {
 	ID            string `json:"id"`
 	SiteUID       string `json:"site"`
 	UserID        int64  `json:"user"`
-	CodespaceUUID string `json:"codespace"`
+	RuntimeKey    string `json:"codespace"`
 	EndpointID    string `json:"endpoint"`
 	IssuedAt      int64  `json:"issued"`
 	ExpiresAt     int64  `json:"expires"`
@@ -77,7 +77,7 @@ func (t *gatewaySessionTickets) open(token string) (gatewaySessionTicket, bool) 
 		return gatewaySessionTicket{}, false
 	}
 	var ticket gatewaySessionTicket
-	if json.Unmarshal(plain, &ticket) != nil || ticket.Version != gatewaySessionTicketVersion || ticket.ID == "" || ticket.SiteUID == "" || ticket.UserID <= 0 || ticket.CodespaceUUID == "" || ticket.EndpointID == "" || ticket.IssuedAt <= 0 || ticket.ExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt > ticket.ExpiresAt {
+	if json.Unmarshal(plain, &ticket) != nil || ticket.Version != gatewaySessionTicketVersion || ticket.ID == "" || ticket.SiteUID == "" || ticket.UserID <= 0 || ticket.RuntimeKey == "" || ticket.EndpointID == "" || ticket.IssuedAt <= 0 || ticket.ExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt <= ticket.IssuedAt || ticket.IdleExpiresAt > ticket.ExpiresAt {
 		return gatewaySessionTicket{}, false
 	}
 	return ticket, true
