@@ -56,6 +56,7 @@ sudo env \
 	sh "$installer"
 
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
+kubectl wait --for=create node --all --timeout=3m
 kubectl wait --for=condition=Ready node --all --timeout=3m
 
 if [[ $runtime == sysbox ]]; then

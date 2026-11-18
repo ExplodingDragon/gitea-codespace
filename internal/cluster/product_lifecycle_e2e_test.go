@@ -814,7 +814,6 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 	host := strings.ReplaceAll(runtimeAlias, "-", "") + "." + domain + ":" + strconv.Itoa(int(port))
 	client := &http.Client{Timeout: 10 * time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
 	defer client.CloseIdleConnections()
-	var session *http.Cookie
 	var lastResult string
 	for range 30 {
 		request, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("http://%s:%d/.gitea-codespace/open?code=lifecycle-e2e", node, port), nil)
@@ -822,9 +821,6 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 			return err
 		}
 		request.Host = host
-		if session != nil {
-			request.AddCookie(session)
-		}
 		response, err := client.Do(request)
 		if err == nil {
 			body, readErr := io.ReadAll(io.LimitReader(response.Body, 1024))
@@ -833,15 +829,11 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 				return readErr
 			}
 			lastResult = response.Status + ": " + strings.TrimSpace(string(body))
-			cookies := response.Cookies()
-			if response.StatusCode == http.StatusForbidden {
-				if len(cookies) != 0 {
+			if response.StatusCode == http.StatusNotFound {
+				if len(response.Cookies()) != 0 {
 					return fmt.Errorf("gateway rejected the stopped runtime but issued a session cookie")
 				}
 				return nil
-			}
-			if response.StatusCode == http.StatusSeeOther && len(cookies) != 0 {
-				session = cookies[0]
 			}
 		} else {
 			lastResult = err.Error()
@@ -852,7 +844,7 @@ func verifyGatewayOpenRejected(ctx context.Context, node string, port int32, dom
 		case <-time.After(time.Second):
 		}
 	}
-	return fmt.Errorf("gateway continued accepting opens after the Runtime stopped; last response was %s", lastResult)
+	return fmt.Errorf("gateway did not return 404 after the Runtime stopped; last response was %s", lastResult)
 }
 
 func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeAlias string, signer ssh.Signer, initialize, verifyNativeDevice bool) error {
