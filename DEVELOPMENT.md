@@ -62,7 +62,7 @@ the generator toolchain.
 | Kubernetes API types            | `make generate-kubernetes kubernetes-check`    |
 | Internal Agent or component RPC | `make proto-format proto-generate proto-check` |
 
-The public Gitea-to-Manager protocol lives in `gitea.dev/codespace-proto-go`.
+The public protocol called by Manager and served by Gitea lives in `gitea.dev/codespace-proto-go`.
 Release it before updating this repository so every consumer resolves the same
 immutable version.
 

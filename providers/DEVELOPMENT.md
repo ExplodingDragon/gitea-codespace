@@ -436,18 +436,11 @@ and verify that editor state survives a stop and resume. Use the
 
 ## Connect the provider to Codespace
 
-1. Open **Environment templates** in the administration panel.
-2. Enter a registry image with an optional tag or explicit digest and select
-   **Resolve**.
-3. Review the provider name, version, platforms, and generated default options.
-4. Save the environment template. Manager validates the options and preserves
-   the normalized image reference.
-5. Create a codespace with that environment and open its browser workspace.
-
-Resolve the image again to inspect its current metadata; the displayed version
-describes that lookup. Edit and save the template to select a different reference
-or options. The [lifecycle](#lifecycle) snapshot rules determine which Codespaces
-use that configuration.
+Follow the project [connection guide](../README.md#connect-gitea) to register the
+provider image in an environment template. Create a Codespace with that template
+and verify its browser workspace. Image selection and update behavior are
+documented in the [provider overview](README.md); the [lifecycle](#lifecycle)
+describes how Agent starts the adapter.
 
 ### Implementation acceptance criteria
 
