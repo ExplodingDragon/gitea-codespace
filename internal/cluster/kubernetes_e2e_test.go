@@ -167,7 +167,12 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 		site.Spec.Templates = []api.ResourceReference{{Name: template.Name, UID: template.UID}}
 		return c.Update(ctx, site)
 	}))
-	remote := &operationRemote{}
+	remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
+		require.EqualValues(t, 2, request.CodespaceId)
+		require.EqualValues(t, 1, request.OperationRversion)
+		require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
+		return &codespacev1.FinalizeOperationResponse{}, nil
+	}}
 	operations := Operations{Client: c, Authority: &ExecutionAuthority{}, ManagementNamespace: cluster.managementNamespace, PlatformImage: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE")}
 	require.NoError(t, operations.Accept(ctx, site, &codespacev1.OperationPayload{CodespaceId: 2, OperationRversion: 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{EnvironmentTag: template.Name, RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{}}}}, time.Now()))
 	var allocated api.Codespace
