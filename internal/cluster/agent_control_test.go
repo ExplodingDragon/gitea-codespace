@@ -37,7 +37,7 @@ func TestAgentResultReplay(t *testing.T) {
 	server := &AgentControlServer{Client: c}
 	report := &agentv1.AgentReport{
 		OperationRversion: 1,
-		Result:            &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
+		Result:            &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
 		Target:            &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
 	}
@@ -129,15 +129,27 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.NoError(t, err)
 	defer func() { require.NoError(t, stream.Close()) }()
 	require.NoError(t, stream.Send(&agentv1.ControlRequest{
-		ProtocolVersion: 1, SessionId: "reconnected", Sequence: 1,
-		Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}},
+		SessionId: "reconnected", Sequence: 1,
+		Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}},
 	}))
 	response, err := stream.Receive()
 	require.NoError(t, err)
-	require.True(t, response.CancelExecution)
+	require.Zero(t, response.PermitValidForMilliseconds)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.NotNil(t, cs.Status.Result)
 	require.True(t, cs.Status.Result.Succeeded)
+	cs.Status.SettledOperationVersion = 3
+	cs.Status.Result = nil
+	require.NoError(t, c.Status().Update(t.Context(), cs))
+	server.Authority.Grant(cs.UID, 3, time.Now().Add(time.Minute))
+	require.NoError(t, stream.Send(&agentv1.ControlRequest{
+		SessionId: "reconnected", Sequence: 2, AcceptedOperationRversion: 3,
+		Report: &agentv1.AgentReport{OperationRversion: 3},
+	}))
+	response, err = stream.Receive()
+	require.NoError(t, err)
+	require.Zero(t, response.PermitValidForMilliseconds)
+	require.Nil(t, response.Operation)
 	require.NoError(t, stream.CloseSend())
 
 	access := &runtimeAccessTestServer{t: t}
@@ -171,16 +183,16 @@ func TestAgentControlRecovery(t *testing.T) {
 	startup, err := remote.Control(t.Context())
 	require.NoError(t, err)
 	defer func() { require.NoError(t, startup.Close()) }()
-	require.NoError(t, startup.Send(&agentv1.ControlRequest{ProtocolVersion: 1, SessionId: "new-pod", Sequence: 1, Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}}}))
+	require.NoError(t, startup.Send(&agentv1.ControlRequest{SessionId: "new-pod", Sequence: 1, Report: &agentv1.AgentReport{OperationRversion: 3, Result: &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}}}))
 	response, err = startup.Receive()
 	require.NoError(t, err)
 	require.Equal(t, "rsa-4096", response.Runtime.GitSshKeyType)
 	require.Equal(t, "https://gitea.example.com", response.Runtime.GiteaUrl)
 	require.Equal(t, site.Spec.CABundle, response.Runtime.GiteaCaBundle)
 	require.EqualValues(t, 4, response.Operation.OperationRversion)
-	require.True(t, response.CancelExecution)
+	require.Zero(t, response.PermitValidForMilliseconds)
 	require.Nil(t, response.Access)
-	require.NoError(t, startup.Send(&agentv1.ControlRequest{ProtocolVersion: 1, SessionId: "new-pod", Sequence: 2, AcceptedOperationRversion: 4, Report: &agentv1.AgentReport{OperationRversion: 4, GitSshPublicKey: []byte("public-key")}}))
+	require.NoError(t, startup.Send(&agentv1.ControlRequest{SessionId: "new-pod", Sequence: 2, AcceptedOperationRversion: 4, Report: &agentv1.AgentReport{OperationRversion: 4, GitSshPublicKey: []byte("public-key")}}))
 	response, err = startup.Receive()
 	require.NoError(t, err)
 	require.EqualValues(t, 4, response.OperationRversion)
@@ -188,9 +200,8 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.Nil(t, response.Runtime)
 	require.Equal(t, "runtime-token", response.Access.GiteaToken)
 	require.Positive(t, response.PermitValidForMilliseconds)
-	require.False(t, response.CancelExecution)
 	require.NoError(t, startup.CloseSend())
-	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
+	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
 	require.Equal(t, connect.CodeUnavailable, connect.CodeOf(err))
 	logs, _ := testOperationLogs(t, &operationLogRemote{update: func(ctx context.Context, _ *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
 		<-ctx.Done()
@@ -199,12 +210,12 @@ func TestAgentControlRecovery(t *testing.T) {
 	logs.OpenSite(t.Context(), site.UID)
 	t.Cleanup(func() { logs.CloseSite(site.UID) })
 	server.Logs = logs
-	reply, err := remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
+	reply, err := remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{OperationRversion: 4, Lines: []*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: "Agent started"}}})
 	require.NoError(t, err)
 	require.False(t, reply.Closed)
-	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 5})
+	_, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{OperationRversion: 5})
 	require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
-	reply, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: 3})
+	reply, err = remote.UploadLogs(t.Context(), &agentv1.UploadLogsRequest{OperationRversion: 3})
 	require.NoError(t, err)
 	require.True(t, reply.Closed)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
@@ -214,14 +225,14 @@ func TestAgentControlRecovery(t *testing.T) {
 	require.NoError(t, c.Status().Update(t.Context(), cs))
 	volume := &corev1.PersistentVolumeClaim{ObjectMeta: metav1.ObjectMeta{Name: "data", Namespace: cs.Namespace, UID: cs.Status.Volume.UID, Labels: map[string]string{SiteUIDLabel: string(site.UID), RuntimeUIDLabel: string(cs.UID)}}}
 	require.NoError(t, c.Create(t.Context(), volume))
-	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{})
 	require.NoError(t, err)
-	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{})
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.Equal(t, "started", cs.Status.VolumeInitialization)
 	for range 2 {
-		_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+		_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{Initialized: true})
 		require.NoError(t, err)
 	}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
@@ -229,12 +240,12 @@ func TestAgentControlRecovery(t *testing.T) {
 	cs.Spec.Operation.Type, cs.Spec.Operation.Version = "resume", 5
 	require.NoError(t, c.Update(t.Context(), cs))
 	server.Authority.Grant(cs.UID, 5, time.Now().Add(time.Minute))
-	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1})
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{})
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
-	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{Initialized: true})
 	require.NoError(t, err)
 	server.Authority.Revoke(cs.UID)
-	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: true})
+	_, err = remote.PrepareVolume(t.Context(), &agentv1.PrepareVolumeRequest{Initialized: true})
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 }
 
@@ -246,7 +257,7 @@ type runtimeAccessTestServer struct {
 func (s *runtimeAccessTestServer) RequestRuntimeAccess(ctx context.Context, request *codespacev1.RequestRuntimeAccessRequest) (*codespacev1.RequestRuntimeAccessResponse, error) {
 	info, _ := connect.CallInfoForServerContext(ctx)
 	require.Equal(s.t, "test-manager-secret", info.RequestHeader().Get("x-codespace-manager-secret"))
-	require.Equal(s.t, []byte("public-key"), request.GitSshKey.PublicKey)
+	require.Equal(s.t, []byte("public-key"), request.GitSshPublicKey)
 	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{GiteaToken: "runtime-token"}}, nil
 }
 
@@ -254,7 +265,7 @@ func TestAgentStartupValidatesReadyTarget(t *testing.T) {
 	cs := &api.Codespace{Spec: api.CodespaceSpec{Operation: api.Operation{Type: "resume", Version: 3}}}
 	report := &agentv1.AgentReport{
 		OperationRversion: 3,
-		Result:            &agentv1.OperationResult{OperationRversion: 3, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
+		Result:            &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 2, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
 		Target:            &agentv1.AccessTarget{Version: 3, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace", Public: true}, ContainerId: "container", Port: 13337}}},
 	}
@@ -300,7 +311,7 @@ func TestAgentProgressAndTargetRefresh(t *testing.T) {
 	require.Equal(t, version, cs.ResourceVersion)
 	report.Boot.Stage, report.Boot.LastUpdateUnix = codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, 3
 	report.Target = &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}}
-	report.Result = &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}
+	report.Result = &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
 	require.Equal(t, "/workspaces/project", cs.Status.Target.WorkspaceFolder)
 	report.Result = nil

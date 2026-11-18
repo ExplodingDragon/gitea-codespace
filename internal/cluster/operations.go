@@ -228,14 +228,11 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 	if payload == nil || payload.CodespaceId <= 0 || payload.OperationRversion <= 0 {
 		return nil
 	}
-	var operationType codespacev1.OperationType
 	var recoveryAction string
 	switch payload.Command.(type) {
 	case *codespacev1.OperationPayload_Create:
-		operationType = codespacev1.OperationType_OPERATION_TYPE_CREATE
 		recoveryAction = "delete"
 	case *codespacev1.OperationPayload_Resume:
-		operationType = codespacev1.OperationType_OPERATION_TYPE_RESUME
 		recoveryAction = "stop"
 	default:
 		return nil
@@ -256,10 +253,8 @@ func (o *Operations) finalizeRejectedOperation(ctx context.Context, site *api.Gi
 		o.Authority.Revoke(cs.UID)
 	}
 	_, err = remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{
-		ProtocolVersion:   1,
 		CodespaceId:       payload.CodespaceId,
 		OperationRversion: payload.OperationRversion,
-		OperationType:     operationType,
 		Status:            codespacev1.FinalStatus_FINAL_STATUS_FAILED,
 	})
 	if err != nil || !local {
@@ -303,7 +298,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 				return fmt.Errorf("build runtime metadata: %w", err)
 			}
 			metadata.ResourceUsage = o.Samples.Load(cs)
-			_, err = remote.ReportRuntimeMetadata(ctx, &codespacev1.ReportRuntimeMetadataRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata})
+			_, err = remote.ReportRuntimeMetadata(ctx, &codespacev1.ReportRuntimeMetadataRequest{CodespaceId: cs.Spec.CodespaceID, MetadataGeneration: cs.Status.MetadataGeneration, Metadata: metadata})
 			if err != nil {
 				return err
 			}
@@ -337,24 +332,11 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 		return nil
 	}
 	o.Logs.Finish(cs)
-	var finalOperationType codespacev1.OperationType
-	switch operationType {
-	case "create", "abort_create":
-		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_CREATE
-	case "resume", "abort_resume":
-		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_RESUME
-	case "stop":
-		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_STOP
-	case "delete":
-		finalOperationType = codespacev1.OperationType_OPERATION_TYPE_DELETE
-	default:
-		return fmt.Errorf("invalid saved operation type")
-	}
 	status := codespacev1.FinalStatus_FINAL_STATUS_FAILED
 	if result.Succeeded {
 		status = codespacev1.FinalStatus_FINAL_STATUS_DONE
 	}
-	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, OperationRversion: result.Version, OperationType: finalOperationType, Status: status})
+	response, err := remote.FinalizeOperation(ctx, &codespacev1.FinalizeOperationRequest{CodespaceId: cs.Spec.CodespaceID, OperationRversion: result.Version, Status: status})
 	if err != nil {
 		return err
 	}

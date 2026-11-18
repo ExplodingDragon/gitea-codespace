@@ -336,7 +336,6 @@ func TestRuntimeProvisioningAndVolumeRetention(t *testing.T) {
 			require.True(t, meta.IsStatusConditionTrue(cs.Status.Conditions, "Stopped"))
 			operations := Operations{Client: c, Authority: r.Authority}
 			remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
-				require.Equal(t, codespacev1.OperationType_OPERATION_TYPE_RESUME, request.OperationType)
 				require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
 				return &codespacev1.FinalizeOperationResponse{}, nil
 			}}
@@ -752,7 +751,7 @@ func TestGiteaCredentialRedirect(t *testing.T) {
 	control := &AgentControlServer{Client: c, ManagementNamespace: secret.Namespace, Connections: newSiteConnectionStore(c, secret.Namespace)}
 	remote, err := control.gitea(t.Context(), &api.Codespace{Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}}})
 	require.NoError(t, err)
-	request := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
+	request := &codespacev1.CheckManagerRequest{}
 	_, err = remote.CheckManager(t.Context(), request)
 	require.Error(t, err)
 	require.Zero(t, forwarded.Load())

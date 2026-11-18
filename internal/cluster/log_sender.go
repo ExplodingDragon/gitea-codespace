@@ -232,7 +232,7 @@ func (l *operationLogs) send(ctx context.Context, sender *operationLogSender) {
 		remote, err := l.remote(attempt, sender.site)
 		var response *codespacev1.UpdateLogResponse
 		if err == nil {
-			response, err = remote.UpdateLog(attempt, &codespacev1.UpdateLogRequest{ProtocolVersion: 1, CodespaceId: sender.codespaceID, OperationRversion: sender.version, Offset: offset, Lines: lines})
+			response, err = remote.UpdateLog(attempt, &codespacev1.UpdateLogRequest{CodespaceId: sender.codespaceID, OperationRversion: sender.version, Offset: offset, Lines: lines})
 		}
 		cancel()
 		if err == nil {

@@ -104,18 +104,17 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 		operationType  string
 		payload        func() *codespacev1.OperationPayload
 		missing        bool
-		finalType      codespacev1.OperationType
 		recoveryAction string
 	}{
 		{name: "create", operationType: "create", payload: func() *codespacev1.OperationPayload {
 			return &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
-		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE, recoveryAction: "delete"},
+		}, recoveryAction: "delete"},
 		{name: "create runtime missing", operationType: "create", missing: true, payload: func() *codespacev1.OperationPayload {
 			return &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}}
-		}, finalType: codespacev1.OperationType_OPERATION_TYPE_CREATE},
+		}},
 		{name: "resume", operationType: "resume", payload: func() *codespacev1.OperationPayload {
 			return &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{}}}
-		}, finalType: codespacev1.OperationType_OPERATION_TYPE_RESUME, recoveryAction: "stop"},
+		}, recoveryAction: "stop"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			site := testSite("example", "site-uid")
@@ -140,7 +139,6 @@ func TestRejectedStartupIsFinalizedAndCleanedUp(t *testing.T) {
 			remote := &operationRemote{final: func(request *codespacev1.FinalizeOperationRequest) (*codespacev1.FinalizeOperationResponse, error) {
 				require.EqualValues(t, 1, request.CodespaceId)
 				require.EqualValues(t, 3, request.OperationRversion)
-				require.Equal(t, tc.finalType, request.OperationType)
 				require.Equal(t, codespacev1.FinalStatus_FINAL_STATUS_FAILED, request.Status)
 				attempts++
 				if attempts == 1 {

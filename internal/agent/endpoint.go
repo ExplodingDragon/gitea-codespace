@@ -24,8 +24,8 @@ type RuntimeEndpointServer struct {
 	Runtime *Runtime
 }
 
-func (s *RuntimeEndpointServer) List(_ context.Context, request *agentv1.RuntimeEndpointServiceListRequest) (*agentv1.RuntimeEndpointServiceListResponse, error) {
-	if request.ProtocolVersion != 1 || s.Runtime == nil {
+func (s *RuntimeEndpointServer) List(_ context.Context, _ *agentv1.RuntimeEndpointServiceListRequest) (*agentv1.RuntimeEndpointServiceListResponse, error) {
+	if s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
 	endpoints, err := s.Runtime.listEndpoints()
@@ -36,7 +36,7 @@ func (s *RuntimeEndpointServer) List(_ context.Context, request *agentv1.Runtime
 }
 
 func (s *RuntimeEndpointServer) Set(_ context.Context, request *agentv1.RuntimeEndpointServiceSetRequest) (*agentv1.RuntimeEndpointServiceSetResponse, error) {
-	if request.ProtocolVersion != 1 || request.Endpoint == nil || s.Runtime == nil {
+	if request.Endpoint == nil || s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
 	_, err := s.Runtime.setEndpoint(request.Endpoint)
@@ -47,7 +47,7 @@ func (s *RuntimeEndpointServer) Set(_ context.Context, request *agentv1.RuntimeE
 }
 
 func (s *RuntimeEndpointServer) Delete(_ context.Context, request *agentv1.RuntimeEndpointServiceDeleteRequest) (*agentv1.RuntimeEndpointServiceDeleteResponse, error) {
-	if request.ProtocolVersion != 1 || s.Runtime == nil {
+	if s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime endpoint request")
 	}
 	_, err := s.Runtime.deleteEndpoint(request.EndpointId)

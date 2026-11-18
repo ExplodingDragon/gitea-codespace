@@ -198,7 +198,7 @@ func (s *ComponentServer) cacheMaterial(ctx context.Context, component *api.Code
 	return &cacheMaterial{component: component, config: config, secret: &secret}, nil
 }
 
-func (s *ComponentServer) cacheForRequest(ctx context.Context, cacheID string) (componentIdentity, *cacheMaterial, error) {
+func (s *ComponentServer) cacheForRequest(ctx context.Context) (componentIdentity, *cacheMaterial, error) {
 	identity, err := componentIdentityFromContext(ctx, "cache")
 	if err != nil {
 		return componentIdentity{}, nil, err
@@ -206,9 +206,6 @@ func (s *ComponentServer) cacheForRequest(ctx context.Context, cacheID string) (
 	material, err := s.cacheByUID(ctx, identity.UID)
 	if err != nil {
 		return componentIdentity{}, nil, err
-	}
-	if cacheID != material.component.Name {
-		return componentIdentity{}, nil, connect.NewError(connect.CodePermissionDenied, "cache identity does not allow this resource")
 	}
 	return identity, material, nil
 }
@@ -271,10 +268,10 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 	if err != nil {
 		return err
 	}
-	if first.ProtocolVersion != 1 || first.CacheId == "" || first.SessionId == "" || first.Sequence == 0 {
+	if first.SessionId == "" || first.Sequence == 0 {
 		return connect.NewError(connect.CodeInvalidArgument, "cache control identity is invalid")
 	}
-	identity, material, err := s.cacheForRequest(ctx, first.CacheId)
+	identity, material, err := s.cacheForRequest(ctx)
 	if err != nil {
 		return err
 	}
@@ -311,13 +308,13 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 	sendConfig := true
 	for {
 		if sendConfig {
-			_, current, err := s.cacheForRequest(ctx, first.CacheId)
+			_, current, err := s.cacheForRequest(ctx)
 			if err != nil {
 				return err
 			}
 			material = current
 			if material.config.Revision != lastRevision {
-				response := &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, Config: componentpkg.CacheConfigToProto(material.config)}
+				response := &componentv1.CacheControlResponse{Sequence: sequence, Config: componentpkg.CacheConfigToProto(material.config)}
 				if lastRevision == -1 {
 					response.PermitValidForMilliseconds = cacheOwnerTTL.Milliseconds()
 				}
@@ -337,15 +334,15 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 			}
 			return err
 		case request := <-requests:
-			if request.ProtocolVersion != 1 || request.CacheId != first.CacheId || request.SessionId != first.SessionId || request.Sequence <= sequence {
+			if request.SessionId != first.SessionId || request.Sequence <= sequence {
 				return connect.NewError(connect.CodeInvalidArgument, "cache control sequence is invalid")
 			}
 			sequence = request.Sequence
-			_, material, err = s.cacheForRequest(ctx, first.CacheId)
+			_, material, err = s.cacheForRequest(ctx)
 			if err != nil || s.renewCache(ctx, identity, material, first.SessionId, request.Status) != nil {
 				return connect.NewError(connect.CodeFailedPrecondition, "cache owner lease is no longer current")
 			}
-			response := &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds()}
+			response := &componentv1.CacheControlResponse{Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds()}
 			switch maintenance := request.Maintenance.(type) {
 			case *componentv1.CacheControlRequest_BeginGc:
 				response.GcGrant, err = s.beginCacheGC(ctx, identity, material, first.SessionId)

@@ -14,7 +14,7 @@ import (
 func TestRuntimeActivityTrackerRequiresFreshIdleGateway(t *testing.T) {
 	tracker := &RuntimeActivityTracker{}
 	start := time.Now()
-	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 10, InteractionGeneration: 1}
+	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 10, InteractionGeneration: 1}
 	require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, start))
 
 	_, ready := tracker.IdleRequest("site", "runtime", "gateway", true, start)
@@ -45,7 +45,7 @@ func TestRuntimeActivityTrackerRequiresFreshIdleGateway(t *testing.T) {
 func TestRuntimeActivityTrackerWaitsForDisconnectedGatewayPermit(t *testing.T) {
 	tracker := &RuntimeActivityTracker{}
 	start := time.Now()
-	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 1, InteractionGeneration: 1}
+	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 1, InteractionGeneration: 1}
 	require.NoError(t, tracker.ObserveSettings("site", "runtime", settings, start))
 	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-1", map[string]int64{"runtime": 1}, false, start))
 	require.NoError(t, tracker.ReplaceGateway("gateway", "pod-2", nil, false, start))
@@ -65,14 +65,14 @@ func TestRuntimeActivityTrackerWaitsForDisconnectedGatewayPermit(t *testing.T) {
 func TestRuntimeActivityTrackerAppliesIdleStopOutcomes(t *testing.T) {
 	tracker := &RuntimeActivityTracker{}
 	now := time.Now()
-	require.NoError(t, tracker.ObserveSettings("site", "runtime", &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 1, InteractionGeneration: 1}, now))
+	require.NoError(t, tracker.ObserveSettings("site", "runtime", &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 1, InteractionGeneration: 1}, now))
 	require.NoError(t, tracker.ReplaceGateway("gateway", "pod", nil, false, now))
 	_, ready := tracker.IdleRequest("site", "runtime", "gateway", true, now)
 	require.False(t, ready)
 	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(time.Second))
 	require.True(t, ready)
 
-	response := &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 5, InteractionGeneration: 2}}}}
+	response := &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 5, InteractionGeneration: 2}}}}
 	require.NoError(t, tracker.IdleStopResult("site", "runtime", response, now.Add(time.Second)))
 	require.NoError(t, tracker.ReplaceGateway("gateway", "pod", nil, false, now.Add(2*time.Second)))
 	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(6*time.Second))
@@ -80,7 +80,7 @@ func TestRuntimeActivityTrackerAppliesIdleStopOutcomes(t *testing.T) {
 	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(11*time.Second))
 	require.True(t, ready)
 
-	response = &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: 4}}}
+	response = &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{}}}
 	require.NoError(t, tracker.IdleStopResult("site", "runtime", response, now.Add(11*time.Second)))
 	_, ready = tracker.IdleRequest("site", "runtime", "gateway", true, now.Add(12*time.Second))
 	require.False(t, ready)
@@ -92,7 +92,7 @@ func TestRuntimeActivityTrackerSettingsPreserveNewerInteraction(t *testing.T) {
 			tracker := &RuntimeActivityTracker{}
 			now := time.Now()
 			tracker.ObserveInteraction("site", "runtime", 3, now)
-			settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 5, InteractionGeneration: 2}
+			settings := &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 5, InteractionGeneration: 2}
 			if fromResponse {
 				require.NoError(t, tracker.IdleStopResult("site", "runtime", &codespacev1.RequestIdleStopResponse{
 					Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}},

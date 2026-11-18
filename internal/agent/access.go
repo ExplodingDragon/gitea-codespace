@@ -76,7 +76,7 @@ func (s *AccessServer) Access(ctx context.Context, stream agentv1connect.AgentAc
 		return err
 	}
 	open := request.GetOpen()
-	if request.ProtocolVersion != 1 || open == nil || open.Ticket == "" {
+	if open == nil || open.Ticket == "" {
 		return connect.NewError(connect.CodeInvalidArgument, "first access frame must open one capability")
 	}
 	target, state, secrets, capability, endpoint, err := s.Runtime.authorize(open)

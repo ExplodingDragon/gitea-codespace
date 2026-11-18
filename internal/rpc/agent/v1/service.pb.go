@@ -146,8 +146,7 @@ func (AccessCapability) EnumDescriptor() ([]byte, []int) {
 }
 
 type PrepareVolumeRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// initialized confirms that ext4 was checked and mounted successfully.
 	Initialized   bool `protobuf:"varint,2,opt,name=initialized,proto3" json:"initialized,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -182,13 +181,6 @@ func (x *PrepareVolumeRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use PrepareVolumeRequest.ProtoReflect.Descriptor instead.
 func (*PrepareVolumeRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *PrepareVolumeRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *PrepareVolumeRequest) GetInitialized() bool {
@@ -235,13 +227,12 @@ func (*PrepareVolumeResponse) Descriptor() ([]byte, []int) {
 }
 
 type RuntimeUSBIPServiceRunRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Operation       RuntimeUSBIPOperation  `protobuf:"varint,2,opt,name=operation,proto3,enum=agent.v1.RuntimeUSBIPOperation" json:"operation,omitempty"`
-	Argument        string                 `protobuf:"bytes,3,opt,name=argument,proto3" json:"argument,omitempty"`
-	Source          string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Operation     RuntimeUSBIPOperation  `protobuf:"varint,2,opt,name=operation,proto3,enum=agent.v1.RuntimeUSBIPOperation" json:"operation,omitempty"`
+	Argument      string                 `protobuf:"bytes,3,opt,name=argument,proto3" json:"argument,omitempty"`
+	Source        string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RuntimeUSBIPServiceRunRequest) Reset() {
@@ -272,13 +263,6 @@ func (x *RuntimeUSBIPServiceRunRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use RuntimeUSBIPServiceRunRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeUSBIPServiceRunRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *RuntimeUSBIPServiceRunRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *RuntimeUSBIPServiceRunRequest) GetOperation() RuntimeUSBIPOperation {
@@ -432,10 +416,9 @@ func (x *USBIPSource) GetListenerId() string {
 }
 
 type RuntimeEndpointServiceListRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RuntimeEndpointServiceListRequest) Reset() {
@@ -466,13 +449,6 @@ func (x *RuntimeEndpointServiceListRequest) ProtoReflect() protoreflect.Message 
 // Deprecated: Use RuntimeEndpointServiceListRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceListRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *RuntimeEndpointServiceListRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 type RuntimeEndpointServiceListResponse struct {
@@ -520,11 +496,10 @@ func (x *RuntimeEndpointServiceListResponse) GetEndpoints() []*v1.RuntimeEndpoin
 }
 
 type RuntimeEndpointServiceSetRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Endpoint        *v1.RuntimeEndpoint    `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Endpoint      *v1.RuntimeEndpoint    `protobuf:"bytes,2,opt,name=endpoint,proto3" json:"endpoint,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RuntimeEndpointServiceSetRequest) Reset() {
@@ -555,13 +530,6 @@ func (x *RuntimeEndpointServiceSetRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use RuntimeEndpointServiceSetRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceSetRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *RuntimeEndpointServiceSetRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *RuntimeEndpointServiceSetRequest) GetEndpoint() *v1.RuntimeEndpoint {
@@ -608,11 +576,10 @@ func (*RuntimeEndpointServiceSetResponse) Descriptor() ([]byte, []int) {
 }
 
 type RuntimeEndpointServiceDeleteRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	EndpointId      string                 `protobuf:"bytes,2,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	EndpointId    string                 `protobuf:"bytes,2,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *RuntimeEndpointServiceDeleteRequest) Reset() {
@@ -643,13 +610,6 @@ func (x *RuntimeEndpointServiceDeleteRequest) ProtoReflect() protoreflect.Messag
 // Deprecated: Use RuntimeEndpointServiceDeleteRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceDeleteRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *RuntimeEndpointServiceDeleteRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *RuntimeEndpointServiceDeleteRequest) GetEndpointId() string {
@@ -696,8 +656,7 @@ func (*RuntimeEndpointServiceDeleteResponse) Descriptor() ([]byte, []int) {
 }
 
 type ControlRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// Fresh per connection; stale session replies cannot renew execution.
 	SessionId string `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	// Strictly increasing within this control session.
@@ -737,13 +696,6 @@ func (x *ControlRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use ControlRequest.ProtoReflect.Descriptor instead.
 func (*ControlRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{11}
-}
-
-func (x *ControlRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *ControlRequest) GetSessionId() string {
@@ -859,12 +811,11 @@ func (x *AgentReport) GetResourceUsage() *v1.RuntimeResourceUsage {
 }
 
 type OperationResult struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	OperationRversion int64                  `protobuf:"varint,1,opt,name=operation_rversion,json=operationRversion,proto3" json:"operation_rversion,omitempty"`
-	Status            v1.FinalStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=codespace.v1.FinalStatus" json:"status,omitempty"`
-	Message           string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        v1.FinalStatus         `protobuf:"varint,2,opt,name=status,proto3,enum=codespace.v1.FinalStatus" json:"status,omitempty"`
+	Message       string                 `protobuf:"bytes,3,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *OperationResult) Reset() {
@@ -897,13 +848,6 @@ func (*OperationResult) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
-func (x *OperationResult) GetOperationRversion() int64 {
-	if x != nil {
-		return x.OperationRversion
-	}
-	return 0
-}
-
 func (x *OperationResult) GetStatus() v1.FinalStatus {
 	if x != nil {
 		return x.Status
@@ -922,11 +866,10 @@ type ControlResponse struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	SessionId string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Sequence  uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	// Measured from the caller's request send time, not reply receipt time.
+	// Measured from request send time. Zero immediately revokes execution permission.
 	PermitValidForMilliseconds int64                   `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
 	Operation                  *v1.OperationPayload    `protobuf:"bytes,4,opt,name=operation,proto3" json:"operation,omitempty"`
 	Access                     *v1.RuntimeAccessBundle `protobuf:"bytes,5,opt,name=access,proto3" json:"access,omitempty"`
-	CancelExecution            bool                    `protobuf:"varint,7,opt,name=cancel_execution,json=cancelExecution,proto3" json:"cancel_execution,omitempty"`
 	// Pinned platform options, applied before the Docker daemon starts.
 	Runtime *RuntimeOptions `protobuf:"bytes,8,opt,name=runtime,proto3" json:"runtime,omitempty"`
 	// Ed25519 verification key for Manager-issued, limited access tickets.
@@ -1000,13 +943,6 @@ func (x *ControlResponse) GetAccess() *v1.RuntimeAccessBundle {
 		return x.Access
 	}
 	return nil
-}
-
-func (x *ControlResponse) GetCancelExecution() bool {
-	if x != nil {
-		return x.CancelExecution
-	}
-	return false
 }
 
 func (x *ControlResponse) GetRuntime() *RuntimeOptions {
@@ -1358,7 +1294,6 @@ func (x *EndpointTarget) GetPort() uint32 {
 
 type UploadLogsRequest struct {
 	state             protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion   uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	OperationRversion int64                  `protobuf:"varint,2,opt,name=operation_rversion,json=operationRversion,proto3" json:"operation_rversion,omitempty"`
 	Lines             []*v1.LogLine          `protobuf:"bytes,4,rep,name=lines,proto3" json:"lines,omitempty"`
 	unknownFields     protoimpl.UnknownFields
@@ -1393,13 +1328,6 @@ func (x *UploadLogsRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use UploadLogsRequest.ProtoReflect.Descriptor instead.
 func (*UploadLogsRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{20}
-}
-
-func (x *UploadLogsRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *UploadLogsRequest) GetOperationRversion() int64 {
@@ -1462,8 +1390,7 @@ func (x *UploadLogsResponse) GetClosed() bool {
 }
 
 type AccessRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Frame:
 	//
 	//	*AccessRequest_Open
@@ -1505,13 +1432,6 @@ func (x *AccessRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AccessRequest.ProtoReflect.Descriptor instead.
 func (*AccessRequest) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{22}
-}
-
-func (x *AccessRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *AccessRequest) GetFrame() isAccessRequest_Frame {
@@ -1789,19 +1709,18 @@ func (*OpenAccess_ReverseTcpAccept) isOpenAccess_Capability() {}
 
 // AccessTicketClaims is signed by Manager and verified by the current Agent.
 type AccessTicketClaims struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	SiteUid         string                 `protobuf:"bytes,2,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
-	ResourceUid     string                 `protobuf:"bytes,3,opt,name=resource_uid,json=resourceUid,proto3" json:"resource_uid,omitempty"`
-	CodespaceId     int64                  `protobuf:"varint,4,opt,name=codespace_id,json=codespaceId,proto3" json:"codespace_id,omitempty"`
-	PodUid          string                 `protobuf:"bytes,5,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
-	TargetVersion   int64                  `protobuf:"varint,6,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
-	Capability      AccessCapability       `protobuf:"varint,7,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
-	EndpointId      string                 `protobuf:"bytes,8,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
-	ExpiresUnix     int64                  `protobuf:"varint,9,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
-	Nonce           []byte                 `protobuf:"bytes,10,opt,name=nonce,proto3" json:"nonce,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	FormatVersion uint32                 `protobuf:"varint,1,opt,name=format_version,json=formatVersion,proto3" json:"format_version,omitempty"`
+	SiteUid       string                 `protobuf:"bytes,2,opt,name=site_uid,json=siteUid,proto3" json:"site_uid,omitempty"`
+	ResourceUid   string                 `protobuf:"bytes,3,opt,name=resource_uid,json=resourceUid,proto3" json:"resource_uid,omitempty"`
+	CodespaceId   int64                  `protobuf:"varint,4,opt,name=codespace_id,json=codespaceId,proto3" json:"codespace_id,omitempty"`
+	PodUid        string                 `protobuf:"bytes,5,opt,name=pod_uid,json=podUid,proto3" json:"pod_uid,omitempty"`
+	TargetVersion int64                  `protobuf:"varint,6,opt,name=target_version,json=targetVersion,proto3" json:"target_version,omitempty"`
+	Capability    AccessCapability       `protobuf:"varint,7,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
+	EndpointId    string                 `protobuf:"bytes,8,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	ExpiresUnix   int64                  `protobuf:"varint,9,opt,name=expires_unix,json=expiresUnix,proto3" json:"expires_unix,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *AccessTicketClaims) Reset() {
@@ -1834,9 +1753,9 @@ func (*AccessTicketClaims) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
-func (x *AccessTicketClaims) GetProtocolVersion() uint32 {
+func (x *AccessTicketClaims) GetFormatVersion() uint32 {
 	if x != nil {
-		return x.ProtocolVersion
+		return x.FormatVersion
 	}
 	return 0
 }
@@ -1895,13 +1814,6 @@ func (x *AccessTicketClaims) GetExpiresUnix() int64 {
 		return x.ExpiresUnix
 	}
 	return 0
-}
-
-func (x *AccessTicketClaims) GetNonce() []byte {
-	if x != nil {
-		return x.Nonce
-	}
-	return nil
 }
 
 type Terminal struct {
@@ -2697,13 +2609,11 @@ var File_agent_v1_service_proto protoreflect.FileDescriptor
 
 const file_agent_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x16agent/v1/service.proto\x12\bagent.v1\x1a\x18codespace/v1/types.proto\"c\n" +
-	"\x14PrepareVolumeRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12 \n" +
+	"\x16agent/v1/service.proto\x12\bagent.v1\x1a\x18codespace/v1/types.proto\"8\n" +
+	"\x14PrepareVolumeRequest\x12 \n" +
 	"\vinitialized\x18\x02 \x01(\bR\vinitialized\"\x17\n" +
-	"\x15PrepareVolumeResponse\"\xbd\x01\n" +
-	"\x1dRuntimeUSBIPServiceRunRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12=\n" +
+	"\x15PrepareVolumeResponse\"\x92\x01\n" +
+	"\x1dRuntimeUSBIPServiceRunRequest\x12=\n" +
 	"\toperation\x18\x02 \x01(\x0e2\x1f.agent.v1.RuntimeUSBIPOperationR\toperation\x12\x1a\n" +
 	"\bargument\x18\x03 \x01(\tR\bargument\x12\x16\n" +
 	"\x06source\x18\x04 \x01(\tR\x06source\"i\n" +
@@ -2716,22 +2626,18 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x06output\x18\x03 \x01(\tR\x06output\x12\x14\n" +
 	"\x05error\x18\x04 \x01(\tR\x05error\x12\x1f\n" +
 	"\vlistener_id\x18\x05 \x01(\tR\n" +
-	"listenerId\"N\n" +
-	"!RuntimeEndpointServiceListRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\"a\n" +
+	"listenerId\"#\n" +
+	"!RuntimeEndpointServiceListRequest\"a\n" +
 	"\"RuntimeEndpointServiceListResponse\x12;\n" +
-	"\tendpoints\x18\x01 \x03(\v2\x1d.codespace.v1.RuntimeEndpointR\tendpoints\"\x88\x01\n" +
-	" RuntimeEndpointServiceSetRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x129\n" +
+	"\tendpoints\x18\x01 \x03(\v2\x1d.codespace.v1.RuntimeEndpointR\tendpoints\"]\n" +
+	" RuntimeEndpointServiceSetRequest\x129\n" +
 	"\bendpoint\x18\x02 \x01(\v2\x1d.codespace.v1.RuntimeEndpointR\bendpoint\"#\n" +
-	"!RuntimeEndpointServiceSetResponse\"q\n" +
-	"#RuntimeEndpointServiceDeleteRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1f\n" +
+	"!RuntimeEndpointServiceSetResponse\"F\n" +
+	"#RuntimeEndpointServiceDeleteRequest\x12\x1f\n" +
 	"\vendpoint_id\x18\x02 \x01(\tR\n" +
 	"endpointId\"&\n" +
-	"$RuntimeEndpointServiceDeleteResponse\"\xe5\x01\n" +
-	"\x0eControlRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1d\n" +
+	"$RuntimeEndpointServiceDeleteResponse\"\xba\x01\n" +
+	"\x0eControlRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x03 \x01(\x04R\bsequence\x12-\n" +
@@ -2743,23 +2649,21 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x06result\x18\x03 \x01(\v2\x19.agent.v1.OperationResultR\x06result\x12.\n" +
 	"\x06target\x18\x04 \x01(\v2\x16.agent.v1.AccessTargetR\x06target\x12-\n" +
 	"\x04boot\x18\x05 \x01(\v2\x19.codespace.v1.RuntimeBootR\x04boot\x12I\n" +
-	"\x0eresource_usage\x18\x06 \x01(\v2\".codespace.v1.RuntimeResourceUsageR\rresourceUsage\"\x8d\x01\n" +
-	"\x0fOperationResult\x12-\n" +
-	"\x12operation_rversion\x18\x01 \x01(\x03R\x11operationRversion\x121\n" +
+	"\x0eresource_usage\x18\x06 \x01(\v2\".codespace.v1.RuntimeResourceUsageR\rresourceUsage\"^\n" +
+	"\x0fOperationResult\x121\n" +
 	"\x06status\x18\x02 \x01(\x0e2\x19.codespace.v1.FinalStatusR\x06status\x12\x18\n" +
-	"\amessage\x18\x03 \x01(\tR\amessage\"\xf1\x03\n" +
+	"\amessage\x18\x03 \x01(\tR\amessage\"\xa3\x03\n" +
 	"\x0fControlResponse\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
 	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x12<\n" +
 	"\toperation\x18\x04 \x01(\v2\x1e.codespace.v1.OperationPayloadR\toperation\x129\n" +
-	"\x06access\x18\x05 \x01(\v2!.codespace.v1.RuntimeAccessBundleR\x06access\x12)\n" +
-	"\x10cancel_execution\x18\a \x01(\bR\x0fcancelExecution\x122\n" +
+	"\x06access\x18\x05 \x01(\v2!.codespace.v1.RuntimeAccessBundleR\x06access\x122\n" +
 	"\aruntime\x18\b \x01(\v2\x18.agent.v1.RuntimeOptionsR\aruntime\x126\n" +
 	"\x17access_verification_key\x18\t \x01(\fR\x15accessVerificationKey\x12-\n" +
 	"\x12operation_rversion\x18\n" +
-	" \x01(\x03R\x11operationRversionJ\x04\b\x06\x10\aR\x1backnowledged_result_version\"\xac\x01\n" +
+	" \x01(\x03R\x11operationRversion\"\xac\x01\n" +
 	"\x0eRuntimeOptions\x12'\n" +
 	"\x10git_ssh_key_type\x18\x01 \x01(\tR\rgitSshKeyType\x12,\n" +
 	"\x05cache\x18\x02 \x01(\v2\x16.agent.v1.RuntimeCacheR\x05cache\x12\x1b\n" +
@@ -2789,15 +2693,13 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x0eEndpointTarget\x129\n" +
 	"\bendpoint\x18\x01 \x01(\v2\x1d.codespace.v1.RuntimeEndpointR\bendpoint\x12!\n" +
 	"\fcontainer_id\x18\x02 \x01(\tR\vcontainerId\x12\x12\n" +
-	"\x04port\x18\x03 \x01(\rR\x04port\"\xa0\x01\n" +
-	"\x11UploadLogsRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12-\n" +
+	"\x04port\x18\x03 \x01(\rR\x04port\"o\n" +
+	"\x11UploadLogsRequest\x12-\n" +
 	"\x12operation_rversion\x18\x02 \x01(\x03R\x11operationRversion\x12+\n" +
-	"\x05lines\x18\x04 \x03(\v2\x15.codespace.v1.LogLineR\x05linesJ\x04\b\x03\x10\x04\"2\n" +
+	"\x05lines\x18\x04 \x03(\v2\x15.codespace.v1.LogLineR\x05lines\",\n" +
 	"\x12UploadLogsResponse\x12\x16\n" +
-	"\x06closed\x18\x02 \x01(\bR\x06closedJ\x04\b\x01\x10\x02\"\x9b\x02\n" +
-	"\rAccessRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12*\n" +
+	"\x06closed\x18\x02 \x01(\bR\x06closed\"\xf0\x01\n" +
+	"\rAccessRequest\x12*\n" +
 	"\x04open\x18\x02 \x01(\v2\x14.agent.v1.OpenAccessH\x00R\x04open\x12\x16\n" +
 	"\x05stdin\x18\x03 \x01(\fH\x00R\x05stdin\x120\n" +
 	"\x06resize\x18\x04 \x01(\v2\x16.agent.v1.TerminalSizeH\x00R\x06resize\x12\x18\n" +
@@ -2816,9 +2718,9 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x12reverse_tcp_listen\x18\a \x01(\v2\x1a.agent.v1.ReverseTCPListenH\x00R\x10reverseTcpListen\x12J\n" +
 	"\x12reverse_tcp_accept\x18\b \x01(\v2\x1a.agent.v1.ReverseTCPAcceptH\x00R\x10reverseTcpAcceptB\f\n" +
 	"\n" +
-	"capability\"\xf6\x02\n" +
-	"\x12AccessTicketClaims\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x19\n" +
+	"capability\"\xdc\x02\n" +
+	"\x12AccessTicketClaims\x12%\n" +
+	"\x0eformat_version\x18\x01 \x01(\rR\rformatVersion\x12\x19\n" +
 	"\bsite_uid\x18\x02 \x01(\tR\asiteUid\x12!\n" +
 	"\fresource_uid\x18\x03 \x01(\tR\vresourceUid\x12!\n" +
 	"\fcodespace_id\x18\x04 \x01(\x03R\vcodespaceId\x12\x17\n" +
@@ -2829,9 +2731,7 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"capability\x12\x1f\n" +
 	"\vendpoint_id\x18\b \x01(\tR\n" +
 	"endpointId\x12!\n" +
-	"\fexpires_unix\x18\t \x01(\x03R\vexpiresUnix\x12\x14\n" +
-	"\x05nonce\x18\n" +
-	" \x01(\fR\x05nonce\"J\n" +
+	"\fexpires_unix\x18\t \x01(\x03R\vexpiresUnix\"J\n" +
 	"\bTerminal\x12\x12\n" +
 	"\x04term\x18\x01 \x01(\tR\x04term\x12*\n" +
 	"\x04size\x18\x02 \x01(\v2\x16.agent.v1.TerminalSizeR\x04size\"<\n" +

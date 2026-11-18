@@ -45,8 +45,7 @@ func TestNewManagerServiceClientAddsAuthentication(t *testing.T) {
 
 	client := NewManagerServiceClient(server.Client(), server.URL, 42, "manager-secret")
 	response, err := client.DeclareManager(t.Context(), &codespacev1.DeclareManagerRequest{
-		ProtocolVersion: ProtocolVersion,
-		Version:         strings.Repeat("a", 2*1024*1024),
+		Version: strings.Repeat("a", 2*1024*1024),
 	})
 	if err != nil {
 		t.Fatalf("declare manager: %v", err)
@@ -72,9 +71,8 @@ func TestNewManagerRegistrationClientDoesNotAddAuthentication(t *testing.T) {
 
 	client := NewManagerRegistrationClient(server.Client(), server.URL)
 	response, err := client.RegisterManager(t.Context(), &codespacev1.RegisterManagerRequest{
-		ProtocolVersion: ProtocolVersion,
-		Token:           "registration-token",
-		Name:            "Manager",
+		Token: "registration-token",
+		Name:  "Manager",
 	})
 	if err != nil {
 		t.Fatalf("register manager: %v", err)

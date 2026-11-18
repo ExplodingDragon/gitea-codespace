@@ -78,7 +78,7 @@ func (r *SiteReconciler) Reconcile(ctx context.Context, request ctrl.Request) (c
 	if err != nil {
 		return r.condition(ctx, &site, "CredentialUnavailable", fmt.Errorf("read site credential: %w", err))
 	}
-	check := &codespacev1.CheckManagerRequest{ProtocolVersion: 1}
+	check := &codespacev1.CheckManagerRequest{}
 	checkCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	response, err := remote.CheckManager(checkCtx, check)

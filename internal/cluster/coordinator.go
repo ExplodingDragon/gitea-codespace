@@ -238,7 +238,7 @@ func (c *SiteCoordinator) runSite(ctx context.Context, name string, uid types.UI
 				}
 			}
 			c.requestIdleStops(ctx, &site, rows.Items, remote)
-			request := &codespacev1.FetchOperationsRequest{ProtocolVersion: 1}
+			request := &codespacev1.FetchOperationsRequest{}
 			runtimesByID := make(map[int64]*api.Codespace, len(rows.Items))
 			for i := range rows.Items {
 				cs := &rows.Items[i]
@@ -361,7 +361,7 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 	if err != nil {
 		return nil, nil, fmt.Errorf("invalid gateway SSH host key")
 	}
-	declaration := &codespacev1.DeclareManagerRequest{ProtocolVersion: 1, Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(gatewayConfig.HTTP.PublicURL, "/"), GatewaySshAddr: gatewayConfig.SSH.PublicAddr, GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
+	declaration := &codespacev1.DeclareManagerRequest{Version: controlplane.BuildVersion(), GatewayUrl: strings.TrimRight(gatewayConfig.HTTP.PublicURL, "/"), GatewaySshAddr: gatewayConfig.SSH.PublicAddr, GatewaySshHostKeyAlgorithm: signer.PublicKey().Type(), GatewaySshHostKeyFingerprintSha256: ssh.FingerprintSHA256(signer.PublicKey())}
 	var accepted []string
 	seen := make(map[types.UID]bool)
 	for _, ref := range site.Spec.Templates {
@@ -386,7 +386,7 @@ func (c *SiteCoordinator) declaration(ctx context.Context, site *api.GiteaSite) 
 }
 
 func (c *SiteCoordinator) inventory(ctx context.Context, site *api.GiteaSite, rows []api.Codespace, remote codespacev1connect.ManagerServiceClient) error {
-	request := &codespacev1.ReportInstancesRequest{ProtocolVersion: 1}
+	request := &codespacev1.ReportInstancesRequest{}
 	states := make(map[int64]codespacev1.RuntimeState)
 	runtimes := make(map[int64]*api.Codespace, len(rows))
 	for i := range rows {
@@ -505,7 +505,7 @@ func (c *SiteCoordinator) requestIdleStops(ctx context.Context, site *api.GiteaS
 		if !ready {
 			continue
 		}
-		response, err := remote.RequestIdleStop(ctx, &codespacev1.RequestIdleStopRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, ObservedSettings: settings})
+		response, err := remote.RequestIdleStop(ctx, &codespacev1.RequestIdleStopRequest{CodespaceId: cs.Spec.CodespaceID, ObservedSettings: settings})
 		if err != nil {
 			c.Activity.IdleStopFailed(cs.RuntimeKey(), now)
 			log.FromContext(ctx).Error(err, "Request idle stop", "codespace", cs.Name)

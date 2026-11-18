@@ -142,7 +142,7 @@ func (s *ComponentServer) LookupWorkspaceSession(ctx context.Context, request *c
 		return nil, err
 	}
 	identity := request.GetIdentity()
-	if request.ProtocolVersion != 1 || identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeKey() == "" {
+	if identity.GetSessionId() == "" || identity.GetSiteUid() == "" || identity.GetUserId() <= 0 || identity.GetRuntimeKey() == "" {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "workspace session identity is incomplete")
 	}
 	_, site, err := s.runtimeForGateway(ctx, component, identity.RuntimeKey)

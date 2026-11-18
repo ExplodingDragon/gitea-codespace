@@ -91,7 +91,7 @@ func TestCoordinatorRequestsIdleStopAfterObservedInactivity(t *testing.T) {
 	site := testSite("example", "site-uid")
 	tracker := &RuntimeActivityTracker{}
 	now := time.Now()
-	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 1, InteractionGeneration: 2}
+	settings := &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 1, InteractionGeneration: 2}
 	require.NoError(t, tracker.ObserveSettings(string(site.UID), "site-uid/1", settings, now.Add(-2*time.Second)))
 	require.NoError(t, tracker.ReplaceGateway(string(site.Spec.Gateway.UID), "gateway-pod", nil, false, now.Add(-2*time.Second)))
 	_, ready := tracker.IdleRequest(string(site.UID), "site-uid/1", string(site.Spec.Gateway.UID), true, now.Add(-2*time.Second))
@@ -103,7 +103,7 @@ func TestCoordinatorRequestsIdleStopAfterObservedInactivity(t *testing.T) {
 		requests++
 		require.EqualValues(t, 1, request.CodespaceId)
 		require.Equal(t, settings, request.ObservedSettings)
-		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: 2}}}
+		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{}}}
 	}}
 	coordinator := &SiteCoordinator{Operations: Operations{Activity: tracker}}
 	coordinator.requestIdleStops(t.Context(), site, []api.Codespace{cs}, remote)
@@ -196,7 +196,7 @@ func TestSiteCoordinatorLifecycle(t *testing.T) {
 	require.Equal(t, api.RuntimeAccess{GatewayURL: "https://workspace.example", SSHAddress: "workspace.example:2222"}, cs.Status.Access)
 	control := &AgentControlServer{Client: c}
 	require.NoError(t, control.saveReport(t.Context(), &cs, &agentv1.AgentReport{
-		OperationRversion: 1, Result: &agentv1.OperationResult{OperationRversion: 1, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
+		OperationRversion: 1, Result: &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:   &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
 		Target: &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
 	}))

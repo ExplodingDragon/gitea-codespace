@@ -23,7 +23,6 @@ func (c *componentControlPlane) authorize(ctx context.Context, payload *componen
 	}
 	callCtx, cancel := context.WithTimeout(ctx, gatewayAuthorizationTimeout)
 	defer cancel()
-	payload.ProtocolVersion = 1
 	response, err := c.Client.AuthorizeGateway(callCtx, payload)
 	if err != nil {
 		return nil, err
@@ -92,7 +91,7 @@ func (c *componentControlPlane) RevalidateSSHSession(ctx context.Context, siteUI
 func (c *componentControlPlane) LookupWorkspaceSession(ctx context.Context, identity *componentv1.WorkspaceSessionIdentity) (bool, error) {
 	callCtx, cancel := context.WithTimeout(ctx, gatewayAuthorizationTimeout)
 	defer cancel()
-	response, err := c.Client.LookupWorkspaceSession(callCtx, &componentv1.LookupWorkspaceSessionRequest{ProtocolVersion: 1, Identity: identity})
+	response, err := c.Client.LookupWorkspaceSession(callCtx, &componentv1.LookupWorkspaceSessionRequest{Identity: identity})
 	if err != nil {
 		return false, err
 	}

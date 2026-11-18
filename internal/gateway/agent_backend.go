@@ -80,7 +80,7 @@ func (b *agentBackend) open(ctx context.Context, runtimeKey string, capability a
 			cancel()
 		}
 	}()
-	response, err := b.Manager.IssueAgentAccess(streamCtx, &componentv1.IssueAgentAccessRequest{ProtocolVersion: 1, RuntimeKey: runtimeKey, Capability: capability, EndpointId: endpointID})
+	response, err := b.Manager.IssueAgentAccess(streamCtx, &componentv1.IssueAgentAccessRequest{RuntimeKey: runtimeKey, Capability: capability, EndpointId: endpointID})
 	if err != nil {
 		return nil, wrapGatewayUpstreamError("ticket_issue", err)
 	}
@@ -107,7 +107,7 @@ func (b *agentBackend) open(ctx context.Context, runtimeKey string, capability a
 		return nil, wrapGatewayUpstreamTargetError("agent_connect", target, err)
 	}
 	open.Ticket = response.Ticket
-	if err := stream.Send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Open{Open: open}}); err != nil {
+	if err := stream.Send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_Open{Open: open}}); err != nil {
 		return nil, wrapGatewayUpstreamTargetError("agent_open", target, err)
 	}
 	accepted, err := stream.Receive()
@@ -231,7 +231,7 @@ type agentInput struct {
 }
 
 func (w *agentInput) Write(value []byte) (int, error) {
-	if err := w.access.send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Stdin{Stdin: append([]byte(nil), value...)}}); err != nil {
+	if err := w.access.send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_Stdin{Stdin: append([]byte(nil), value...)}}); err != nil {
 		return 0, err
 	}
 	return len(value), nil
@@ -240,7 +240,7 @@ func (w *agentInput) Write(value []byte) (int, error) {
 func (w *agentInput) Close() error {
 	var err error
 	w.once.Do(func() {
-		err = w.access.send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_StdinEof{StdinEof: true}})
+		err = w.access.send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_StdinEof{StdinEof: true}})
 	})
 	return err
 }
@@ -321,10 +321,10 @@ func (s *agentCommandSession) Resize(cols, rows int) error {
 	if cols <= 0 || rows <= 0 {
 		return fmt.Errorf("terminal size is invalid")
 	}
-	return s.access.send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Resize{Resize: &agentv1.TerminalSize{Columns: uint32(cols), Rows: uint32(rows)}}})
+	return s.access.send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_Resize{Resize: &agentv1.TerminalSize{Columns: uint32(cols), Rows: uint32(rows)}}})
 }
 func (s *agentCommandSession) Signal(signal int) error {
-	return s.access.send(&agentv1.AccessRequest{ProtocolVersion: 1, Frame: &agentv1.AccessRequest_Signal{Signal: int32(signal)}})
+	return s.access.send(&agentv1.AccessRequest{Frame: &agentv1.AccessRequest_Signal{Signal: int32(signal)}})
 }
 func (s *agentCommandSession) Wait() error { return <-s.done }
 func (s *agentCommandSession) Close() error {

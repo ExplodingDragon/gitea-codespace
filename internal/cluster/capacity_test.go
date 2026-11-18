@@ -72,7 +72,6 @@ func TestSiteCapacity(t *testing.T) {
 	require.NoError(t, c.Status().Update(t.Context(), quota))
 	request = &codespacev1.FetchOperationsRequest{}
 	require.NoError(t, coordinator.capacity(t.Context(), site, rows, []string{"small"}, request))
-	require.Equal(t, []codespacev1.AcceptedOperationType{codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_RESUME}, request.AcceptedOperationTypes)
 	require.EqualValues(t, 1, request.StartupCapacityAvailable)
 
 	quota.Status.Hard = nil

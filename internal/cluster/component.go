@@ -5,7 +5,6 @@ package cluster
 
 import (
 	"context"
-	"crypto/sha256"
 	"errors"
 	"fmt"
 	"io"
@@ -147,7 +146,7 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 	if err := s.IdentityIndex.List(ctx, &sites, client.MatchingFields{SiteGatewayUIDIndex: string(componentUID)}); err != nil {
 		return nil, err
 	}
-	response := &componentv1.GatewayControlResponse{ProtocolVersion: 1, Snapshot: true, Config: configuration}
+	response := &componentv1.GatewayControlResponse{Config: configuration}
 	for i := range sites.Items {
 		site := &sites.Items[i]
 		if !site.Spec.Enabled || site.Spec.Gateway.UID != componentUID || !meta.IsStatusConditionTrue(site.Status.Conditions, "InfrastructureReady") {
@@ -171,11 +170,6 @@ func (s *ComponentServer) gatewaySnapshot(ctx context.Context, identity componen
 		}
 	}
 	slices.SortFunc(response.Runtimes, func(a, b *componentv1.GatewayRuntimeRoute) int { return strings.Compare(a.RuntimeKey, b.RuntimeKey) })
-	encoded, err := proto.MarshalOptions{Deterministic: true}.Marshal(response)
-	if err != nil {
-		return nil, err
-	}
-	response.Cursor = fmt.Sprintf("%x", sha256.Sum256(encoded))
 	return response, nil
 }
 
@@ -242,7 +236,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	if err != nil {
 		return err
 	}
-	if first.ProtocolVersion != 1 || strings.TrimSpace(first.SessionId) == "" || first.Sequence == 0 {
+	if strings.TrimSpace(first.SessionId) == "" || first.Sequence == 0 {
 		return connect.NewError(connect.CodeInvalidArgument, "gateway control identity is invalid")
 	}
 	session := first.SessionId
@@ -295,10 +289,9 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 	streamLifetime := time.NewTimer(45 * time.Minute)
 	defer streamLifetime.Stop()
 	sequence := first.Sequence
-	response := snapshot
+	response := &componentv1.GatewayControlResponse{Config: snapshot.Config, Runtimes: snapshot.Runtimes}
 	for {
 		if response != nil {
-			response.ProtocolVersion = 1
 			response.Sequence = sequence
 			response.PermitValidForMilliseconds = gatewayPermitTTL.Milliseconds()
 			// Confirm activity and renew permits through the same response path.
@@ -311,7 +304,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 				s.Activity.RenewGatewayPermit(identity.UID, session, now)
 			}
 		}
-		response = &componentv1.GatewayControlResponse{Cursor: snapshot.Cursor}
+		response = &componentv1.GatewayControlResponse{}
 		select {
 		case <-ctx.Done():
 			return connect.NewError(connect.CodeCanceled, ctx.Err().Error()).WithCause(ctx.Err())
@@ -321,7 +314,7 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 			}
 			return err
 		case request := <-requests:
-			if request.ProtocolVersion != 1 || request.SessionId != first.SessionId || request.Sequence <= sequence {
+			if request.SessionId != first.SessionId || request.Sequence <= sequence {
 				return connect.NewError(connect.CodeInvalidArgument, "gateway control sequence is invalid")
 			}
 			if err := s.replaceWorkspaceActivity(key, workspaceReport, request.WorkspaceSessions, authorizedSites); err != nil {
@@ -336,11 +329,12 @@ func (s *ComponentServer) GatewayControl(ctx context.Context, stream componentv1
 			if err != nil {
 				return connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 			}
-			if updated.Cursor == snapshot.Cursor {
+			if proto.Equal(snapshot, updated) {
 				response = nil
 				continue
 			}
-			snapshot, response = updated, updated
+			snapshot = updated
+			response.Config, response.Runtimes = updated.Config, updated.Runtimes
 			authorizedSites = make(map[string]string, len(snapshot.Runtimes))
 			for _, runtime := range snapshot.Runtimes {
 				authorizedSites[runtime.RuntimeKey] = runtime.SiteUid
@@ -408,9 +402,6 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 	if err != nil {
 		return nil, err
 	}
-	if request.ProtocolVersion != 1 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported component protocol version")
-	}
 	if open := request.GetOpenCode(); open != nil {
 		if strings.TrimSpace(open.Code) == "" || strings.TrimSpace(open.RuntimeKey) == "" || strings.TrimSpace(open.EndpointId) == "" {
 			return nil, connect.NewError(connect.CodeInvalidArgument, "open code target is incomplete")
@@ -423,7 +414,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
-		result, err := remote.ValidateOpenToken(ctx, &codespacev1.ValidateOpenTokenRequest{ProtocolVersion: 1, Code: open.Code})
+		result, err := remote.ValidateOpenToken(ctx, &codespacev1.ValidateOpenTokenRequest{Code: open.Code})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -465,7 +456,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 	response := &componentv1.AuthorizeGatewayResponse{SiteUid: string(site.UID), RuntimeKey: runtimeKey}
 	switch value := request.Request.(type) {
 	case *componentv1.AuthorizeGatewayRequest_PublicEndpoint:
-		result, err := remote.ValidatePublicEndpoint(ctx, &codespacev1.ValidatePublicEndpointRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, EndpointId: value.PublicEndpoint.EndpointId})
+		result, err := remote.ValidatePublicEndpoint(ctx, &codespacev1.ValidatePublicEndpointRequest{CodespaceId: cs.Spec.CodespaceID, EndpointId: value.PublicEndpoint.EndpointId})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -474,7 +465,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 			response.DeniedCategory = denied.Category
 		}
 	case *componentv1.AuthorizeGatewayRequest_SshPublicKey:
-		result, err := remote.VerifySSHPublicKey(ctx, &codespacev1.VerifySSHPublicKeyRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, PublicKey: value.SshPublicKey.PublicKey})
+		result, err := remote.VerifySSHPublicKey(ctx, &codespacev1.VerifySSHPublicKeyRequest{CodespaceId: cs.Spec.CodespaceID, PublicKey: value.SshPublicKey.PublicKey})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -491,7 +482,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 		if value.EndpointSession.SiteUid != string(site.UID) {
 			return gatewayDenied("site_mismatch"), nil
 		}
-		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{Endpoint: &codespacev1.EndpointSessionBinding{UserId: value.EndpointSession.UserId, CodespaceId: cs.Spec.CodespaceID, EndpointId: value.EndpointSession.EndpointId}}})
+		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{Session: &codespacev1.RevalidateGatewaySessionRequest_Endpoint{Endpoint: &codespacev1.EndpointSessionBinding{UserId: value.EndpointSession.UserId, CodespaceId: cs.Spec.CodespaceID, EndpointId: value.EndpointSession.EndpointId}}})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -503,7 +494,7 @@ func (s *ComponentServer) AuthorizeGateway(ctx context.Context, request *compone
 		if value.SshSession.SiteUid != string(site.UID) {
 			return gatewayDenied("site_mismatch"), nil
 		}
-		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{ProtocolVersion: 1, Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{Ssh: &codespacev1.SSHSessionBinding{UserId: value.SshSession.UserId, CodespaceId: cs.Spec.CodespaceID}}})
+		result, err := remote.RevalidateGatewaySession(ctx, &codespacev1.RevalidateGatewaySessionRequest{Session: &codespacev1.RevalidateGatewaySessionRequest_Ssh{Ssh: &codespacev1.SSHSessionBinding{UserId: value.SshSession.UserId, CodespaceId: cs.Spec.CodespaceID}}})
 		if err != nil {
 			return nil, connect.NewError(connect.CodeUnavailable, err.Error()).WithCause(err)
 		}
@@ -520,7 +511,7 @@ func (s *ComponentServer) IssueAgentAccess(ctx context.Context, request *compone
 	if err != nil {
 		return nil, err
 	}
-	if request.ProtocolVersion != 1 || request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
+	if request.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "agent access request is invalid")
 	}
 	cs, site, err := s.runtimeForGateway(ctx, identity, request.RuntimeKey)

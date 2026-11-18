@@ -52,7 +52,7 @@ func (p *Permit) Accept(response *agentv1.ControlResponse, now time.Time) (time.
 	if response == nil || response.SessionId != p.session || response.Sequence != p.sequence || p.sequence == 0 {
 		return time.Time{}, fmt.Errorf("control reply does not match the current request")
 	}
-	if response.CancelExecution {
+	if response.PermitValidForMilliseconds == 0 {
 		p.deadline = time.Time{}
 		return time.Time{}, fmt.Errorf("execution canceled by Manager")
 	}

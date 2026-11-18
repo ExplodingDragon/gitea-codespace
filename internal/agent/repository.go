@@ -33,6 +33,15 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 	if err != nil {
 		return err
 	}
+	urls := make([]string, 0, len(repository.CloneUrls))
+	for _, cloneURL := range repository.CloneUrls {
+		if cloneURL = strings.TrimSpace(cloneURL); cloneURL != "" {
+			urls = append(urls, cloneURL)
+		}
+	}
+	if len(urls) == 0 {
+		return fmt.Errorf("repository clone URL is missing")
+	}
 	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
 		return err
 	}
@@ -43,22 +52,13 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 		if err := verifyWorkspace(ctx, owner, target, repository.CommitSha); err != nil {
 			return fmt.Errorf("existing workspace: %w", err)
 		}
-		for _, cloneURL := range repositoryCloneURLs(repository) {
-			if cloneURL != "" {
-				return configureRepositoryCredentials(ctx, owner, target, cloneURL, trust)
-			}
-		}
-		return fmt.Errorf("repository clone URL is missing")
+		return configureRepositoryCredentials(ctx, owner, target, urls[0], trust)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	urls := repositoryCloneURLs(repository)
 	var failures []error
-	for index, cloneURL := range urls {
-		if cloneURL == "" || (index == 1 && cloneURL == urls[0]) {
-			continue
-		}
-		temporary := filepath.Join(workspaceRoot, fmt.Sprintf(".create-%d", operation.CodespaceId))
+	temporary := filepath.Join(workspaceRoot, fmt.Sprintf(".create-%d", operation.CodespaceId))
+	for _, cloneURL := range urls {
 		if err := os.RemoveAll(temporary); err != nil {
 			return err
 		}
@@ -83,14 +83,6 @@ func ensureWorkspace(ctx context.Context, operation *codespacev1.OperationPayloa
 		return nil
 	}
 	return fmt.Errorf("clone repository: %w", errors.Join(failures...))
-}
-
-func repositoryCloneURLs(repository *codespacev1.RepositoryCheckout) []string {
-	urls := []string{strings.TrimSpace(repository.CloneHttpUrl), strings.TrimSpace(repository.CloneSshUrl)}
-	if repository.PreferredProtocol == codespacev1.GitProtocol_GIT_PROTOCOL_SSH {
-		urls[0], urls[1] = urls[1], urls[0]
-	}
-	return urls
 }
 
 func repositoryCloneEndpoint(cloneURL string) (string, string) {

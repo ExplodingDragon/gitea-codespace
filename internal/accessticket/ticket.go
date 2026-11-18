@@ -7,7 +7,6 @@ package accessticket
 
 import (
 	"crypto/ed25519"
-	"crypto/rand"
 	"encoding/base64"
 	"fmt"
 	"strings"
@@ -18,8 +17,8 @@ import (
 )
 
 const (
-	// ProtocolVersion identifies the signed claims format interpreted by Agents.
-	ProtocolVersion = 1
+	// FormatVersion identifies the signed claims format interpreted by Agents.
+	FormatVersion = 1
 	// MaxLifetime bounds how long a target-bound access ticket can be replayed.
 	MaxLifetime = 2 * time.Minute
 )
@@ -33,13 +32,7 @@ func Sign(privateKey ed25519.PrivateKey, claims *agentv1.AccessTicketClaims, now
 		return "", fmt.Errorf("access ticket claims are required")
 	}
 	claims = proto.Clone(claims).(*agentv1.AccessTicketClaims)
-	claims.ProtocolVersion = ProtocolVersion
-	if len(claims.Nonce) == 0 {
-		claims.Nonce = make([]byte, 16)
-		if _, err := rand.Read(claims.Nonce); err != nil {
-			return "", err
-		}
-	}
+	claims.FormatVersion = FormatVersion
 	if err := validate(claims, now); err != nil {
 		return "", err
 	}
@@ -78,7 +71,7 @@ func Verify(publicKey ed25519.PublicKey, token string, now time.Time) (*agentv1.
 }
 
 func validate(claims *agentv1.AccessTicketClaims, now time.Time) error {
-	if claims.ProtocolVersion != ProtocolVersion || claims.SiteUid == "" || claims.ResourceUid == "" || claims.CodespaceId <= 0 || claims.PodUid == "" || claims.TargetVersion <= 0 || claims.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED || len(claims.Nonce) != 16 {
+	if claims.FormatVersion != FormatVersion || claims.SiteUid == "" || claims.ResourceUid == "" || claims.CodespaceId <= 0 || claims.PodUid == "" || claims.TargetVersion <= 0 || claims.Capability == agentv1.AccessCapability_ACCESS_CAPABILITY_UNSPECIFIED {
 		return fmt.Errorf("access ticket identity is incomplete")
 	}
 	expires := time.Unix(claims.ExpiresUnix, 0)

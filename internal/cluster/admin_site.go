@@ -110,7 +110,7 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 		if err != nil {
 			return err
 		}
-		checked, err := remote.CheckManager(ctx, &codespacev1.CheckManagerRequest{ProtocolVersion: controlplane.ProtocolVersion})
+		checked, err := remote.CheckManager(ctx, &codespacev1.CheckManagerRequest{})
 		if err != nil {
 			return apierrors.NewBadRequest("Gitea Manager connection check failed: " + err.Error())
 		}
@@ -139,9 +139,8 @@ func (s *AdminServer) saveSite(ctx context.Context, site *api.GiteaSite, body ad
 		return apierrors.NewBadRequest(err.Error())
 	}
 	registration, err := controlplane.NewManagerRegistrationClient(httpClient, strings.TrimRight(site.Spec.URL, "/")+"/api/codespace").RegisterManager(ctx, &codespacev1.RegisterManagerRequest{
-		ProtocolVersion: controlplane.ProtocolVersion,
-		Token:           body.RegistrationToken,
-		Name:            site.Spec.DisplayName,
+		Token: body.RegistrationToken,
+		Name:  site.Spec.DisplayName,
 	})
 	if err != nil {
 		switch connect.CodeOf(err) {

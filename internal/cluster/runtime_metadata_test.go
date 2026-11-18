@@ -26,15 +26,13 @@ func TestRuntimeMetadataPublishesAccessAddresses(t *testing.T) {
 	metadata, err := runtimeMetadata(cs)
 	require.NoError(t, err)
 	require.Equal(t, "https://933ef4a954c74f36aad932ea72c4c986.workspace.example:8443/", metadata.Endpoints[0].Url)
-	require.Equal(t, metadata.Endpoints[0].Url+".gitea-codespace/open", metadata.Endpoints[0].OpenUrl)
 	require.Zero(t, metadata.Endpoints[0].Port)
 	require.Equal(t, "https://app-933ef4a954c74f36aad932ea72c4c986.workspace.example:8443/", metadata.Endpoints[1].Url)
-	require.Equal(t, "cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986", metadata.Ssh.User)
-	require.Equal(t, "vscode://vscode-remote/ssh-remote+cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986@ssh.example:2222/workspaces/a%20b", metadata.Ssh.VscodeUrl)
-	cs.Status.Access = api.RuntimeAccess{GatewayURL: "http://new.example", SSHAddress: "ssh.example:22"}
+	require.Equal(t, "ssh://cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986@ssh.example:2222", metadata.Ssh)
+	require.Equal(t, "/workspaces/a b", metadata.WorkspaceFolder)
+	cs.Status.Access = api.RuntimeAccess{GatewayURL: "http://new.example", SSHAddress: "[2001:db8::1]:22"}
 	updated, err := runtimeMetadata(cs)
 	require.NoError(t, err)
 	require.Equal(t, "http://933ef4a954c74f36aad932ea72c4c986.new.example/", updated.Endpoints[0].Url)
-	require.Equal(t, metadata.Ssh.User, updated.Ssh.User)
-	require.Equal(t, "zed://ssh/cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986@ssh.example/workspaces/a%20b", updated.Ssh.ZedUrl)
+	require.Equal(t, "ssh://cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986@[2001:db8::1]:22", updated.Ssh)
 }

@@ -76,7 +76,6 @@ type e2eWebIDEState struct {
 	InitializeCount int `json:"initializeCount"`
 	ServeCount      int `json:"serveCount"`
 	LastRequest     struct {
-		ProtocolVersion   int            `json:"protocolVersion"`
 		Initialize        bool           `json:"initialize"`
 		TemplateOptions   map[string]any `json:"templateOptions"`
 		RepositoryOptions map[string]any `json:"repositoryOptions"`
@@ -96,7 +95,6 @@ type lifecycleRemote struct {
 	logs            map[int64][]string
 	metadata        *codespacev1.RuntimeMetadata
 	runtimeSettings struct {
-		autoStopEnabled       bool
 		idleTimeoutSeconds    int64
 		interactionGeneration int64
 	}
@@ -123,13 +121,11 @@ func (s *lifecycleRemote) setOperation(operation *codespacev1.OperationPayload) 
 	s.operation = operation
 	s.delivered = false
 	if create := operation.GetCreate(); create != nil && create.RuntimeSettings != nil {
-		s.runtimeSettings.autoStopEnabled = create.RuntimeSettings.AutoStopEnabled
 		s.runtimeSettings.idleTimeoutSeconds = create.RuntimeSettings.IdleTimeoutSeconds
 		s.runtimeSettings.interactionGeneration = create.RuntimeSettings.InteractionGeneration
 		s.interactionGeneration = create.RuntimeSettings.InteractionGeneration
 	}
 	if resume := operation.GetResume(); resume != nil && resume.RuntimeSettings != nil {
-		s.runtimeSettings.autoStopEnabled = resume.RuntimeSettings.AutoStopEnabled
 		s.runtimeSettings.idleTimeoutSeconds = resume.RuntimeSettings.IdleTimeoutSeconds
 		s.runtimeSettings.interactionGeneration = resume.RuntimeSettings.InteractionGeneration
 		s.interactionGeneration = resume.RuntimeSettings.InteractionGeneration
@@ -139,21 +135,17 @@ func (s *lifecycleRemote) setOperation(operation *codespacev1.OperationPayload) 
 func (s *lifecycleRemote) setRuntimeSettings(settings *codespacev1.EffectiveCodespaceRuntimeSettings) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.runtimeSettings.autoStopEnabled = settings.AutoStopEnabled
 	s.runtimeSettings.idleTimeoutSeconds = settings.IdleTimeoutSeconds
 	s.runtimeSettings.interactionGeneration = settings.InteractionGeneration
 	s.interactionGeneration = settings.InteractionGeneration
 }
 
 func (s *lifecycleRemote) CheckManager(_ context.Context, request *codespacev1.CheckManagerRequest) (*codespacev1.CheckManagerResponse, error) {
-	if request.ProtocolVersion != 1 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported protocol")
-	}
 	return &codespacev1.CheckManagerResponse{GiteaWebUrl: s.baseURL}, nil
 }
 
 func (s *lifecycleRemote) RegisterManager(_ context.Context, request *codespacev1.RegisterManagerRequest) (*codespacev1.RegisterManagerResponse, error) {
-	if request.ProtocolVersion != 1 || request.Token != strings.Repeat("r", 40) || request.Name == "" {
+	if request.Token != strings.Repeat("r", 40) || request.Name == "" {
 		return nil, connect.NewError(connect.CodeUnauthenticated, "invalid registration")
 	}
 	return &codespacev1.RegisterManagerResponse{
@@ -162,7 +154,7 @@ func (s *lifecycleRemote) RegisterManager(_ context.Context, request *codespacev
 }
 
 func (s *lifecycleRemote) DeclareManager(_ context.Context, request *codespacev1.DeclareManagerRequest) (*codespacev1.DeclareManagerResponse, error) {
-	if request.ProtocolVersion != 1 || len(request.Environments) != 1 || request.Environments[0].Tag != s.environmentName {
+	if len(request.Environments) != 1 || request.Environments[0].Tag != s.environmentName {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid declaration")
 	}
 	s.mu.Lock()
@@ -227,7 +219,7 @@ func (s *lifecycleRemote) FinalizeOperation(_ context.Context, request *codespac
 func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) {
+	if request.CodespaceId != int64(1) {
 		return nil, connect.NewError(connect.CodeFailedPrecondition, "log identity changed")
 	}
 	if len(request.Lines) == 0 {
@@ -246,7 +238,7 @@ func (s *lifecycleRemote) UpdateLog(_ context.Context, request *codespacev1.Upda
 func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *codespacev1.ReportRuntimeMetadataRequest) (*codespacev1.ReportRuntimeMetadataResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || request.MetadataGeneration <= 0 || request.Metadata == nil {
+	if request.CodespaceId != int64(1) || request.MetadataGeneration <= 0 || request.Metadata == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime metadata")
 	}
 	s.metadata = request.Metadata
@@ -256,13 +248,13 @@ func (s *lifecycleRemote) ReportRuntimeMetadata(_ context.Context, request *code
 func (s *lifecycleRemote) RequestRuntimeAccess(_ context.Context, request *codespacev1.RequestRuntimeAccessRequest) (*codespacev1.RequestRuntimeAccessResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || request.OperationRversion <= 0 || len(request.GetGitSshKey().GetPublicKey()) == 0 {
+	if request.CodespaceId != int64(1) || request.OperationRversion <= 0 || len(request.GitSshPublicKey) == 0 {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid runtime access request")
 	}
 	return &codespacev1.RequestRuntimeAccessResponse{Access: &codespacev1.RuntimeAccessBundle{
 		GiteaToken: "e2e-runtime-token", GiteaServerUrl: s.baseURL,
-		Secrets:     []*codespacev1.RuntimeSecretEnvironmentVariable{{Name: "E2E_SECRET", Value: "e2e-secret-value"}},
-		GitSshTrust: &codespacev1.GitSSHTrust{},
+		Secrets:          []*codespacev1.RuntimeSecretEnvironmentVariable{{Name: "E2E_SECRET", Value: "e2e-secret-value"}},
+		GitSshKnownHosts: []string{},
 	}}, nil
 }
 
@@ -270,18 +262,18 @@ func (s *lifecycleRemote) RequestIdleStop(_ context.Context, request *codespacev
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	observed := request.ObservedSettings
-	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || observed == nil {
+	if request.CodespaceId != int64(1) || observed == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid idle stop request")
 	}
-	if observed.AutoStopEnabled != s.runtimeSettings.autoStopEnabled || observed.IdleTimeoutSeconds != s.runtimeSettings.idleTimeoutSeconds || observed.InteractionGeneration != s.runtimeSettings.interactionGeneration {
-		settings := &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: s.runtimeSettings.autoStopEnabled, IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration}
+	if observed.IdleTimeoutSeconds != s.runtimeSettings.idleTimeoutSeconds || observed.InteractionGeneration != s.runtimeSettings.interactionGeneration {
+		settings := &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration}
 		return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_ObservationChanged{ObservationChanged: &codespacev1.IdleStopObservationChanged{RuntimeSettings: settings}}}, nil
 	}
 	if s.operation == nil {
 		s.operation = &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: s.lastFinalized + 1, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}}
 		s.delivered = false
 	}
-	return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{OperationRversion: s.operation.OperationRversion}}}, nil
+	return &codespacev1.RequestIdleStopResponse{Outcome: &codespacev1.RequestIdleStopResponse_Pending{Pending: &codespacev1.IdleStopPending{}}}, nil
 }
 
 func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev1.ReportInstancesRequest) (*codespacev1.ReportInstancesResponse, error) {
@@ -294,7 +286,7 @@ func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev
 		}
 		response.Results = append(response.Results, &codespacev1.RuntimeInstanceResult{
 			CodespaceId:              instance.CodespaceId,
-			RuntimeSettings:          &codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: s.runtimeSettings.autoStopEnabled, IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration},
+			RuntimeSettings:          &codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: s.runtimeSettings.idleTimeoutSeconds, InteractionGeneration: s.runtimeSettings.interactionGeneration},
 			CurrentOperationRversion: max(s.lastFinalized, instance.ObservedOperationRversion),
 		})
 	}
@@ -304,7 +296,7 @@ func (s *lifecycleRemote) ReportInstances(_ context.Context, request *codespacev
 func (s *lifecycleRemote) ValidateOpenToken(_ context.Context, request *codespacev1.ValidateOpenTokenRequest) (*codespacev1.ValidateOpenTokenResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.Code != "lifecycle-e2e" || s.metadata == nil {
+	if request.Code != "lifecycle-e2e" || s.metadata == nil {
 		return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_code"}}}, nil
 	}
 	return &codespacev1.ValidateOpenTokenResponse{Outcome: &codespacev1.ValidateOpenTokenResponse_Allowed{Allowed: &codespacev1.OpenTokenBinding{
@@ -319,7 +311,7 @@ func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *c
 	sshSession := request.GetSsh()
 	endpointAllowed := endpoint != nil && endpoint.UserId == 1 && endpoint.CodespaceId == int64(1) && endpoint.EndpointId == "workspace"
 	sshAllowed := sshSession != nil && sshSession.UserId == 1 && sshSession.CodespaceId == int64(1)
-	if request.ProtocolVersion != 1 || (!endpointAllowed && !sshAllowed) {
+	if !endpointAllowed && !sshAllowed {
 		return &codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_session"}}}, nil
 	}
 	return &codespacev1.RevalidateGatewaySessionResponse{Outcome: &codespacev1.RevalidateGatewaySessionResponse_Allowed{Allowed: &codespacev1.SessionAllowed{}}}, nil
@@ -328,7 +320,7 @@ func (s *lifecycleRemote) RevalidateGatewaySession(_ context.Context, request *c
 func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *codespacev1.ValidatePublicEndpointRequest) (*codespacev1.ValidatePublicEndpointResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion == 1 && request.CodespaceId == int64(1) && s.metadata != nil {
+	if request.CodespaceId == int64(1) && s.metadata != nil {
 		for _, endpoint := range s.metadata.Endpoints {
 			if endpoint.EndpointId == request.EndpointId && endpoint.Public {
 				return &codespacev1.ValidatePublicEndpointResponse{Outcome: &codespacev1.ValidatePublicEndpointResponse_Allowed{Allowed: &codespacev1.PublicEndpointAllowed{}}}, nil
@@ -341,18 +333,17 @@ func (s *lifecycleRemote) ValidatePublicEndpoint(_ context.Context, request *cod
 func (s *lifecycleRemote) VerifySSHPublicKey(_ context.Context, request *codespacev1.VerifySSHPublicKeyRequest) (*codespacev1.VerifySSHPublicKeyResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if request.ProtocolVersion != 1 || request.CodespaceId != int64(1) || !bytes.Equal(request.PublicKey, s.sshPublicKey) {
+	if request.CodespaceId != int64(1) || !bytes.Equal(request.PublicKey, s.sshPublicKey) {
 		return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Denied{Denied: &codespacev1.FailureDetail{Category: "invalid_key"}}}, nil
 	}
 	return &codespacev1.VerifySSHPublicKeyResponse{Outcome: &codespacev1.VerifySSHPublicKeyResponse_Allowed{Allowed: &codespacev1.SSHAuthBinding{UserId: 1, InteractionGeneration: s.interactionGeneration}}}, nil
 }
 
-func (s *lifecycleRemote) waitFinal(t *testing.T, version int64, operationType codespacev1.OperationType, timeout time.Duration) {
+func (s *lifecycleRemote) waitFinal(t *testing.T, version int64, timeout time.Duration) {
 	t.Helper()
 	select {
 	case result := <-s.finalized:
 		require.Equal(t, version, result.OperationRversion)
-		require.Equal(t, operationType, result.OperationType)
 		if result.Status != codespacev1.FinalStatus_FINAL_STATUS_DONE {
 			s.mu.Lock()
 			logs := append([]string(nil), s.logs[version]...)
@@ -563,13 +554,13 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 		CodespaceId: 1, OperationRversion: 1, LeaseValidForMilliseconds: 60000,
 		Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{
 			EnvironmentTag:  template.Name,
-			Repository:      &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneHttpUrl: remote.baseURL + "/repo.git", PreferredProtocol: codespacev1.GitProtocol_GIT_PROTOCOL_HTTP, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
+			Repository:      &codespacev1.RepositoryCheckout{FullName: "tester/repository", CloneUrls: []string{remote.baseURL + "/repo.git"}, StartRef: "refs/heads/main", CommitSha: commit, RepositoryId: 1},
 			GitIdentity:     &codespacev1.GitIdentity{GiteaUsername: "tester", GitUserEmail: "tester@example.test", UserId: 1},
 			DevContainer:    devContainer,
 			RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 1},
 		}},
 	})
-	remote.waitFinal(t, 1, codespacev1.OperationType_OPERATION_TYPE_CREATE, 90*time.Minute)
+	remote.waitFinal(t, 1, 90*time.Minute)
 	remote.mu.Lock()
 	createLog := strings.Join(remote.logs[1], "\n")
 	remote.mu.Unlock()
@@ -613,7 +604,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias, true))
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 2, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Stop{Stop: &codespacev1.StopOperationPayload{}}})
-	remote.waitFinal(t, 2, codespacev1.OperationType_OPERATION_TYPE_STOP, 3*time.Minute)
+	remote.waitFinal(t, 2, 3*time.Minute)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 2 && meta.IsStatusConditionTrue(codespace.Status.Conditions, "Stopped") && codespace.Status.Pod.UID == ""
 	}, time.Minute, time.Second)
@@ -621,7 +612,7 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	require.NoError(t, verifyGatewayOpenRejected(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias))
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 3, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{RuntimeSettings: &codespacev1.EffectiveCodespaceRuntimeSettings{InteractionGeneration: 2}}}})
-	remote.waitFinal(t, 3, codespacev1.OperationType_OPERATION_TYPE_RESUME, 8*time.Minute)
+	remote.waitFinal(t, 3, 8*time.Minute)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 3 && codespace.Status.Target != nil && codespace.Status.Target.Ready
 	}, time.Minute, time.Second)
@@ -643,14 +634,14 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	}
 	require.NoError(t, verifyGatewayPublicEndpoint(ctx, nodeAddress, nodePortService.Spec.Ports[0].NodePort, gatewayName+".test", runtimeAlias, false))
 
-	remote.setRuntimeSettings(&codespacev1.EffectiveCodespaceRuntimeSettings{AutoStopEnabled: true, IdleTimeoutSeconds: 2, InteractionGeneration: 3})
-	remote.waitFinal(t, 4, codespacev1.OperationType_OPERATION_TYPE_STOP, time.Minute)
+	remote.setRuntimeSettings(&codespacev1.EffectiveCodespaceRuntimeSettings{IdleTimeoutSeconds: 2, InteractionGeneration: 3})
+	remote.waitFinal(t, 4, time.Minute)
 	require.Eventually(t, func() bool {
 		return c.Get(ctx, key, &codespace) == nil && codespace.Status.SettledOperationVersion == 4 && meta.IsStatusConditionTrue(codespace.Status.Conditions, "Stopped") && codespace.Status.Pod.UID == ""
 	}, time.Minute, time.Second)
 
 	remote.setOperation(&codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 5, LeaseValidForMilliseconds: 60000, Command: &codespacev1.OperationPayload_Delete{Delete: &codespacev1.DeleteOperationPayload{}}})
-	remote.waitFinal(t, 5, codespacev1.OperationType_OPERATION_TYPE_DELETE, 3*time.Minute)
+	remote.waitFinal(t, 5, 3*time.Minute)
 	require.Eventually(t, func() bool { return apierrors.IsNotFound(c.Get(ctx, key, &api.Codespace{})) }, 2*time.Minute, time.Second)
 	require.Eventually(t, func() bool {
 		return apierrors.IsNotFound(c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "data-1"}, &corev1.PersistentVolumeClaim{}))

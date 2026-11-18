@@ -29,8 +29,6 @@ func BuildVersion() string {
 }
 
 const (
-	// ProtocolVersion is the ManagerService protocol implemented by this binary.
-	ProtocolVersion int32 = 1
 	// ManagerIDHeader carries the Gitea-issued Manager identity.
 	ManagerIDHeader = "x-codespace-manager-id"
 	// ManagerSecretHeader authenticates the Gitea-issued Manager identity.

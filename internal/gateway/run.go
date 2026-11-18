@@ -71,7 +71,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 		pendingActivity := make(map[uint64]workspaceActivityAcknowledgement)
 		sendActivity := func() error {
 			sequence++
-			request := &componentv1.GatewayControlRequest{ProtocolVersion: 1, SessionId: sessionID, Sequence: sequence}
+			request := &componentv1.GatewayControlRequest{SessionId: sessionID, Sequence: sequence}
 			if runtime != nil {
 				activity := runtime.sessions.Activity(time.Now())
 				request.ActiveSessions = activity.runtimes
@@ -112,7 +112,7 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 		for ctx.Err() == nil {
 			select {
 			case response := <-responses:
-				if response.ProtocolVersion != 1 || response.Sequence < responseSequence || response.Sequence > sequence || response.PermitValidForMilliseconds <= 0 {
+				if response.Sequence < responseSequence || response.Sequence > sequence || response.PermitValidForMilliseconds <= 0 {
 					terminalErr = fmt.Errorf("manager returned an invalid Gateway control response")
 					connected = false
 					break
@@ -132,13 +132,8 @@ func Run(ctx context.Context, output io.Writer, client componentv1connect.Compon
 					}
 				}
 				permit.Reset(time.Duration(response.PermitValidForMilliseconds) * time.Millisecond)
-				if !response.Snapshot {
+				if response.Config == nil {
 					continue
-				}
-				if response.Config == nil || response.Cursor == "" {
-					terminalErr = fmt.Errorf("manager returned an incomplete Gateway snapshot")
-					connected = false
-					break
 				}
 				if runtime != nil && proto.Equal(config, response.Config) {
 					if err := runtime.routes.ReplaceSharedGatewayRuntimes(gatewayRuntimes(response.Runtimes)); err != nil {
@@ -250,7 +245,7 @@ type runningGateway struct {
 }
 
 func startGateway(parent context.Context, output io.Writer, client componentv1connect.ComponentServiceClient, certificates *transport.FileCertificates, health *healthcheck.State, snapshot *componentv1.GatewayControlResponse) (*runningGateway, error) {
-	if snapshot == nil || snapshot.Config == nil || snapshot.Cursor == "" {
+	if snapshot == nil || snapshot.Config == nil {
 		return nil, fmt.Errorf("gateway snapshot is incomplete")
 	}
 	config, err := gatewayConfig(snapshot.Config)

@@ -17,7 +17,6 @@ service AgentControlService {
 }
 
 message PrepareVolumeRequest {
-  uint32 protocol_version = 1;
   // initialized confirms that ext4 was checked and mounted successfully.
   bool initialized = 2;
 }
@@ -56,7 +55,6 @@ enum RuntimeUSBIPOperation {
 }
 
 message RuntimeUSBIPServiceRunRequest {
-  uint32 protocol_version = 1;
   RuntimeUSBIPOperation operation = 2;
   string argument = 3;
   string source = 4;
@@ -76,30 +74,25 @@ message USBIPSource {
   string listener_id = 5;
 }
 
-message RuntimeEndpointServiceListRequest {
-  uint32 protocol_version = 1;
-}
+message RuntimeEndpointServiceListRequest {}
 
 message RuntimeEndpointServiceListResponse {
   repeated codespace.v1.RuntimeEndpoint endpoints = 1;
 }
 
 message RuntimeEndpointServiceSetRequest {
-  uint32 protocol_version = 1;
   codespace.v1.RuntimeEndpoint endpoint = 2;
 }
 
 message RuntimeEndpointServiceSetResponse {}
 
 message RuntimeEndpointServiceDeleteRequest {
-  uint32 protocol_version = 1;
   string endpoint_id = 2;
 }
 
 message RuntimeEndpointServiceDeleteResponse {}
 
 message ControlRequest {
-  uint32 protocol_version = 1;
   // Fresh per connection; stale session replies cannot renew execution.
   string session_id = 2;
   // Strictly increasing within this control session.
@@ -119,22 +112,17 @@ message AgentReport {
 }
 
 message OperationResult {
-  int64 operation_rversion = 1;
   codespace.v1.FinalStatus status = 2;
   string message = 3;
 }
 
 message ControlResponse {
-  reserved 6;
-  reserved "acknowledged_result_version";
-
   string session_id = 1;
   uint64 sequence = 2;
-  // Measured from the caller's request send time, not reply receipt time.
+  // Measured from request send time. Zero immediately revokes execution permission.
   int64 permit_valid_for_milliseconds = 3;
   codespace.v1.OperationPayload operation = 4;
   codespace.v1.RuntimeAccessBundle access = 5;
-  bool cancel_execution = 7;
   // Pinned platform options, applied before the Docker daemon starts.
   RuntimeOptions runtime = 8;
   // Ed25519 verification key for Manager-issued, limited access tickets.
@@ -179,20 +167,16 @@ message EndpointTarget {
 }
 
 message UploadLogsRequest {
-  uint32 protocol_version = 1;
   int64 operation_rversion = 2;
-  reserved 3;
   repeated codespace.v1.LogLine lines = 4;
 }
 
 message UploadLogsResponse {
-  reserved 1;
   // A reply acknowledges handling, not durable storage. Closed ends this stream.
   bool closed = 2;
 }
 
 message AccessRequest {
-  uint32 protocol_version = 1;
   oneof frame {
     OpenAccess open = 2;
     bytes stdin = 3;
@@ -232,7 +216,7 @@ enum AccessCapability {
 
 // AccessTicketClaims is signed by Manager and verified by the current Agent.
 message AccessTicketClaims {
-  uint32 protocol_version = 1;
+  uint32 format_version = 1;
   string site_uid = 2;
   string resource_uid = 3;
   int64 codespace_id = 4;
@@ -241,7 +225,6 @@ message AccessTicketClaims {
   AccessCapability capability = 7;
   string endpoint_id = 8;
   int64 expires_unix = 9;
-  bytes nonce = 10;
 }
 
 message Terminal {

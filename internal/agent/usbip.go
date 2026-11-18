@@ -43,7 +43,7 @@ type RuntimeUSBIPServer struct {
 }
 
 func (s *RuntimeUSBIPServer) Run(ctx context.Context, request *agentv1.RuntimeUSBIPServiceRunRequest) (*agentv1.RuntimeUSBIPServiceRunResponse, error) {
-	if request == nil || request.ProtocolVersion != 1 || s.Runtime == nil {
+	if s.Runtime == nil {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "USB/IP request is invalid")
 	}
 	if !s.Runtime.USBIP.Enabled() {

@@ -122,14 +122,14 @@ func TestRuntimeEndpointServiceOverUnixSocket(t *testing.T) {
 	client := agentv1connect.NewRuntimeEndpointServiceClient(connect.NewClient(connecthttp.NewTransport(&http.Client{Transport: transport}, "http://runtime-agent")))
 	t.Cleanup(transport.CloseIdleConnections)
 
-	_, err = client.Set(t.Context(), &agentv1.RuntimeEndpointServiceSetRequest{ProtocolVersion: 1, Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Port: 8080}})
+	_, err = client.Set(t.Context(), &agentv1.RuntimeEndpointServiceSetRequest{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "port-8080", Label: "Preview", Port: 8080}})
 	require.NoError(t, err)
-	listed, err := client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
+	listed, err := client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{})
 	require.NoError(t, err)
 	require.Len(t, listed.Endpoints, 1)
-	_, err = client.Delete(t.Context(), &agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: "port-8080"})
+	_, err = client.Delete(t.Context(), &agentv1.RuntimeEndpointServiceDeleteRequest{EndpointId: "port-8080"})
 	require.NoError(t, err)
-	listed, err = client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
+	listed, err = client.List(t.Context(), &agentv1.RuntimeEndpointServiceListRequest{})
 	require.NoError(t, err)
 	require.Empty(t, listed.Endpoints)
 }

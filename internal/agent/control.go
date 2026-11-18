@@ -42,7 +42,7 @@ func (c *ControlClient) snapshot() *agentv1.AgentReport {
 
 func (c *ControlClient) recordResult(executionErr error) error {
 	c.mu.Lock()
-	result := &agentv1.OperationResult{OperationRversion: c.report.OperationRversion, Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}
+	result := &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE}
 	if executionErr != nil {
 		result.Status = codespacev1.FinalStatus_FINAL_STATUS_FAILED
 		// Detailed, redacted diagnostics belong in operation logs, not arbitrary
@@ -142,7 +142,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 		if err := proto.Unmarshal(data, c.report); err != nil {
 			return fmt.Errorf("read saved Agent report: %w", err)
 		}
-		if c.report.OperationRversion <= 0 || (c.report.Result != nil && c.report.Result.OperationRversion != c.report.OperationRversion) {
+		if c.report.OperationRversion <= 0 {
 			return fmt.Errorf("saved Agent report has an invalid operation identity")
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -220,7 +220,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 			if acceptedOperation != nil {
 				acceptedVersion = acceptedOperation.OperationRversion
 			}
-			err = stream.Send(&agentv1.ControlRequest{ProtocolVersion: 1, SessionId: session, Sequence: sequence, Report: report, AcceptedOperationRversion: acceptedVersion})
+			err = stream.Send(&agentv1.ControlRequest{SessionId: session, Sequence: sequence, Report: report, AcceptedOperationRversion: acceptedVersion})
 			var response *agentv1.ControlResponse
 			if err == nil {
 				response, err = stream.Receive()

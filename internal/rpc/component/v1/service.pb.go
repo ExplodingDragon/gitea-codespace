@@ -24,7 +24,6 @@ const (
 
 type GatewayControlRequest struct {
 	state             protoimpl.MessageState      `protogen:"open.v1"`
-	ProtocolVersion   uint32                      `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
 	SessionId         string                      `protobuf:"bytes,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	Sequence          uint64                      `protobuf:"varint,3,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	ActiveSessions    map[string]int64            `protobuf:"bytes,4,rep,name=active_sessions,json=activeSessions,proto3" json:"active_sessions,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"`
@@ -61,13 +60,6 @@ func (x *GatewayControlRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use GatewayControlRequest.ProtoReflect.Descriptor instead.
 func (*GatewayControlRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *GatewayControlRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *GatewayControlRequest) GetSessionId() string {
@@ -227,11 +219,10 @@ func (x *WorkspaceSessionActivity) GetLastActiveUnixMilliseconds() int64 {
 }
 
 type LookupWorkspaceSessionRequest struct {
-	state           protoimpl.MessageState    `protogen:"open.v1"`
-	ProtocolVersion uint32                    `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Identity        *WorkspaceSessionIdentity `protobuf:"bytes,2,opt,name=identity,proto3" json:"identity,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState    `protogen:"open.v1"`
+	Identity      *WorkspaceSessionIdentity `protobuf:"bytes,2,opt,name=identity,proto3" json:"identity,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *LookupWorkspaceSessionRequest) Reset() {
@@ -262,13 +253,6 @@ func (x *LookupWorkspaceSessionRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use LookupWorkspaceSessionRequest.ProtoReflect.Descriptor instead.
 func (*LookupWorkspaceSessionRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *LookupWorkspaceSessionRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *LookupWorkspaceSessionRequest) GetIdentity() *WorkspaceSessionIdentity {
@@ -323,16 +307,14 @@ func (x *LookupWorkspaceSessionResponse) GetRenewable() bool {
 }
 
 type GatewayControlResponse struct {
-	state                      protoimpl.MessageState        `protogen:"open.v1"`
-	ProtocolVersion            uint32                        `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Sequence                   uint64                        `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
-	PermitValidForMilliseconds int64                         `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
-	Cursor                     string                        `protobuf:"bytes,4,opt,name=cursor,proto3" json:"cursor,omitempty"`
-	Snapshot                   bool                          `protobuf:"varint,5,opt,name=snapshot,proto3" json:"snapshot,omitempty"`
-	Config                     *GatewayConfigurationSnapshot `protobuf:"bytes,6,opt,name=config,proto3" json:"config,omitempty"`
-	Runtimes                   []*GatewayRuntimeRoute        `protobuf:"bytes,7,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
-	unknownFields              protoimpl.UnknownFields
-	sizeCache                  protoimpl.SizeCache
+	state                      protoimpl.MessageState `protogen:"open.v1"`
+	Sequence                   uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	PermitValidForMilliseconds int64                  `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
+	// Present with a complete route snapshot; absent on activity confirmations.
+	Config        *GatewayConfigurationSnapshot `protobuf:"bytes,6,opt,name=config,proto3" json:"config,omitempty"`
+	Runtimes      []*GatewayRuntimeRoute        `protobuf:"bytes,7,rep,name=runtimes,proto3" json:"runtimes,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *GatewayControlResponse) Reset() {
@@ -365,13 +347,6 @@ func (*GatewayControlResponse) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{5}
 }
 
-func (x *GatewayControlResponse) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
-}
-
 func (x *GatewayControlResponse) GetSequence() uint64 {
 	if x != nil {
 		return x.Sequence
@@ -384,20 +359,6 @@ func (x *GatewayControlResponse) GetPermitValidForMilliseconds() int64 {
 		return x.PermitValidForMilliseconds
 	}
 	return 0
-}
-
-func (x *GatewayControlResponse) GetCursor() string {
-	if x != nil {
-		return x.Cursor
-	}
-	return ""
-}
-
-func (x *GatewayControlResponse) GetSnapshot() bool {
-	if x != nil {
-		return x.Snapshot
-	}
-	return false
 }
 
 func (x *GatewayControlResponse) GetConfig() *GatewayConfigurationSnapshot {
@@ -787,8 +748,7 @@ func (x *GatewayEndpoint) GetPublic() bool {
 }
 
 type AuthorizeGatewayRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
 	// Types that are valid to be assigned to Request:
 	//
 	//	*AuthorizeGatewayRequest_OpenCode
@@ -829,13 +789,6 @@ func (x *AuthorizeGatewayRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use AuthorizeGatewayRequest.ProtoReflect.Descriptor instead.
 func (*AuthorizeGatewayRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *AuthorizeGatewayRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *AuthorizeGatewayRequest) GetRequest() isAuthorizeGatewayRequest_Request {
@@ -1303,13 +1256,12 @@ func (x *AuthorizeGatewayResponse) GetSiteUid() string {
 }
 
 type IssueAgentAccessRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	RuntimeKey      string                 `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
-	Capability      v1.AccessCapability    `protobuf:"varint,3,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
-	EndpointId      string                 `protobuf:"bytes,4,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
-	unknownFields   protoimpl.UnknownFields
-	sizeCache       protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	RuntimeKey    string                 `protobuf:"bytes,2,opt,name=runtime_key,json=runtimeKey,proto3" json:"runtime_key,omitempty"`
+	Capability    v1.AccessCapability    `protobuf:"varint,3,opt,name=capability,proto3,enum=agent.v1.AccessCapability" json:"capability,omitempty"`
+	EndpointId    string                 `protobuf:"bytes,4,opt,name=endpoint_id,json=endpointId,proto3" json:"endpoint_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *IssueAgentAccessRequest) Reset() {
@@ -1340,13 +1292,6 @@ func (x *IssueAgentAccessRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use IssueAgentAccessRequest.ProtoReflect.Descriptor instead.
 func (*IssueAgentAccessRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{16}
-}
-
-func (x *IssueAgentAccessRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *IssueAgentAccessRequest) GetRuntimeKey() string {
@@ -1423,11 +1368,9 @@ func (x *IssueAgentAccessResponse) GetTicket() string {
 }
 
 type CacheControlRequest struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	CacheId         string                 `protobuf:"bytes,2,opt,name=cache_id,json=cacheId,proto3" json:"cache_id,omitempty"`
-	SessionId       string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Sequence        uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	SessionId string                 `protobuf:"bytes,3,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	Sequence  uint64                 `protobuf:"varint,4,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	// Present on heartbeats to replace statistics; maintenance requests leave them unchanged.
 	Status *CacheStatus `protobuf:"bytes,5,opt,name=status,proto3" json:"status,omitempty"`
 	// Types that are valid to be assigned to Maintenance:
@@ -1467,20 +1410,6 @@ func (x *CacheControlRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CacheControlRequest.ProtoReflect.Descriptor instead.
 func (*CacheControlRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{18}
-}
-
-func (x *CacheControlRequest) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
-}
-
-func (x *CacheControlRequest) GetCacheId() string {
-	if x != nil {
-		return x.CacheId
-	}
-	return ""
 }
 
 func (x *CacheControlRequest) GetSessionId() string {
@@ -1546,9 +1475,8 @@ func (*CacheControlRequest_BeginGc) isCacheControlRequest_Maintenance() {}
 func (*CacheControlRequest_CompleteGc) isCacheControlRequest_Maintenance() {}
 
 type CacheControlResponse struct {
-	state           protoimpl.MessageState `protogen:"open.v1"`
-	ProtocolVersion uint32                 `protobuf:"varint,1,opt,name=protocol_version,json=protocolVersion,proto3" json:"protocol_version,omitempty"`
-	Sequence        uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Sequence uint64                 `protobuf:"varint,2,opt,name=sequence,proto3" json:"sequence,omitempty"`
 	// A positive value acknowledges lease renewal, measured from request send time.
 	// Configuration-only updates use zero and do not extend permission.
 	PermitValidForMilliseconds int64               `protobuf:"varint,3,opt,name=permit_valid_for_milliseconds,json=permitValidForMilliseconds,proto3" json:"permit_valid_for_milliseconds,omitempty"`
@@ -1586,13 +1514,6 @@ func (x *CacheControlResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CacheControlResponse.ProtoReflect.Descriptor instead.
 func (*CacheControlResponse) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{19}
-}
-
-func (x *CacheControlResponse) GetProtocolVersion() uint32 {
-	if x != nil {
-		return x.ProtocolVersion
-	}
-	return 0
 }
 
 func (x *CacheControlResponse) GetSequence() uint64 {
@@ -2139,9 +2060,8 @@ var File_component_v1_service_proto protoreflect.FileDescriptor
 
 const file_component_v1_service_proto_rawDesc = "" +
 	"\n" +
-	"\x1acomponent/v1/service.proto\x12\fcomponent.v1\x1a\x16agent/v1/service.proto\"\xf9\x02\n" +
-	"\x15GatewayControlRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1d\n" +
+	"\x1acomponent/v1/service.proto\x12\fcomponent.v1\x1a\x16agent/v1/service.proto\"\xce\x02\n" +
+	"\x15GatewayControlRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x02 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x03 \x01(\x04R\bsequence\x12`\n" +
@@ -2160,18 +2080,14 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x18WorkspaceSessionActivity\x12B\n" +
 	"\bidentity\x18\x01 \x01(\v2&.component.v1.WorkspaceSessionIdentityR\bidentity\x12\x16\n" +
 	"\x06active\x18\x02 \x01(\bR\x06active\x12A\n" +
-	"\x1dlast_active_unix_milliseconds\x18\x03 \x01(\x03R\x1alastActiveUnixMilliseconds\"\x8e\x01\n" +
-	"\x1dLookupWorkspaceSessionRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12B\n" +
+	"\x1dlast_active_unix_milliseconds\x18\x03 \x01(\x03R\x1alastActiveUnixMilliseconds\"c\n" +
+	"\x1dLookupWorkspaceSessionRequest\x12B\n" +
 	"\bidentity\x18\x02 \x01(\v2&.component.v1.WorkspaceSessionIdentityR\bidentity\">\n" +
 	"\x1eLookupWorkspaceSessionResponse\x12\x1c\n" +
-	"\trenewable\x18\x01 \x01(\bR\trenewable\"\xd9\x02\n" +
-	"\x16GatewayControlResponse\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1a\n" +
+	"\trenewable\x18\x01 \x01(\bR\trenewable\"\xfa\x01\n" +
+	"\x16GatewayControlResponse\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
-	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x12\x16\n" +
-	"\x06cursor\x18\x04 \x01(\tR\x06cursor\x12\x1a\n" +
-	"\bsnapshot\x18\x05 \x01(\bR\bsnapshot\x12B\n" +
+	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x12B\n" +
 	"\x06config\x18\x06 \x01(\v2*.component.v1.GatewayConfigurationSnapshotR\x06config\x12=\n" +
 	"\bruntimes\x18\a \x03(\v2!.component.v1.GatewayRuntimeRouteR\bruntimes\"\xcd\n" +
 	"\n" +
@@ -2216,9 +2132,8 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\vendpoint_id\x18\x01 \x01(\tR\n" +
 	"endpointId\x12\x14\n" +
 	"\x05label\x18\x02 \x01(\tR\x05label\x12\x16\n" +
-	"\x06public\x18\x03 \x01(\bR\x06public\"\xdd\x03\n" +
-	"\x17AuthorizeGatewayRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12B\n" +
+	"\x06public\x18\x03 \x01(\bR\x06public\"\xb2\x03\n" +
+	"\x17AuthorizeGatewayRequest\x12B\n" +
 	"\topen_code\x18\x02 \x01(\v2#.component.v1.OpenCodeAuthorizationH\x00R\bopenCode\x12T\n" +
 	"\x0fpublic_endpoint\x18\x03 \x01(\v2).component.v1.PublicEndpointAuthorizationH\x00R\x0epublicEndpoint\x12O\n" +
 	"\x0essh_public_key\x18\x04 \x01(\v2'.component.v1.SSHPublicKeyAuthorizationH\x00R\fsshPublicKey\x12W\n" +
@@ -2262,9 +2177,8 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"runtimeKey\x12\x1f\n" +
 	"\vendpoint_id\x18\x05 \x01(\tR\n" +
 	"endpointId\x12\x19\n" +
-	"\bsite_uid\x18\x06 \x01(\tR\asiteUid\"\xc2\x01\n" +
-	"\x17IssueAgentAccessRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1f\n" +
+	"\bsite_uid\x18\x06 \x01(\tR\asiteUid\"\x97\x01\n" +
+	"\x17IssueAgentAccessRequest\x12\x1f\n" +
 	"\vruntime_key\x18\x02 \x01(\tR\n" +
 	"runtimeKey\x12:\n" +
 	"\n" +
@@ -2274,10 +2188,8 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"endpointId\"o\n" +
 	"\x18IssueAgentAccessResponse\x12;\n" +
 	"\aruntime\x18\x01 \x01(\v2!.component.v1.GatewayRuntimeRouteR\aruntime\x12\x16\n" +
-	"\x06ticket\x18\x02 \x01(\tR\x06ticket\"\xd5\x02\n" +
-	"\x13CacheControlRequest\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x19\n" +
-	"\bcache_id\x18\x02 \x01(\tR\acacheId\x12\x1d\n" +
+	"\x06ticket\x18\x02 \x01(\tR\x06ticket\"\x8f\x02\n" +
+	"\x13CacheControlRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x03 \x01(\tR\tsessionId\x12\x1a\n" +
 	"\bsequence\x18\x04 \x01(\x04R\bsequence\x121\n" +
@@ -2285,9 +2197,8 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\bbegin_gc\x18\x06 \x01(\v2\x1c.component.v1.CacheGCRequestH\x00R\abeginGc\x12@\n" +
 	"\vcomplete_gc\x18\a \x01(\v2\x1d.component.v1.CacheGCCompleteH\x00R\n" +
 	"completeGcB\r\n" +
-	"\vmaintenance\"\x91\x02\n" +
-	"\x14CacheControlResponse\x12)\n" +
-	"\x10protocol_version\x18\x01 \x01(\rR\x0fprotocolVersion\x12\x1a\n" +
+	"\vmaintenance\"\xe6\x01\n" +
+	"\x14CacheControlResponse\x12\x1a\n" +
 	"\bsequence\x18\x02 \x01(\x04R\bsequence\x12A\n" +
 	"\x1dpermit_valid_for_milliseconds\x18\x03 \x01(\x03R\x1apermitValidForMilliseconds\x128\n" +
 	"\x06config\x18\x04 \x01(\v2 .component.v1.CacheConfigurationR\x06config\x125\n" +
@@ -2319,17 +2230,17 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\x06prefix\x18\x04 \x01(\tR\x06prefix\x12(\n" +
 	"\x10force_path_style\x18\x05 \x01(\bR\x0eforcePathStyle\"2\n" +
 	"\x1aCacheUpstreamConfiguration\x12\x14\n" +
-	"\x05allow\x18\x01 \x03(\tR\x05allow\"\xd9\x01\n" +
+	"\x05allow\x18\x01 \x03(\tR\x05allow\"x\n" +
 	"\vCacheStatus\x12\x1f\n" +
 	"\vcache_bytes\x18\x02 \x01(\x03R\n" +
 	"cacheBytes\x12!\n" +
 	"\fmirror_bytes\x18\x03 \x01(\x03R\vmirrorBytes\x12%\n" +
-	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResultJ\x04\b\x01\x10\x02J\x04\b\x04\x10\x05J\x04\b\x05\x10\x06R\x0fconfig_revisionR\x1cscanned_at_unix_millisecondsR\x1elast_cleanup_unix_milliseconds\"\xce\x01\n" +
+	"\x0ecleanup_result\x18\x06 \x01(\tR\rcleanupResult\"\xb7\x01\n" +
 	"\fCacheGCGrant\x12\x19\n" +
 	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12?\n" +
 	"\x1cexpires_at_unix_milliseconds\x18\x04 \x01(\x03R\x19expiresAtUnixMilliseconds\x12;\n" +
-	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMillisecondsJ\x04\b\x03\x10\x04R\x0fconfig_revision\"\x10\n" +
+	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"\x10\n" +
 	"\x0eCacheGCRequest\",\n" +
 	"\x0fCacheGCComplete\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x89\x04\n" +

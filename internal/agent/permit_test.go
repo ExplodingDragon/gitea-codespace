@@ -37,7 +37,7 @@ func TestExecutionPermitTimingAndReconnect(t *testing.T) {
 	response.SessionId, response.Sequence, response.OperationRversion = session, sequence, 8
 	_, err = permit.Accept(response, now.Add(3*time.Second))
 	require.NoError(t, err)
-	response.CancelExecution = true
+	response.PermitValidForMilliseconds = 0
 	_, err = permit.Accept(response, now.Add(3*time.Second))
 	require.Error(t, err)
 	require.False(t, permit.Valid(8, now.Add(3*time.Second)))

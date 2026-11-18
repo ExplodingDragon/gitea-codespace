@@ -118,10 +118,8 @@ func (c *SiteCoordinator) capacity(ctx context.Context, site *api.GiteaSite, row
 		}
 	}
 	request.StartupCapacityAvailable = startup
-	request.AcceptedOperationTypes = []codespacev1.AcceptedOperationType{codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_RESUME}
 	if len(accepted) != 0 {
 		request.AcceptedCreateTags = accepted
-		request.AcceptedOperationTypes = append(request.AcceptedOperationTypes, codespacev1.AcceptedOperationType_ACCEPTED_OPERATION_TYPE_CREATE)
 	}
 	return nil
 }

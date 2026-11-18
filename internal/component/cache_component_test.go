@@ -80,7 +80,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		require.Empty(t, client.waiters)
 
 		// A late acknowledgment cannot complete the next maintenance request.
-		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		stream.responses <- &componentv1.CacheControlResponse{Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		grant := cachepkg.GCGrant{CacheID: "cache", ID: "grant"}
 		go func() { done <- client.CompleteCacheGC(t.Context(), grant) }()
 		request = <-stream.requests
@@ -88,7 +88,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		require.Empty(t, done)
 		require.Equal(t, grant.ID, request.GetCompleteGc().GrantId)
 		require.Nil(t, request.Status)
-		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		stream.responses <- &componentv1.CacheControlResponse{Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		require.NoError(t, <-done)
 
 		var issued cachepkg.GCGrant
@@ -99,7 +99,7 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		}()
 		request = <-stream.requests
 		stream.responses <- &componentv1.CacheControlResponse{
-			ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000,
+			Sequence: request.Sequence, PermitValidForMilliseconds: 15000,
 			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ReadyAtUnixMilliseconds: time.Now().UnixMilli(), ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},
 		}
 		require.NoError(t, <-done)
@@ -137,11 +137,11 @@ func TestCachePermitUsesAcknowledgedRequestSendTime(t *testing.T) {
 		request := <-stream.requests
 		require.Equal(t, &componentv1.CacheStatus{CacheBytes: 10, MirrorBytes: 20, CleanupResult: "ok"}, request.Status)
 		time.Sleep(4 * time.Second)
-		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		stream.responses <- &componentv1.CacheControlResponse{Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		require.NoError(t, <-done)
 		require.Equal(t, sent.Add(14*time.Second), client.permitUntil)
 		time.Sleep(time.Second)
-		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		stream.responses <- &componentv1.CacheControlResponse{Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		synctest.Wait()
 		require.Equal(t, sent.Add(14*time.Second), client.permitUntil)
 		go func() {
@@ -151,7 +151,7 @@ func TestCachePermitUsesAcknowledgedRequestSendTime(t *testing.T) {
 		request = <-stream.requests
 		require.Equal(t, &componentv1.CacheStatus{}, request.Status)
 		require.ErrorIs(t, <-done, context.DeadlineExceeded)
-		stream.responses <- &componentv1.CacheControlResponse{ProtocolVersion: 1, Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
+		stream.responses <- &componentv1.CacheControlResponse{Sequence: request.Sequence, PermitValidForMilliseconds: 15000}
 		close(stream.responses)
 		synctest.Wait()
 		require.Error(t, client.streamErr)

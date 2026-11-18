@@ -61,12 +61,12 @@ func TestUSBIPRuntimeCommands(t *testing.T) {
 		require.NoError(t, runtime.forwards.register(source))
 	}
 	t.Cleanup(runtime.forwards.close)
-	response, err := server.Run(t.Context(), &agentv1.RuntimeUSBIPServiceRunRequest{ProtocolVersion: 1, Operation: agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_LIST})
+	response, err := server.Run(t.Context(), &agentv1.RuntimeUSBIPServiceRunRequest{Operation: agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_LIST})
 	require.NoError(t, err)
 	require.Len(t, response.Sources, 2)
 	require.Equal(t, "lab", response.Sources[0].Name)
 	require.Equal(t, "--tcp-port 43112 list --remote=127.0.0.1", response.Sources[0].Output)
-	request := &agentv1.RuntimeUSBIPServiceRunRequest{ProtocolVersion: 1, Operation: agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_ATTACH, Argument: "2-1.3"}
+	request := &agentv1.RuntimeUSBIPServiceRunRequest{Operation: agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_ATTACH, Argument: "2-1.3"}
 	_, err = server.Run(t.Context(), request)
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(err))
 	request.Source = "workstation"
@@ -85,7 +85,7 @@ func TestUSBIPRuntimeCommands(t *testing.T) {
 		{agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_STATUS, "", "port"},
 		{agentv1.RuntimeUSBIPOperation_RUNTIME_USBIP_OPERATION_DETACH, "0", "detach --port=0"},
 	} {
-		response, err := server.Run(t.Context(), &agentv1.RuntimeUSBIPServiceRunRequest{ProtocolVersion: 1, Operation: test.operation, Argument: test.argument})
+		response, err := server.Run(t.Context(), &agentv1.RuntimeUSBIPServiceRunRequest{Operation: test.operation, Argument: test.argument})
 		require.NoError(t, err)
 		require.Equal(t, test.want, response.Output)
 	}

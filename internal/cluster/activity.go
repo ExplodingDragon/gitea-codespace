@@ -32,7 +32,6 @@ type gatewayActivityReport struct {
 
 type runtimeActivity struct {
 	siteUID               string
-	autoStopEnabled       bool
 	idleTimeoutSeconds    int64
 	interactionGeneration int64
 	hasPolicy             bool
@@ -122,7 +121,7 @@ func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeKey, gatewayUID str
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	state := t.runtimes[runtimeKey]
-	if state == nil || state.siteUID != siteUID || !state.hasPolicy || !state.autoStopEnabled || !eligible {
+	if state == nil || state.siteUID != siteUID || !state.hasPolicy || state.idleTimeoutSeconds == 0 || !eligible {
 		if state != nil {
 			state.idleSince = time.Time{}
 			state.retryAt = time.Time{}
@@ -161,7 +160,6 @@ func (t *RuntimeActivityTracker) IdleRequest(siteUID, runtimeKey, gatewayUID str
 	}
 	state.retryAt = now.Add(idleStopRetryDelay)
 	return &codespacev1.EffectiveCodespaceRuntimeSettings{
-		AutoStopEnabled:       state.autoStopEnabled,
 		IdleTimeoutSeconds:    state.idleTimeoutSeconds,
 		InteractionGeneration: state.interactionGeneration,
 	}, true
@@ -179,7 +177,7 @@ func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeKey string, resp
 	}
 	switch outcome := response.Outcome.(type) {
 	case *codespacev1.RequestIdleStopResponse_Pending:
-		if outcome.Pending == nil || outcome.Pending.OperationRversion <= 0 {
+		if outcome.Pending == nil {
 			return fmt.Errorf("idle stop pending result is invalid")
 		}
 		state.retryAt = now.Add(idleStopPendingDelay)
@@ -191,7 +189,7 @@ func (t *RuntimeActivityTracker) IdleStopResult(siteUID, runtimeKey string, resp
 		state.applySettings(settings, now)
 		state.retryAt = time.Time{}
 	case *codespacev1.RequestIdleStopResponse_NotApplicable:
-		if outcome.NotApplicable == nil || outcome.NotApplicable.Reason == codespacev1.IdleStopNotApplicableReason_IDLE_STOP_NOT_APPLICABLE_REASON_UNSPECIFIED {
+		if outcome.NotApplicable == nil {
 			return fmt.Errorf("idle stop not-applicable result is invalid")
 		}
 		state.idleSince = time.Time{}
@@ -206,12 +204,11 @@ func (s *runtimeActivity) applySettings(settings *codespacev1.EffectiveCodespace
 	if settings.InteractionGeneration < s.interactionGeneration {
 		return
 	}
-	changed := !s.hasPolicy || settings.AutoStopEnabled != s.autoStopEnabled || settings.IdleTimeoutSeconds != s.idleTimeoutSeconds || settings.InteractionGeneration != s.interactionGeneration
-	s.autoStopEnabled = settings.AutoStopEnabled
+	changed := !s.hasPolicy || settings.IdleTimeoutSeconds != s.idleTimeoutSeconds || settings.InteractionGeneration != s.interactionGeneration
 	s.idleTimeoutSeconds = settings.IdleTimeoutSeconds
 	s.interactionGeneration = settings.InteractionGeneration
 	s.hasPolicy = true
-	if changed || !settings.AutoStopEnabled {
+	if changed || settings.IdleTimeoutSeconds == 0 {
 		s.activityAfter = now
 		s.idleSince = time.Time{}
 		s.retryAt = time.Time{}
@@ -219,7 +216,7 @@ func (s *runtimeActivity) applySettings(settings *codespacev1.EffectiveCodespace
 }
 
 func validateRuntimeSettings(settings *codespacev1.EffectiveCodespaceRuntimeSettings) error {
-	if settings == nil || settings.InteractionGeneration < 0 || settings.AutoStopEnabled && settings.IdleTimeoutSeconds <= 0 || !settings.AutoStopEnabled && settings.IdleTimeoutSeconds != 0 {
+	if settings == nil || settings.InteractionGeneration < 0 || settings.IdleTimeoutSeconds < 0 {
 		return fmt.Errorf("invalid effective Runtime settings")
 	}
 	return nil

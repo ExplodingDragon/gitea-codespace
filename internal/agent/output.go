@@ -158,7 +158,7 @@ func (o *Output) Upload(ctx context.Context, remote agentv1connect.AgentControlS
 		lines, size := o.buffer.Take()
 		o.mu.Unlock()
 		attempt, cancel := context.WithTimeout(ctx, 5*time.Second)
-		response, err := remote.UploadLogs(attempt, &agentv1.UploadLogsRequest{ProtocolVersion: 1, OperationRversion: o.version, Lines: lines})
+		response, err := remote.UploadLogs(attempt, &agentv1.UploadLogsRequest{OperationRversion: o.version, Lines: lines})
 		cancel()
 		o.mu.Lock()
 		o.buffer.Release(size)

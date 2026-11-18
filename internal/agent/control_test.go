@@ -67,7 +67,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 				return connect.NewError(connect.CodeUnavailable, "reply lost")
 			}
 			if len(request.Report.GitSshPublicKey) == 0 {
-				response.CancelExecution = true
+				response.PermitValidForMilliseconds = 0
 			} else {
 				if _, err := ssh.ParsePublicKey(request.Report.GitSshPublicKey); err != nil {
 					return err
@@ -154,8 +154,8 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 			}
 			response := &agentv1.ControlResponse{SessionId: request.SessionId, Sequence: request.Sequence, OperationRversion: 1,
 				Operation: &codespacev1.OperationPayload{CodespaceId: 1, OperationRversion: 1, Command: &codespacev1.OperationPayload_Create{Create: &codespacev1.CreateOperationPayload{}}},
-				Runtime:   &agentv1.RuntimeOptions{GitSshKeyType: "ed25519"}, CancelExecution: len(request.Report.GitSshPublicKey) == 0,
-				Access: &codespacev1.RuntimeAccessBundle{}, PermitValidForMilliseconds: 500,
+				Runtime:   &agentv1.RuntimeOptions{GitSshKeyType: "ed25519"},
+				Access:    &codespacev1.RuntimeAccessBundle{}, PermitValidForMilliseconds: 500,
 			}
 			if err := stream.Send(response); err != nil {
 				return err
@@ -218,7 +218,7 @@ func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 				operation.Command = &codespacev1.OperationPayload_Resume{Resume: &codespacev1.ResumeOperationPayload{}}
 			}
 			response := &agentv1.ControlResponse{SessionId: request.SessionId, Sequence: request.Sequence, OperationRversion: operation.OperationRversion, Operation: operation, Runtime: &agentv1.RuntimeOptions{GitSshKeyType: "ed25519"},
-				CancelExecution: len(request.Report.GitSshPublicKey) == 0, PermitValidForMilliseconds: 2000, Access: &codespacev1.RuntimeAccessBundle{}}
+				PermitValidForMilliseconds: 2000, Access: &codespacev1.RuntimeAccessBundle{}}
 			if err := stream.Send(response); err != nil {
 				return err
 			}
@@ -270,5 +270,5 @@ func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 	report := &agentv1.AgentReport{}
 	require.NoError(t, proto.Unmarshal(data, report))
 	require.NotNil(t, report.Result)
-	require.EqualValues(t, 1, report.Result.OperationRversion)
+	require.EqualValues(t, 1, report.OperationRversion)
 }

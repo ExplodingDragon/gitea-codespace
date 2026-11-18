@@ -39,8 +39,7 @@ func SetEndpoint(ctx context.Context, port uint16, label string, public bool) er
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
 	_, err := remote.Set(ctx, &agentv1.RuntimeEndpointServiceSetRequest{
-		ProtocolVersion: 1,
-		Endpoint:        &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Public: public, Port: uint32(port)},
+		Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: runtimeendpoint.PortEndpointID(port), Label: label, Public: public, Port: uint32(port)},
 	})
 	return err
 }
@@ -52,7 +51,7 @@ func DeleteEndpoint(ctx context.Context, port uint16) error {
 	}
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
-	_, err := remote.Delete(ctx, &agentv1.RuntimeEndpointServiceDeleteRequest{ProtocolVersion: 1, EndpointId: runtimeendpoint.PortEndpointID(port)})
+	_, err := remote.Delete(ctx, &agentv1.RuntimeEndpointServiceDeleteRequest{EndpointId: runtimeendpoint.PortEndpointID(port)})
 	return err
 }
 
@@ -60,7 +59,7 @@ func DeleteEndpoint(ctx context.Context, port uint16) error {
 func ListEndpoints(ctx context.Context) ([]*codespacev1.RuntimeEndpoint, error) {
 	remote, client := endpointClient()
 	defer client.CloseIdleConnections()
-	response, err := remote.List(ctx, &agentv1.RuntimeEndpointServiceListRequest{ProtocolVersion: 1})
+	response, err := remote.List(ctx, &agentv1.RuntimeEndpointServiceListRequest{})
 	if err != nil {
 		return nil, err
 	}

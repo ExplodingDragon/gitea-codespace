@@ -18,8 +18,6 @@ import (
 	"gitea.dev/codespace/internal/rpc/component/v1/componentv1connect"
 )
 
-const componentProtocolVersion uint32 = 1
-
 type cacheControlStream interface {
 	Send(*componentv1.CacheControlRequest) error
 	Receive() (*componentv1.CacheControlResponse, error)
@@ -106,7 +104,7 @@ func (c *CacheComponentClient) start(ctx context.Context, id string) error {
 	c.ready = make(chan struct{})
 	c.waiters = make(map[uint64]chan *componentv1.CacheControlResponse)
 	c.sent = map[uint64]time.Time{1: time.Now()}
-	if err := stream.Send(&componentv1.CacheControlRequest{ProtocolVersion: componentProtocolVersion, CacheId: id, SessionId: c.sessionID, Sequence: c.sequence}); err != nil {
+	if err := stream.Send(&componentv1.CacheControlRequest{SessionId: c.sessionID, Sequence: c.sequence}); err != nil {
 		c.failLocked(err)
 		c.mu.Unlock()
 		return err
@@ -129,7 +127,7 @@ func (c *CacheComponentClient) receive(ctx context.Context, stream cacheControlS
 			c.mu.Unlock()
 			return
 		}
-		if response.ProtocolVersion != componentProtocolVersion || response.PermitValidForMilliseconds < 0 || response.Sequence > c.sequence {
+		if response == nil || response.PermitValidForMilliseconds < 0 || response.Sequence > c.sequence {
 			c.failLocked(fmt.Errorf("manager returned an invalid cache control response"))
 			c.mu.Unlock()
 			return
@@ -247,7 +245,7 @@ func (c *CacheComponentClient) send(ctx context.Context, request *componentv1.Ca
 		return nil, fmt.Errorf("cache control permit expired")
 	}
 	c.sequence++
-	request.ProtocolVersion, request.CacheId, request.SessionId, request.Sequence = componentProtocolVersion, c.cacheID, c.sessionID, c.sequence
+	request.SessionId, request.Sequence = c.sessionID, c.sequence
 	waiter := make(chan *componentv1.CacheControlResponse, 1)
 	c.waiters[c.sequence] = waiter
 	if c.sent == nil {

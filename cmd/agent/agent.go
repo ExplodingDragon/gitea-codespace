@@ -120,7 +120,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		unmount, err := agentpkg.MountDataVolume(ctx, device, "/var/lib/codespace", func(ctx context.Context, initialized bool) error {
 			attempt, cancel := context.WithTimeout(ctx, 10*time.Second)
 			defer cancel()
-			_, err := remote.PrepareVolume(attempt, &agentv1.PrepareVolumeRequest{ProtocolVersion: 1, Initialized: initialized})
+			_, err := remote.PrepareVolume(attempt, &agentv1.PrepareVolumeRequest{Initialized: initialized})
 			return err
 		})
 		if err != nil {

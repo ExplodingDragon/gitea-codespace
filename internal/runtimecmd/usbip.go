@@ -17,5 +17,5 @@ func RunUSBIP(ctx context.Context, operation agentv1.RuntimeUSBIPOperation, argu
 	client := runtimeHTTPClient()
 	defer client.CloseIdleConnections()
 	remote := agentv1connect.NewRuntimeUSBIPServiceClient(connect.NewClient(connecthttp.NewTransport(client, "http://runtime-agent")))
-	return remote.Run(ctx, &agentv1.RuntimeUSBIPServiceRunRequest{ProtocolVersion: 1, Operation: operation, Argument: argument, Source: source})
+	return remote.Run(ctx, &agentv1.RuntimeUSBIPServiceRunRequest{Operation: operation, Argument: argument, Source: source})
 }

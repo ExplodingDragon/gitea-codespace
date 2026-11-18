@@ -160,9 +160,6 @@ func (s *AgentControlServer) current(ctx context.Context) (*api.Codespace, error
 }
 
 func (s *AgentControlServer) PrepareVolume(ctx context.Context, request *agentv1.PrepareVolumeRequest) (*agentv1.PrepareVolumeResponse, error) {
-	if request.ProtocolVersion != 1 {
-		return nil, connect.NewError(connect.CodeInvalidArgument, "unsupported Agent protocol version")
-	}
 	certificate, _ := ctx.Value(agentPeerKey{}).(*x509.Certificate)
 	cs, pod, err := ResolveAgent(ctx, s.IdentityIndex, s.Client, certificate)
 	if err != nil {
@@ -250,7 +247,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if request.ProtocolVersion != 1 || request.SessionId == "" || len(request.SessionId) > 64 || (session != "" && request.SessionId != session) || request.Sequence <= sequence || request.Report == nil || request.AcceptedOperationRversion < 0 {
+		if request.SessionId == "" || len(request.SessionId) > 64 || (session != "" && request.SessionId != session) || request.Sequence <= sequence || request.Report == nil || request.AcceptedOperationRversion < 0 {
 			return connect.NewError(connect.CodeInvalidArgument, "invalid Agent control session")
 		}
 		session, sequence = request.SessionId, request.Sequence
@@ -259,7 +256,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			return err
 		}
 		remaining := s.Authority.Remaining(cs.UID, cs.Spec.Operation.Version)
-		response := &agentv1.ControlResponse{SessionId: session, Sequence: sequence, OperationRversion: cs.Spec.Operation.Version, AccessVerificationKey: s.Tickets.PublicKey(), CancelExecution: remaining < time.Millisecond || cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version}
+		response := &agentv1.ControlResponse{SessionId: session, Sequence: sequence, OperationRversion: cs.Spec.Operation.Version, AccessVerificationKey: s.Tickets.PublicKey(), PermitValidForMilliseconds: remaining.Milliseconds()}
 		if request.AcceptedOperationRversion > cs.Spec.Operation.Version {
 			return connect.NewError(connect.CodeFailedPrecondition, "agent accepted operation history is ahead of Gitea")
 		}
@@ -270,7 +267,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		// Reporting a completed fact does not grant permission to execute more work.
 		switch {
 		case cs.Spec.Operation.Type == "abort_create" || cs.Spec.Operation.Type == "abort_resume" || cs.Status.RecoveryAction != "":
-			response.CancelExecution = true
+			response.PermitValidForMilliseconds = 0
 		case currentReport:
 			if err := s.saveReport(ctx, cs, request.Report); err != nil {
 				return err
@@ -279,10 +276,10 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 		case request.Report.OperationRversion == 0 && (request.Report.Result != nil || request.Report.Boot != nil || request.Report.Target != nil):
 			return connect.NewError(connect.CodeInvalidArgument, "agent facts require an operation version")
 		}
-		if cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version {
-			response.CancelExecution = true
+		if cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version || (cs.Status.Result != nil && cs.Status.Result.Version == cs.Spec.Operation.Version) {
+			response.PermitValidForMilliseconds = 0
 		}
-		if response.CancelExecution {
+		if response.PermitValidForMilliseconds <= 0 {
 			if err := stream.Send(response); err != nil {
 				return err
 			}
@@ -313,7 +310,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			if len(request.Report.GitSshPublicKey) == 0 {
 				// The first response supplies key options. Execution starts only after
 				// the Agent has durably created its key and obtained runtime access.
-				response.CancelExecution = true
+				response.PermitValidForMilliseconds = 0
 				if err := stream.Send(response); err != nil {
 					return err
 				}
@@ -323,7 +320,7 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			if err != nil {
 				return err
 			}
-			access := &codespacev1.RequestRuntimeAccessRequest{ProtocolVersion: 1, CodespaceId: cs.Spec.CodespaceID, OperationRversion: cs.Spec.Operation.Version, GitSshKey: &codespacev1.RuntimeGitSSHKey{PublicKey: request.Report.GitSshPublicKey}}
+			access := &codespacev1.RequestRuntimeAccessRequest{CodespaceId: cs.Spec.CodespaceID, OperationRversion: cs.Spec.Operation.Version, GitSshPublicKey: request.Report.GitSshPublicKey}
 			reply, err := remote.RequestRuntimeAccess(ctx, access)
 			if err != nil {
 				return err
@@ -338,7 +335,6 @@ func (s *AgentControlServer) Control(ctx context.Context, stream agentv1connect.
 			}
 		}
 		response.PermitValidForMilliseconds = s.Authority.Remaining(cs.UID, cs.Spec.Operation.Version).Milliseconds()
-		response.CancelExecution = response.PermitValidForMilliseconds <= 0
 		if err := stream.Send(response); err != nil {
 			return err
 		}
@@ -360,7 +356,7 @@ func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 		return connect.NewError(connect.CodeFailedPrecondition, "agent report operation changed")
 	}
 	result := report.Result
-	if result != nil && (result.OperationRversion != cs.Spec.Operation.Version || len(result.Message) > 4096 || (result.Status != codespacev1.FinalStatus_FINAL_STATUS_DONE && result.Status != codespacev1.FinalStatus_FINAL_STATUS_FAILED)) {
+	if result != nil && (len(result.Message) > 4096 || (result.Status != codespacev1.FinalStatus_FINAL_STATUS_DONE && result.Status != codespacev1.FinalStatus_FINAL_STATUS_FAILED)) {
 		return connect.NewError(connect.CodeInvalidArgument, "invalid Agent operation result")
 	}
 	startup := cs.Spec.Operation.Type == "create" || cs.Spec.Operation.Type == "resume"
@@ -424,7 +420,7 @@ func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 		cs.Status.MetadataGeneration++
 	}
 	if result != nil {
-		stored := &api.OperationResult{Version: result.OperationRversion, Succeeded: result.Status == codespacev1.FinalStatus_FINAL_STATUS_DONE, Message: result.Message}
+		stored := &api.OperationResult{Version: report.OperationRversion, Succeeded: result.Status == codespacev1.FinalStatus_FINAL_STATUS_DONE, Message: result.Message}
 		if previous := cs.Status.Result; previous != nil && previous.Version == stored.Version {
 			if *previous != *stored {
 				return connect.NewError(connect.CodeFailedPrecondition, "operation result was already recorded with different content")
@@ -443,7 +439,7 @@ func (s *AgentControlServer) UploadLogs(ctx context.Context, request *agentv1.Up
 	if err != nil {
 		return nil, err
 	}
-	if request.ProtocolVersion != 1 || request.OperationRversion <= 0 || request.OperationRversion > cs.Spec.Operation.Version {
+	if request.OperationRversion <= 0 || request.OperationRversion > cs.Spec.Operation.Version {
 		return nil, connect.NewError(connect.CodeInvalidArgument, "invalid Agent log operation")
 	}
 	if request.OperationRversion < cs.Spec.Operation.Version {

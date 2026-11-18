@@ -43,7 +43,7 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 	if err != nil {
 		return nil, err
 	}
-	knownHosts := strings.Join(access.GetGitSshTrust().GetKnownHostsLines(), "\n")
+	knownHosts := strings.Join(access.GetGitSshKnownHosts(), "\n")
 	if knownHosts != "" {
 		knownHosts += "\n"
 		for remaining := []byte(knownHosts); len(remaining) > 0; {
