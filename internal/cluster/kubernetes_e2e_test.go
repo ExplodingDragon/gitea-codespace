@@ -107,9 +107,8 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 		Spec:       api.CodespaceSpec{Site: api.ResourceReference{Name: site.Name, UID: site.UID}, CodespaceID: 1, EnvironmentTag: "standard", Runtime: testRuntime(), Operation: api.Operation{Version: 1, Type: "stop", Payload: runtime.RawExtension{Raw: []byte(`{}`)}}},
 	}
 	require.NoError(t, c.Create(ctx, cs))
-	changed := cs.DeepCopy()
-	changed.Spec.Runtime.GitSSHKeyType = "rsa-4096"
-	require.True(t, apierrors.IsInvalid(c.Update(ctx, changed)))
+	err := c.Patch(ctx, cs.DeepCopy(), client.RawPatch(types.MergePatchType, []byte(`{"spec":{"runtime":{"gitSSHKeyType":"rsa-4096"}}}`)))
+	require.True(t, apierrors.IsInvalid(err), "runtime settings must be immutable: %v", err)
 	pod := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "writer", Namespace: namespace, Finalizers: []string{WriterFinalizer}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(cs, api.GroupVersion.WithKind("Codespace"))}},
 		Spec:       corev1.PodSpec{RestartPolicy: corev1.RestartPolicyNever, AutomountServiceAccountToken: ptr.To(false), TerminationGracePeriodSeconds: ptr.To(int64(1)), Containers: []corev1.Container{{Name: "runtime", Image: requireE2EEnvironment(t, "CODESPACE_E2E_PLATFORM_IMAGE"), ImagePullPolicy: corev1.PullNever, Command: []string{"sleep", "3600"}, Resources: testRuntime().Resources}}},
@@ -156,7 +155,7 @@ func TestKubernetesE2EResourceOwnership(t *testing.T) {
 			t.Errorf("delete E2E EnvironmentTemplate %s: %v", template.Name, err)
 		}
 	})
-	_, err := (&TemplateReconciler{Client: c}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(template)})
+	_, err = (&TemplateReconciler{Client: c}).Reconcile(ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(template)})
 	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(template), template))
 	require.True(t, meta.IsStatusConditionTrue(template.Status.Conditions, "Ready"))

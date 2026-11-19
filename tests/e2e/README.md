@@ -103,7 +103,7 @@ configuration, HTTP and WebSocket access, and state across stop and resume.
 
 Network tests verify platform connections, same-site communication, cross-site
 isolation, Internet access, and explicit TCP/UDP port ranges with actual traffic
-in each runtime. The worker needs direct access to `http://example.com/` for the
+in each runtime. The worker needs direct TCP access to `1.1.1.1:443` for the
 Internet test. Docker process tests check the default bridge, newly created
 bridges, and explicit MTU overrides so Compose networks inherit the Pod's MTU.
 

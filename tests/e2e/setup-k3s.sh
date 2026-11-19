@@ -34,7 +34,11 @@ if [[ $runtime == sysbox ]]; then
 	printf '%s  %s\n' "$SYSBOX_SHA256" "$package" | sha256sum --check
 	sudo apt-get update
 	sudo apt-get install -y "$package"
-	sudo systemctl is-active --quiet sysbox-mgr sysbox-fs
+	# The package may leave sysbox-fs failed after its initial startup timeout.
+	sudo systemctl start sysbox-mgr
+	sudo systemctl start sysbox-fs
+	sudo systemctl is-active --quiet sysbox-mgr
+	sudo systemctl is-active --quiet sysbox-fs
 elif [[ $runtime == kata ]]; then
 	echo "Checking Kata hardware virtualization"
 	test -c /dev/kvm

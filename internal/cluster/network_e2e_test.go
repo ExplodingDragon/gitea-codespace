@@ -14,6 +14,7 @@ import (
 	"time"
 
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -137,20 +138,24 @@ sleep 3600`}}},
 	apply()
 	httpProbe(workspace, manager, 8002, true)
 
-	// Confirm external reachability independently before testing the switch.
-	const internetProbe = "if wget -q -T 3 -O /dev/null http://example.com/ 2>/dev/null; then echo reachable; else echo blocked; fi"
-	output, err = probe(manager, internetProbe)
-	require.NoError(t, err, "%s", output)
-	require.Equal(t, "reachable\n", output, "public test destination must be reachable")
-	output, err = probe(workspace, internetProbe)
-	require.NoError(t, err, "%s", output)
-	require.Equal(t, "blocked\n", output)
+	// Test public TCP routing independently of DNS and a third-party HTTP response.
+	internetProbe := func(source *corev1.Pod, allowed bool) {
+		t.Helper()
+		expected := "blocked\n"
+		if allowed {
+			expected = "reachable\n"
+		}
+		require.EventuallyWithT(t, func(collect *assert.CollectT) {
+			output, err := probe(source, "if nc -z -w 3 1.1.1.1 443 2>/dev/null; then echo reachable; else echo blocked; fi")
+			assert.NoError(collect, err, "%s", output)
+			assert.Equal(collect, expected, output)
+		}, 20*time.Second, time.Second, "%s -> 1.1.1.1:443 allowed=%v", source.Name, allowed)
+	}
+	internetProbe(manager, true)
+	internetProbe(workspace, false)
 	site.Spec.Network.Egress = api.SiteEgress{AllowInternet: true}
 	apply()
-	require.Eventually(t, func() bool {
-		output, err := probe(workspace, internetProbe)
-		return err == nil && output == "reachable\n"
-	}, 20*time.Second, time.Second, "Internet access")
+	internetProbe(workspace, true)
 	httpProbe(workspace, manager, 8002, false)
 	httpProbe(gateway, workspace, 8444, true)
 	httpProbe(workspace, manager, 8443, true)
