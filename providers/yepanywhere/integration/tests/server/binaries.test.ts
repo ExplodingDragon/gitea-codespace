@@ -1,15 +1,15 @@
-// biome-ignore-all lint/complexity/useLiteralKeys: Bracket access verifies private executable selection without starting model services.
+// biome-ignore-all lint/complexity/useLiteralKeys: Verify executable and backend selection without starting model services.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { findCodexCliPath } from "../../src/sdk/cli-detection.js";
+import { setCliInstallationService } from "../../src/sdk/cli-installation-context.js";
+import { configureCliInstallations } from "../../src/sdk/cli-installation-runtime.js";
 import { OpenCodeProvider } from "../../src/sdk/providers/opencode.js";
 import { PiProvider } from "../../src/sdk/providers/pi.js";
-import {
-  getAllProviders,
-  getRawProvider,
-} from "../../src/sdk/providers/index.js";
+import { getAllProviders } from "../../src/sdk/providers/index.js";
+import { createApp } from "../setup/create-app.js";
 
 vi.mock("node:os", async (original) => ({
   ...(await original<typeof import("node:os")>()),
@@ -30,6 +30,11 @@ it("selects explicit and external programs before image fallbacks", async () => 
     vi.stubEnv("PATH", external);
     vi.stubEnv("PI_EXECUTABLE", "");
     vi.stubEnv("PI_PATH", "");
+    configureCliInstallations(
+      root,
+      () => ({}),
+      () => ({}),
+    );
     await writeFile(join(external, "which"), "#!/bin/sh\nexit 1\n", {
       mode: 0o755,
     });
@@ -82,18 +87,19 @@ it("selects explicit and external programs before image fallbacks", async () => 
     ).toBe(false);
     expect(await new PiProvider({ piPath: missing }).isInstalled()).toBe(false);
   } finally {
+    setCliInstallationService(undefined);
     await rm(root, { recursive: true, force: true });
   }
 });
 
-it("uses the configured backend subset for discovery and execution", () => {
-  vi.stubEnv("ENABLED_PROVIDERS", "codex,opencode,pi");
-  expect(getAllProviders().map((provider) => provider.name)).toEqual([
-    "codex",
-    "opencode",
-    "pi",
-  ]);
-  for (const name of ["codex", "opencode", "pi"] as const)
-    expect(getRawProvider(name)?.name).toBe(name);
-  expect(getRawProvider("claude")).toBeNull();
+it("starts with Codex as the only configured backend", async () => {
+  vi.stubEnv("ENABLED_PROVIDERS", "codex");
+  expect(getAllProviders().map((provider) => provider.name)).toEqual(["codex"]);
+  // Override the test fixture's null provider to exercise production startup.
+  const instance = createApp({ provider: undefined });
+  try {
+    expect(instance.supervisor["resolveProvider"]()?.name).toBe("codex");
+  } finally {
+    await instance.disposeSessionReaders();
+  }
 });

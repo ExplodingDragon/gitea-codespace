@@ -108,13 +108,14 @@ test('serve inherits user tools, reports bounded exit diagnostics, restarts, and
       });
       setInterval(() => {}, 1000);
     } else {
-      process.stderr.write('x'.repeat(8192) + '\\nexample failure\\n');
+      process.stdout.write('x'.repeat(8192) + '\\nexample stdout failure\\n');
+      process.stderr.write('example stderr failure');
     }
     console.log('started');
   `);
   Object.assign(env, {TEST_SECRET: 'line one\nline two', HTTPS_PROXY: 'http://proxy.invalid:8080', HOME: path.join(root, 'home'), HOST: '0.0.0.0', PORT: '9999', AUTH_DISABLED: 'false', YEP_PEER_API_ENABLED: 'true'});
   await symlink(path.join(runtime, 'launch.mjs'), path.join(root, 'lib/launch.mjs'));
-  await symlink(path.join(runtime, 'capture-stderr.mjs'), path.join(root, 'lib/capture-stderr.mjs'));
+  await symlink(path.join(runtime, 'capture-output.mjs'), path.join(root, 'lib/capture-output.mjs'));
   await mkdir(path.join(root, 'bin'));
   env.TMPDIR = path.join(root, 'tmp');
   await mkdir(env.TMPDIR);
@@ -142,7 +143,11 @@ test('serve inherits user tools, reports bounded exit diagnostics, restarts, and
   assert.deepEqual(await readdir(env.TMPDIR), []);
   const event = JSON.parse(await readFile(path.join(root, 'data/event.json')));
   assert.equal(event[0], 'webide.error');
-  assert.equal(event[1], 'Yep Anywhere exited with code 0\n[stderr line omitted: exceeds 8 KiB]\nexample failure');
+  assert.ok(event[1].startsWith('Yep Anywhere exited with code 0\n'));
+  assert.match(event[1], /\[stdout line omitted: exceeds 8 KiB\]/);
+  assert.match(event[1], /example stdout failure/);
+  assert.match(event[1], /example stderr failure/);
+  assert.ok(Buffer.byteLength(event[1]) <= 8192 + 'Yep Anywhere exited with code 0\n'.length);
   const actual = JSON.parse(await readFile(path.join(root, 'data/launch.json')));
   assert.equal(actual.HOME, env.HOME);
   assert.equal(actual.PATH, env.PATH);

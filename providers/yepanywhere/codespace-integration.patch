@@ -102,10 +102,10 @@ index 27917d4..5676fc0 100644
                        path="/settings"
                        element={routeModule(<SettingsLayout />)}
 diff --git a/packages/client/src/pages/settings/ProvidersSettings.tsx b/packages/client/src/pages/settings/ProvidersSettings.tsx
-index d5ba758..6329d89 100644
+index 0b6bd19..ad7b502 100644
 --- a/packages/client/src/pages/settings/ProvidersSettings.tsx
 +++ b/packages/client/src/pages/settings/ProvidersSettings.tsx
-@@ -869,11 +869,7 @@ export function ProvidersSettings() {
+@@ -870,11 +870,7 @@ export function ProvidersSettings() {
      const serverInfo = serverProviders.find(
        (p) => p.name === clientProvider.id,
      );
@@ -119,7 +119,7 @@ index d5ba758..6329d89 100644
      }
 
 diff --git a/packages/client/src/pages/settings/SettingsLayout.tsx b/packages/client/src/pages/settings/SettingsLayout.tsx
-index 4802cf1..b3ecb17 100644
+index 42731d1..db586e0 100644
 --- a/packages/client/src/pages/settings/SettingsLayout.tsx
 +++ b/packages/client/src/pages/settings/SettingsLayout.tsx
 @@ -111,14 +111,6 @@ const CATEGORY_COMPONENTS: Record<string, React.ComponentType> = {
@@ -154,7 +154,7 @@ index 4802cf1..b3ecb17 100644
    providers: lazy(() =>
      import("./ProvidersSettings").then((m) => ({
        default: m.ProvidersSettings,
-@@ -303,7 +285,10 @@ export function SettingsLayout() {
+@@ -308,7 +290,10 @@ export function SettingsLayout() {
    );
 
    const allCategories = useMemo(
@@ -166,7 +166,7 @@ index 4802cf1..b3ecb17 100644
      [t],
    );
    const categories = useMemo(
-@@ -446,7 +431,8 @@ export function SettingsLayout() {
+@@ -451,7 +436,8 @@ export function SettingsLayout() {
      effectiveCategory &&
      principalResolved &&
      !withheldFromPrincipal &&
@@ -220,10 +220,10 @@ index e035dcb..09de59b 100644
          path="settings/:category"
          element={routeModule(<SettingsLayout />)}
 diff --git a/packages/server/src/app.ts b/packages/server/src/app.ts
-index 8eaa253..d7a0f70 100644
+index bbf116f..2ef8229 100644
 --- a/packages/server/src/app.ts
 +++ b/packages/server/src/app.ts
-@@ -246,6 +246,8 @@ import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
+@@ -245,6 +245,8 @@ import { createDebugStreamingRoutes } from "./routes/debug-streaming.js";
  import { createDevRoutes } from "./routes/dev.js";
  import { createDesktopBootstrapRoutes } from "./routes/desktop-bootstrap.js";
  import { createDeviceRoutes } from "./routes/devices.js";
@@ -232,7 +232,7 @@ index 8eaa253..d7a0f70 100644
  import { createFilesRoutes } from "./routes/files.js";
  import { createBangCommandsRoutes } from "./routes/bang-commands.js";
  import { BangCommandService } from "./services/BangCommandService.js";
-@@ -937,6 +939,9 @@ export function createApp(options: AppOptions): AppResult {
+@@ -939,6 +941,9 @@ export function createApp(options: AppOptions): AppResult {
      }
    });
 
@@ -242,7 +242,7 @@ index 8eaa253..d7a0f70 100644
    // Auth middleware (if authService is provided)
    // The middleware checks authService.isEnabled() dynamically
    if (options.authService) {
-@@ -1046,8 +1051,10 @@ export function createApp(options: AppOptions): AppResult {
+@@ -1048,8 +1053,10 @@ export function createApp(options: AppOptions): AppResult {
          ),
        getCookieSecret: () => authService.getCookieSecret(),
      });
@@ -255,7 +255,16 @@ index 8eaa253..d7a0f70 100644
      app.route(
        "/api/users",
        createUsersRoutes({
-@@ -3200,6 +3207,7 @@ export function createApp(options: AppOptions): AppResult {
+@@ -2514,7 +2521,7 @@ export function createApp(options: AppOptions): AppResult {
+     provider:
+       options.provider !== undefined
+         ? options.provider
+-        : resolveConfiguredProvider("claude"),
++        : (resolveConfiguredProvider("claude") ?? getAllProviders()[0] ?? null),
+     idleTimeoutMs: options.idleTimeoutMs,
+     defaultPermissionMode: options.defaultPermissionMode,
+     eventBus: options.eventBus,
+@@ -3199,6 +3206,7 @@ export function createApp(options: AppOptions): AppResult {
      createBrowserDebugClientRoutes(browserDebugService),
    );
    app.route("/api/provider-host", createProviderHostRoutes());
@@ -264,7 +273,7 @@ index 8eaa253..d7a0f70 100644
      "/api/projects",
      createProjectsRoutes({
 diff --git a/packages/server/src/remote-access/RemoteAccessService.ts b/packages/server/src/remote-access/RemoteAccessService.ts
-index 6e79985..15bb53d 100644
+index 16b17c5..905ae1e 100644
 --- a/packages/server/src/remote-access/RemoteAccessService.ts
 +++ b/packages/server/src/remote-access/RemoteAccessService.ts
 @@ -112,11 +112,10 @@ export class RemoteAccessService {
@@ -317,37 +326,39 @@ index 5eee95c..0b01e57 100644
        };
        return c.json(body);
 diff --git a/packages/server/src/sdk/cli-detection.ts b/packages/server/src/sdk/cli-detection.ts
-index 67015d5..20ed3ec 100644
+index c1ab1f7..7613c9b 100644
 --- a/packages/server/src/sdk/cli-detection.ts
 +++ b/packages/server/src/sdk/cli-detection.ts
-@@ -14,6 +14,7 @@ import {
-   resolveNpmCommandTarget,
- } from "../utils/npmCommand.js";
+@@ -16,6 +16,7 @@ import {
  import { whichCommand } from "./which-command.js";
+ import { fnmCodexPaths } from "./fnm-codex-discovery.js";
+ import { getCliInstallationService } from "./cli-installation-context.js";
 +import { bundledCodespaceBinary } from "./codespace-binaries.js";
 
  export type InstallationReadCoordinator = Pick<
    ProviderInstallationCoordinator,
-@@ -479,6 +480,19 @@ export async function findCodexCliInstall(
-             installationCoordinator,
-           );
-           if (install) return install;
-+          const bundled = bundledCodespaceBinary("codex");
-+          if (bundled) {
-+            const version = await getCodexCliVersion(
-+              bundled,
-+              installationCoordinator,
-+            );
-+            if (version)
-+              return {
-+                path: bundled,
-+                version,
-+                normalizedVersion: normalizeCodexCliVersion(version),
-+              };
-+          }
-         }
+@@ -397,11 +398,13 @@ async function findAutoCodexCliInstall(
+ export async function discoverCodexCliCandidates(
+   installationCoordinator: InstallationReadCoordinator = providerInstallationCoordinator,
+ ): Promise<Array<{ path: string; version?: string; error?: string }>> {
++  const bundled = bundledCodespaceBinary("codex");
+   const candidatePaths = uniquePaths([
+     ...(await getPathCodexCandidates()),
+     ...fnmCodexPaths(),
+     ...(await getNpmGlobalCodexPaths()),
+     ...getCodexCommonPaths().filter((path) => existsSync(path)),
++    ...(bundled ? [bundled] : []),
+   ]);
 
-         if (attempt === 0) {
+   const candidates = await Promise.all(
+@@ -421,6 +424,7 @@ export async function discoverCodexCliCandidates(
+   return candidates.sort(
+     (a, b) =>
+       Number(Boolean(a.error)) - Number(Boolean(b.error)) ||
++      Number(a.path === bundled) - Number(b.path === bundled) ||
+       compareCodexCandidates(b, a),
+   );
+ }
 diff --git a/packages/server/src/sdk/providers/claude.ts b/packages/server/src/sdk/providers/claude.ts
 index 9aac6cd..8fe8c64 100644
 --- a/packages/server/src/sdk/providers/claude.ts
@@ -490,7 +501,7 @@ index 9aac6cd..8fe8c64 100644
        },
      };
 diff --git a/packages/server/src/sdk/providers/codex-app-server-client.ts b/packages/server/src/sdk/providers/codex-app-server-client.ts
-index 1adda5d..4944fa0 100644
+index 5af44fd..b4fa5d2 100644
 --- a/packages/server/src/sdk/providers/codex-app-server-client.ts
 +++ b/packages/server/src/sdk/providers/codex-app-server-client.ts
 @@ -1,3 +1,7 @@
@@ -501,14 +512,20 @@ index 1adda5d..4944fa0 100644
  import { type ChildProcess, execFile, spawn } from "node:child_process";
  import type { SessionSandboxRuntime } from "../../session-sandbox.js";
  import type { ProviderActivitySnapshot } from "../types.js";
-@@ -282,12 +286,14 @@ export class CodexAppServerClient {
+@@ -279,16 +283,20 @@ export class CodexAppServerClient {
+       throw new Error("Codex app-server already connected");
+     }
+
++    // Isolated installation probes supply their own endpoint and credentials.
++    const configured = Boolean(this.env.CODESPACE_YEP_CONNECTIONS);
+     const commandArgs = [
        "app-server",
        "--listen",
        "stdio://",
-+      ...codespaceCodexArguments("codex"),
++      ...(configured ? codespaceCodexArguments("codex") : []),
        ...this.launchArguments,
      ];
-+    const env = codespaceEnvironment("codex", this.env);
++    const env = configured ? codespaceEnvironment("codex", this.env) : this.env;
      const sandboxed = this.sessionSandbox?.wrapSpawn(
        this.command,
        commandArgs,
@@ -517,20 +534,27 @@ index 1adda5d..4944fa0 100644
      );
      const child = (() => {
        try {
-@@ -298,7 +304,7 @@ export class CodexAppServerClient {
-             cwd: sandboxed?.cwd ?? this.cwd,
-             detached: process.platform !== "win32",
-             stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
--            env: sandboxed?.env ?? this.env,
-+            env: sandboxed?.env ?? env,
-             shell: sandboxed
-               ? false
-               : process.platform === "win32" &&
+@@ -298,12 +306,12 @@ export class CodexAppServerClient {
+               args: sandboxed.args,
+               windowsVerbatimArguments: false,
+             }
+-          : cliProcessLaunch(this.command, commandArgs, this.env);
++          : cliProcessLaunch(this.command, commandArgs, env);
+         return spawn(launch.command, launch.args, {
+           cwd: sandboxed?.cwd ?? this.cwd,
+           detached: process.platform !== "win32",
+           stdio: sandboxed?.stdio ?? ["pipe", "pipe", "pipe"],
+-          env: sandboxed?.env ?? this.env,
++          env: sandboxed?.env ?? env,
+           shell: false,
+           windowsVerbatimArguments: launch.windowsVerbatimArguments,
+         });
 diff --git a/packages/server/src/sdk/providers/codex-oss.ts b/packages/server/src/sdk/providers/codex-oss.ts
-index 93bc595..de4341b 100644
+index 75b84bd..89e3549 100644
 --- a/packages/server/src/sdk/providers/codex-oss.ts
 +++ b/packages/server/src/sdk/providers/codex-oss.ts
-@@ -1,3 +1,11 @@
+@@ -1,4 +1,12 @@
+ import { extractCodexOssUserText } from "./codex-oss-user-text.js";
 +import {
 +  codespaceAuthStatus,
 +  codespaceCodexArguments,
@@ -542,7 +566,7 @@ index 93bc595..de4341b 100644
  import { nativeStorageScope } from "./native-storage-scope.js";
  /**
   * CodexOSS Provider - Local models via Codex CLI with --oss flag.
-@@ -302,6 +310,8 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -301,6 +309,8 @@ export class CodexOSSProvider implements AgentProvider {
     * Check that something can serve a model: a configured endpoint, or Ollama.
     */
    async isAuthenticated(): Promise<boolean> {
@@ -551,7 +575,7 @@ index 93bc595..de4341b 100644
      if (this.codexServices().length > 0) return true;
      // For OSS mode, we just need Ollama running
      if (this.localProvider === "ollama") {
-@@ -321,6 +331,8 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -320,6 +330,8 @@ export class CodexOSSProvider implements AgentProvider {
     */
    async getAuthStatus(): Promise<AuthStatus> {
      const installed = await this.isInstalled();
@@ -560,7 +584,7 @@ index 93bc595..de4341b 100644
      if (!installed) {
        return { installed: false, authenticated: false, enabled: false };
      }
-@@ -340,6 +352,8 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -339,6 +351,8 @@ export class CodexOSSProvider implements AgentProvider {
     * launch and a Claude Gateway launch name their source the same way.
     */
    async getAvailableModels(): Promise<ModelInfo[]> {
@@ -569,7 +593,7 @@ index 93bc595..de4341b 100644
      const services = this.codexServices();
      const perSource = await Promise.all([
        ...services.map(async (service) => ({
-@@ -509,6 +523,7 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -508,6 +522,7 @@ export class CodexOSSProvider implements AgentProvider {
    async resolveLaunchGatewayRoute(
      model: string | undefined,
    ): Promise<ModelCatalogRoute | null> {
@@ -577,7 +601,7 @@ index 93bc595..de4341b 100644
      if (
        model &&
        this.codexServices().length > 0 &&
-@@ -706,6 +721,8 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -705,6 +720,8 @@ export class CodexOSSProvider implements AgentProvider {
    }
 
    async startSession(options: StartSessionOptions): Promise<AgentSession> {
@@ -586,7 +610,7 @@ index 93bc595..de4341b 100644
      const source = options.nativeResumeSource;
      if (source) {
        if (
-@@ -972,7 +989,9 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -971,7 +988,9 @@ export class CodexOSSProvider implements AgentProvider {
          codexProcess = spawn(codexPath, args, {
            cwd: options.cwd,
            stdio: ["pipe", "pipe", "pipe"],
@@ -597,7 +621,7 @@ index 93bc595..de4341b 100644
            shell: process.platform === "win32",
          });
          runtime.process = codexProcess;
-@@ -1185,7 +1204,9 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -1184,7 +1203,9 @@ export class CodexOSSProvider implements AgentProvider {
      route: CodexModelRoute,
    ): string[] {
      const service = this.serviceById(route.serviceId);
@@ -608,7 +632,7 @@ index 93bc595..de4341b 100644
        ? // A configured endpoint replaces `--oss`, which only ever meant
          // "whichever local provider Codex is configured for".
          ["exec", ...this.serviceLaunchArgs(service), "--json"]
-@@ -1233,7 +1254,9 @@ export class CodexOSSProvider implements AgentProvider {
+@@ -1232,7 +1253,9 @@ export class CodexOSSProvider implements AgentProvider {
        sessionId,
        prompt,
        "--json",
@@ -620,7 +644,7 @@ index 93bc595..de4341b 100644
          : ["-c", `model_provider=${tomlString(this.localProvider)}`]),
      ];
 diff --git a/packages/server/src/sdk/providers/codex-session.ts b/packages/server/src/sdk/providers/codex-session.ts
-index 0f966e5..016edc5 100644
+index 6c11eb0..2c6bd5a 100644
 --- a/packages/server/src/sdk/providers/codex-session.ts
 +++ b/packages/server/src/sdk/providers/codex-session.ts
 @@ -20,6 +20,7 @@ import {
@@ -640,10 +664,12 @@ index 0f966e5..016edc5 100644
        this.options.routerLaunch?.models &&
        !routerModelSupportsThinking(
 diff --git a/packages/server/src/sdk/providers/codex.ts b/packages/server/src/sdk/providers/codex.ts
-index fa2efaa..15c6429 100644
+index a994235..09edc18 100644
 --- a/packages/server/src/sdk/providers/codex.ts
 +++ b/packages/server/src/sdk/providers/codex.ts
-@@ -1,3 +1,9 @@
+@@ -1,5 +1,11 @@
+ import { getCliInstallationService } from "../cli-installation-context.js";
+ import { verifiedCodexLaunchPath } from "../cli-installation-runtime.js";
 +import {
 +  codespaceAuthStatus,
 +  codespaceConnection,
@@ -688,7 +714,7 @@ index fa2efaa..15c6429 100644
        this.startSessionInternal(resolved),
      );
 diff --git a/packages/server/src/sdk/providers/index.ts b/packages/server/src/sdk/providers/index.ts
-index 2978a8f..31b6bad 100644
+index 0a7272a..2356d90 100644
 --- a/packages/server/src/sdk/providers/index.ts
 +++ b/packages/server/src/sdk/providers/index.ts
 @@ -6,6 +6,8 @@ import { assertAndroidWorkspaceAvailable } from "../../lib/android-workspace.js"
@@ -700,7 +726,7 @@ index 2978a8f..31b6bad 100644
    DEFAULT_CODEX_CYBER_ACCESS_PROGRAM,
    DEFAULT_CODEX_REASONING_SUMMARY,
    DEFAULT_SUBAGENT_MAX_DEPTH,
-@@ -63,17 +65,6 @@ export {
+@@ -64,17 +66,6 @@ export {
    type GeminiACPProviderConfig,
  } from "./gemini-acp.js";
 
@@ -718,7 +744,7 @@ index 2978a8f..31b6bad 100644
  // Grok Build ACP provider (uses `grok agent stdio`)
  // Phase 1 isolated addition per topics/grok.md. Gated by ENABLED_PROVIDERS=grok.
  import { grokACPProvider } from "./grok-acp.js";
-@@ -284,21 +275,15 @@ function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
+@@ -292,19 +283,15 @@ function runtimeProvider(rawProvider: AgentProvider): AgentProvider {
   * Useful for provider detection UI.
   */
  export function getAllProviders(): AgentProvider[] {
@@ -730,9 +756,7 @@ index 2978a8f..31b6bad 100644
 -    codexOSSProvider,
 -    geminiAliasProvider,
 -    geminiACPProvider,
--    ...(process.env.ENABLED_PROVIDERS?.split(",").includes("antigravity")
--      ? [antigravityProvider]
--      : []),
+-    antigravityProvider,
 -    grokACPProvider, // Phase 1: additive only (see grok-acp.ts header + topics/grok.md)
 -    opencodeProvider,
 -    piProvider,
@@ -749,7 +773,7 @@ index 2978a8f..31b6bad 100644
  }
 
  /**
-@@ -311,6 +296,12 @@ export function getAllProviders(): AgentProvider[] {
+@@ -317,6 +304,12 @@ export function getAllProviders(): AgentProvider[] {
   * getProvider("grok") is never reached from normal flows.
   */
  export function getRawProvider(name: ProviderName): AgentProvider | null {
@@ -990,10 +1014,10 @@ index 46686db..26e109a 100644
 
    private async getPiTerminalEvent(
 diff --git a/packages/server/src/services/ServerSettingsService.ts b/packages/server/src/services/ServerSettingsService.ts
-index 7df6ea0..7204845 100644
+index 734cb13..75414b0 100644
 --- a/packages/server/src/services/ServerSettingsService.ts
 +++ b/packages/server/src/services/ServerSettingsService.ts
-@@ -402,6 +402,12 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
+@@ -405,6 +405,12 @@ export const DEFAULT_SERVER_SETTINGS: ServerSettings = {
 
  const TOOLBAR_PRESENCE_TIERS = new Set(["pin", "last", "mid", "first"]);
 
@@ -1006,7 +1030,7 @@ index 7df6ea0..7204845 100644
  /**
   * Fold pre-presence toolbar defaults (a visibility boolean map plus a
   * narrowing-priority map) into the single presence map: explicit `false`
-@@ -676,7 +682,7 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
+@@ -679,7 +685,7 @@ function normalizeLoadedSettings(settings: ServerSettings): ServerSettings {
    normalized.longContextEffortWarning =
      parseLongContextEffortWarningSettings(settings.longContextEffortWarning) ??
      DEFAULT_LONG_CONTEXT_EFFORT_WARNING_SETTINGS;
@@ -1015,7 +1039,7 @@ index 7df6ea0..7204845 100644
  }
 
  /** Stored state with version for migrations */
-@@ -814,6 +820,7 @@ export class ServerSettingsService {
+@@ -820,6 +826,7 @@ export class ServerSettingsService {
        const merged: ServerSettings = {
          ...previousSettings,
          ...updates,
@@ -1024,7 +1048,7 @@ index 7df6ea0..7204845 100644
        // The services list and the legacy single-gateway keys are two views of
        // one configuration, so an edit to either has to settle both before the
 diff --git a/packages/shared/src/index.ts b/packages/shared/src/index.ts
-index 60b06bb..3eb827e 100644
+index e7318fc..a367b13 100644
 --- a/packages/shared/src/index.ts
 +++ b/packages/shared/src/index.ts
 @@ -1,3 +1,7 @@

@@ -2,11 +2,14 @@ import { execFile } from "node:child_process";
 import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import { promisify } from "node:util";
-import type { CodespaceCapabilities } from "@yep-anywhere/shared";
+import type {
+  CodespaceCapabilities,
+  CodespaceEndpoint,
+  CodespaceUSBState,
+} from "@yep-anywhere/shared";
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { z } from "zod";
-import { PRINCIPAL_VARIABLE, type Principal } from "../auth/principal.js";
 
 const executables = {
   ports: "/usr/local/bin/gitea-codespace-endpoint",
@@ -28,23 +31,6 @@ const endpoint = z
     visibility: z.enum(["authenticated", "public"]),
   })
   .strict();
-const device = z.object({
-  source: source.or(z.literal("")),
-  busId: z.string(),
-  description: z.string(),
-});
-const usbList = z.object({
-  version: z.literal(1),
-  sources: z.array(z.object({ name: source, error: z.string().optional() })),
-  devices: z.array(device.extend({ source, busId })),
-});
-const usbStatus = usbList.extend({
-  devices: z.array(device.extend({ port: vhciPort, state: z.string() })),
-});
-const endpoints = z.object({
-  version: z.literal(1),
-  endpoints: z.array(endpoint),
-});
 
 async function available(file: string): Promise<boolean> {
   try {
@@ -84,7 +70,6 @@ export function createCodespaceRoutes(
   async function readCLI<T>(
     tool: keyof typeof executables,
     operation: "list" | "status",
-    schema: z.ZodType<T>,
     signal: AbortSignal,
   ): Promise<T> {
     const output = await deps.run(
@@ -93,7 +78,7 @@ export function createCodespaceRoutes(
       signal,
     );
     try {
-      return schema.parse(JSON.parse(output));
+      return JSON.parse(output) as T;
     } catch {
       throw new HTTPException(502, {
         message: "Invalid Codespace CLI response",
@@ -101,11 +86,9 @@ export function createCodespaceRoutes(
     }
   }
 
-  const app = new Hono<{ Variables: { yaPrincipal: Principal } }>();
+  const app = new Hono();
   app.use("*", async (c, next) => {
     c.header("Cache-Control", "no-store");
-    if (c.get(PRINCIPAL_VARIABLE)?.kind !== "superuser")
-      return c.json({ error: "Forbidden" }, 403);
     await next();
   });
   app.onError((error, c) => {
@@ -139,7 +122,13 @@ export function createCodespaceRoutes(
     return c.json(result);
   });
   app.get("/ports", async (c) =>
-    c.json(await readCLI("ports", "list", endpoints, c.req.raw.signal)),
+    c.json(
+      await readCLI<{ version: number; endpoints: CodespaceEndpoint[] }>(
+        "ports",
+        "list",
+        c.req.raw.signal,
+      ),
+    ),
   );
   app.post("/ports", async (c) => {
     const value = endpoint.parse(await c.req.json());
@@ -173,12 +162,7 @@ export function createCodespaceRoutes(
   for (const command of ["status", "list"] as const) {
     app.get(`/usb/${command}`, async (c) =>
       c.json(
-        await readCLI(
-          "usb",
-          command,
-          command === "status" ? usbStatus : usbList,
-          c.req.raw.signal,
-        ),
+        await readCLI<CodespaceUSBState>("usb", command, c.req.raw.signal),
       ),
     );
   }
@@ -203,7 +187,11 @@ export function createCodespaceRoutes(
       })
       .strict()
       .parse(await c.req.json());
-    const state = await readCLI("usb", "status", usbStatus, c.req.raw.signal);
+    const state = await readCLI<CodespaceUSBState>(
+      "usb",
+      "status",
+      c.req.raw.signal,
+    );
     if (
       !state.devices.some(
         (device) =>

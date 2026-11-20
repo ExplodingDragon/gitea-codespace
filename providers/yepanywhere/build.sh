@@ -72,7 +72,7 @@ cp "$source_root/tools/package.json" "$source_root/tools/pnpm-lock.yaml" "$outpu
 CI=1 pnpm --dir "$output/program/tools" install --prod --frozen-lockfile --ignore-scripts
 node "$source_root/tools/bundle.mjs" "$output/program/tools"
 cp "$source_root/runtime/prepare" "$source_root/runtime/serve" "$output/bin/"
-cp "$source_root/runtime/prepare.mjs" "$source_root/runtime/launch.mjs" "$source_root/runtime/capture-stderr.mjs" "$output/lib/"
+cp "$source_root/runtime/prepare.mjs" "$source_root/runtime/launch.mjs" "$source_root/runtime/capture-output.mjs" "$output/lib/"
 chmod 0555 "$output/bin/prepare" "$output/bin/serve"
 printf '{"schemaVersion":1,"provider":"yepanywhere","architecture":"%s","version":"%s"}\n' "$arch" "$YEP_VERSION" >"$output/manifest.json"
 chmod -R a+rX "$output"

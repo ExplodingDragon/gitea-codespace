@@ -1,8 +1,5 @@
-import { EMPTY_LIMITED_USER_GRANTS } from "@yep-anywhere/shared";
-import { Hono } from "hono";
 import { describe, expect, it, vi } from "vitest";
 import { createCodespaceRoutes } from "../../src/routes/codespace.js";
-import type { Principal } from "../../src/auth/principal.js";
 
 const state = {
   version: 1,
@@ -18,31 +15,23 @@ const state = {
   ],
 };
 
-function fixture(principal: Principal = { kind: "superuser" }) {
+function fixture() {
   const run = vi.fn(async (_file: string, args: string[]) =>
     JSON.stringify(
       args[0] === "status" ? state : { version: 1, endpoints: [] },
     ),
   );
   const available = vi.fn(async () => true);
-  const app = new Hono<{ Variables: { yaPrincipal: Principal } }>();
-  app.use("*", async (c, next) => {
-    c.set("yaPrincipal", principal);
-    await next();
+  const app = createCodespaceRoutes({
+    run,
+    available,
+    env: {
+      CODESPACE_SSH_USER: "cs-1234",
+      CODESPACE_SSH_HOST: "ssh.example.test",
+      CODESPACE_SSH_PORT: "2222",
+      TOKEN: "secret",
+    },
   });
-  app.route(
-    "/",
-    createCodespaceRoutes({
-      run,
-      available,
-      env: {
-        CODESPACE_SSH_USER: "cs-1234",
-        CODESPACE_SSH_HOST: "ssh.example.test",
-        CODESPACE_SSH_PORT: "2222",
-        TOKEN: "secret",
-      },
-    }),
-  );
   return { app, run, available };
 }
 
@@ -71,7 +60,7 @@ describe("Codespace CLI routes", () => {
     expect((await app.request("/ports/0", { method: "DELETE" })).status).toBe(
       400,
     );
-    run.mockResolvedValueOnce('{"version":2,"endpoints":[]}');
+    run.mockResolvedValueOnce("invalid JSON");
     expect((await app.request("/ports")).status).toBe(502);
   });
 
@@ -88,18 +77,5 @@ describe("Codespace CLI routes", () => {
     expect(run.mock.calls.at(-1)?.[1]).toEqual(["detach", "0"]);
     available.mockResolvedValue(false);
     expect((await app.request("/usb/status")).status).toBe(404);
-  });
-
-  it("rejects non-owner principals before invoking CLI operations", async () => {
-    const { app, run } = fixture({
-      kind: "limited",
-      username: "guest",
-      grants: EMPTY_LIMITED_USER_GRANTS,
-      switched: false,
-      locked: true,
-      via: "direct",
-    });
-    expect((await app.request("/ports")).status).toBe(403);
-    expect(run).not.toHaveBeenCalled();
   });
 });

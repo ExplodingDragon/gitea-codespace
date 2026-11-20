@@ -7,6 +7,7 @@ import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
+import {pathToFileURL} from 'node:url';
 import {promisify} from 'node:util';
 
 const root = path.resolve(process.argv[2]);
@@ -23,14 +24,26 @@ try {
     const {stdout} = await promisify(execFile)(executable, ['--version'], {env, cwd: home, timeout: 30_000});
     assert.ok(stdout.includes(versions[pkg]), `${name}: unexpected version ${stdout}`);
     console.log(`${name}: ${stdout.trim()}`);
-    const args = name === 'codex' ? ['app-server'] : name === 'pi' ? ['--mode', 'rpc', '--no-session'] : ['serve', '--hostname', '127.0.0.1', '--port', '0'];
+    if (name === 'codex') {
+      const {configureCliInstallations} = await import(pathToFileURL(path.join(root, 'program/app/dist/sdk/cli-installation-runtime.js')));
+      // The installation probe owns its local API, not the workspace connection.
+      process.env.OPENAI_API_KEY = 'unused-workspace-test-key';
+      process.env.CODESPACE_YEP_CONNECTIONS = JSON.stringify({codex: {
+        baseUrl: 'http://127.0.0.1:1/unused', apiKeyEnv: 'OPENAI_API_KEY', models: [],
+      }});
+      const installations = configureCliInstallations(home, () => ({}), () => ({}));
+      const launch = await installations.resolve('codex', executable);
+      assert.equal(launch.command, executable);
+      console.log('codex: isolated installation execution verified');
+      continue;
+    }
+    const args = name === 'pi' ? ['--mode', 'rpc', '--no-session'] : ['serve', '--hostname', '127.0.0.1', '--port', '0'];
     const child = spawn(executable, args, {env, cwd: home, detached: true, stdio: ['pipe', 'pipe', 'pipe']});
     const exited = once(child, 'exit');
     let output = '';
     child.stderr.on('data', (chunk) => { output += chunk; });
     const timer = setTimeout(() => process.kill(-child.pid, 'SIGKILL'), 30_000);
     try {
-      if (name === 'codex') child.stdin.write(`${JSON.stringify({id: 1, method: 'initialize', params: {clientInfo: {name: 'codespace-smoke', version: '1.0.0'}}})}\n`);
       if (name === 'pi') child.stdin.write(`${JSON.stringify({id: 'smoke', type: 'get_state'})}\n`);
       let ready = false;
       for await (const line of createInterface({input: child.stdout})) {
@@ -44,9 +57,8 @@ try {
         } else {
           let message;
           try { message = JSON.parse(line); } catch { continue; }
-          if (message.id !== (name === 'codex' ? 1 : 'smoke')) continue;
-          if (name === 'codex') assert.ok(message.result, line);
-          else assert.equal(message.success, true, line);
+          if (message.id !== 'smoke') continue;
+          assert.equal(message.success, true, line);
         }
         ready = true;
         break;

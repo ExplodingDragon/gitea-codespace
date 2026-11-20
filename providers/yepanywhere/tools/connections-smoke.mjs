@@ -12,6 +12,7 @@ import {pathToFileURL} from 'node:url';
 
 const root = path.resolve(process.argv[2]);
 const sdk = pathToFileURL(`${root}/program/app/dist/sdk/`);
+const {parseCodespaceConnections} = await import(pathToFileURL(`${root}/program/app/bundled/@yep-anywhere/shared/dist/codespace-connections.js`));
 const {codespaceEnvironment, codespaceCodexArguments} = await import(new URL('codespace-connections.js', sdk));
 const {ClaudeProvider} = await import(new URL('providers/claude.js', sdk));
 const {resolveLocalClaudeCodeExecutable} = await import(new URL('providers/claude-executable.js', sdk));
@@ -60,13 +61,13 @@ try {
   for (const [backend, protocol] of cases) {
     const prefix = `/${backend}/${protocol}`;
     const apiProtocol = protocol === 'no-auth' ? 'openai-completions' : protocol;
-    process.env.CODESPACE_YEP_CONNECTIONS = JSON.stringify({[backend]: {
+    process.env.CODESPACE_YEP_CONNECTIONS = JSON.stringify(parseCodespaceConnections({[backend]: {
       baseUrl: `${apiUrl}${prefix}`,
       ...(protocol !== 'no-auth' ? {apiKeyEnv: keyName} : {}),
       models: [{id: 'test-model'}],
       ...(backend === 'claude' ? {authMode: protocol === 'bearer' ? 'bearer' : 'api-key'} : {}),
       ...(['pi', 'opencode'].includes(backend) ? {api: apiProtocol} : {}),
-    }});
+    }}));
     let command = path.join(root, 'program/tools/bin', backend === 'codex-oss' ? 'codex' : backend);
     let args;
     const env = codespaceEnvironment(backend, {...inherited, CODESPACE_YEP_CONNECTIONS: process.env.CODESPACE_YEP_CONNECTIONS});

@@ -29,6 +29,13 @@ const connection = {
 
 afterEach(() => vi.unstubAllEnvs());
 
+function configureConnections(input: unknown) {
+  vi.stubEnv(
+    "CODESPACE_YEP_CONNECTIONS",
+    JSON.stringify(parseCodespaceConnections(input)),
+  );
+}
+
 it("validates connection fields, model defaults and token limits", () => {
   expect(
     parseCodespaceConnections({ codex: connection, claude: null }),
@@ -95,7 +102,7 @@ it("uses optional connection catalogs for all five backends without discovery or
       },
     ]),
   );
-  vi.stubEnv("CODESPACE_YEP_CONNECTIONS", JSON.stringify(connections));
+  configureConnections(connections);
   for (const provider of providers) {
     const id = ["pi", "opencode"].includes(provider.name)
       ? "codespace/company/model"
@@ -123,7 +130,7 @@ it("uses optional connection catalogs for all five backends without discovery or
         models: requiresRegisteredModel ? [] : undefined,
       },
     };
-    vi.stubEnv("CODESPACE_YEP_CONNECTIONS", JSON.stringify(input));
+    configureConnections(input);
     expect(await provider.getAvailableModels()).toEqual([]);
     if (requiresRegisteredModel) {
       expect(() => codespaceModel(name)).toThrow(
@@ -150,13 +157,10 @@ it("uses optional connection catalogs for all five backends without discovery or
 });
 
 it("keeps Codex exec new and resumed turns on the same scoped Responses connection", () => {
-  vi.stubEnv(
-    "CODESPACE_YEP_CONNECTIONS",
-    JSON.stringify({
-      codex: { ...connection, models: [] },
-      "codex-oss": { ...connection, models: [] },
-    }),
-  );
+  configureConnections({
+    codex: { ...connection, models: [] },
+    "codex-oss": { ...connection, models: [] },
+  });
   const args = codespaceCodexArguments("codex");
   expect(args.join(" ")).toContain(
     'base_url="https://api.example.test/custom/v1"',
@@ -177,13 +181,10 @@ it("keeps Codex exec new and resumed turns on the same scoped Responses connecti
 
 it("scopes Claude SDK settings and OpenCode native configuration while preserving user storage", () => {
   vi.stubEnv("COMPANY_TOKEN", "example-token");
-  vi.stubEnv(
-    "CODESPACE_YEP_CONNECTIONS",
-    JSON.stringify({
-      claude: { ...connection, authMode: "bearer" },
-      opencode: { ...connection, api: "openai-responses" },
-    }),
-  );
+  configureConnections({
+    claude: { ...connection, authMode: "bearer" },
+    opencode: { ...connection, api: "openai-responses" },
+  });
   const claude = new ClaudeProvider();
   const env = claude["getSettings"]()?.env;
   expect(env).toMatchObject({
@@ -212,13 +213,10 @@ it("scopes Claude SDK settings and OpenCode native configuration while preservin
       },
     },
   });
-  vi.stubEnv(
-    "CODESPACE_YEP_CONNECTIONS",
-    JSON.stringify({
-      claude: { baseUrl: connection.baseUrl, models: connection.models },
-      codex: null,
-    }),
-  );
+  configureConnections({
+    claude: { baseUrl: connection.baseUrl, models: connection.models },
+    codex: null,
+  });
   expect(
     codespaceEnvironment("claude", { ANTHROPIC_AUTH_TOKEN: "unrelated-token" }),
   ).toMatchObject({

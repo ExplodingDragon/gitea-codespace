@@ -1,21 +1,21 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
-import {
-  type CodespaceBackend,
-  type CodespaceConnection,
-  type ModelInfo,
-  parseCodespaceConnections,
+import type {
+  CodespaceBackend,
+  CodespaceConnection,
+  CodespaceConnections,
+  ModelInfo,
 } from "@yep-anywhere/shared";
 import type { AuthStatus } from "./providers/types.js";
 
 export function codespaceConnection(
   backend: string,
 ): CodespaceConnection | undefined {
-  return (
-    parseCodespaceConnections(
-      JSON.parse(process.env.CODESPACE_YEP_CONNECTIONS || "{}"),
-    )[backend as CodespaceBackend] ?? undefined
+  // The launcher validates and normalizes this configuration before startup.
+  const connections: CodespaceConnections = JSON.parse(
+    process.env.CODESPACE_YEP_CONNECTIONS || "{}",
   );
+  return connections[backend as CodespaceBackend] ?? undefined;
 }
 
 export function codespaceAuthStatus(
