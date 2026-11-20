@@ -20,6 +20,8 @@ const (
 	RuntimeEndpointServiceName = "agent.v1.RuntimeEndpointService"
 	// RuntimeUSBIPServiceName is the fully-qualified name of the RuntimeUSBIPService service.
 	RuntimeUSBIPServiceName = "agent.v1.RuntimeUSBIPService"
+	// RuntimeEventServiceName is the fully-qualified name of the RuntimeEventService service.
+	RuntimeEventServiceName = "agent.v1.RuntimeEventService"
 )
 
 // These constants are the procedure names of the RPCs defined in this package. They're exposed at
@@ -39,6 +41,9 @@ const (
 	// AgentControlServiceUploadLogsProcedure is the procedure name of the AgentControlService's
 	// UploadLogs RPC.
 	AgentControlServiceUploadLogsProcedure = "/agent.v1.AgentControlService/UploadLogs"
+	// AgentControlServiceReportEventProcedure is the procedure name of the AgentControlService's
+	// ReportEvent RPC.
+	AgentControlServiceReportEventProcedure = "/agent.v1.AgentControlService/ReportEvent"
 	// AgentAccessServiceAccessProcedure is the procedure name of the AgentAccessService's Access RPC.
 	AgentAccessServiceAccessProcedure = "/agent.v1.AgentAccessService/Access"
 	// RuntimeEndpointServiceListProcedure is the procedure name of the RuntimeEndpointService's List
@@ -51,6 +56,8 @@ const (
 	RuntimeEndpointServiceDeleteProcedure = "/agent.v1.RuntimeEndpointService/Delete"
 	// RuntimeUSBIPServiceRunProcedure is the procedure name of the RuntimeUSBIPService's Run RPC.
 	RuntimeUSBIPServiceRunProcedure = "/agent.v1.RuntimeUSBIPService/Run"
+	// RuntimeEventServiceEmitProcedure is the procedure name of the RuntimeEventService's Emit RPC.
+	RuntimeEventServiceEmitProcedure = "/agent.v1.RuntimeEventService/Emit"
 )
 
 var (
@@ -75,6 +82,13 @@ var (
 			Procedure:  AgentControlServiceUploadLogsProcedure,
 		}
 	})
+	agentControlServiceReportEventSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("AgentControlService").Methods().ByName("ReportEvent"),
+			Procedure:  AgentControlServiceReportEventProcedure,
+		}
+	})
 )
 
 // AgentControlServiceClient is a client for the agent.v1.AgentControlService service.
@@ -85,6 +99,8 @@ type AgentControlServiceClient interface {
 	Control(context.Context) (AgentControlServiceControlClientStream, error)
 	// UploadLogs submits diagnostic output to Manager's bounded memory queue.
 	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
+	// ReportEvent accepts one instance event into Manager's bounded log queue.
+	ReportEvent(context.Context, *v1.ReportEventRequest) (*v1.ReportEventResponse, error)
 }
 
 // NewAgentControlServiceClient constructs a client for the agent.v1.AgentControlService service.
@@ -138,6 +154,8 @@ type AgentControlServiceHandler interface {
 	Control(context.Context, AgentControlServiceControlServerStream) error
 	// UploadLogs submits diagnostic output to Manager's bounded memory queue.
 	UploadLogs(context.Context, *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error)
+	// ReportEvent accepts one instance event into Manager's bounded log queue.
+	ReportEvent(context.Context, *v1.ReportEventRequest) (*v1.ReportEventResponse, error)
 }
 
 // RegisterAgentControlServiceHandler registers svc as the agent.v1.AgentControlService
@@ -148,6 +166,7 @@ func RegisterAgentControlServiceHandler(server *connect.Server, svc AgentControl
 		connect.Method{Spec: agentControlServicePrepareVolumeSpec(), Handler: adapter.prepareVolume},
 		connect.Method{Spec: agentControlServiceControlSpec(), Handler: adapter.control},
 		connect.Method{Spec: agentControlServiceUploadLogsSpec(), Handler: adapter.uploadLogs},
+		connect.Method{Spec: agentControlServiceReportEventSpec(), Handler: adapter.reportEvent},
 	)
 }
 
@@ -191,6 +210,10 @@ func (UnimplementedAgentControlServiceHandler) UploadLogs(context.Context, *v1.U
 	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.UploadLogs is not implemented")
 }
 
+func (UnimplementedAgentControlServiceHandler) ReportEvent(context.Context, *v1.ReportEventRequest) (*v1.ReportEventResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.AgentControlService.ReportEvent is not implemented")
+}
+
 type agentControlServiceClient struct {
 	client *connect.Client
 }
@@ -214,6 +237,14 @@ func (c *agentControlServiceClient) Control(ctx context.Context) (AgentControlSe
 func (c *agentControlServiceClient) UploadLogs(ctx context.Context, req *v1.UploadLogsRequest) (*v1.UploadLogsResponse, error) {
 	var res v1.UploadLogsResponse
 	if err := c.client.CallUnary(ctx, agentControlServiceUploadLogsSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+func (c *agentControlServiceClient) ReportEvent(ctx context.Context, req *v1.ReportEventRequest) (*v1.ReportEventResponse, error) {
+	var res v1.ReportEventResponse
+	if err := c.client.CallUnary(ctx, agentControlServiceReportEventSpec(), req, &res); err != nil {
 		return nil, err
 	}
 	return &res, nil
@@ -243,6 +274,18 @@ func (h agentControlServiceHandler) uploadLogs(ctx context.Context, _ connect.Sp
 		return err
 	}
 	res, err := h.svc.UploadLogs(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+func (h agentControlServiceHandler) reportEvent(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.ReportEventRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.ReportEvent(ctx, &req)
 	if err != nil {
 		return err
 	}
@@ -580,6 +623,74 @@ func (h runtimeUSBIPServiceHandler) run(ctx context.Context, _ connect.Spec, str
 		return err
 	}
 	res, err := h.svc.Run(ctx, &req)
+	if err != nil {
+		return err
+	}
+	return stream.Send(res)
+}
+
+var (
+	runtimeEventServiceEmitSpec = sync.OnceValue(func() connect.Spec {
+		return connect.Spec{
+			StreamType: connect.StreamTypeUnary,
+			Schema:     v1.File_agent_v1_service_proto.Services().ByName("RuntimeEventService").Methods().ByName("Emit"),
+			Procedure:  RuntimeEventServiceEmitProcedure,
+		}
+	})
+)
+
+// RuntimeEventServiceClient is a client for the agent.v1.RuntimeEventService service.
+type RuntimeEventServiceClient interface {
+	Emit(context.Context, *v1.EmitRequest) (*v1.EmitResponse, error)
+}
+
+// NewRuntimeEventServiceClient constructs a client for the agent.v1.RuntimeEventService service.
+// Multiple service clients may share a single connect.Client.
+func NewRuntimeEventServiceClient(client *connect.Client) RuntimeEventServiceClient {
+	return &runtimeEventServiceClient{client: client}
+}
+
+// RuntimeEventServiceHandler is an implementation of the agent.v1.RuntimeEventService service.
+type RuntimeEventServiceHandler interface {
+	Emit(context.Context, *v1.EmitRequest) (*v1.EmitResponse, error)
+}
+
+// RegisterRuntimeEventServiceHandler registers svc as the agent.v1.RuntimeEventService
+// implementation on server.
+func RegisterRuntimeEventServiceHandler(server *connect.Server, svc RuntimeEventServiceHandler) {
+	adapter := runtimeEventServiceHandler{svc: svc}
+	server.Register(
+		connect.Method{Spec: runtimeEventServiceEmitSpec(), Handler: adapter.emit},
+	)
+}
+
+// UnimplementedRuntimeEventServiceHandler returns CodeUnimplemented from all methods.
+type UnimplementedRuntimeEventServiceHandler struct{}
+
+func (UnimplementedRuntimeEventServiceHandler) Emit(context.Context, *v1.EmitRequest) (*v1.EmitResponse, error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, "agent.v1.RuntimeEventService.Emit is not implemented")
+}
+
+type runtimeEventServiceClient struct {
+	client *connect.Client
+}
+
+func (c *runtimeEventServiceClient) Emit(ctx context.Context, req *v1.EmitRequest) (*v1.EmitResponse, error) {
+	var res v1.EmitResponse
+	if err := c.client.CallUnary(ctx, runtimeEventServiceEmitSpec(), req, &res); err != nil {
+		return nil, err
+	}
+	return &res, nil
+}
+
+type runtimeEventServiceHandler struct{ svc RuntimeEventServiceHandler }
+
+func (h runtimeEventServiceHandler) emit(ctx context.Context, _ connect.Spec, stream connect.ServerStream) error {
+	var req v1.EmitRequest
+	if err := stream.Receive(&req); err != nil {
+		return err
+	}
+	res, err := h.svc.Emit(ctx, &req)
 	if err != nil {
 		return err
 	}

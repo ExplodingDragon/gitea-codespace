@@ -14,6 +14,8 @@ service AgentControlService {
   rpc Control(stream ControlRequest) returns (stream ControlResponse);
   // UploadLogs submits diagnostic output to Manager's bounded memory queue.
   rpc UploadLogs(UploadLogsRequest) returns (UploadLogsResponse);
+  // ReportEvent accepts one instance event into Manager's bounded log queue.
+  rpc ReportEvent(ReportEventRequest) returns (ReportEventResponse);
 }
 
 message PrepareVolumeRequest {
@@ -44,6 +46,26 @@ service RuntimeUSBIPService {
   // Run executes one bounded USB/IP client operation in the Runtime.
   rpc Run(RuntimeUSBIPServiceRunRequest) returns (RuntimeUSBIPServiceRunResponse);
 }
+
+// RuntimeEventService shares the Runtime's private Unix socket.
+service RuntimeEventService {
+  rpc Emit(EmitRequest) returns (EmitResponse);
+}
+
+message EmitRequest {
+  string type = 1;
+  string message = 2;
+}
+
+// Success acknowledges queue admission, not durable storage in Gitea.
+message EmitResponse {}
+
+message ReportEventRequest {
+  string type = 1;
+  string message = 2;
+}
+
+message ReportEventResponse {}
 
 enum RuntimeUSBIPOperation {
   RUNTIME_USBIP_OPERATION_UNSPECIFIED = 0;

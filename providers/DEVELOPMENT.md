@@ -11,16 +11,11 @@ production adapters.
 
 ## Lifecycle
 
-When creating a template with Web IDE enabled or changing its enabled Web IDE
-configuration, Manager validates the provider's OCI metadata and options, then
-records the selected image reference. Other template edits retain the validated
-Web IDE configuration so they can be saved independently of registry availability.
-A new Codespace copies that configuration into its runtime snapshot; later
-template edits apply to subsequently created Codespaces. See the
-[provider overview](README.md) for image reference formats, pull policies, and
-when image updates take effect.
+Each Codespace retains the provider image reference and options selected at
+creation. See the [provider overview](README.md) for template configuration,
+image reference formats, pull policies, and when image updates take effect.
 
-Each start uses that snapshot:
+Creation and resume use the same startup sequence:
 
 1. Kubernetes mounts the selected image's `/provider` directory read-only at
    `/opt/gitea-codespace/web-ide` in the Runtime using an `image` volume.
@@ -48,22 +43,9 @@ This separates the files required to start the Runtime from the editor process
 running inside it. Provider process recovery is described under
 [`bin/serve`](#binserve).
 
-### Implementation acceptance criteria
-
-- Saving an environment preserves its normalized tag or explicit digest.
-- Creating a template with Web IDE enabled or changing its enabled Web IDE
-  configuration validates the image metadata and options; unrelated edits
-  preserve that configuration without a registry request.
-- New Pods refresh tags and reuse fixed digests; running Pods retain their image.
-- Creation and resume use the same sequence: mount the bundle, prepare it as
-  the remote user, submit `bin/serve`, and publish one browser endpoint.
-- The editor process runs inside the Dev Container and can use the workspace,
-  declared environment, and persistent provider data.
-- An image-volume failure blocks Runtime startup; a later editor preparation
-  or launch failure only withholds Web IDE access.
-- A successful launch schedules `postAttachCommand` after the required Dev
-  Container lifecycle commands finish; its failure is logged while editor access
-  remains available.
+After a successful launch submission, Agent schedules `postAttachCommand` once
+the required Dev Container lifecycle commands finish. A failure in that command
+is logged while editor access remains available.
 
 ## Provider identity and image metadata
 
@@ -124,26 +106,12 @@ metadata label is limited to 32 KiB, and saved option values are limited to 16
 KiB. During image resolution, Manager takes the schema's root default object
 or constructs an object from property defaults, including nested objects, and
 validates that result against the schema. Supply defaults that satisfy required
-fields and other constraints: invalid defaults fail image resolution before the
-administrator can edit the options. This gives each resolved image a valid
-starting configuration. Manager also validates edited options before saving
-the environment template.
+fields and other constraints so image resolution provides a valid starting
+configuration. Manager also validates edited options before saving the template.
 
 For a multi-platform image, the provider metadata, version, source, and
 revision must be identical on `linux/amd64` and `linux/arm64`. This makes one
 template behave the same regardless of the Kubernetes node selected for a pod.
-
-### Implementation acceptance criteria
-
-- Manager resolves the image, displays its provider identity and options, and
-  stores the normalized image reference in the environment template.
-- Valid option values round-trip through the administration form and validate
-  against the embedded schema.
-- Resolving the image produces default options that already satisfy its schema;
-  administrators can then edit and save those options. Re-resolving the same
-  provider preserves edited options; selecting a different provider uses its defaults.
-- Every platform manifest presents the same provider ID, version, source,
-  revision, and option schema.
 
 ## Bundle layout
 
@@ -171,9 +139,8 @@ program/...
 The manifest is limited to 64 KiB. `bin/prepare` and `bin/serve` must be regular
 executable files. Everything else under the bundle is provider-owned.
 
-Kubernetes selects the node architecture and mounts the image with
-`subPath: provider`. The manifest must identify the selected provider and
-architecture, use the supported schema version, and contain a nonempty version.
+The manifest identifies the selected provider and architecture, uses schema
+version `1`, and contains a nonempty version.
 
 Make directories traversable and files readable by the Dev Container remote
 user, and preserve executable permissions on programs. The image can use
@@ -187,16 +154,6 @@ user before adapters start, so images can retain their own user IDs. Existing
 files retain their permissions across stop and resume. See the
 [startup design](https://github.com/ExplodingDragon/gitea-dev/blob/main/src/codespace/runtime-platform.md#web-ide-交付与启动)
 for lifecycle sequencing and failure handling.
-
-### Implementation acceptance criteria
-
-- Mounting the image's `provider` subdirectory exposes the complete bundle.
-- The manifest matches the selected provider and architecture and declares a
-  supported schema version and nonempty version.
-- The remote user can read the manifest and assets and execute both adapters
-  from the read-only bundle mounted in the Dev Container.
-- On creation and resume, the remote user can write the data directory even
-  when its UID differs from the Runtime host user.
 
 ## Adapter programs
 
@@ -216,8 +173,6 @@ following environment:
 
 The normal Dev Container remote environment and the secrets selected for this
 instance are also available. Provider state belongs in `CODESPACE_WEB_IDE_DATA_DIR`.
-The program bundle is read-only and comes from the image reference in the
-Codespace runtime snapshot, following the pull policy described in [Lifecycle](#lifecycle).
 The SSH variables let providers generate local connection instructions; their
 refresh behavior and usage examples are documented in the [SSH guide](../docs/ssh.md).
 Expose only these public fields to a browser interface; the complete process
@@ -301,18 +256,10 @@ foreground process manager behind `bin/serve`.
 Endpoint publication and startup failures follow the [lifecycle table](#lifecycle),
 so process recovery remains the provider's responsibility.
 
-### Implementation acceptance criteria
-
-- `bin/prepare` accepts both initialization values, combines template and
-  repository options deterministically, and stores writable state only in the
-  provider data directory.
-- Adapter processes receive the current Pod's SSH connection information;
-  browser connection APIs return only the public user, host, and port.
-- Requests made before the editor listens receive the temporary Gateway error;
-  requests made after it listens succeed without resuming the codespace.
-- Exiting `bin/serve` does not stop SSH, the Dev Container, or other endpoints.
-- A Provider that needs automatic restart keeps its own process manager in the
-  foreground behind `bin/serve`.
+Providers can report unexpected exits through the [workspace event command](../docs/events.md).
+Keep error details bounded and reporting failures independent of process
+recovery. The platform accepts these events during startup and while the
+instance runs, using the same Gitea log as lifecycle output.
 
 ## Build the carrier image
 
@@ -369,13 +316,6 @@ only on nodes with that architecture. For private registries, configure
 [image access](../charts/gitea-codespace/README.md#configure-web-ide-storage-and-image-access)
 for both Manager metadata resolution and node image pulls.
 
-### Implementation acceptance criteria
-
-- Each platform image contains `/provider` with the matching manifest and
-  executable adapters, accessible to a non-root remote user.
-- Published platform manifests share the same metadata and resolve successfully
-  in Manager.
-
 ## Test the image locally
 
 Use a test cluster meeting the [deployment requirements](../charts/gitea-codespace/README.md#requirements).
@@ -417,8 +357,9 @@ an image imported into the node's container runtime, use its imported
 without requiring a provider registry request.
 
 Inspect `kubectl logs web-ide-bundle-check` and the Pod's exit status, then remove
-it with `kubectl delete pod web-ide-bundle-check`. For a private registry, supply
-the Pod's `imagePullSecrets` and configure registry trust on the node.
+it with `kubectl delete pod web-ide-bundle-check`. Repeat on each supported node
+architecture. For a private registry, supply the Pod's `imagePullSecrets` and
+configure registry trust on the node.
 
 Follow the project [connection guide](../README.md#connect-gitea) to select the
 provider image in an environment template, then create a Codespace to validate
@@ -426,15 +367,6 @@ Agent's manifest checks and the adapter inside a compatible Dev Container.
 Repeat with the supported isolation modes and verify that editor state survives
 a stop and resume. Use the [lifecycle table](#lifecycle) to identify which startup
 stage failed.
-
-### Implementation acceptance criteria
-
-- The test Pod completes and reads the expected manifest on every supported
-  node architecture.
-- Recreating the test Pod with a published tag checks its current image;
-  an imported digest selects the exact locally available image.
-- A Codespace prepares and serves the editor as its remote user from the
-  read-only bundle, and retains provider data across stop and resume.
 
 ## Maintain the official providers
 
@@ -444,12 +376,12 @@ both platform build records use the same version before creating the index.
 PRs and manual runs on other branches validate without publishing. Image update
 and pinning behavior is documented in the [provider overview](README.md).
 
-The official providers restart their editor after
-every exit, with a one-second delay to avoid a tight failure loop. They restart
-after both successful and failed exits because their role is to keep the editor
-running. `HUP`, `INT`, and `TERM` are forwarded to the current editor process and
-end the provider loop, which lets Docker stop the Dev Container without the
-provider starting a replacement process.
+The official providers use their `bin/serve` shell scripts to restart editors
+after exit, with a delay to avoid a tight failure loop. Shutdown signals reach
+the editor and end the loop so stopping the Dev Container does not start another
+process. Yep Anywhere also sends bounded exit diagnostics through the
+[workspace event command](../docs/events.md); reporting failures leave restart
+and shutdown available.
 
 Each provider has an independent toolchain because its application and
 integration follow upstream dependencies. Select Node.js from that provider's
@@ -486,17 +418,3 @@ their Makefiles define the checks and build steps for each toolchain.
 Each provider workflow runs for changes to its own source. Changes to the shared
 [build workflow](../.github/workflows/provider-build.yml) trigger all providers;
 the [platform workflow](../.github/workflows/ci.yml) handles core changes separately.
-
-### Implementation acceptance criteria
-
-- The official providers restart the editor after a successful or failed exit,
-  with a one-second delay between attempts.
-- `HUP`, `INT`, and `TERM` reach the running editor and end its restart loop.
-- Each provider passes its own `check` target and supplies a valid bundle for
-  every published architecture.
-- Image version labels match the completed bundle manifest, including when
-  building VS Code with a version override.
-- Both platform records have the same version before publishing, and `latest`
-  and the bundle-version tag resolve to the same multi-platform index.
-- Built images pass the mounted-bundle verification and their provider-specific
-  configuration and integration checks.

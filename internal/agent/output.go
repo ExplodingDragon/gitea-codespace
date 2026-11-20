@@ -38,6 +38,20 @@ type outputWriter struct {
 	discarding bool
 }
 
+func logCredentials(response *agentv1.ControlResponse) []string {
+	var credentials []string
+	if access := response.GetAccess(); access != nil {
+		credentials = append(credentials, access.GiteaToken)
+		for _, secret := range access.Secrets {
+			credentials = append(credentials, secret.GetValue())
+		}
+	}
+	for _, credential := range response.GetRuntime().GetCache().GetCredentials() {
+		credentials = append(credentials, credential.GetPassword())
+	}
+	return credentials
+}
+
 func NewOutput(version int64, credentials []string) *Output {
 	output := &Output{version: version, redactor: logbuffer.NewRedactor(credentials), changed: make(chan struct{}, 1)}
 	output.stdout, output.stderr = &outputWriter{output: output}, &outputWriter{output: output}

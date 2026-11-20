@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -17,38 +18,42 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/logbuffer"
+	"gitea.dev/codespace/internal/runtimeevent"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const maxManagerLogBytes = 64 * 1024 * 1024
 
-var errOperationLogClosed = errors.New("operation log is closed")
+var errCodespaceLogClosed = errors.New("codespace log sender is closed")
 
-// operationLogs owns the single Gitea sender for each active operation. All
+// codespaceLogs owns the single Gitea sender for each instance's current operation. All
 // accounting is under mu; remote calls and retry delays are outside that lock.
-type operationLogs struct {
-	mu      sync.Mutex
-	sites   map[types.UID]context.Context
-	senders map[types.UID]*operationLogSender
-	bytes   int
-	remote  func(context.Context, api.ResourceReference) (codespacev1connect.ManagerServiceClient, error)
+type codespaceLogs struct {
+	mu                sync.Mutex
+	sites             map[types.UID]context.Context
+	senders           map[types.UID]*codespaceLogSender
+	bytes             int
+	eventMaxPerSecond int
+	remote            func(context.Context, api.ResourceReference) (codespacev1connect.ManagerServiceClient, error)
 }
 
-type operationLogSender struct {
-	site        api.ResourceReference
-	version     int64
-	codespaceID int64
-	progress    string
-	buffer      logbuffer.Buffer
-	closed      bool
-	finishAt    time.Time
-	cancel      context.CancelFunc
-	wake        chan struct{}
-	done        chan struct{}
+type codespaceLogSender struct {
+	site          api.ResourceReference
+	version       int64
+	codespaceID   int64
+	progress      string
+	buffer        logbuffer.Buffer
+	closed        bool
+	completed     bool
+	eventTimes    []time.Time
+	drainDeadline time.Time
+	cancel        context.CancelFunc
+	wake          chan struct{}
+	done          chan struct{}
 }
 
-func (l *operationLogs) OpenSite(ctx context.Context, uid types.UID) {
+func (l *codespaceLogs) OpenSite(ctx context.Context, uid types.UID) {
 	if l == nil {
 		return
 	}
@@ -56,12 +61,12 @@ func (l *operationLogs) OpenSite(ctx context.Context, uid types.UID) {
 	defer l.mu.Unlock()
 	if l.sites == nil {
 		l.sites = make(map[types.UID]context.Context)
-		l.senders = make(map[types.UID]*operationLogSender)
+		l.senders = make(map[types.UID]*codespaceLogSender)
 	}
 	l.sites[uid] = ctx
 }
 
-func (l *operationLogs) CloseSite(uid types.UID) {
+func (l *codespaceLogs) CloseSite(uid types.UID) {
 	if l == nil {
 		return
 	}
@@ -84,7 +89,7 @@ func (l *operationLogs) CloseSite(uid types.UID) {
 
 // RetainSite uses the live inventory, so a lagging informer cannot discard a
 // newly accepted operation's output.
-func (l *operationLogs) RetainSite(uid types.UID, rows []api.Codespace) {
+func (l *codespaceLogs) RetainSite(uid types.UID, rows []api.Codespace) {
 	if l == nil {
 		return
 	}
@@ -101,51 +106,26 @@ func (l *operationLogs) RetainSite(uid types.UID, rows []api.Codespace) {
 		if sender.site.UID == uid && active[id] != sender.version {
 			sender.closed = true
 			sender.cancel()
-			delete(l.senders, id)
+			// Keep the rate window across operation changes and reject stale
+			// observations until the new operation opens its sender.
+			if _, exists := active[id]; !exists {
+				delete(l.senders, id)
+			}
 		}
 	}
 }
 
 // Append deduplicates infrastructure progress independently of diagnostics.
 // Agent batches use an empty stage; diagnostic captures own their deduplication.
-func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespacev1.LogLine) error {
+func (l *codespaceLogs) Append(cs *api.Codespace, stage string, lines []*codespacev1.LogLine) error {
 	if l == nil {
-		return connect.NewError(connect.CodeUnavailable, "operation log sender is not ready")
+		return connect.NewError(connect.CodeUnavailable, "codespace log sender is not ready")
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	ctx := l.sites[cs.Spec.Site.UID]
-	if ctx == nil || ctx.Err() != nil {
-		return connect.NewError(connect.CodeUnavailable, "operation log site is not active")
-	}
-	if !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
-		return errOperationLogClosed
-	}
-	sender := l.senders[cs.UID]
-	if sender != nil && sender.version > cs.Spec.Operation.Version {
-		return errOperationLogClosed
-	}
-	if sender == nil || sender.version != cs.Spec.Operation.Version {
-		if cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version {
-			return errOperationLogClosed
-		}
-		// Cached progress only supplements a live accepted operation. A stale
-		// observation must not reopen a sender that live inventory has retired.
-		if stage != "" {
-			return nil
-		}
-		if sender != nil {
-			sender.closed = true
-			sender.cancel()
-		}
-		workerCtx, cancel := context.WithCancel(ctx)
-		sender = &operationLogSender{site: cs.Spec.Site, codespaceID: cs.Spec.CodespaceID, version: cs.Spec.Operation.Version, cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{})}
-		l.senders[cs.UID] = sender
-		l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[INFO] [operation] Accepted %s #%d", strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version)}}, maxManagerLogBytes-l.bytes)
-		go l.send(workerCtx, sender)
-	}
-	if sender.closed || (!sender.finishAt.IsZero() && !time.Now().Before(sender.finishAt)) {
-		return errOperationLogClosed
+	sender, err := l.senderLocked(cs, stage, false)
+	if err != nil || sender == nil {
+		return err
 	}
 	if stage == "" || stage == diagnosticLogStage || stage != sender.progress {
 		l.bytes += sender.buffer.Add(lines, maxManagerLogBytes-l.bytes)
@@ -160,32 +140,134 @@ func (l *operationLogs) Append(cs *api.Codespace, stage string, lines []*codespa
 	return nil
 }
 
-// Finish allows same-version output to arrive briefly after finalization.
-func (l *operationLogs) Finish(cs *api.Codespace) {
+// senderLocked also recovers a running instance's event sender after election.
+// Ordinary output cannot reopen a settled operation by itself.
+func (l *codespaceLogs) senderLocked(cs *api.Codespace, stage string, event bool) (*codespaceLogSender, error) {
+	ctx := l.sites[cs.Spec.Site.UID]
+	if ctx == nil || ctx.Err() != nil {
+		return nil, connect.NewError(connect.CodeUnavailable, "codespace log site is not active")
+	}
+	if !cs.DeletionTimestamp.IsZero() || cs.Status.RecoveryAction != "" {
+		return nil, errCodespaceLogClosed
+	}
+	sender := l.senders[cs.UID]
+	if sender != nil && sender.version > cs.Spec.Operation.Version {
+		return nil, errCodespaceLogClosed
+	}
+	if sender == nil || sender.version != cs.Spec.Operation.Version {
+		settled := cs.Status.SettledOperationVersion >= cs.Spec.Operation.Version
+		if settled && !(event && hasRunningRuntime(cs)) {
+			return nil, errCodespaceLogClosed
+		}
+		// Cached progress only supplements a live accepted operation. A stale
+		// observation must not reopen a sender that live inventory has retired.
+		if stage != "" {
+			return nil, nil
+		}
+		var eventTimes []time.Time
+		if sender != nil {
+			sender.closed = true
+			sender.cancel()
+			eventTimes = sender.eventTimes
+		}
+		workerCtx, cancel := context.WithCancel(ctx)
+		sender = &codespaceLogSender{
+			site: cs.Spec.Site, codespaceID: cs.Spec.CodespaceID, version: cs.Spec.Operation.Version,
+			completed: settled, eventTimes: eventTimes,
+			cancel: cancel, wake: make(chan struct{}, 1), done: make(chan struct{}),
+		}
+		l.senders[cs.UID] = sender
+		if !settled {
+			l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: fmt.Sprintf("[INFO] [operation] Accepted %s #%d", strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version)}}, maxManagerLogBytes-l.bytes)
+		}
+		go l.send(workerCtx, sender)
+	}
+	if sender.closed || (!sender.drainDeadline.IsZero() && !time.Now().Before(sender.drainDeadline)) {
+		return nil, errCodespaceLogClosed
+	}
+	return sender, nil
+}
+
+func (l *codespaceLogs) ReportEvent(cs *api.Codespace, eventType, message string) error {
+	if err := runtimeevent.Validate(eventType, message); err != nil {
+		return connect.NewError(connect.CodeInvalidArgument, err.Error())
+	}
+	if l == nil {
+		return connect.NewError(connect.CodeUnavailable, "codespace log sender is not ready")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	sender, err := l.senderLocked(cs, "", true)
+	if err != nil {
+		if errors.Is(err, errCodespaceLogClosed) {
+			return connect.NewError(connect.CodeFailedPrecondition, err.Error())
+		}
+		return err
+	}
+	cutoff := now.Add(-time.Second)
+	first := 0
+	for first < len(sender.eventTimes) && !sender.eventTimes[first].After(cutoff) {
+		first++
+	}
+	sender.eventTimes = slices.Delete(sender.eventTimes, 0, first)
+	if len(sender.eventTimes) >= l.eventMaxPerSecond {
+		return connect.NewError(connect.CodeResourceExhausted, "codespace event rate limit exceeded")
+	}
+	var lines []*codespacev1.LogLine
+	for _, line := range strings.Split(strings.ReplaceAll(message, "\r", ""), "\n") {
+		lines = append(lines, &codespacev1.LogLine{TimestampUnixNano: now.UnixNano(), Message: "[EVENT] [" + eventType + "] " + line})
+	}
+	size, accepted := sender.buffer.TryAdd(lines, maxManagerLogBytes-l.bytes)
+	if !accepted {
+		return connect.NewError(connect.CodeResourceExhausted, "codespace log queue is full")
+	}
+	l.bytes += size
+	sender.eventTimes = append(sender.eventTimes, now)
+	select {
+	case sender.wake <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+func hasRunningRuntime(cs *api.Codespace) bool {
+	result := cs.Status.Result
+	return (cs.Spec.Operation.Type == "create" || cs.Spec.Operation.Type == "resume") &&
+		result != nil && result.Version == cs.Spec.Operation.Version && result.Succeeded &&
+		cs.Status.Target != nil && cs.Status.Target.Ready && cs.Status.Pod.UID != ""
+}
+
+// CompleteOperation records the summary once. A running instance retains its
+// sender; terminal operations allow only a short, bounded output drain.
+func (l *codespaceLogs) CompleteOperation(cs *api.Codespace) {
 	if l == nil {
 		return
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	sender := l.senders[cs.UID]
-	if sender == nil || sender.version != cs.Spec.Operation.Version || sender.closed {
+	if sender == nil || sender.version != cs.Spec.Operation.Version || sender.closed || sender.completed {
 		return
 	}
-	if sender.finishAt.IsZero() {
-		if result := cs.Status.Result; result != nil && result.Version == sender.version {
-			level, outcome := "INFO", "completed"
-			if !result.Succeeded {
-				level, outcome = "ERROR", "failed; see preceding output"
-			} else if cs.Spec.Operation.Type == "stop" {
-				outcome = "completed; workspace volume retained"
-			} else if cs.Spec.Operation.Type == "delete" {
-				outcome = "completed; runtime resources removed"
-			}
-			message := fmt.Sprintf("[%s] [operation] %s #%d %s", level, strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version, outcome)
-			l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}}, maxManagerLogBytes-l.bytes)
-		}
-		sender.finishAt = time.Now().Add(5 * time.Second)
-		time.AfterFunc(time.Until(sender.finishAt), sender.cancel)
+	result := cs.Status.Result
+	if result == nil || result.Version != sender.version {
+		return
+	}
+	level, outcome := "INFO", "completed"
+	if !result.Succeeded {
+		level, outcome = "ERROR", "failed; see preceding output"
+	} else if cs.Spec.Operation.Type == "stop" {
+		outcome = "completed; workspace volume retained"
+	} else if cs.Spec.Operation.Type == "delete" {
+		outcome = "completed; runtime resources removed"
+	}
+	message := fmt.Sprintf("[%s] [operation] %s #%d %s", level, strings.TrimPrefix(cs.Spec.Operation.Type, "abort_"), sender.version, outcome)
+	l.bytes += sender.buffer.Add([]*codespacev1.LogLine{{TimestampUnixNano: time.Now().UnixNano(), Message: message}}, maxManagerLogBytes-l.bytes)
+	sender.completed = true
+	if !hasRunningRuntime(cs) {
+		sender.drainDeadline = time.Now().Add(5 * time.Second)
+		time.AfterFunc(time.Until(sender.drainDeadline), sender.cancel)
 	}
 	select {
 	case sender.wake <- struct{}{}:
@@ -193,7 +275,7 @@ func (l *operationLogs) Finish(cs *api.Codespace) {
 	}
 }
 
-func (l *operationLogs) send(ctx context.Context, sender *operationLogSender) {
+func (l *codespaceLogs) send(ctx context.Context, sender *codespaceLogSender) {
 	defer close(sender.done)
 	defer sender.cancel()
 	defer func() {

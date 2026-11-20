@@ -153,19 +153,19 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 		runtime.SSHEnvironment[name] = os.Getenv(name)
 	}
 	defer func() { returnErr = errors.Join(returnErr, runtime.Close()) }()
-	endpointListener, endpointServer, err := prepareEndpointServer(ctx, runtime)
+	runtimeListener, runtimeServer, err := prepareRuntimeServer(ctx, runtime, remote)
 	if err != nil {
 		return err
 	}
 	defer func() {
-		_ = endpointListener.Close()
+		_ = runtimeListener.Close()
 		_ = os.Remove(runtimeendpoint.AgentSocketPath)
 	}()
 	sampler := agentpkg.NewResourceSampler(hierarchy)
 	client := &agentpkg.ControlClient{Journal: journal, Remote: remote, Execute: runtime.Execute, Sample: sampler.Sample, TargetChanges: runtime.TargetChanges(), CurrentTarget: runtime.CurrentAccessTarget}
 	group, groupCtx := errgroup.WithContext(ctx)
 	group.Go(func() error { return runAccessServer(groupCtx, runtime, certificates) })
-	group.Go(func() error { return serveEndpointServer(groupCtx, endpointListener, endpointServer) })
+	group.Go(func() error { return serveRuntimeServer(groupCtx, runtimeListener, runtimeServer) })
 	group.Go(func() error { return client.Run(groupCtx) })
 	err = group.Wait()
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
@@ -174,13 +174,13 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	return err
 }
 
-func prepareEndpointServer(ctx context.Context, runtime *agentpkg.Runtime) (net.Listener, *http.Server, error) {
+func prepareRuntimeServer(ctx context.Context, runtime *agentpkg.Runtime, remote agentv1connect.AgentControlServiceClient) (net.Listener, *http.Server, error) {
 	if err := os.MkdirAll(filepath.Dir(runtimeendpoint.AgentSocketPath), 0o755); err != nil {
 		return nil, nil, err
 	}
 	if info, err := os.Lstat(runtimeendpoint.AgentSocketPath); err == nil {
 		if info.Mode()&os.ModeSocket == 0 {
-			return nil, nil, fmt.Errorf("runtime endpoint socket path is occupied by a non-socket")
+			return nil, nil, fmt.Errorf("runtime command socket path is occupied by a non-socket")
 		}
 		if err := os.Remove(runtimeendpoint.AgentSocketPath); err != nil {
 			return nil, nil, err
@@ -200,13 +200,14 @@ func prepareEndpointServer(ctx context.Context, runtime *agentpkg.Runtime) (net.
 	rpcServer := connect.NewServer()
 	agentv1connect.RegisterRuntimeEndpointServiceHandler(rpcServer, &agentpkg.RuntimeEndpointServer{Runtime: runtime})
 	agentv1connect.RegisterRuntimeUSBIPServiceHandler(rpcServer, &agentpkg.RuntimeUSBIPServer{Runtime: runtime})
+	agentv1connect.RegisterRuntimeEventServiceHandler(rpcServer, &agentpkg.RuntimeEventServer{Runtime: runtime, Remote: remote})
 	mux := http.NewServeMux()
-	connecthttp.Mount(mux, rpcServer)
+	connecthttp.Mount(mux, rpcServer, connecthttp.WithReadMaxBytes(128*1024))
 	server := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: time.Minute, MaxHeaderBytes: 16 * 1024}
 	return listener, server, nil
 }
 
-func serveEndpointServer(ctx context.Context, listener net.Listener, server *http.Server) error {
+func serveRuntimeServer(ctx context.Context, listener net.Listener, server *http.Server) error {
 	server.BaseContext = func(net.Listener) context.Context { return ctx }
 	stop := context.AfterFunc(ctx, func() {
 		shutdown, cancel := context.WithTimeout(context.Background(), 5*time.Second)

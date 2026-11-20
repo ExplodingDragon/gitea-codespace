@@ -34,7 +34,7 @@ type Operations struct {
 	Samples             *ResourceSamples
 	Activity            *RuntimeActivityTracker
 	Connections         *siteConnectionStore
-	Logs                *operationLogs
+	Logs                *codespaceLogs
 	ManagementNamespace string
 	PlatformImage       string
 }
@@ -331,7 +331,7 @@ func (o *Operations) Flush(ctx context.Context, cs *api.Codespace, remote codesp
 	if result == nil || result.Version != cs.Spec.Operation.Version || cs.Status.SettledOperationVersion >= result.Version {
 		return nil
 	}
-	o.Logs.Finish(cs)
+	o.Logs.CompleteOperation(cs)
 	status := codespacev1.FinalStatus_FINAL_STATUS_FAILED
 	if result.Succeeded {
 		status = codespacev1.FinalStatus_FINAL_STATUS_DONE

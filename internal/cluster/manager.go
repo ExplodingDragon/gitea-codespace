@@ -47,6 +47,7 @@ type ManagerOptions struct {
 	IdentitySecretName string
 	HealthAddress      string
 	PodName            string
+	EventMaxPerSecond  int
 }
 
 type Manager struct {
@@ -163,6 +164,9 @@ func (l *Leadership) Handler(next http.Handler) http.Handler {
 }
 
 func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
+	if options.EventMaxPerSecond <= 0 {
+		return nil, fmt.Errorf("event-max-per-second must be positive")
+	}
 	if options.Namespace == "" || options.ManagerURL == "" || options.ComponentURL == "" || options.PlatformImage == "" || options.IdentitySecretName == "" {
 		return nil, fmt.Errorf("management namespace, Manager and component URLs, platform image and internal CA Secret name are required")
 	}
@@ -279,7 +283,7 @@ func NewManager(config *rest.Config, options ManagerOptions) (*Manager, error) {
 		return nil, err
 	}
 	components := &ComponentServer{Client: liveClient, IdentityIndex: mgr.GetClient(), ManagementNamespace: options.Namespace, Tickets: tickets, Activity: activity, Changes: componentChanges, Connections: connections}
-	logs := &operationLogs{remote: func(ctx context.Context, ref api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
+	logs := &codespaceLogs{eventMaxPerSecond: options.EventMaxPerSecond, remote: func(ctx context.Context, ref api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
 		var site api.GiteaSite
 		if err := liveClient.Get(ctx, client.ObjectKey{Name: ref.Name}, &site); err != nil {
 			return nil, err

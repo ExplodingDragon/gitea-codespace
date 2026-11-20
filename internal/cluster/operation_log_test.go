@@ -34,10 +34,10 @@ func (r *operationLogRemote) UpdateLog(ctx context.Context, request *codespacev1
 	return r.update(ctx, request)
 }
 
-func testOperationLogs(t *testing.T, remote *operationLogRemote) (*operationLogs, *api.Codespace) {
+func testOperationLogs(t *testing.T, remote *operationLogRemote) (*codespaceLogs, *api.Codespace) {
 	t.Helper()
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{UID: "runtime-uid", Namespace: "site"}, Spec: api.CodespaceSpec{Site: api.ResourceReference{Name: "site", UID: "site-uid"}, CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 2}}, Status: api.CodespaceStatus{}}
-	logs := &operationLogs{remote: func(context.Context, api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
+	logs := &codespaceLogs{eventMaxPerSecond: 5, remote: func(context.Context, api.ResourceReference) (codespacev1connect.ManagerServiceClient, error) {
 		return remote, nil
 	}}
 	logs.OpenSite(t.Context(), cs.Spec.Site.UID)
@@ -45,9 +45,101 @@ func testOperationLogs(t *testing.T, remote *operationLogRemote) (*operationLogs
 	return logs, cs
 }
 
-func awaitOperationLogDelivery(t *testing.T, logs *operationLogs, cs *api.Codespace) {
+func TestCodespaceEventsContinueAfterCompletionAndElection(t *testing.T) {
+	var mu sync.Mutex
+	var messages []string
+	offset := int64(100)
+	logs, cs := testOperationLogs(t, &operationLogRemote{update: func(_ context.Context, request *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		for _, line := range request.Lines {
+			messages = append(messages, line.Message)
+			offset += int64(len(line.Message) + 1)
+		}
+		return &codespacev1.UpdateLogResponse{NextOffset: offset}, nil
+	}})
+	require.NoError(t, logs.Append(cs, "", nil))
+	cs.Status.Result = &api.OperationResult{Version: cs.Spec.Operation.Version, Succeeded: true}
+	cs.Status.Target = &api.AgentTarget{Ready: true}
+	cs.Status.Pod.UID = "pod-uid"
+	logs.CompleteOperation(cs)
+	logs.CompleteOperation(cs)
+	cs.Status.SettledOperationVersion = cs.Spec.Operation.Version
+	require.NoError(t, logs.ReportEvent(cs, "webide.error", "first\nsecond"))
+	awaitOperationLogDelivery(t, logs, cs)
+	logs.mu.Lock()
+	require.True(t, logs.senders[cs.UID].drainDeadline.IsZero())
+	logs.mu.Unlock()
+	logs.CloseSite(cs.Spec.Site.UID)
+	logs.OpenSite(t.Context(), cs.Spec.Site.UID)
+	require.NoError(t, logs.ReportEvent(cs, "workspace.notice", "after election"))
+	awaitOperationLogDelivery(t, logs, cs)
+	logs.CloseSite(cs.Spec.Site.UID)
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []string{
+		"[INFO] [operation] Accepted create #2", "[INFO] [operation] create #2 completed",
+		"[EVENT] [webide.error] first", "[EVENT] [webide.error] second",
+		"[EVENT] [workspace.notice] after election",
+	}, messages)
+}
+
+func TestCodespaceEventsRateAndQueueAdmission(t *testing.T) {
+	logs, cs := testOperationLogs(t, &operationLogRemote{update: func(ctx context.Context, _ *codespacev1.UpdateLogRequest) (*codespacev1.UpdateLogResponse, error) {
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}})
+	var workers sync.WaitGroup
+	errors := make(chan error, 20)
+	for range cap(errors) {
+		workers.Go(func() { errors <- logs.ReportEvent(cs, "parallel", "message") })
+	}
+	workers.Wait()
+	close(errors)
+	accepted := 0
+	for err := range errors {
+		if err == nil {
+			accepted++
+		} else {
+			require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+		}
+	}
+	require.Equal(t, 5, accepted)
+	other := cs.DeepCopy()
+	other.UID = "other-runtime"
+	require.NoError(t, logs.ReportEvent(other, "parallel", "message"))
+	cs.Spec.Operation.Version++
+	cs.Spec.Operation.Type = "stop"
+	logs.RetainSite(cs.Spec.Site.UID, []api.Codespace{*cs, *other})
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(logs.ReportEvent(cs, "different-type", "message")))
+	logs.mu.Lock()
+	logs.eventMaxPerSecond = 2
+	sender := logs.senders[cs.UID]
+	sender.eventTimes = []time.Time{time.Now().Add(-2 * time.Second), time.Now()}
+	logs.mu.Unlock()
+	require.NoError(t, logs.ReportEvent(cs, "window", "message"))
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(logs.ReportEvent(cs, "window", "message")))
+	logs.mu.Lock()
+	sender.eventTimes = nil
+	before := sender.buffer.Bytes()
+	logs.mu.Unlock()
+	// A legal multiline input can exceed the queue budget after per-line framing.
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(logs.ReportEvent(cs, "large", strings.Repeat("\n", 16384))))
+	logs.mu.Lock()
+	require.Equal(t, before, sender.buffer.Bytes())
+	require.Empty(t, sender.eventTimes)
+	logs.mu.Unlock()
+	cs.Status.Result = &api.OperationResult{Version: cs.Spec.Operation.Version, Succeeded: true}
+	logs.CompleteOperation(cs)
+	logs.mu.Lock()
+	require.False(t, sender.drainDeadline.IsZero())
+	sender.drainDeadline = time.Now().Add(-time.Second)
+	logs.mu.Unlock()
+	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(logs.ReportEvent(cs, "stopped", "message")))
+}
+
+func awaitOperationLogDelivery(t *testing.T, logs *codespaceLogs, cs *api.Codespace) {
 	t.Helper()
-	logs.Finish(cs)
 	require.Eventually(t, func() bool {
 		logs.mu.Lock()
 		defer logs.mu.Unlock()
@@ -93,6 +185,7 @@ func TestOperationLogsReplayAndRestart(t *testing.T) {
 	require.NoError(t, logs.Append(cs, "pod", []*codespacev1.LogLine{{TimestampUnixNano: 1, Message: "Creating Pod"}}))
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 2, Message: "Agent started"}}))
 	cs.Status.Result = &api.OperationResult{Version: 2, Succeeded: true}
+	logs.CompleteOperation(cs)
 	awaitOperationLogDelivery(t, logs, cs)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
@@ -103,6 +196,7 @@ func TestOperationLogsReplayAndRestart(t *testing.T) {
 	logs.OpenSite(t.Context(), cs.Spec.Site.UID)
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{{TimestampUnixNano: 3, Message: "After restart"}}))
 	cs.Status.Result.Succeeded = false
+	logs.CompleteOperation(cs)
 	awaitOperationLogDelivery(t, logs, cs)
 	logs.CloseSite(cs.Spec.Site.UID)
 	mu.Lock()
@@ -170,8 +264,8 @@ func TestOperationLogsCloseOnPermanentFailure(t *testing.T) {
 			case <-time.After(time.Second):
 				t.Fatal("sender did not close")
 			}
-			logs.Finish(cs)
-			require.ErrorIs(t, logs.Append(cs, "", nil), errOperationLogClosed)
+			logs.CompleteOperation(cs)
+			require.ErrorIs(t, logs.Append(cs, "", nil), errCodespaceLogClosed)
 		})
 	}
 }
@@ -197,13 +291,14 @@ func TestOperationLogsBoundMemoryAndFinalDrain(t *testing.T) {
 	}
 	logs.mu.Unlock()
 	cs.UID = "runtime-0"
-	logs.Finish(cs)
+	cs.Status.Result = &api.OperationResult{Version: cs.Spec.Operation.Version, Succeeded: false}
+	logs.CompleteOperation(cs)
 	cs.Status.SettledOperationVersion = cs.Spec.Operation.Version
 	require.NoError(t, logs.Append(cs, "", []*codespacev1.LogLine{line}))
 	logs.mu.Lock()
-	logs.senders[cs.UID].finishAt = time.Now().Add(-time.Second)
+	logs.senders[cs.UID].drainDeadline = time.Now().Add(-time.Second)
 	logs.mu.Unlock()
-	require.ErrorIs(t, logs.Append(cs, "", []*codespacev1.LogLine{line}), errOperationLogClosed)
+	require.ErrorIs(t, logs.Append(cs, "", []*codespacev1.LogLine{line}), errCodespaceLogClosed)
 	logs.CloseSite(cs.Spec.Site.UID)
 	require.Zero(t, logs.bytes)
 }

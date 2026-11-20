@@ -226,6 +226,183 @@ func (*PrepareVolumeResponse) Descriptor() ([]byte, []int) {
 	return file_agent_v1_service_proto_rawDescGZIP(), []int{1}
 }
 
+type EmitRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmitRequest) Reset() {
+	*x = EmitRequest{}
+	mi := &file_agent_v1_service_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmitRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmitRequest) ProtoMessage() {}
+
+func (x *EmitRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_service_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmitRequest.ProtoReflect.Descriptor instead.
+func (*EmitRequest) Descriptor() ([]byte, []int) {
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *EmitRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *EmitRequest) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+// Success acknowledges queue admission, not durable storage in Gitea.
+type EmitResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *EmitResponse) Reset() {
+	*x = EmitResponse{}
+	mi := &file_agent_v1_service_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *EmitResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*EmitResponse) ProtoMessage() {}
+
+func (x *EmitResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_service_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use EmitResponse.ProtoReflect.Descriptor instead.
+func (*EmitResponse) Descriptor() ([]byte, []int) {
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{3}
+}
+
+type ReportEventRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Type          string                 `protobuf:"bytes,1,opt,name=type,proto3" json:"type,omitempty"`
+	Message       string                 `protobuf:"bytes,2,opt,name=message,proto3" json:"message,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportEventRequest) Reset() {
+	*x = ReportEventRequest{}
+	mi := &file_agent_v1_service_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportEventRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportEventRequest) ProtoMessage() {}
+
+func (x *ReportEventRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_service_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportEventRequest.ProtoReflect.Descriptor instead.
+func (*ReportEventRequest) Descriptor() ([]byte, []int) {
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ReportEventRequest) GetType() string {
+	if x != nil {
+		return x.Type
+	}
+	return ""
+}
+
+func (x *ReportEventRequest) GetMessage() string {
+	if x != nil {
+		return x.Message
+	}
+	return ""
+}
+
+type ReportEventResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ReportEventResponse) Reset() {
+	*x = ReportEventResponse{}
+	mi := &file_agent_v1_service_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ReportEventResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ReportEventResponse) ProtoMessage() {}
+
+func (x *ReportEventResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_agent_v1_service_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ReportEventResponse.ProtoReflect.Descriptor instead.
+func (*ReportEventResponse) Descriptor() ([]byte, []int) {
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{5}
+}
+
 type RuntimeUSBIPServiceRunRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Operation     RuntimeUSBIPOperation  `protobuf:"varint,2,opt,name=operation,proto3,enum=agent.v1.RuntimeUSBIPOperation" json:"operation,omitempty"`
@@ -237,7 +414,7 @@ type RuntimeUSBIPServiceRunRequest struct {
 
 func (x *RuntimeUSBIPServiceRunRequest) Reset() {
 	*x = RuntimeUSBIPServiceRunRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[2]
+	mi := &file_agent_v1_service_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -249,7 +426,7 @@ func (x *RuntimeUSBIPServiceRunRequest) String() string {
 func (*RuntimeUSBIPServiceRunRequest) ProtoMessage() {}
 
 func (x *RuntimeUSBIPServiceRunRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[2]
+	mi := &file_agent_v1_service_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -262,7 +439,7 @@ func (x *RuntimeUSBIPServiceRunRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeUSBIPServiceRunRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeUSBIPServiceRunRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{2}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *RuntimeUSBIPServiceRunRequest) GetOperation() RuntimeUSBIPOperation {
@@ -296,7 +473,7 @@ type RuntimeUSBIPServiceRunResponse struct {
 
 func (x *RuntimeUSBIPServiceRunResponse) Reset() {
 	*x = RuntimeUSBIPServiceRunResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[3]
+	mi := &file_agent_v1_service_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -308,7 +485,7 @@ func (x *RuntimeUSBIPServiceRunResponse) String() string {
 func (*RuntimeUSBIPServiceRunResponse) ProtoMessage() {}
 
 func (x *RuntimeUSBIPServiceRunResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[3]
+	mi := &file_agent_v1_service_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -321,7 +498,7 @@ func (x *RuntimeUSBIPServiceRunResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeUSBIPServiceRunResponse.ProtoReflect.Descriptor instead.
 func (*RuntimeUSBIPServiceRunResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{3}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *RuntimeUSBIPServiceRunResponse) GetOutput() string {
@@ -352,7 +529,7 @@ type USBIPSource struct {
 
 func (x *USBIPSource) Reset() {
 	*x = USBIPSource{}
-	mi := &file_agent_v1_service_proto_msgTypes[4]
+	mi := &file_agent_v1_service_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -364,7 +541,7 @@ func (x *USBIPSource) String() string {
 func (*USBIPSource) ProtoMessage() {}
 
 func (x *USBIPSource) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[4]
+	mi := &file_agent_v1_service_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -377,7 +554,7 @@ func (x *USBIPSource) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use USBIPSource.ProtoReflect.Descriptor instead.
 func (*USBIPSource) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{4}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *USBIPSource) GetName() string {
@@ -423,7 +600,7 @@ type RuntimeEndpointServiceListRequest struct {
 
 func (x *RuntimeEndpointServiceListRequest) Reset() {
 	*x = RuntimeEndpointServiceListRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[5]
+	mi := &file_agent_v1_service_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -435,7 +612,7 @@ func (x *RuntimeEndpointServiceListRequest) String() string {
 func (*RuntimeEndpointServiceListRequest) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceListRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[5]
+	mi := &file_agent_v1_service_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -448,7 +625,7 @@ func (x *RuntimeEndpointServiceListRequest) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use RuntimeEndpointServiceListRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceListRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{5}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{9}
 }
 
 type RuntimeEndpointServiceListResponse struct {
@@ -460,7 +637,7 @@ type RuntimeEndpointServiceListResponse struct {
 
 func (x *RuntimeEndpointServiceListResponse) Reset() {
 	*x = RuntimeEndpointServiceListResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[6]
+	mi := &file_agent_v1_service_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -472,7 +649,7 @@ func (x *RuntimeEndpointServiceListResponse) String() string {
 func (*RuntimeEndpointServiceListResponse) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceListResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[6]
+	mi := &file_agent_v1_service_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -485,7 +662,7 @@ func (x *RuntimeEndpointServiceListResponse) ProtoReflect() protoreflect.Message
 
 // Deprecated: Use RuntimeEndpointServiceListResponse.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceListResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{6}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *RuntimeEndpointServiceListResponse) GetEndpoints() []*v1.RuntimeEndpoint {
@@ -504,7 +681,7 @@ type RuntimeEndpointServiceSetRequest struct {
 
 func (x *RuntimeEndpointServiceSetRequest) Reset() {
 	*x = RuntimeEndpointServiceSetRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[7]
+	mi := &file_agent_v1_service_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -516,7 +693,7 @@ func (x *RuntimeEndpointServiceSetRequest) String() string {
 func (*RuntimeEndpointServiceSetRequest) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceSetRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[7]
+	mi := &file_agent_v1_service_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -529,7 +706,7 @@ func (x *RuntimeEndpointServiceSetRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeEndpointServiceSetRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceSetRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{7}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *RuntimeEndpointServiceSetRequest) GetEndpoint() *v1.RuntimeEndpoint {
@@ -547,7 +724,7 @@ type RuntimeEndpointServiceSetResponse struct {
 
 func (x *RuntimeEndpointServiceSetResponse) Reset() {
 	*x = RuntimeEndpointServiceSetResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[8]
+	mi := &file_agent_v1_service_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -559,7 +736,7 @@ func (x *RuntimeEndpointServiceSetResponse) String() string {
 func (*RuntimeEndpointServiceSetResponse) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceSetResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[8]
+	mi := &file_agent_v1_service_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -572,7 +749,7 @@ func (x *RuntimeEndpointServiceSetResponse) ProtoReflect() protoreflect.Message 
 
 // Deprecated: Use RuntimeEndpointServiceSetResponse.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceSetResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{8}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{12}
 }
 
 type RuntimeEndpointServiceDeleteRequest struct {
@@ -584,7 +761,7 @@ type RuntimeEndpointServiceDeleteRequest struct {
 
 func (x *RuntimeEndpointServiceDeleteRequest) Reset() {
 	*x = RuntimeEndpointServiceDeleteRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[9]
+	mi := &file_agent_v1_service_proto_msgTypes[13]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -596,7 +773,7 @@ func (x *RuntimeEndpointServiceDeleteRequest) String() string {
 func (*RuntimeEndpointServiceDeleteRequest) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceDeleteRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[9]
+	mi := &file_agent_v1_service_proto_msgTypes[13]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -609,7 +786,7 @@ func (x *RuntimeEndpointServiceDeleteRequest) ProtoReflect() protoreflect.Messag
 
 // Deprecated: Use RuntimeEndpointServiceDeleteRequest.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceDeleteRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{9}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{13}
 }
 
 func (x *RuntimeEndpointServiceDeleteRequest) GetEndpointId() string {
@@ -627,7 +804,7 @@ type RuntimeEndpointServiceDeleteResponse struct {
 
 func (x *RuntimeEndpointServiceDeleteResponse) Reset() {
 	*x = RuntimeEndpointServiceDeleteResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[10]
+	mi := &file_agent_v1_service_proto_msgTypes[14]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -639,7 +816,7 @@ func (x *RuntimeEndpointServiceDeleteResponse) String() string {
 func (*RuntimeEndpointServiceDeleteResponse) ProtoMessage() {}
 
 func (x *RuntimeEndpointServiceDeleteResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[10]
+	mi := &file_agent_v1_service_proto_msgTypes[14]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -652,7 +829,7 @@ func (x *RuntimeEndpointServiceDeleteResponse) ProtoReflect() protoreflect.Messa
 
 // Deprecated: Use RuntimeEndpointServiceDeleteResponse.ProtoReflect.Descriptor instead.
 func (*RuntimeEndpointServiceDeleteResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{10}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{14}
 }
 
 type ControlRequest struct {
@@ -670,7 +847,7 @@ type ControlRequest struct {
 
 func (x *ControlRequest) Reset() {
 	*x = ControlRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[11]
+	mi := &file_agent_v1_service_proto_msgTypes[15]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -682,7 +859,7 @@ func (x *ControlRequest) String() string {
 func (*ControlRequest) ProtoMessage() {}
 
 func (x *ControlRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[11]
+	mi := &file_agent_v1_service_proto_msgTypes[15]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -695,7 +872,7 @@ func (x *ControlRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlRequest.ProtoReflect.Descriptor instead.
 func (*ControlRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{11}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{15}
 }
 
 func (x *ControlRequest) GetSessionId() string {
@@ -740,7 +917,7 @@ type AgentReport struct {
 
 func (x *AgentReport) Reset() {
 	*x = AgentReport{}
-	mi := &file_agent_v1_service_proto_msgTypes[12]
+	mi := &file_agent_v1_service_proto_msgTypes[16]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -752,7 +929,7 @@ func (x *AgentReport) String() string {
 func (*AgentReport) ProtoMessage() {}
 
 func (x *AgentReport) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[12]
+	mi := &file_agent_v1_service_proto_msgTypes[16]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -765,7 +942,7 @@ func (x *AgentReport) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AgentReport.ProtoReflect.Descriptor instead.
 func (*AgentReport) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{12}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{16}
 }
 
 func (x *AgentReport) GetOperationRversion() int64 {
@@ -820,7 +997,7 @@ type OperationResult struct {
 
 func (x *OperationResult) Reset() {
 	*x = OperationResult{}
-	mi := &file_agent_v1_service_proto_msgTypes[13]
+	mi := &file_agent_v1_service_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -832,7 +1009,7 @@ func (x *OperationResult) String() string {
 func (*OperationResult) ProtoMessage() {}
 
 func (x *OperationResult) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[13]
+	mi := &file_agent_v1_service_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -845,7 +1022,7 @@ func (x *OperationResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OperationResult.ProtoReflect.Descriptor instead.
 func (*OperationResult) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{13}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *OperationResult) GetStatus() v1.FinalStatus {
@@ -882,7 +1059,7 @@ type ControlResponse struct {
 
 func (x *ControlResponse) Reset() {
 	*x = ControlResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[14]
+	mi := &file_agent_v1_service_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -894,7 +1071,7 @@ func (x *ControlResponse) String() string {
 func (*ControlResponse) ProtoMessage() {}
 
 func (x *ControlResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[14]
+	mi := &file_agent_v1_service_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -907,7 +1084,7 @@ func (x *ControlResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ControlResponse.ProtoReflect.Descriptor instead.
 func (*ControlResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{14}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *ControlResponse) GetSessionId() string {
@@ -979,7 +1156,7 @@ type RuntimeOptions struct {
 
 func (x *RuntimeOptions) Reset() {
 	*x = RuntimeOptions{}
-	mi := &file_agent_v1_service_proto_msgTypes[15]
+	mi := &file_agent_v1_service_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -991,7 +1168,7 @@ func (x *RuntimeOptions) String() string {
 func (*RuntimeOptions) ProtoMessage() {}
 
 func (x *RuntimeOptions) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[15]
+	mi := &file_agent_v1_service_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1004,7 +1181,7 @@ func (x *RuntimeOptions) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeOptions.ProtoReflect.Descriptor instead.
 func (*RuntimeOptions) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{15}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *RuntimeOptions) GetGitSshKeyType() string {
@@ -1047,7 +1224,7 @@ type RuntimeCache struct {
 
 func (x *RuntimeCache) Reset() {
 	*x = RuntimeCache{}
-	mi := &file_agent_v1_service_proto_msgTypes[16]
+	mi := &file_agent_v1_service_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1059,7 +1236,7 @@ func (x *RuntimeCache) String() string {
 func (*RuntimeCache) ProtoMessage() {}
 
 func (x *RuntimeCache) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[16]
+	mi := &file_agent_v1_service_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1072,7 +1249,7 @@ func (x *RuntimeCache) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RuntimeCache.ProtoReflect.Descriptor instead.
 func (*RuntimeCache) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{16}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *RuntimeCache) GetBuildRegistry() string {
@@ -1113,7 +1290,7 @@ type RegistryCredential struct {
 
 func (x *RegistryCredential) Reset() {
 	*x = RegistryCredential{}
-	mi := &file_agent_v1_service_proto_msgTypes[17]
+	mi := &file_agent_v1_service_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1125,7 +1302,7 @@ func (x *RegistryCredential) String() string {
 func (*RegistryCredential) ProtoMessage() {}
 
 func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[17]
+	mi := &file_agent_v1_service_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1138,7 +1315,7 @@ func (x *RegistryCredential) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RegistryCredential.ProtoReflect.Descriptor instead.
 func (*RegistryCredential) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{17}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *RegistryCredential) GetUsername() string {
@@ -1169,7 +1346,7 @@ type AccessTarget struct {
 
 func (x *AccessTarget) Reset() {
 	*x = AccessTarget{}
-	mi := &file_agent_v1_service_proto_msgTypes[18]
+	mi := &file_agent_v1_service_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1181,7 +1358,7 @@ func (x *AccessTarget) String() string {
 func (*AccessTarget) ProtoMessage() {}
 
 func (x *AccessTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[18]
+	mi := &file_agent_v1_service_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1194,7 +1371,7 @@ func (x *AccessTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessTarget.ProtoReflect.Descriptor instead.
 func (*AccessTarget) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{18}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *AccessTarget) GetVersion() int64 {
@@ -1243,7 +1420,7 @@ type EndpointTarget struct {
 
 func (x *EndpointTarget) Reset() {
 	*x = EndpointTarget{}
-	mi := &file_agent_v1_service_proto_msgTypes[19]
+	mi := &file_agent_v1_service_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1255,7 +1432,7 @@ func (x *EndpointTarget) String() string {
 func (*EndpointTarget) ProtoMessage() {}
 
 func (x *EndpointTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[19]
+	mi := &file_agent_v1_service_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1268,7 +1445,7 @@ func (x *EndpointTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use EndpointTarget.ProtoReflect.Descriptor instead.
 func (*EndpointTarget) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{19}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *EndpointTarget) GetEndpoint() *v1.RuntimeEndpoint {
@@ -1302,7 +1479,7 @@ type UploadLogsRequest struct {
 
 func (x *UploadLogsRequest) Reset() {
 	*x = UploadLogsRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[20]
+	mi := &file_agent_v1_service_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1314,7 +1491,7 @@ func (x *UploadLogsRequest) String() string {
 func (*UploadLogsRequest) ProtoMessage() {}
 
 func (x *UploadLogsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[20]
+	mi := &file_agent_v1_service_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1327,7 +1504,7 @@ func (x *UploadLogsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadLogsRequest.ProtoReflect.Descriptor instead.
 func (*UploadLogsRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{20}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *UploadLogsRequest) GetOperationRversion() int64 {
@@ -1354,7 +1531,7 @@ type UploadLogsResponse struct {
 
 func (x *UploadLogsResponse) Reset() {
 	*x = UploadLogsResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[21]
+	mi := &file_agent_v1_service_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1366,7 +1543,7 @@ func (x *UploadLogsResponse) String() string {
 func (*UploadLogsResponse) ProtoMessage() {}
 
 func (x *UploadLogsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[21]
+	mi := &file_agent_v1_service_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1379,7 +1556,7 @@ func (x *UploadLogsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use UploadLogsResponse.ProtoReflect.Descriptor instead.
 func (*UploadLogsResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{21}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *UploadLogsResponse) GetClosed() bool {
@@ -1406,7 +1583,7 @@ type AccessRequest struct {
 
 func (x *AccessRequest) Reset() {
 	*x = AccessRequest{}
-	mi := &file_agent_v1_service_proto_msgTypes[22]
+	mi := &file_agent_v1_service_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1418,7 +1595,7 @@ func (x *AccessRequest) String() string {
 func (*AccessRequest) ProtoMessage() {}
 
 func (x *AccessRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[22]
+	mi := &file_agent_v1_service_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1431,7 +1608,7 @@ func (x *AccessRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessRequest.ProtoReflect.Descriptor instead.
 func (*AccessRequest) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{22}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *AccessRequest) GetFrame() isAccessRequest_Frame {
@@ -1556,7 +1733,7 @@ type OpenAccess struct {
 
 func (x *OpenAccess) Reset() {
 	*x = OpenAccess{}
-	mi := &file_agent_v1_service_proto_msgTypes[23]
+	mi := &file_agent_v1_service_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1568,7 +1745,7 @@ func (x *OpenAccess) String() string {
 func (*OpenAccess) ProtoMessage() {}
 
 func (x *OpenAccess) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[23]
+	mi := &file_agent_v1_service_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1581,7 +1758,7 @@ func (x *OpenAccess) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OpenAccess.ProtoReflect.Descriptor instead.
 func (*OpenAccess) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{23}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *OpenAccess) GetTicket() string {
@@ -1725,7 +1902,7 @@ type AccessTicketClaims struct {
 
 func (x *AccessTicketClaims) Reset() {
 	*x = AccessTicketClaims{}
-	mi := &file_agent_v1_service_proto_msgTypes[24]
+	mi := &file_agent_v1_service_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1737,7 +1914,7 @@ func (x *AccessTicketClaims) String() string {
 func (*AccessTicketClaims) ProtoMessage() {}
 
 func (x *AccessTicketClaims) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[24]
+	mi := &file_agent_v1_service_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1750,7 +1927,7 @@ func (x *AccessTicketClaims) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessTicketClaims.ProtoReflect.Descriptor instead.
 func (*AccessTicketClaims) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{24}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *AccessTicketClaims) GetFormatVersion() uint32 {
@@ -1826,7 +2003,7 @@ type Terminal struct {
 
 func (x *Terminal) Reset() {
 	*x = Terminal{}
-	mi := &file_agent_v1_service_proto_msgTypes[25]
+	mi := &file_agent_v1_service_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1838,7 +2015,7 @@ func (x *Terminal) String() string {
 func (*Terminal) ProtoMessage() {}
 
 func (x *Terminal) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[25]
+	mi := &file_agent_v1_service_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1851,7 +2028,7 @@ func (x *Terminal) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Terminal.ProtoReflect.Descriptor instead.
 func (*Terminal) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{25}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *Terminal) GetTerm() string {
@@ -1878,7 +2055,7 @@ type TerminalSize struct {
 
 func (x *TerminalSize) Reset() {
 	*x = TerminalSize{}
-	mi := &file_agent_v1_service_proto_msgTypes[26]
+	mi := &file_agent_v1_service_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1890,7 +2067,7 @@ func (x *TerminalSize) String() string {
 func (*TerminalSize) ProtoMessage() {}
 
 func (x *TerminalSize) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[26]
+	mi := &file_agent_v1_service_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1903,7 +2080,7 @@ func (x *TerminalSize) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TerminalSize.ProtoReflect.Descriptor instead.
 func (*TerminalSize) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{26}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TerminalSize) GetColumns() uint32 {
@@ -1930,7 +2107,7 @@ type Shell struct {
 
 func (x *Shell) Reset() {
 	*x = Shell{}
-	mi := &file_agent_v1_service_proto_msgTypes[27]
+	mi := &file_agent_v1_service_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1942,7 +2119,7 @@ func (x *Shell) String() string {
 func (*Shell) ProtoMessage() {}
 
 func (x *Shell) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[27]
+	mi := &file_agent_v1_service_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1955,7 +2132,7 @@ func (x *Shell) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Shell.ProtoReflect.Descriptor instead.
 func (*Shell) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{27}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *Shell) GetTerminal() *Terminal {
@@ -1977,7 +2154,7 @@ type Command struct {
 
 func (x *Command) Reset() {
 	*x = Command{}
-	mi := &file_agent_v1_service_proto_msgTypes[28]
+	mi := &file_agent_v1_service_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1989,7 +2166,7 @@ func (x *Command) String() string {
 func (*Command) ProtoMessage() {}
 
 func (x *Command) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[28]
+	mi := &file_agent_v1_service_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2002,7 +2179,7 @@ func (x *Command) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Command.ProtoReflect.Descriptor instead.
 func (*Command) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{28}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *Command) GetCommand() string {
@@ -2027,7 +2204,7 @@ type SFTP struct {
 
 func (x *SFTP) Reset() {
 	*x = SFTP{}
-	mi := &file_agent_v1_service_proto_msgTypes[29]
+	mi := &file_agent_v1_service_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2039,7 +2216,7 @@ func (x *SFTP) String() string {
 func (*SFTP) ProtoMessage() {}
 
 func (x *SFTP) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[29]
+	mi := &file_agent_v1_service_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2052,7 +2229,7 @@ func (x *SFTP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SFTP.ProtoReflect.Descriptor instead.
 func (*SFTP) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{29}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{33}
 }
 
 type Endpoint struct {
@@ -2064,7 +2241,7 @@ type Endpoint struct {
 
 func (x *Endpoint) Reset() {
 	*x = Endpoint{}
-	mi := &file_agent_v1_service_proto_msgTypes[30]
+	mi := &file_agent_v1_service_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2076,7 +2253,7 @@ func (x *Endpoint) String() string {
 func (*Endpoint) ProtoMessage() {}
 
 func (x *Endpoint) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[30]
+	mi := &file_agent_v1_service_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2089,7 +2266,7 @@ func (x *Endpoint) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use Endpoint.ProtoReflect.Descriptor instead.
 func (*Endpoint) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{30}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *Endpoint) GetEndpointId() string {
@@ -2108,7 +2285,7 @@ type LoopbackTCP struct {
 
 func (x *LoopbackTCP) Reset() {
 	*x = LoopbackTCP{}
-	mi := &file_agent_v1_service_proto_msgTypes[31]
+	mi := &file_agent_v1_service_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2120,7 +2297,7 @@ func (x *LoopbackTCP) String() string {
 func (*LoopbackTCP) ProtoMessage() {}
 
 func (x *LoopbackTCP) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[31]
+	mi := &file_agent_v1_service_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2133,7 +2310,7 @@ func (x *LoopbackTCP) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use LoopbackTCP.ProtoReflect.Descriptor instead.
 func (*LoopbackTCP) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{31}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *LoopbackTCP) GetPort() uint32 {
@@ -2157,7 +2334,7 @@ type ReverseTCPListen struct {
 
 func (x *ReverseTCPListen) Reset() {
 	*x = ReverseTCPListen{}
-	mi := &file_agent_v1_service_proto_msgTypes[32]
+	mi := &file_agent_v1_service_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2169,7 +2346,7 @@ func (x *ReverseTCPListen) String() string {
 func (*ReverseTCPListen) ProtoMessage() {}
 
 func (x *ReverseTCPListen) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[32]
+	mi := &file_agent_v1_service_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2182,7 +2359,7 @@ func (x *ReverseTCPListen) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReverseTCPListen.ProtoReflect.Descriptor instead.
 func (*ReverseTCPListen) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{32}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *ReverseTCPListen) GetListenerId() string {
@@ -2243,7 +2420,7 @@ type ContainerTCPBind struct {
 
 func (x *ContainerTCPBind) Reset() {
 	*x = ContainerTCPBind{}
-	mi := &file_agent_v1_service_proto_msgTypes[33]
+	mi := &file_agent_v1_service_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2255,7 +2432,7 @@ func (x *ContainerTCPBind) String() string {
 func (*ContainerTCPBind) ProtoMessage() {}
 
 func (x *ContainerTCPBind) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[33]
+	mi := &file_agent_v1_service_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2268,7 +2445,7 @@ func (x *ContainerTCPBind) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContainerTCPBind.ProtoReflect.Descriptor instead.
 func (*ContainerTCPBind) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{33}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ContainerTCPBind) GetAddress() string {
@@ -2294,7 +2471,7 @@ type ReverseTCPReady struct {
 
 func (x *ReverseTCPReady) Reset() {
 	*x = ReverseTCPReady{}
-	mi := &file_agent_v1_service_proto_msgTypes[34]
+	mi := &file_agent_v1_service_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2306,7 +2483,7 @@ func (x *ReverseTCPReady) String() string {
 func (*ReverseTCPReady) ProtoMessage() {}
 
 func (x *ReverseTCPReady) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[34]
+	mi := &file_agent_v1_service_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2319,7 +2496,7 @@ func (x *ReverseTCPReady) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReverseTCPReady.ProtoReflect.Descriptor instead.
 func (*ReverseTCPReady) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{34}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *ReverseTCPReady) GetPort() uint32 {
@@ -2339,7 +2516,7 @@ type ReverseTCPAccept struct {
 
 func (x *ReverseTCPAccept) Reset() {
 	*x = ReverseTCPAccept{}
-	mi := &file_agent_v1_service_proto_msgTypes[35]
+	mi := &file_agent_v1_service_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2351,7 +2528,7 @@ func (x *ReverseTCPAccept) String() string {
 func (*ReverseTCPAccept) ProtoMessage() {}
 
 func (x *ReverseTCPAccept) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[35]
+	mi := &file_agent_v1_service_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2364,7 +2541,7 @@ func (x *ReverseTCPAccept) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReverseTCPAccept.ProtoReflect.Descriptor instead.
 func (*ReverseTCPAccept) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{35}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ReverseTCPAccept) GetListenerId() string {
@@ -2392,7 +2569,7 @@ type ReverseTCPConnection struct {
 
 func (x *ReverseTCPConnection) Reset() {
 	*x = ReverseTCPConnection{}
-	mi := &file_agent_v1_service_proto_msgTypes[36]
+	mi := &file_agent_v1_service_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2404,7 +2581,7 @@ func (x *ReverseTCPConnection) String() string {
 func (*ReverseTCPConnection) ProtoMessage() {}
 
 func (x *ReverseTCPConnection) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[36]
+	mi := &file_agent_v1_service_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2417,7 +2594,7 @@ func (x *ReverseTCPConnection) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ReverseTCPConnection.ProtoReflect.Descriptor instead.
 func (*ReverseTCPConnection) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{36}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ReverseTCPConnection) GetConnectionId() string {
@@ -2459,7 +2636,7 @@ type AccessResponse struct {
 
 func (x *AccessResponse) Reset() {
 	*x = AccessResponse{}
-	mi := &file_agent_v1_service_proto_msgTypes[37]
+	mi := &file_agent_v1_service_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2471,7 +2648,7 @@ func (x *AccessResponse) String() string {
 func (*AccessResponse) ProtoMessage() {}
 
 func (x *AccessResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_agent_v1_service_proto_msgTypes[37]
+	mi := &file_agent_v1_service_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2484,7 +2661,7 @@ func (x *AccessResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use AccessResponse.ProtoReflect.Descriptor instead.
 func (*AccessResponse) Descriptor() ([]byte, []int) {
-	return file_agent_v1_service_proto_rawDescGZIP(), []int{37}
+	return file_agent_v1_service_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *AccessResponse) GetFrame() isAccessResponse_Frame {
@@ -2612,7 +2789,15 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x16agent/v1/service.proto\x12\bagent.v1\x1a\x18codespace/v1/types.proto\"8\n" +
 	"\x14PrepareVolumeRequest\x12 \n" +
 	"\vinitialized\x18\x02 \x01(\bR\vinitialized\"\x17\n" +
-	"\x15PrepareVolumeResponse\"\x92\x01\n" +
+	"\x15PrepareVolumeResponse\";\n" +
+	"\vEmitRequest\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x0e\n" +
+	"\fEmitResponse\"B\n" +
+	"\x12ReportEventRequest\x12\x12\n" +
+	"\x04type\x18\x01 \x01(\tR\x04type\x12\x18\n" +
+	"\amessage\x18\x02 \x01(\tR\amessage\"\x15\n" +
+	"\x13ReportEventResponse\"\x92\x01\n" +
 	"\x1dRuntimeUSBIPServiceRunRequest\x12=\n" +
 	"\toperation\x18\x02 \x01(\x0e2\x1f.agent.v1.RuntimeUSBIPOperationR\toperation\x12\x1a\n" +
 	"\bargument\x18\x03 \x01(\tR\bargument\x12\x16\n" +
@@ -2796,12 +2981,13 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x1aACCESS_CAPABILITY_ENDPOINT\x10\x04\x12\"\n" +
 	"\x1eACCESS_CAPABILITY_LOOPBACK_TCP\x10\x05\x12(\n" +
 	"$ACCESS_CAPABILITY_REVERSE_TCP_LISTEN\x10\x06\x12(\n" +
-	"$ACCESS_CAPABILITY_REVERSE_TCP_ACCEPT\x10\a2\xf4\x01\n" +
+	"$ACCESS_CAPABILITY_REVERSE_TCP_ACCEPT\x10\a2\xc0\x02\n" +
 	"\x13AgentControlService\x12P\n" +
 	"\rPrepareVolume\x12\x1e.agent.v1.PrepareVolumeRequest\x1a\x1f.agent.v1.PrepareVolumeResponse\x12B\n" +
 	"\aControl\x12\x18.agent.v1.ControlRequest\x1a\x19.agent.v1.ControlResponse(\x010\x01\x12G\n" +
 	"\n" +
-	"UploadLogs\x12\x1b.agent.v1.UploadLogsRequest\x1a\x1c.agent.v1.UploadLogsResponse2U\n" +
+	"UploadLogs\x12\x1b.agent.v1.UploadLogsRequest\x1a\x1c.agent.v1.UploadLogsResponse\x12J\n" +
+	"\vReportEvent\x12\x1c.agent.v1.ReportEventRequest\x1a\x1d.agent.v1.ReportEventResponse2U\n" +
 	"\x12AgentAccessService\x12?\n" +
 	"\x06Access\x12\x17.agent.v1.AccessRequest\x1a\x18.agent.v1.AccessResponse(\x010\x012\xc4\x02\n" +
 	"\x16RuntimeEndpointService\x12a\n" +
@@ -2809,7 +2995,9 @@ const file_agent_v1_service_proto_rawDesc = "" +
 	"\x03Set\x12*.agent.v1.RuntimeEndpointServiceSetRequest\x1a+.agent.v1.RuntimeEndpointServiceSetResponse\x12g\n" +
 	"\x06Delete\x12-.agent.v1.RuntimeEndpointServiceDeleteRequest\x1a..agent.v1.RuntimeEndpointServiceDeleteResponse2o\n" +
 	"\x13RuntimeUSBIPService\x12X\n" +
-	"\x03Run\x12'.agent.v1.RuntimeUSBIPServiceRunRequest\x1a(.agent.v1.RuntimeUSBIPServiceRunResponseB3Z1gitea.dev/codespace/internal/rpc/agent/v1;agentv1b\x06proto3"
+	"\x03Run\x12'.agent.v1.RuntimeUSBIPServiceRunRequest\x1a(.agent.v1.RuntimeUSBIPServiceRunResponse2L\n" +
+	"\x13RuntimeEventService\x125\n" +
+	"\x04Emit\x12\x15.agent.v1.EmitRequest\x1a\x16.agent.v1.EmitResponseB3Z1gitea.dev/codespace/internal/rpc/agent/v1;agentv1b\x06proto3"
 
 var (
 	file_agent_v1_service_proto_rawDescOnce sync.Once
@@ -2824,113 +3012,121 @@ func file_agent_v1_service_proto_rawDescGZIP() []byte {
 }
 
 var file_agent_v1_service_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
-var file_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 40)
+var file_agent_v1_service_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_agent_v1_service_proto_goTypes = []any{
 	(RuntimeUSBIPOperation)(0),                   // 0: agent.v1.RuntimeUSBIPOperation
 	(AccessCapability)(0),                        // 1: agent.v1.AccessCapability
 	(*PrepareVolumeRequest)(nil),                 // 2: agent.v1.PrepareVolumeRequest
 	(*PrepareVolumeResponse)(nil),                // 3: agent.v1.PrepareVolumeResponse
-	(*RuntimeUSBIPServiceRunRequest)(nil),        // 4: agent.v1.RuntimeUSBIPServiceRunRequest
-	(*RuntimeUSBIPServiceRunResponse)(nil),       // 5: agent.v1.RuntimeUSBIPServiceRunResponse
-	(*USBIPSource)(nil),                          // 6: agent.v1.USBIPSource
-	(*RuntimeEndpointServiceListRequest)(nil),    // 7: agent.v1.RuntimeEndpointServiceListRequest
-	(*RuntimeEndpointServiceListResponse)(nil),   // 8: agent.v1.RuntimeEndpointServiceListResponse
-	(*RuntimeEndpointServiceSetRequest)(nil),     // 9: agent.v1.RuntimeEndpointServiceSetRequest
-	(*RuntimeEndpointServiceSetResponse)(nil),    // 10: agent.v1.RuntimeEndpointServiceSetResponse
-	(*RuntimeEndpointServiceDeleteRequest)(nil),  // 11: agent.v1.RuntimeEndpointServiceDeleteRequest
-	(*RuntimeEndpointServiceDeleteResponse)(nil), // 12: agent.v1.RuntimeEndpointServiceDeleteResponse
-	(*ControlRequest)(nil),                       // 13: agent.v1.ControlRequest
-	(*AgentReport)(nil),                          // 14: agent.v1.AgentReport
-	(*OperationResult)(nil),                      // 15: agent.v1.OperationResult
-	(*ControlResponse)(nil),                      // 16: agent.v1.ControlResponse
-	(*RuntimeOptions)(nil),                       // 17: agent.v1.RuntimeOptions
-	(*RuntimeCache)(nil),                         // 18: agent.v1.RuntimeCache
-	(*RegistryCredential)(nil),                   // 19: agent.v1.RegistryCredential
-	(*AccessTarget)(nil),                         // 20: agent.v1.AccessTarget
-	(*EndpointTarget)(nil),                       // 21: agent.v1.EndpointTarget
-	(*UploadLogsRequest)(nil),                    // 22: agent.v1.UploadLogsRequest
-	(*UploadLogsResponse)(nil),                   // 23: agent.v1.UploadLogsResponse
-	(*AccessRequest)(nil),                        // 24: agent.v1.AccessRequest
-	(*OpenAccess)(nil),                           // 25: agent.v1.OpenAccess
-	(*AccessTicketClaims)(nil),                   // 26: agent.v1.AccessTicketClaims
-	(*Terminal)(nil),                             // 27: agent.v1.Terminal
-	(*TerminalSize)(nil),                         // 28: agent.v1.TerminalSize
-	(*Shell)(nil),                                // 29: agent.v1.Shell
-	(*Command)(nil),                              // 30: agent.v1.Command
-	(*SFTP)(nil),                                 // 31: agent.v1.SFTP
-	(*Endpoint)(nil),                             // 32: agent.v1.Endpoint
-	(*LoopbackTCP)(nil),                          // 33: agent.v1.LoopbackTCP
-	(*ReverseTCPListen)(nil),                     // 34: agent.v1.ReverseTCPListen
-	(*ContainerTCPBind)(nil),                     // 35: agent.v1.ContainerTCPBind
-	(*ReverseTCPReady)(nil),                      // 36: agent.v1.ReverseTCPReady
-	(*ReverseTCPAccept)(nil),                     // 37: agent.v1.ReverseTCPAccept
-	(*ReverseTCPConnection)(nil),                 // 38: agent.v1.ReverseTCPConnection
-	(*AccessResponse)(nil),                       // 39: agent.v1.AccessResponse
-	nil,                                          // 40: agent.v1.RuntimeCache.MirrorsEntry
-	nil,                                          // 41: agent.v1.RuntimeCache.CredentialsEntry
-	(*v1.RuntimeEndpoint)(nil),                   // 42: codespace.v1.RuntimeEndpoint
-	(*v1.RuntimeBoot)(nil),                       // 43: codespace.v1.RuntimeBoot
-	(*v1.RuntimeResourceUsage)(nil),              // 44: codespace.v1.RuntimeResourceUsage
-	(v1.FinalStatus)(0),                          // 45: codespace.v1.FinalStatus
-	(*v1.OperationPayload)(nil),                  // 46: codespace.v1.OperationPayload
-	(*v1.RuntimeAccessBundle)(nil),               // 47: codespace.v1.RuntimeAccessBundle
-	(*v1.LogLine)(nil),                           // 48: codespace.v1.LogLine
+	(*EmitRequest)(nil),                          // 4: agent.v1.EmitRequest
+	(*EmitResponse)(nil),                         // 5: agent.v1.EmitResponse
+	(*ReportEventRequest)(nil),                   // 6: agent.v1.ReportEventRequest
+	(*ReportEventResponse)(nil),                  // 7: agent.v1.ReportEventResponse
+	(*RuntimeUSBIPServiceRunRequest)(nil),        // 8: agent.v1.RuntimeUSBIPServiceRunRequest
+	(*RuntimeUSBIPServiceRunResponse)(nil),       // 9: agent.v1.RuntimeUSBIPServiceRunResponse
+	(*USBIPSource)(nil),                          // 10: agent.v1.USBIPSource
+	(*RuntimeEndpointServiceListRequest)(nil),    // 11: agent.v1.RuntimeEndpointServiceListRequest
+	(*RuntimeEndpointServiceListResponse)(nil),   // 12: agent.v1.RuntimeEndpointServiceListResponse
+	(*RuntimeEndpointServiceSetRequest)(nil),     // 13: agent.v1.RuntimeEndpointServiceSetRequest
+	(*RuntimeEndpointServiceSetResponse)(nil),    // 14: agent.v1.RuntimeEndpointServiceSetResponse
+	(*RuntimeEndpointServiceDeleteRequest)(nil),  // 15: agent.v1.RuntimeEndpointServiceDeleteRequest
+	(*RuntimeEndpointServiceDeleteResponse)(nil), // 16: agent.v1.RuntimeEndpointServiceDeleteResponse
+	(*ControlRequest)(nil),                       // 17: agent.v1.ControlRequest
+	(*AgentReport)(nil),                          // 18: agent.v1.AgentReport
+	(*OperationResult)(nil),                      // 19: agent.v1.OperationResult
+	(*ControlResponse)(nil),                      // 20: agent.v1.ControlResponse
+	(*RuntimeOptions)(nil),                       // 21: agent.v1.RuntimeOptions
+	(*RuntimeCache)(nil),                         // 22: agent.v1.RuntimeCache
+	(*RegistryCredential)(nil),                   // 23: agent.v1.RegistryCredential
+	(*AccessTarget)(nil),                         // 24: agent.v1.AccessTarget
+	(*EndpointTarget)(nil),                       // 25: agent.v1.EndpointTarget
+	(*UploadLogsRequest)(nil),                    // 26: agent.v1.UploadLogsRequest
+	(*UploadLogsResponse)(nil),                   // 27: agent.v1.UploadLogsResponse
+	(*AccessRequest)(nil),                        // 28: agent.v1.AccessRequest
+	(*OpenAccess)(nil),                           // 29: agent.v1.OpenAccess
+	(*AccessTicketClaims)(nil),                   // 30: agent.v1.AccessTicketClaims
+	(*Terminal)(nil),                             // 31: agent.v1.Terminal
+	(*TerminalSize)(nil),                         // 32: agent.v1.TerminalSize
+	(*Shell)(nil),                                // 33: agent.v1.Shell
+	(*Command)(nil),                              // 34: agent.v1.Command
+	(*SFTP)(nil),                                 // 35: agent.v1.SFTP
+	(*Endpoint)(nil),                             // 36: agent.v1.Endpoint
+	(*LoopbackTCP)(nil),                          // 37: agent.v1.LoopbackTCP
+	(*ReverseTCPListen)(nil),                     // 38: agent.v1.ReverseTCPListen
+	(*ContainerTCPBind)(nil),                     // 39: agent.v1.ContainerTCPBind
+	(*ReverseTCPReady)(nil),                      // 40: agent.v1.ReverseTCPReady
+	(*ReverseTCPAccept)(nil),                     // 41: agent.v1.ReverseTCPAccept
+	(*ReverseTCPConnection)(nil),                 // 42: agent.v1.ReverseTCPConnection
+	(*AccessResponse)(nil),                       // 43: agent.v1.AccessResponse
+	nil,                                          // 44: agent.v1.RuntimeCache.MirrorsEntry
+	nil,                                          // 45: agent.v1.RuntimeCache.CredentialsEntry
+	(*v1.RuntimeEndpoint)(nil),                   // 46: codespace.v1.RuntimeEndpoint
+	(*v1.RuntimeBoot)(nil),                       // 47: codespace.v1.RuntimeBoot
+	(*v1.RuntimeResourceUsage)(nil),              // 48: codespace.v1.RuntimeResourceUsage
+	(v1.FinalStatus)(0),                          // 49: codespace.v1.FinalStatus
+	(*v1.OperationPayload)(nil),                  // 50: codespace.v1.OperationPayload
+	(*v1.RuntimeAccessBundle)(nil),               // 51: codespace.v1.RuntimeAccessBundle
+	(*v1.LogLine)(nil),                           // 52: codespace.v1.LogLine
 }
 var file_agent_v1_service_proto_depIdxs = []int32{
 	0,  // 0: agent.v1.RuntimeUSBIPServiceRunRequest.operation:type_name -> agent.v1.RuntimeUSBIPOperation
-	6,  // 1: agent.v1.RuntimeUSBIPServiceRunResponse.sources:type_name -> agent.v1.USBIPSource
-	42, // 2: agent.v1.RuntimeEndpointServiceListResponse.endpoints:type_name -> codespace.v1.RuntimeEndpoint
-	42, // 3: agent.v1.RuntimeEndpointServiceSetRequest.endpoint:type_name -> codespace.v1.RuntimeEndpoint
-	14, // 4: agent.v1.ControlRequest.report:type_name -> agent.v1.AgentReport
-	15, // 5: agent.v1.AgentReport.result:type_name -> agent.v1.OperationResult
-	20, // 6: agent.v1.AgentReport.target:type_name -> agent.v1.AccessTarget
-	43, // 7: agent.v1.AgentReport.boot:type_name -> codespace.v1.RuntimeBoot
-	44, // 8: agent.v1.AgentReport.resource_usage:type_name -> codespace.v1.RuntimeResourceUsage
-	45, // 9: agent.v1.OperationResult.status:type_name -> codespace.v1.FinalStatus
-	46, // 10: agent.v1.ControlResponse.operation:type_name -> codespace.v1.OperationPayload
-	47, // 11: agent.v1.ControlResponse.access:type_name -> codespace.v1.RuntimeAccessBundle
-	17, // 12: agent.v1.ControlResponse.runtime:type_name -> agent.v1.RuntimeOptions
-	18, // 13: agent.v1.RuntimeOptions.cache:type_name -> agent.v1.RuntimeCache
-	40, // 14: agent.v1.RuntimeCache.mirrors:type_name -> agent.v1.RuntimeCache.MirrorsEntry
-	41, // 15: agent.v1.RuntimeCache.credentials:type_name -> agent.v1.RuntimeCache.CredentialsEntry
-	21, // 16: agent.v1.AccessTarget.endpoints:type_name -> agent.v1.EndpointTarget
-	42, // 17: agent.v1.EndpointTarget.endpoint:type_name -> codespace.v1.RuntimeEndpoint
-	48, // 18: agent.v1.UploadLogsRequest.lines:type_name -> codespace.v1.LogLine
-	25, // 19: agent.v1.AccessRequest.open:type_name -> agent.v1.OpenAccess
-	28, // 20: agent.v1.AccessRequest.resize:type_name -> agent.v1.TerminalSize
-	29, // 21: agent.v1.OpenAccess.shell:type_name -> agent.v1.Shell
-	30, // 22: agent.v1.OpenAccess.command:type_name -> agent.v1.Command
-	31, // 23: agent.v1.OpenAccess.sftp:type_name -> agent.v1.SFTP
-	32, // 24: agent.v1.OpenAccess.endpoint:type_name -> agent.v1.Endpoint
-	33, // 25: agent.v1.OpenAccess.tcp:type_name -> agent.v1.LoopbackTCP
-	34, // 26: agent.v1.OpenAccess.reverse_tcp_listen:type_name -> agent.v1.ReverseTCPListen
-	37, // 27: agent.v1.OpenAccess.reverse_tcp_accept:type_name -> agent.v1.ReverseTCPAccept
+	10, // 1: agent.v1.RuntimeUSBIPServiceRunResponse.sources:type_name -> agent.v1.USBIPSource
+	46, // 2: agent.v1.RuntimeEndpointServiceListResponse.endpoints:type_name -> codespace.v1.RuntimeEndpoint
+	46, // 3: agent.v1.RuntimeEndpointServiceSetRequest.endpoint:type_name -> codespace.v1.RuntimeEndpoint
+	18, // 4: agent.v1.ControlRequest.report:type_name -> agent.v1.AgentReport
+	19, // 5: agent.v1.AgentReport.result:type_name -> agent.v1.OperationResult
+	24, // 6: agent.v1.AgentReport.target:type_name -> agent.v1.AccessTarget
+	47, // 7: agent.v1.AgentReport.boot:type_name -> codespace.v1.RuntimeBoot
+	48, // 8: agent.v1.AgentReport.resource_usage:type_name -> codespace.v1.RuntimeResourceUsage
+	49, // 9: agent.v1.OperationResult.status:type_name -> codespace.v1.FinalStatus
+	50, // 10: agent.v1.ControlResponse.operation:type_name -> codespace.v1.OperationPayload
+	51, // 11: agent.v1.ControlResponse.access:type_name -> codespace.v1.RuntimeAccessBundle
+	21, // 12: agent.v1.ControlResponse.runtime:type_name -> agent.v1.RuntimeOptions
+	22, // 13: agent.v1.RuntimeOptions.cache:type_name -> agent.v1.RuntimeCache
+	44, // 14: agent.v1.RuntimeCache.mirrors:type_name -> agent.v1.RuntimeCache.MirrorsEntry
+	45, // 15: agent.v1.RuntimeCache.credentials:type_name -> agent.v1.RuntimeCache.CredentialsEntry
+	25, // 16: agent.v1.AccessTarget.endpoints:type_name -> agent.v1.EndpointTarget
+	46, // 17: agent.v1.EndpointTarget.endpoint:type_name -> codespace.v1.RuntimeEndpoint
+	52, // 18: agent.v1.UploadLogsRequest.lines:type_name -> codespace.v1.LogLine
+	29, // 19: agent.v1.AccessRequest.open:type_name -> agent.v1.OpenAccess
+	32, // 20: agent.v1.AccessRequest.resize:type_name -> agent.v1.TerminalSize
+	33, // 21: agent.v1.OpenAccess.shell:type_name -> agent.v1.Shell
+	34, // 22: agent.v1.OpenAccess.command:type_name -> agent.v1.Command
+	35, // 23: agent.v1.OpenAccess.sftp:type_name -> agent.v1.SFTP
+	36, // 24: agent.v1.OpenAccess.endpoint:type_name -> agent.v1.Endpoint
+	37, // 25: agent.v1.OpenAccess.tcp:type_name -> agent.v1.LoopbackTCP
+	38, // 26: agent.v1.OpenAccess.reverse_tcp_listen:type_name -> agent.v1.ReverseTCPListen
+	41, // 27: agent.v1.OpenAccess.reverse_tcp_accept:type_name -> agent.v1.ReverseTCPAccept
 	1,  // 28: agent.v1.AccessTicketClaims.capability:type_name -> agent.v1.AccessCapability
-	28, // 29: agent.v1.Terminal.size:type_name -> agent.v1.TerminalSize
-	27, // 30: agent.v1.Shell.terminal:type_name -> agent.v1.Terminal
-	27, // 31: agent.v1.Command.terminal:type_name -> agent.v1.Terminal
-	35, // 32: agent.v1.ReverseTCPListen.container:type_name -> agent.v1.ContainerTCPBind
-	38, // 33: agent.v1.AccessResponse.reverse_tcp_connection:type_name -> agent.v1.ReverseTCPConnection
-	36, // 34: agent.v1.AccessResponse.reverse_tcp_ready:type_name -> agent.v1.ReverseTCPReady
-	19, // 35: agent.v1.RuntimeCache.CredentialsEntry.value:type_name -> agent.v1.RegistryCredential
+	32, // 29: agent.v1.Terminal.size:type_name -> agent.v1.TerminalSize
+	31, // 30: agent.v1.Shell.terminal:type_name -> agent.v1.Terminal
+	31, // 31: agent.v1.Command.terminal:type_name -> agent.v1.Terminal
+	39, // 32: agent.v1.ReverseTCPListen.container:type_name -> agent.v1.ContainerTCPBind
+	42, // 33: agent.v1.AccessResponse.reverse_tcp_connection:type_name -> agent.v1.ReverseTCPConnection
+	40, // 34: agent.v1.AccessResponse.reverse_tcp_ready:type_name -> agent.v1.ReverseTCPReady
+	23, // 35: agent.v1.RuntimeCache.CredentialsEntry.value:type_name -> agent.v1.RegistryCredential
 	2,  // 36: agent.v1.AgentControlService.PrepareVolume:input_type -> agent.v1.PrepareVolumeRequest
-	13, // 37: agent.v1.AgentControlService.Control:input_type -> agent.v1.ControlRequest
-	22, // 38: agent.v1.AgentControlService.UploadLogs:input_type -> agent.v1.UploadLogsRequest
-	24, // 39: agent.v1.AgentAccessService.Access:input_type -> agent.v1.AccessRequest
-	7,  // 40: agent.v1.RuntimeEndpointService.List:input_type -> agent.v1.RuntimeEndpointServiceListRequest
-	9,  // 41: agent.v1.RuntimeEndpointService.Set:input_type -> agent.v1.RuntimeEndpointServiceSetRequest
-	11, // 42: agent.v1.RuntimeEndpointService.Delete:input_type -> agent.v1.RuntimeEndpointServiceDeleteRequest
-	4,  // 43: agent.v1.RuntimeUSBIPService.Run:input_type -> agent.v1.RuntimeUSBIPServiceRunRequest
-	3,  // 44: agent.v1.AgentControlService.PrepareVolume:output_type -> agent.v1.PrepareVolumeResponse
-	16, // 45: agent.v1.AgentControlService.Control:output_type -> agent.v1.ControlResponse
-	23, // 46: agent.v1.AgentControlService.UploadLogs:output_type -> agent.v1.UploadLogsResponse
-	39, // 47: agent.v1.AgentAccessService.Access:output_type -> agent.v1.AccessResponse
-	8,  // 48: agent.v1.RuntimeEndpointService.List:output_type -> agent.v1.RuntimeEndpointServiceListResponse
-	10, // 49: agent.v1.RuntimeEndpointService.Set:output_type -> agent.v1.RuntimeEndpointServiceSetResponse
-	12, // 50: agent.v1.RuntimeEndpointService.Delete:output_type -> agent.v1.RuntimeEndpointServiceDeleteResponse
-	5,  // 51: agent.v1.RuntimeUSBIPService.Run:output_type -> agent.v1.RuntimeUSBIPServiceRunResponse
-	44, // [44:52] is the sub-list for method output_type
-	36, // [36:44] is the sub-list for method input_type
+	17, // 37: agent.v1.AgentControlService.Control:input_type -> agent.v1.ControlRequest
+	26, // 38: agent.v1.AgentControlService.UploadLogs:input_type -> agent.v1.UploadLogsRequest
+	6,  // 39: agent.v1.AgentControlService.ReportEvent:input_type -> agent.v1.ReportEventRequest
+	28, // 40: agent.v1.AgentAccessService.Access:input_type -> agent.v1.AccessRequest
+	11, // 41: agent.v1.RuntimeEndpointService.List:input_type -> agent.v1.RuntimeEndpointServiceListRequest
+	13, // 42: agent.v1.RuntimeEndpointService.Set:input_type -> agent.v1.RuntimeEndpointServiceSetRequest
+	15, // 43: agent.v1.RuntimeEndpointService.Delete:input_type -> agent.v1.RuntimeEndpointServiceDeleteRequest
+	8,  // 44: agent.v1.RuntimeUSBIPService.Run:input_type -> agent.v1.RuntimeUSBIPServiceRunRequest
+	4,  // 45: agent.v1.RuntimeEventService.Emit:input_type -> agent.v1.EmitRequest
+	3,  // 46: agent.v1.AgentControlService.PrepareVolume:output_type -> agent.v1.PrepareVolumeResponse
+	20, // 47: agent.v1.AgentControlService.Control:output_type -> agent.v1.ControlResponse
+	27, // 48: agent.v1.AgentControlService.UploadLogs:output_type -> agent.v1.UploadLogsResponse
+	7,  // 49: agent.v1.AgentControlService.ReportEvent:output_type -> agent.v1.ReportEventResponse
+	43, // 50: agent.v1.AgentAccessService.Access:output_type -> agent.v1.AccessResponse
+	12, // 51: agent.v1.RuntimeEndpointService.List:output_type -> agent.v1.RuntimeEndpointServiceListResponse
+	14, // 52: agent.v1.RuntimeEndpointService.Set:output_type -> agent.v1.RuntimeEndpointServiceSetResponse
+	16, // 53: agent.v1.RuntimeEndpointService.Delete:output_type -> agent.v1.RuntimeEndpointServiceDeleteResponse
+	9,  // 54: agent.v1.RuntimeUSBIPService.Run:output_type -> agent.v1.RuntimeUSBIPServiceRunResponse
+	5,  // 55: agent.v1.RuntimeEventService.Emit:output_type -> agent.v1.EmitResponse
+	46, // [46:56] is the sub-list for method output_type
+	36, // [36:46] is the sub-list for method input_type
 	36, // [36:36] is the sub-list for extension type_name
 	36, // [36:36] is the sub-list for extension extendee
 	0,  // [0:36] is the sub-list for field type_name
@@ -2941,7 +3137,7 @@ func file_agent_v1_service_proto_init() {
 	if File_agent_v1_service_proto != nil {
 		return
 	}
-	file_agent_v1_service_proto_msgTypes[22].OneofWrappers = []any{
+	file_agent_v1_service_proto_msgTypes[26].OneofWrappers = []any{
 		(*AccessRequest_Open)(nil),
 		(*AccessRequest_Stdin)(nil),
 		(*AccessRequest_Resize)(nil),
@@ -2949,7 +3145,7 @@ func file_agent_v1_service_proto_init() {
 		(*AccessRequest_StdinEof)(nil),
 		(*AccessRequest_StopListening)(nil),
 	}
-	file_agent_v1_service_proto_msgTypes[23].OneofWrappers = []any{
+	file_agent_v1_service_proto_msgTypes[27].OneofWrappers = []any{
 		(*OpenAccess_Shell)(nil),
 		(*OpenAccess_Command)(nil),
 		(*OpenAccess_Sftp)(nil),
@@ -2958,11 +3154,11 @@ func file_agent_v1_service_proto_init() {
 		(*OpenAccess_ReverseTcpListen)(nil),
 		(*OpenAccess_ReverseTcpAccept)(nil),
 	}
-	file_agent_v1_service_proto_msgTypes[32].OneofWrappers = []any{
+	file_agent_v1_service_proto_msgTypes[36].OneofWrappers = []any{
 		(*ReverseTCPListen_Container)(nil),
 		(*ReverseTCPListen_UsbipSource)(nil),
 	}
-	file_agent_v1_service_proto_msgTypes[37].OneofWrappers = []any{
+	file_agent_v1_service_proto_msgTypes[41].OneofWrappers = []any{
 		(*AccessResponse_Accepted)(nil),
 		(*AccessResponse_Stdout)(nil),
 		(*AccessResponse_Stderr)(nil),
@@ -2977,9 +3173,9 @@ func file_agent_v1_service_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_agent_v1_service_proto_rawDesc), len(file_agent_v1_service_proto_rawDesc)),
 			NumEnums:      2,
-			NumMessages:   40,
+			NumMessages:   44,
 			NumExtensions: 0,
-			NumServices:   4,
+			NumServices:   5,
 		},
 		GoTypes:           file_agent_v1_service_proto_goTypes,
 		DependencyIndexes: file_agent_v1_service_proto_depIdxs,

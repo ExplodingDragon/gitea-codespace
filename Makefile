@@ -153,10 +153,12 @@ helm-check:
 	@set -e; rendered="$$(helm template codespace charts/gitea-codespace $(HELM_CHECK_ARGS) --namespace codespace-system)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace:main"'; \
 	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: Always'; \
-	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'
-	@set -e; rendered="$$(helm template codespace charts/gitea-codespace $(HELM_CHECK_ARGS) --namespace codespace-system --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000)"; \
+	printf '%s\n' "$$rendered" | grep -Fq -- '--identity-secret=codespace-gitea-codespace-internal-ca'; \
+	printf '%s\n' "$$rendered" | grep -Fq -- '--event-max-per-second=5'
+	@set -e; rendered="$$(helm template codespace charts/gitea-codespace $(HELM_CHECK_ARGS) --namespace codespace-system --set events.maxPerSecond=2 --set image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000)"; \
 	printf '%s\n' "$$rendered" | grep -Fq 'image: "ghcr.io/explodingdragon/gitea-codespace@sha256:0000000000000000000000000000000000000000000000000000000000000000"'; \
-	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: IfNotPresent'
+	printf '%s\n' "$$rendered" | grep -Fq 'imagePullPolicy: IfNotPresent'; \
+	printf '%s\n' "$$rendered" | grep -Fq -- '--event-max-per-second=2'
 
 admin-dev:
 	$(PNPM) --dir web run dev

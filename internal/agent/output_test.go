@@ -12,19 +12,70 @@ import (
 	"testing"
 	"time"
 
+	"connectrpc.com/connect/v2"
+	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/internal/logbuffer"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/rpc/agent/v1/agentv1connect"
+	"gitea.dev/codespace/internal/runtimeevent"
 	"github.com/stretchr/testify/require"
 )
 
 type logRemote struct {
 	agentv1connect.AgentControlServiceClient
 	upload func(context.Context, *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error)
+	event  func(context.Context, *agentv1.ReportEventRequest) (*agentv1.ReportEventResponse, error)
+}
+
+func (r *logRemote) ReportEvent(ctx context.Context, request *agentv1.ReportEventRequest) (*agentv1.ReportEventResponse, error) {
+	return r.event(ctx, request)
 }
 
 func (r *logRemote) UploadLogs(ctx context.Context, request *agentv1.UploadLogsRequest) (*agentv1.UploadLogsResponse, error) {
 	return r.upload(ctx, request)
+}
+
+func TestRuntimeEventsRedactAndForward(t *testing.T) {
+	response := &agentv1.ControlResponse{
+		Access: &codespacev1.RuntimeAccessBundle{GiteaToken: "private-token"},
+		Runtime: &agentv1.RuntimeOptions{Cache: &agentv1.RuntimeCache{
+			Credentials: map[string]*agentv1.RegistryCredential{"registry.example": {Password: "registry-password"}},
+		}},
+	}
+	runtime := &Runtime{eventRedactor: logbuffer.NewRedactor(logCredentials(response))}
+	var received []*agentv1.ReportEventRequest
+	remote := &logRemote{event: func(ctx context.Context, request *agentv1.ReportEventRequest) (*agentv1.ReportEventResponse, error) {
+		_, hasDeadline := ctx.Deadline()
+		require.True(t, hasDeadline)
+		received = append(received, request)
+		if request.Type == "limited" {
+			return nil, connect.NewError(connect.CodeResourceExhausted, "event rate exceeded")
+		}
+		return &agentv1.ReportEventResponse{}, nil
+	}}
+	server := &RuntimeEventServer{Runtime: runtime, Remote: remote}
+	_, err := server.Emit(t.Context(), &agentv1.EmitRequest{Type: "private-token", Message: "first private-token\nsecond " + base64.StdEncoding.EncodeToString([]byte("private-token")) + "\ncache registry-password"})
+	require.NoError(t, err)
+	_, err = server.Emit(t.Context(), &agentv1.EmitRequest{Type: strings.Repeat("a", runtimeevent.MaxTypeBytes), Message: strings.Repeat("x", runtimeevent.MaxMessageBytes)})
+	require.NoError(t, err)
+	_, err = server.Emit(t.Context(), &agentv1.EmitRequest{Type: "limited", Message: "message"})
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	for _, request := range []*agentv1.EmitRequest{
+		{Type: "", Message: "message"}, {Type: "bad\ntype", Message: "message"},
+		{Type: strings.Repeat("a", runtimeevent.MaxTypeBytes+1), Message: "message"},
+		{Type: "test", Message: ""}, {Type: "test", Message: strings.Repeat("x", runtimeevent.MaxMessageBytes+1)},
+		{Type: "test", Message: string([]byte{0xff})},
+	} {
+		_, err := server.Emit(t.Context(), request)
+		require.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))
+	}
+	require.Len(t, received, 3)
+	require.Equal(t, "redacted", received[0].Type)
+	require.Equal(t, "first [redacted]\nsecond [redacted]\ncache [redacted]", received[0].Message)
+	runtime.eventRedactor = logbuffer.NewRedactor([]string{"pin"})
+	_, err = server.Emit(t.Context(), &agentv1.EmitRequest{Type: "budget", Message: strings.Repeat("pin", runtimeevent.MaxMessageBytes/3)})
+	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
+	require.Len(t, received, 3)
 }
 
 func TestOutputRedactsStreamsAndBoundsLines(t *testing.T) {

@@ -35,7 +35,7 @@ const diagnosticLogStage = "diagnostic"
 type runtimeDiagnostics struct {
 	Reader   client.Reader
 	Pods     coreclient.CoreV1Interface
-	Logs     *operationLogs
+	Logs     *codespaceLogs
 	mu       sync.Mutex
 	observed map[types.NamespacedName]*diagnosticObservation
 }

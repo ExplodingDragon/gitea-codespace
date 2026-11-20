@@ -50,15 +50,21 @@ func NewRedactor(credentials []string) *Redactor {
 }
 
 func (r *Redactor) Redact(message string) string {
+	message = r.RedactText(message)
+	if len(message) > MaxLineBytes {
+		return "[WARN] [logging] Output line omitted: redacted line exceeds 32 KiB"
+	}
+	return message
+}
+
+// RedactText preserves the complete result so event callers can reject an
+// oversized message instead of acknowledging a replacement log line.
+func (r *Redactor) RedactText(message string) string {
 	message = strings.ReplaceAll(message, "\r", "")
 	if r != nil {
 		message = r.replacements.Replace(message)
 	}
 	message = authorizationPattern.ReplaceAllString(message, "${1}[redacted]")
 	message = urlCredentialsPattern.ReplaceAllString(message, "${1}[redacted]@")
-	message = strings.ToValidUTF8(message, "\ufffd")
-	if len(message) > MaxLineBytes {
-		return "[WARN] [logging] Output line omitted: redacted line exceeds 32 KiB"
-	}
-	return message
+	return strings.ToValidUTF8(message, "\ufffd")
 }

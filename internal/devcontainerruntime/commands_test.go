@@ -75,11 +75,11 @@ func TestConfigureRuntimeCommands(t *testing.T) {
 	require.NoError(t, configureRuntimeCommands(t.Context(), engine, state, Request{
 		DevContainer: Configuration{GiteaCLI: true}, USBIP: USBIPContainerConfiguration{Enabled: true},
 	}))
-	require.Equal(t, []string{"gitea-codespace-endpoint", "gitea-codespace-usbip", "gt"}, installed)
+	require.Equal(t, []string{"gitea-codespace-endpoint", "gitea-codespace-event", "gitea-codespace-usbip", "gt"}, installed)
 	require.Equal(t, []string{"/bin/sh", "-c", installGiteaCLIScript}, commands[len(commands)-1])
 	installed, commands = nil, nil
 	require.NoError(t, configureRuntimeCommands(t.Context(), engine, state, Request{}))
-	require.Equal(t, []string{"gitea-codespace-endpoint"}, installed)
+	require.Equal(t, []string{"gitea-codespace-endpoint", "gitea-codespace-event"}, installed)
 	require.Equal(t, []string{"rm", "-f", containerUSBIPBinary}, commands[len(commands)-1])
 }
 

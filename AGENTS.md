@@ -17,8 +17,11 @@
   contributors. Explain the reason for an action where it affects correctness;
   keep protocol and controller rationale in the architecture documents.
 - Describe the current design positively and explain why a boundary or workflow
-  exists. End each design section with implementation acceptance criteria that
-  translate the design intent into behavior a contributor can verify.
+  exists. In architecture and design documents, end each design section with
+  implementation acceptance criteria that translate the design intent into
+  verifiable behavior. Organize user, operator, and contributor guides around
+  tasks, with practical verification steps where useful, so readers can complete
+  their work without repeating the implementation checklist.
 - Keep detailed examples only when they help a reader complete the documented
   task. Link to the canonical guide instead of repeating the same procedure in
   several documents.

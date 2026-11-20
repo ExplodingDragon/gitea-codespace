@@ -3,7 +3,7 @@
 import assert from 'node:assert/strict';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {mkdtemp, mkdir, readFile, rm, symlink, writeFile} from 'node:fs/promises';
+import {mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile} from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import {createInterface} from 'node:readline';
@@ -90,20 +90,42 @@ test('prepare initializes options once and registers the canonical workspace on 
   assert.equal(Object.keys(JSON.parse(await readFile(path.join(data, 'project.json')))).length, 1);
 });
 
-test('serve inherits user tools and secrets, restarts successful exits, and stops on termination', {timeout: 10_000}, async (t) => {
+test('serve inherits user tools, reports bounded exit diagnostics, restarts, and stops on termination', {timeout: 10_000}, async (t) => {
   const {root, app, env} = await fixture(t);
   const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: []};
   await writeFile(path.join(root, 'data/codespace-options.json'), JSON.stringify({providers: ['codex'], connections: {codex: connection}}));
   await writeFile(path.join(app, 'dist/index.js'), `
-    import {writeFile} from 'node:fs/promises';
+    import {readFile, writeFile} from 'node:fs/promises';
     await writeFile(process.env.CODESPACE_WEB_IDE_DATA_DIR + '/launch.json', JSON.stringify(Object.fromEntries(
       ['HOME','PATH','TEST_SECRET','HTTPS_PROXY','NODE_EXTRA_CA_CERTS','NODE_ENV','HOST','PORT','AUTH_DISABLED','YEP_PEER_API_ENABLED','ENABLED_PROVIDERS','CODESPACE_YEP_CONNECTIONS'].map(key => [key,process.env[key]])
     )));
+    let restarted = false;
+    try { await readFile(process.env.CODESPACE_WEB_IDE_DATA_DIR + '/event.json'); restarted = true; } catch {}
+    if (restarted) {
+      process.on('SIGTERM', async () => {
+        await writeFile(process.env.CODESPACE_WEB_IDE_DATA_DIR + '/stopped', '');
+        process.exit(0);
+      });
+      setInterval(() => {}, 1000);
+    } else {
+      process.stderr.write('x'.repeat(8192) + '\\nexample failure\\n');
+    }
     console.log('started');
   `);
   Object.assign(env, {TEST_SECRET: 'line one\nline two', HTTPS_PROXY: 'http://proxy.invalid:8080', HOME: path.join(root, 'home'), HOST: '0.0.0.0', PORT: '9999', AUTH_DISABLED: 'false', YEP_PEER_API_ENABLED: 'true'});
   await symlink(path.join(runtime, 'launch.mjs'), path.join(root, 'lib/launch.mjs'));
-  const supervisor = spawn(path.join(runtime, 'serve'), [], {env, stdio: ['ignore', 'pipe', 'inherit']});
+  await symlink(path.join(runtime, 'capture-stderr.mjs'), path.join(root, 'lib/capture-stderr.mjs'));
+  await mkdir(path.join(root, 'bin'));
+  env.TMPDIR = path.join(root, 'tmp');
+  await mkdir(env.TMPDIR);
+  await writeFile(path.join(root, 'bin/gitea-codespace-event'), `#!${process.execPath}
+    const fs = require('node:fs');
+    fs.writeFileSync(process.env.CODESPACE_WEB_IDE_DATA_DIR + '/event.json', JSON.stringify(process.argv.slice(2)));
+    process.exit(1);
+  `, {mode: 0o755});
+  env.PATH = `${path.join(root, 'bin')}:${env.PATH}`;
+  const supervisor = spawn(path.join(runtime, 'serve'), [], {env, stdio: ['ignore', 'pipe', 'pipe']});
+  supervisor.stderr.resume();
   const exited = once(supervisor, 'exit');
   t.after(async () => {
     supervisor.kill('SIGTERM');
@@ -116,6 +138,11 @@ test('serve inherits user tools and secrets, restarts successful exits, and stop
   assert.equal(starts, 2, 'a completed app process must be restarted');
   supervisor.kill('SIGTERM');
   assert.deepEqual(await exited, [0, null]);
+  await readFile(path.join(root, 'data/stopped'));
+  assert.deepEqual(await readdir(env.TMPDIR), []);
+  const event = JSON.parse(await readFile(path.join(root, 'data/event.json')));
+  assert.equal(event[0], 'webide.error');
+  assert.equal(event[1], 'Yep Anywhere exited with code 0\n[stderr line omitted: exceeds 8 KiB]\nexample failure');
   const actual = JSON.parse(await readFile(path.join(root, 'data/launch.json')));
   assert.equal(actual.HOME, env.HOME);
   assert.equal(actual.PATH, env.PATH);

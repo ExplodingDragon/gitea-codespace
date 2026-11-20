@@ -15,6 +15,9 @@ import (
 //go:embed builtin/endpoint.sh
 var endpointScript []byte
 
+//go:embed builtin/event.sh
+var eventScript []byte
+
 //go:embed builtin/usbip.sh
 var usbIPScript []byte
 
@@ -28,6 +31,7 @@ const (
 	// ContainerRuntimeBinary serves SFTP and the in-container platform commands.
 	ContainerRuntimeBinary  = "/usr/local/libexec/gitea-codespace-runtime"
 	containerEndpointBinary = "/usr/local/bin/gitea-codespace-endpoint"
+	containerEventBinary    = "/usr/local/bin/gitea-codespace-event"
 	containerUSBIPBinary    = "/usr/local/bin/gitea-codespace-usbip"
 	platformGiteaCLIPath    = "/usr/local/libexec/gitea-codespace/gt"
 	containerGiteaCLIPath   = "/usr/local/bin/gt"
@@ -37,8 +41,16 @@ func configureRuntimeCommands(ctx context.Context, engine *containerdocker.Engin
 	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"mkdir", "-p", "/usr/local/libexec", "/usr/local/bin"}, nil, nil); err != nil {
 		return fmt.Errorf("prepare platform directories in Dev Container: %w", err)
 	}
-	if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerEndpointBinary, 0o755, endpointScript); err != nil {
-		return err
+	for _, command := range []struct {
+		path   string
+		script []byte
+	}{
+		{containerEndpointBinary, endpointScript},
+		{containerEventBinary, eventScript},
+	} {
+		if err := engine.CopyContent(ctx, state.PrimaryContainerID, command.path, 0o755, command.script); err != nil {
+			return err
+		}
 	}
 	if request.USBIP.Enabled {
 		if err := engine.CopyContent(ctx, state.PrimaryContainerID, containerUSBIPBinary, 0o755, usbIPScript); err != nil {

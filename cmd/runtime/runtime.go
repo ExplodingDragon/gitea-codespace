@@ -3,7 +3,11 @@
 
 package runtime
 
-import "github.com/spf13/cobra"
+import (
+	"github.com/spf13/cobra"
+
+	"gitea.dev/codespace/internal/runtimecmd"
+)
 
 // NewCommand creates the internal Dev Container runtime command tree.
 func NewCommand() *cobra.Command {
@@ -17,6 +21,14 @@ func NewCommand() *cobra.Command {
 		newSFTPCommand(),
 		newEndpointCommand(),
 		newUSBIPCommand(),
+		&cobra.Command{
+			Use:   "event <type> <message>",
+			Short: "Send an event to the Codespace log",
+			Args:  cobra.ExactArgs(2),
+			RunE: func(command *cobra.Command, args []string) error {
+				return runtimecmd.EmitEvent(command.Context(), args[0], args[1])
+			},
+		},
 	)
 	return command
 }

@@ -95,6 +95,18 @@ chart. The source chart defaults to the `main` image tag with no digest for
 local development, while each published chart contains the digest of the
 platform image built for that chart.
 
+## Configure event limits
+
+`events.maxPerSecond` sets the maximum accepted workspace events per Codespace
+in any one-second interval. It defaults to `5` and must be a positive integer.
+Ordinary platform and build logs keep their existing limits.
+
+Changing this value rolls the Manager deployment and applies to existing and
+new Codespaces without rebuilding their Dev Containers. Each instance shares
+one allowance across event types and callers, so launching more processes does
+not increase its quota. Counters are in memory and reset on leader replacement.
+See [Workspace events](../../docs/events.md) for the command and delivery limits.
+
 ## Configure Web IDE storage and image access
 
 Web IDE programs are mounted read-only from the selected OCI image. Tags use
@@ -124,12 +136,10 @@ editor configuration.
 
 ### Verify
 
-- Manager validates the provider image and saves its tag or explicit digest;
-  an omitted tag becomes `latest`.
-- Each workspace node can pull the selected provider image and mount its
-  `provider` subdirectory read-only.
-- The editor starts as the Dev Container remote user, and its settings remain
-  available after stop and resume.
+- Resolve the provider image in an environment template, then create a
+  workspace on each node pool to check image pulls and the read-only bundle mount.
+- Open the editor as the Dev Container remote user, change a setting, and stop
+  and resume the workspace to check that the setting persists.
 
 ## Connect Gitea
 
@@ -252,15 +262,12 @@ not require a data migration workflow.
 
 ### Verify
 
-- Runtime Pods can reach the Cache Service through its `443/https` endpoint.
-- A site with a private CA can clone repositories, build Dev Container images,
-  and download HTTPS or OCI Features from that Gitea installation.
-- The primary container's public and enterprise roots remain trusted alongside
-  platform certificates, including after a stop and resume.
-- Cache cleanup completes without interrupting active image pushes or workspace
-  lifecycle operations.
-- Editing an existing Cache shows its actual StorageClass and does not report a
-  changed class as successfully applied.
+- Check connectivity from a Runtime Pod to the Cache Service's `443/https`
+  endpoint.
+- Create a workspace using the site's private CA and check repository cloning,
+  image builds, and HTTPS or OCI Feature downloads.
+- Check HTTPS access to the required public and enterprise services from the
+  primary container, then repeat after stop and resume to verify its trust bundle.
 
 ## Enable Kata USB/IP
 
@@ -341,24 +348,13 @@ can revoke access before the hook runs.
 
 ### Verify
 
-- USB/IP-capable environments expose the command and IDE controls; ordinary
-  Kata environments start normally with those optional controls hidden.
-- A compatible guest lists, attaches, uses, and detaches a remote device
-  without restarting the Dev Container.
-- udev or eudev rules in the development image receive hotplug events and set
-  the expected non-root ownership and permissions.
-- Device access and ordinary terminal use remain functional after a stop/start
-  cycle and a new device attachment.
-- The selected kernel provides the intended drivers and filesystems; test
-  hardware is usable with the declared container permissions. A storage test
-  uses a disposable disk and explicitly granted block-device and mount access.
-- HIDRAW and GPIO access rules use the running guest's major numbers. The
-  supplied kernel keeps USB networking and CAN disabled while normal Pod and
-  Docker networking works.
-- Multiple named USB/IP sources coexist with ordinary Dev Container reverse
-  forwards. Source names are unique within one Codespace. Closing a source
-  disconnects only its devices; closing an SSH session releases its forwards.
-  Stopping the Codespace or replacing its Runtime releases all bridge connections.
+- List, attach, use, and detach a disposable device as the configured non-root
+  user. Check the resulting device nodes and udev permissions; a storage test
+  also needs explicitly granted block-device and mount access.
+- Stop and resume the workspace, reconnect the USB source, and repeat the
+  device operation while checking ordinary terminal and network access.
+- If using several device servers, connect two named sources and confirm that
+  closing one leaves the other's devices usable.
 
 ## Resource monitoring
 
@@ -384,12 +380,10 @@ lifecycle.
 
 ### Verify
 
-- CPU and memory usage match the Runtime container in `kubectl top pod
+- Compare CPU and memory usage with the Runtime container in `kubectl top pod
   --containers`, allowing for different sample times.
-- Filesystem usage is derived from observed capacity and available space;
-  a valid zero available-space observation is shown as full.
-- A metrics outage falls back to Runtime observations without changing the
-  workspace lifecycle.
+- Compare the displayed filesystem capacity and available space with the
+  mounted workspace filesystem, accounting for any shared storage.
 
 ## Upgrade
 

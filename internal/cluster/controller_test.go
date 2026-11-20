@@ -524,6 +524,7 @@ func TestExitedRuntimePreservesVolume(t *testing.T) {
 			} else {
 				require.NotNil(t, cs.Status.Result)
 				require.False(t, cs.Status.Result.Succeeded)
+				logs.CompleteOperation(cs)
 				awaitOperationLogDelivery(t, logs, cs)
 				logs.CloseSite(site.UID)
 				require.Contains(t, messages, "[ERROR] [kubernetes] Container runtime terminated: reason=OOMKilled exitCode=137 signal=9")

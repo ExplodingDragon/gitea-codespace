@@ -150,6 +150,12 @@ Codespace SSH endpoint. Manage devices from the bundled IDE plugins or the
 Dev Container command line. See [Connect USB devices](docs/usbip.md) for setup,
 multiple device sources, and reconnecting after a stop.
 
+## Report workspace events
+
+Scripts and providers can send diagnostic messages to the Gitea Codespace log
+with `gitea-codespace-event <type> <message>` inside the primary Dev Container.
+See [Workspace events](docs/events.md) for message limits and delivery semantics.
+
 ## Web IDE providers
 
 Choose a Web IDE provider in the environment template when browser access is

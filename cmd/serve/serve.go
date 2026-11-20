@@ -45,6 +45,7 @@ func NewCommand() *cobra.Command {
 		},
 	}
 	flags := command.Flags()
+	flags.IntVar(&options.EventMaxPerSecond, "event-max-per-second", 5, "Maximum accepted events per Codespace in any one-second interval")
 	flags.StringVar(&kubeconfig, "kubeconfig", "", "Kubernetes client configuration (defaults to in-cluster credentials)")
 	flags.StringVar(&options.Namespace, "namespace", "codespace-system", "Management namespace")
 	flags.StringVar(&options.ManagerURL, "manager-url", "https://codespace-manager.codespace-system.svc:8443", "Manager Service URL used by Agents")

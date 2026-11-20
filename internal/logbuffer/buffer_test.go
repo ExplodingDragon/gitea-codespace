@@ -26,6 +26,9 @@ func TestBufferBoundsInflightAndReportsLoss(t *testing.T) {
 	require.LessOrEqual(t, size, MaxBatchBytes)
 	require.Equal(t, before, buffer.Bytes())
 	require.Zero(t, buffer.Add([]*codespacev1.LogLine{line}, 0))
+	added, ok := buffer.TryAdd([]*codespacev1.LogLine{line, line}, len(line.Message)+LineOverheadBytes)
+	require.False(t, ok)
+	require.Zero(t, added)
 	require.Equal(t, before, buffer.Bytes())
 	buffer.Release(size)
 	added = buffer.Add(nil, MaxBytes)
@@ -41,4 +44,10 @@ func TestBufferBoundsInflightAndReportsLoss(t *testing.T) {
 	}
 	require.Contains(t, messages[len(messages)-1], "lines lost")
 	require.Zero(t, buffer.Bytes())
+	added, ok = buffer.TryAdd([]*codespacev1.LogLine{line, line}, MaxBytes)
+	require.True(t, ok)
+	require.Equal(t, 2*(len(line.Message)+LineOverheadBytes), added)
+	lines, size = buffer.Take()
+	require.Len(t, lines, 2)
+	require.Equal(t, added, size)
 }

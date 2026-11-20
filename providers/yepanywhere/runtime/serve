@@ -4,24 +4,41 @@
 set -eu
 root=${CODESPACE_WEB_IDE_PROGRAM_DIR:?}
 cd "${CODESPACE_WEB_IDE_WORKSPACE:?}"
+diagnostics=$(mktemp "${TMPDIR:-/tmp}/yepanywhere-stderr.XXXXXX")
+trap 'rm -f "$diagnostics"' EXIT
+
 child=
-stopping=
 stop() {
-  stopping=$1
-  [ -z "$child" ] || kill -s "$1" "$child" 2>/dev/null || :
+  if [ -n "$child" ]; then
+    kill -s "$1" "$child" 2>/dev/null || :
+    wait "$child" || :
+  fi
+  exit 0
 }
 trap 'stop HUP' HUP
 trap 'stop INT' INT
 trap 'stop TERM' TERM
+
 while :; do
-  "$root/program/node/bin/node" "$root/lib/launch.mjs" &
+  : >"$diagnostics"
+  "$root/program/node/bin/node" "$root/lib/capture-stderr.mjs" "$diagnostics" &
   child=$!
-  wait "$child" || :
+  status=0
+  wait "$child" || status=$?
   child=
-  [ -z "$stopping" ] || exit 0
+
+  message="Yep Anywhere exited with code $status"
+  if [ -s "$diagnostics" ]; then
+    message=$(cat "$diagnostics")
+  fi
+  : >"$diagnostics"
+  gitea-codespace-event webide.error "$message" &
+  child=$!
+  wait "$child" || printf 'Report Yep Anywhere exit event failed\n' >&2
+  child=
+
   sleep 1 &
   child=$!
   wait "$child" || :
   child=
-  [ -z "$stopping" ] || exit 0
 done

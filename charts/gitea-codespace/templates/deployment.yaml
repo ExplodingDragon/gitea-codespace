@@ -58,6 +58,7 @@ spec:
             - --identity-secret={{ $fullname }}-internal-ca
             - --admin-address=:18080
             - --admin-token-file=/var/run/codespace/admin/token
+            - --event-max-per-second={{ .Values.events.maxPerSecond }}
             {{- range .Values.image.pullSecrets }}
             - --image-pull-secret={{ . }}
             {{- end }}

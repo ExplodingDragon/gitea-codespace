@@ -49,9 +49,7 @@ func (b *Buffer) Add(lines []*codespacev1.LogLine, available int) int {
 		if size > available {
 			return false
 		}
-		b.lines = append(b.lines, &codespacev1.LogLine{TimestampUnixNano: line.TimestampUnixNano, Message: line.Message})
-		b.pendingBytes += size
-		b.bytes += size
+		b.appendLine(line)
 		available -= size
 		added += size
 		return true
@@ -65,6 +63,29 @@ func (b *Buffer) Add(lines []*codespacev1.LogLine, available int) int {
 		}
 	}
 	return added
+}
+
+// TryAdd admits a complete event or leaves the buffer unchanged. Rejected
+// events are reported to their caller rather than counted as lost output.
+func (b *Buffer) TryAdd(lines []*codespacev1.LogLine, available int) (int, bool) {
+	size := 0
+	for _, line := range lines {
+		size += len(line.Message) + LineOverheadBytes
+	}
+	if size > min(available, MaxBytes-b.bytes) {
+		return 0, false
+	}
+	for _, line := range lines {
+		b.appendLine(line)
+	}
+	return size, true
+}
+
+func (b *Buffer) appendLine(line *codespacev1.LogLine) {
+	size := len(line.Message) + LineOverheadBytes
+	b.lines = append(b.lines, &codespacev1.LogLine{TimestampUnixNano: line.TimestampUnixNano, Message: line.Message})
+	b.pendingBytes += size
+	b.bytes += size
 }
 
 func (b *Buffer) Take() ([]*codespacev1.LogLine, int) {

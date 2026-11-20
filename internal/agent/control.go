@@ -70,14 +70,7 @@ func (c *ControlClient) startExecution(
 	executionResponse.Runtime = proto.Clone(runtimeOptions).(*agentv1.RuntimeOptions)
 	executionCtx, cancel := context.WithCancel(ctx)
 	done := make(chan error, 1)
-	var credentials []string
-	if response.Access != nil {
-		credentials = append(credentials, response.Access.GiteaToken)
-		for _, secret := range response.Access.Secrets {
-			credentials = append(credentials, secret.GetValue())
-		}
-	}
-	output := NewOutput(operation.OperationRversion, credentials)
+	output := NewOutput(operation.OperationRversion, logCredentials(executionResponse))
 	go func() {
 		uploadCtx, cancelUpload := context.WithCancel(context.WithoutCancel(ctx))
 		uploadDone := make(chan struct{})

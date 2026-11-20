@@ -21,6 +21,7 @@ import (
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/cgroup"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/logbuffer"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
 	"google.golang.org/protobuf/proto"
@@ -68,6 +69,7 @@ type Runtime struct {
 	endpointsLoaded bool
 	targetChanged   chan struct{}
 	secrets         map[string]string
+	eventRedactor   *logbuffer.Redactor
 	verificationKey []byte
 	docker          *DockerDaemon
 }
@@ -94,6 +96,11 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	}()
 	if r.Journal == nil || r.PodUID == "" || response == nil || response.Operation == nil || response.Runtime == nil {
 		return fmt.Errorf("runtime execution input is incomplete")
+	}
+	if response.Access != nil {
+		r.mu.Lock()
+		r.eventRedactor = logbuffer.NewRedactor(logCredentials(response))
+		r.mu.Unlock()
 	}
 	_, _ = fmt.Fprintln(stdout, "[INFO] [runtime] Preparing trust and container engine")
 	trust, err := r.prepareRuntimeTrust(response.Runtime)

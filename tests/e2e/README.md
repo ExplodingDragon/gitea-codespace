@@ -127,23 +127,6 @@ or instrument with its actual application. Repeat attachment and removal,
 and check access as the configured user. Verify character-device access in
 a non-privileged container so the test exercises its device cgroup rules.
 
-### Implementation acceptance criteria
-
-- Reusing an imported image succeeds and Pods run the selected digest.
-- Platform connections remain available while site network switches and
-  protocol/port rules control new connections; explicit Docker MTU settings
-  take precedence over the Runtime-derived default.
-- Network-denial checks execute the probe successfully and verify its connection
-  result, with reachable fixtures establishing that the target service works.
-- Ordinary reverse forwarding reaches the Dev Container, and independent
-  USB/IP sources can list, attach, transfer data, and detach.
-- A wrong kernel, ineffective device permissions, or broken forwarding fails
-  the Kata product test with diagnostics.
-- Fresh kernel builds and cache hits pass the same artifact validation and
-  running Kata tests with the virtual USB/IP device.
-- Test resources carry the run label from creation so cleanup can find them
-  after a partial test failure.
-
 ## Diagnostics and cleanup
 
 The harness writes artifacts under `.tmp/e2e/<run-id>` by default; set

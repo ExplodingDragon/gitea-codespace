@@ -95,7 +95,7 @@ type AgentControlServer struct {
 	Tickets             *AccessTickets
 	Caches              *ComponentServer
 	Connections         *siteConnectionStore
-	Logs                *operationLogs
+	Logs                *codespaceLogs
 	Diagnostics         *runtimeDiagnostics
 	Authority           ExecutionAuthority
 	Samples             ResourceSamples
@@ -466,11 +466,22 @@ func (s *AgentControlServer) UploadLogs(ctx context.Context, request *agentv1.Up
 		return nil, connect.NewError(connect.CodeInvalidArgument, "Agent log batch is too large")
 	}
 	err = s.Logs.Append(cs, "", request.Lines)
-	if errors.Is(err, errOperationLogClosed) {
+	if errors.Is(err, errCodespaceLogClosed) {
 		return &agentv1.UploadLogsResponse{Closed: true}, nil
 	}
 	if err != nil {
 		return nil, err
 	}
 	return &agentv1.UploadLogsResponse{}, nil
+}
+
+func (s *AgentControlServer) ReportEvent(ctx context.Context, request *agentv1.ReportEventRequest) (*agentv1.ReportEventResponse, error) {
+	cs, err := s.current(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.Logs.ReportEvent(cs, request.Type, request.Message); err != nil {
+		return nil, err
+	}
+	return &agentv1.ReportEventResponse{}, nil
 }
