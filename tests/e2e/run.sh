@@ -296,6 +296,7 @@ EOF
       deviceNodes:
         - path: /dev/e2e-cdi/fuse$index
           hostPath: $DEVICE_PLUGIN_DIRECTORY/fuse$index
+          gid: $((29000 + index))
           permissions: rwm
       mounts:
         - hostPath: $DEVICE_PLUGIN_DIRECTORY/fuse$index.txt

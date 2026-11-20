@@ -945,15 +945,21 @@ for allocation in "$CODESPACE_E2E_CDI" "$CODESPACE_E2E_CDI_NODE" "$E2E_MANUAL_ID
 done
 test -c "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE"
 test -c /dev/e2e-manual/data
+gid=$((29000 + ${CODESPACE_E2E_CDI_NODE#fuse}))
+if [ "$(stat -c '%a:%g' "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE")" != "660:$gid" ] ||
+   [ "$(stat -c '%a:%g' /dev/e2e-manual/data)" != "660:29002" ]; then
+  printf 'Expected device mode 660 and groups %s (CDI), 29002 (manual)\n' "$gid" >&2
+  stat -c '%n: mode=%a uid=%u gid=%g' "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE" /dev/e2e-manual/data >&2
+  id >&2
+  exit 1
+fi
+groups=$(id -G)
+case " $groups " in *" $gid "*) ;; *) printf 'Missing device group %s; actual groups: %s\n' "$gid" "$groups" >&2; exit 1 ;; esac
 printf device-write > "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE"
 printf device-write > /dev/e2e-manual/data
 test "$(cat /opt/e2e-cdi/allocation)" = "$CODESPACE_E2E_CDI_NODE"
 test "$(cat /opt/e2e-manual/allocation)" = "$E2E_MANUAL_ID"
 test "$(cat /opt/e2e-node/proof)" = node-mount-proof
-gid=$((29000 + ${CODESPACE_E2E_CDI_NODE#fuse}))
-test "$(stat -c '%a:%g' "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE")" = "660:$gid"
-test "$(stat -c '%a:%g' /dev/e2e-manual/data)" = "660:29002"
-case " $(id -G) " in *" $gid "*) ;; *) printf 'Missing device group %s\n' "$gid" >&2; exit 1 ;; esac
 `
 		if initialize {
 			deviceCheck += `printf '%s\n' "$CODESPACE_E2E_CDI" "$CODESPACE_E2E_CDI_NODE" "$E2E_MANUAL_ID" "$gid" > .codespace-native-device; `
