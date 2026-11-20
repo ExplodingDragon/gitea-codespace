@@ -124,19 +124,30 @@ service this is usually a URL ending in `/v1`; the Claude SDK normally adds
 credentials through `apiKeyEnv` so the saved configuration contains only their
 variable name.
 
-`models` is a non-empty list with unique `id` values and optional display `name`.
+`models` is an optional list with unique `id` values and optional display `name`.
 `defaultModel` selects an ID from that list; it defaults to the first entry.
+When a connection supplies a catalog, sessions select models from that catalog,
+keeping model selection on the intended service even when restoring old app data.
+The catalog is available without contacting the model API; actual requests
+report authentication, network or protocol errors when the tool runs.
+
+Omitting `models` or supplying `[]` leaves the custom connection's catalog empty
+and allows the IDE to start; it does not guarantee that the backend can start a
+model session. Codex and Claude then use their native default model unless a
+session explicitly selects one, and the configured API service must support
+that model. For OpenCode and Pi, supply the service's available models in
+`connections.<backend>.models` so sessions can select a model under `codespace`.
+Custom API services may support different models, so their configured catalogs
+define the choices shown in the IDE. To use a tool's native configuration and
+model catalog instead, omit its connection or set it to `null`.
+
 Optional `contextWindow` supplies catalog information. OpenCode and Pi also use
 it for native model registration and accept `maxTokens` as the output limit;
 their defaults are 128000 context tokens and up to 16384 output tokens, capped
 by the context window. An explicit output limit must fit within the configured
 or default context window. Set these values to the limits of the actual service.
 Codex and Claude keep their native token-limit behavior. OpenCode and Pi display
-these models under the `codespace` provider. The catalog is available without
-contacting the model API; actual requests report authentication, network or
-protocol errors when the tool runs.
-Sessions using an explicit connection select models from its catalog, keeping
-model selection on the intended service even when restoring old app data.
+these models under the `codespace` provider.
 
 Omitting `apiKeyEnv` explicitly selects an unauthenticated endpoint. Tools that
 require a non-empty API key receive the fixed, non-secret `codespace-no-auth`
@@ -166,12 +177,10 @@ selection remain intact, so CLI use continues with the user's own settings.
 
 Gateway authenticates browser HTTP and WebSocket connections as the workspace
 owner. This keeps authentication and session renewal aligned with the other
-Codespace providers. The app's remote relay, server-to-server access, public
-sharing and additional-user configuration are disabled, including when saved
-data contains previously enabled settings. Their setup pages are hidden, and
-access-configuration requests return an explicit error. This policy concerns
-application access; agent tools, model APIs and MCP retain their own network
-and authentication behavior.
+Codespace providers. Workspace access stays on this authenticated Gateway path;
+remote relay, server-to-server access, public sharing and additional-user setup
+are unavailable. Agent tools, model APIs and MCP retain their own network and
+authentication behavior.
 
 ## Ports and USB
 

@@ -39,18 +39,19 @@ func TestAgentResultReplay(t *testing.T) {
 		OperationRversion: 1,
 		Result:            &agentv1.OperationResult{Status: codespacev1.FinalStatus_FINAL_STATUS_DONE},
 		Boot:              &codespacev1.RuntimeBoot{OperationRversion: 1, Stage: codespacev1.RuntimeBootStage_RUNTIME_BOOT_STAGE_READY, StartedUnix: 1, LastUpdateUnix: 2},
-		Target:            &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []*agentv1.EndpointTarget{{Endpoint: &codespacev1.RuntimeEndpoint{EndpointId: "workspace", Label: "Workspace"}, ContainerId: "container", Port: 13337}}},
+		Target:            &agentv1.AccessTarget{Version: 1, Ready: true, PrimaryContainerId: "container", WorkspaceFolder: "/workspaces/project"},
 	}
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
+	require.Equal(t, []api.AgentEndpoint{}, cs.Status.Target.Endpoints)
 	cs.Status.SettledOperationVersion = 1
 	require.NoError(t, c.Status().Update(t.Context(), cs))
 	require.NoError(t, server.saveReport(t.Context(), cs, report))
 	require.EqualValues(t, 1, cs.Status.SettledOperationVersion)
 	require.NoError(t, c.Get(t.Context(), client.ObjectKeyFromObject(cs), cs))
-	report.Target.Endpoints[0].Port++
+	report.Target.PrimaryContainerId = "other-container"
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.saveReport(t.Context(), cs, report)))
-	report.Target.Endpoints[0].Port--
+	report.Target.PrimaryContainerId = "container"
 	report.Result.Status = codespacev1.FinalStatus_FINAL_STATUS_FAILED
 	require.Equal(t, connect.CodeFailedPrecondition, connect.CodeOf(server.saveReport(t.Context(), cs, report)))
 }

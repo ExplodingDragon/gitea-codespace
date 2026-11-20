@@ -39,6 +39,19 @@ func (s controlService) UploadLogs(ctx context.Context, request *agentv1.UploadL
 	return s.upload(ctx, request)
 }
 
+func newControlTestClient(t *testing.T, service controlService) agentv1connect.AgentControlServiceClient {
+	t.Helper()
+	rpcServer := connect.NewServer()
+	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
+	handler := http.NewServeMux()
+	connecthttp.Mount(handler, rpcServer)
+	server := httptest.NewUnstartedServer(handler)
+	server.EnableHTTP2 = true
+	server.StartTLS()
+	t.Cleanup(server.Close)
+	return agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC())))
+}
+
 func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
 	require.NoError(t, err)
@@ -89,16 +102,7 @@ func TestControlClientPersistsResultAcrossLostAcknowledgement(t *testing.T) {
 			return nil, ctx.Err()
 		}
 	}
-	rpcServer := connect.NewServer()
-	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
-	handler := http.NewServeMux()
-	connecthttp.Mount(handler, rpcServer)
-
-	server := httptest.NewUnstartedServer(handler)
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
-	remote := agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC())))
+	remote := newControlTestClient(t, service)
 	for attempt := range 2 {
 		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 		client := &ControlClient{Journal: journal, Remote: remote, Execute: func(_ context.Context, response *agentv1.ControlResponse, report func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
@@ -162,18 +166,9 @@ func TestControlClientCancelsExpiredPermitDuringStalledResponse(t *testing.T) {
 			}
 		}
 	}}
-	rpcServer := connect.NewServer()
-	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
-	handler := http.NewServeMux()
-	connecthttp.Mount(handler, rpcServer)
-
-	server := httptest.NewUnstartedServer(handler)
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
 	defer cancel()
-	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))), Execute: func(ctx context.Context, _ *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
+	client := &ControlClient{Journal: journal, Remote: newControlTestClient(t, service), Execute: func(ctx context.Context, _ *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
 		close(started)
 		<-ctx.Done()
 		close(canceled)
@@ -224,18 +219,9 @@ func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 			}
 		}
 	}}
-	rpcServer := connect.NewServer()
-	agentv1connect.RegisterAgentControlServiceHandler(rpcServer, service)
-	handler := http.NewServeMux()
-	connecthttp.Mount(handler, rpcServer)
-
-	server := httptest.NewUnstartedServer(handler)
-	server.EnableHTTP2 = true
-	server.StartTLS()
-	defer server.Close()
 	ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
 	defer cancel()
-	client := &ControlClient{Journal: journal, Remote: agentv1connect.NewAgentControlServiceClient(connect.NewClient(connecthttp.NewTransport(server.Client(), server.URL, connecthttp.WithGRPC()))), Execute: func(ctx context.Context, response *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
+	client := &ControlClient{Journal: journal, Remote: newControlTestClient(t, service), Execute: func(ctx context.Context, response *agentv1.ControlResponse, _ func(*agentv1.AgentReport), stdout, stderr io.Writer) error {
 		if running.Add(1) != 1 {
 			overlap.Store(true)
 		}
@@ -262,7 +248,11 @@ func TestControlClientStopsWriterAfterOperationCancellation(t *testing.T) {
 	default:
 		t.Fatal("execution was not canceled before the writer exited")
 	}
-	require.Empty(t, secondFinished)
+	select {
+	case <-secondFinished:
+		t.Fatal("a new operation ran after the writer was canceled")
+	default:
+	}
 	cancel()
 	require.False(t, overlap.Load())
 	data, err := journal.read("state/report.pb", 1024*1024)

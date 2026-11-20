@@ -58,7 +58,6 @@ const connectionSchemas = Object.fromEntries(
             },
             models: {
               type: "array",
-              minItems: 1,
               items: {
                 ...modelSchema,
                 properties: {
@@ -84,7 +83,6 @@ const connectionSchemas = Object.fromEntries(
           },
           required: [
             "baseUrl",
-            "models",
             ...(backend === "opencode" || backend === "pi" ? ["api"] : []),
           ],
           additionalProperties: false,
@@ -171,10 +169,10 @@ export function parseCodespaceConnections(
       !connectionAPIs.some((api) => api === connection.api)
     )
       fail(`.${key}.api`, "must select a supported API protocol");
-    if (!Array.isArray(connection.models) || !connection.models.length)
-      fail(`.${key}.models`, "must contain at least one model");
+    if (connection.models !== undefined && !Array.isArray(connection.models))
+      fail(`.${key}.models`, "must be an array");
     const ids = new Set<string>();
-    const models = connection.models.map((model, index) => {
+    const models = (connection.models ?? []).map((model, index) => {
       const field = `.${key}.models[${index}]`;
       if (!model || typeof model !== "object" || Array.isArray(model))
         fail(field, "must be an object");

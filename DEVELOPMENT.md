@@ -42,15 +42,16 @@ Use the public Make targets because CI runs the same commands.
 
 | Command              | Purpose                                                                   |
 | -------------------- | ------------------------------------------------------------------------- |
-| `make format`        | Format Go, shell, protobuf, and frontend sources                          |
-| `make lint`          | Check generated files, scripts, workflows, TypeScript, Helm, CRDs, and Go |
+| `make format`        | Format platform Go, shell, protobuf, and administration frontend sources   |
+| `make lint`          | Check platform sources, generated files, workflows, administration frontend, Helm, and CRDs |
 | `make test`          | Run all non-E2E Go tests                                                   |
 | `make test-frontend` | Run administration interface tests                                        |
 | `make build`         | Build the frontend and local binary                                       |
 | `make clean`         | Remove generated local output                                             |
 
 Run focused package tests while editing. Before submitting, run `make lint`,
-`make test`, and `make test-frontend`.
+`make test`, and `make test-frontend`. For provider changes, also run that
+provider's `check` target as described under [Local workflows](#local-workflows).
 
 ## Generated sources
 

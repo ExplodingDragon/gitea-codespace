@@ -192,7 +192,7 @@ func TestRuntimeProxyConfigurationIsSnapshotted(t *testing.T) {
 func TestOperationFinalRequiresReadyAndStoppedFacts(t *testing.T) {
 	cs := &api.Codespace{ObjectMeta: metav1.ObjectMeta{Name: "runtime", Namespace: "codespace-example", UID: "runtime-uid", Generation: 2}, Spec: api.CodespaceSpec{CodespaceID: 1, Operation: api.Operation{Type: "create", Version: 1}}, Status: api.CodespaceStatus{Result: &api.OperationResult{Version: 1, Succeeded: true}}}
 	cs.Status.Access = api.RuntimeAccess{GatewayURL: "https://workspace.example", SSHAddress: "workspace.example:2222"}
-	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project"}
+	cs.Status.Target = &api.AgentTarget{Version: 1, Ready: true, PrimaryContainerID: "container", WorkspaceFolder: "/workspaces/project", Endpoints: []api.AgentEndpoint{}}
 	cs.Status.Boot = &api.RuntimeBoot{OperationVersion: 1, Stage: "ready", StartedUnix: 1, LastUpdateUnix: 2}
 	cs.Status.MetadataGeneration = 1
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).WithStatusSubresource(cs).WithObjects(cs).Build()

@@ -1,10 +1,7 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 // biome-ignore-all lint/complexity/useLiteralKeys: Exercise provider launch boundaries without starting external model services.
-import {
-  type CodespaceBackend,
-  parseCodespaceConnections,
-} from "@yep-anywhere/shared";
+import { parseCodespaceConnections } from "@yep-anywhere/shared";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   codespaceAuthStatus,
@@ -30,12 +27,9 @@ const connection = {
   ],
 };
 
-afterEach(() => {
-  vi.unstubAllEnvs();
-  vi.restoreAllMocks();
-});
+afterEach(() => vi.unstubAllEnvs());
 
-it("validates connection fields and model defaults without exposing supplied values", () => {
+it("validates connection fields, model defaults and token limits", () => {
   expect(
     parseCodespaceConnections({ codex: connection, claude: null }),
   ).toEqual({
@@ -82,7 +76,7 @@ it("validates connection fields and model defaults without exposing supplied val
   }
 });
 
-it("uses the declared model catalog for all five backends without discovery or API requests", async () => {
+it("uses optional connection catalogs for all five backends without discovery or API requests", async () => {
   const providers = [
     new CodexProvider(),
     new CodexOSSProvider(),
@@ -90,22 +84,18 @@ it("uses the declared model catalog for all five backends without discovery or A
     new OpenCodeProvider(),
     new PiProvider(),
   ];
-  vi.stubEnv(
-    "CODESPACE_YEP_CONNECTIONS",
-    JSON.stringify(
-      Object.fromEntries(
-        providers.map(({ name }) => [
-          name,
-          {
-            ...connection,
-            ...(name === "opencode" || name === "pi"
-              ? { api: "openai-completions" }
-              : {}),
-          },
-        ]),
-      ),
-    ),
+  const connections = Object.fromEntries(
+    providers.map(({ name }) => [
+      name,
+      {
+        ...connection,
+        ...(name === "opencode" || name === "pi"
+          ? { api: "openai-completions" }
+          : {}),
+      },
+    ]),
   );
+  vi.stubEnv("CODESPACE_YEP_CONNECTIONS", JSON.stringify(connections));
   for (const provider of providers) {
     const id = ["pi", "opencode"].includes(provider.name)
       ? "codespace/company/model"
@@ -124,18 +114,36 @@ it("uses the declared model catalog for all five backends without discovery or A
     );
   }
   vi.stubEnv("COMPANY_TOKEN", "rotated-secret");
-  for (const { name } of providers) {
+  for (const provider of providers) {
+    const { name } = provider;
+    const requiresRegisteredModel = name === "opencode" || name === "pi";
+    const input = {
+      [name]: {
+        ...connections[name],
+        models: requiresRegisteredModel ? [] : undefined,
+      },
+    };
+    vi.stubEnv("CODESPACE_YEP_CONNECTIONS", JSON.stringify(input));
+    expect(await provider.getAvailableModels()).toEqual([]);
+    if (requiresRegisteredModel) {
+      expect(() => codespaceModel(name)).toThrow(
+        "select a codespace model before starting a session",
+      );
+    } else {
+      expect(codespaceModel(name)).toBeUndefined();
+      expect(codespaceModel(name, "default")).toBeUndefined();
+    }
+    const selected = requiresRegisteredModel ? "codespace/custom" : "custom";
+    expect(codespaceModel(name, selected)).toBe(selected);
     expect(codespaceAuthStatus(name, true)?.enabled).toBe(true);
     const env = codespaceEnvironment(name, {
       CODESPACE_YEP_CONNECTIONS: "{}",
       COMPANY_TOKEN: "old",
       HOME: "/home/user",
     });
-    expect(JSON.parse(env.CODESPACE_YEP_CONNECTIONS ?? "{}")).toEqual({
-      [name]: parseCodespaceConnections(
-        JSON.parse(process.env.CODESPACE_YEP_CONNECTIONS ?? "{}"),
-      )[name as CodespaceBackend],
-    });
+    expect(JSON.parse(env.CODESPACE_YEP_CONNECTIONS ?? "{}")).toEqual(
+      parseCodespaceConnections(input),
+    );
     expect(env.COMPANY_TOKEN).toBe("rotated-secret");
     expect(env.HOME).toBe("/home/user");
   }
@@ -144,7 +152,10 @@ it("uses the declared model catalog for all five backends without discovery or A
 it("keeps Codex exec new and resumed turns on the same scoped Responses connection", () => {
   vi.stubEnv(
     "CODESPACE_YEP_CONNECTIONS",
-    JSON.stringify({ codex: connection, "codex-oss": connection }),
+    JSON.stringify({
+      codex: { ...connection, models: [] },
+      "codex-oss": { ...connection, models: [] },
+    }),
   );
   const args = codespaceCodexArguments("codex");
   expect(args.join(" ")).toContain(
@@ -152,6 +163,7 @@ it("keeps Codex exec new and resumed turns on the same scoped Responses connecti
   );
   expect(args.join(" ")).toContain('env_key="COMPANY_TOKEN"');
   expect(args.join(" ")).toContain("requires_openai_auth=false");
+  expect(args.some((arg) => arg.startsWith("model="))).toBe(false);
   const provider = new CodexOSSProvider();
   const options = { cwd: "/workspace", model: "company/model" };
   const route = { serviceId: undefined, modelId: "company/model" };

@@ -50,14 +50,20 @@ export function codespaceModel(
   const connection = codespaceConnection(backend);
   if (!connection) return selected;
   const prefix = backend === "opencode" || backend === "pi" ? "codespace/" : "";
-  const model =
-    selected && selected !== "default"
-      ? selected
-      : `${prefix}${connection.defaultModel}`;
-  if (!connection.models.some((entry) => `${prefix}${entry.id}` === model))
+  const defaultModel = connection.defaultModel
+    ? `${prefix}${connection.defaultModel}`
+    : undefined;
+  const model = selected && selected !== "default" ? selected : defaultModel;
+  if (connection.models.length) {
+    if (!connection.models.some((entry) => `${prefix}${entry.id}` === model))
+      throw new Error(
+        `connections.${backend}.models: selected model is not in the configured catalog`,
+      );
+  } else if (prefix && !model?.startsWith(prefix)) {
     throw new Error(
-      `connections.${backend}.models: selected model is not in the configured catalog`,
+      `connections.${backend}.models: select a codespace model before starting a session`,
     );
+  }
   return model;
 }
 
@@ -115,8 +121,12 @@ export function codespaceEnvironment(
     }[connection.api ?? "openai-completions"];
     env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
       ...config,
-      model: `codespace/${connection.defaultModel}`,
-      small_model: `codespace/${connection.defaultModel}`,
+      ...(connection.defaultModel
+        ? {
+            model: `codespace/${connection.defaultModel}`,
+            small_model: `codespace/${connection.defaultModel}`,
+          }
+        : {}),
       provider: {
         ...(config.provider as Record<string, unknown>),
         codespace: {
@@ -168,7 +178,8 @@ export function codespaceCodexArguments(
       .join(",")}}`,
     "-c",
     'model_provider="codespace"',
-    "-c",
-    `model=${JSON.stringify(connection.defaultModel)}`,
+    ...(connection.defaultModel
+      ? ["-c", `model=${JSON.stringify(connection.defaultModel)}`]
+      : []),
   ];
 }

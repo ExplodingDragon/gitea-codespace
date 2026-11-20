@@ -120,8 +120,11 @@ allowed to create the Codespace. The code running in the environment can read
 the injected values.
 
 The Codespace page lists the available Web IDE, SSH connection, and forwarded
-application URLs. Stopping a Codespace releases its runtime resources while
-retaining the workspace for its next start.
+application URLs. Once the runtime is ready, an editor preparation or launch
+submission failure is logged and leaves Web IDE access unavailable; SSH and
+other basic access remain available. Provider image pull or mount failures
+occur earlier and prevent the runtime from starting. Stopping a Codespace
+releases its runtime resources while retaining the workspace for its next start.
 
 ## Publish application ports
 

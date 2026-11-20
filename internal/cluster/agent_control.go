@@ -386,9 +386,16 @@ func applyAgentReport(cs *api.Codespace, report *agentv1.AgentReport) error {
 		if !startup || report.Target.Version <= 0 || (report.Target.Ready && (report.Target.PrimaryContainerId == "" || !devcontainer.IsValidWorkspaceFolder(report.Target.WorkspaceFolder))) {
 			return connect.NewError(connect.CodeInvalidArgument, "invalid Agent access target")
 		}
-		target := &api.AgentTarget{Version: report.Target.Version, Ready: report.Target.Ready, PrimaryContainerID: report.Target.PrimaryContainerId, WorkspaceFolder: report.Target.WorkspaceFolder}
 		if len(report.Target.Endpoints) > 64 {
 			return connect.NewError(connect.CodeInvalidArgument, "too many endpoints")
+		}
+		target := &api.AgentTarget{
+			Version:            report.Target.Version,
+			Ready:              report.Target.Ready,
+			PrimaryContainerID: report.Target.PrimaryContainerId,
+			WorkspaceFolder:    report.Target.WorkspaceFolder,
+			// The CRD requires an array even when only SSH access is available.
+			Endpoints: make([]api.AgentEndpoint, 0, len(report.Target.Endpoints)),
 		}
 		seen := make(map[string]bool)
 		for _, endpoint := range report.Target.Endpoints {

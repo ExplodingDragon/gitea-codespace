@@ -155,6 +155,7 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 	var finished chan error
 	var executionTimer *time.Timer
 	var lastStarted int64
+	var controlFailed bool
 	wake := make(chan struct{}, 1)
 	metrics := time.NewTicker(10 * time.Second)
 	defer metrics.Stop()
@@ -171,16 +172,9 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 	for ctx.Err() == nil {
 		permit.Reconnect()
 		sessionCtx, cancelSession := context.WithCancel(ctx)
-		stream, err := c.Remote.Control(sessionCtx)
-		if err != nil {
-			cancelSession()
-			select {
-			case <-ctx.Done():
-			case <-time.After(time.Second):
-			}
-			continue
-		}
-		for sessionCtx.Err() == nil {
+		stream, controlErr := c.Remote.Control(sessionCtx)
+		streamOpened := controlErr == nil
+		for controlErr == nil && sessionCtx.Err() == nil {
 			if refreshMetrics && c.Sample != nil {
 				c.mu.Lock()
 				c.report.ResourceUsage = c.Sample()
@@ -220,17 +214,24 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 			if acceptedOperation != nil {
 				acceptedVersion = acceptedOperation.OperationRversion
 			}
-			err = stream.Send(&agentv1.ControlRequest{SessionId: session, Sequence: sequence, Report: report, AcceptedOperationRversion: acceptedVersion})
+			controlErr = stream.Send(&agentv1.ControlRequest{SessionId: session, Sequence: sequence, Report: report, AcceptedOperationRversion: acceptedVersion})
 			var response *agentv1.ControlResponse
-			if err == nil {
-				response, err = stream.Receive()
+			if controlErr == nil {
+				response, controlErr = stream.Receive()
 			}
 			requestTimeout.Stop()
-			if err != nil || sessionCtx.Err() != nil {
+			if controlErr == nil {
+				controlErr = sessionCtx.Err()
+			}
+			if controlErr == nil && (response.SessionId != session || response.Sequence != sequence) {
+				controlErr = fmt.Errorf("manager returned a mismatched control session or sequence")
+			}
+			if controlErr != nil {
 				break
 			}
-			if response.SessionId != session || response.Sequence != sequence {
-				break
+			if controlFailed {
+				slog.Info("Agent control stream recovered", "operation", report.OperationRversion)
+				controlFailed = false
 			}
 			if response.Operation != nil {
 				acceptedOperation = proto.Clone(response.Operation).(*codespacev1.OperationPayload)
@@ -318,16 +319,19 @@ func (c *ControlClient) Run(ctx context.Context) (returnErr error) {
 					c.mu.Unlock()
 				}
 			}
-			if !timer.Stop() {
-				select {
-				case <-timer.C:
-				default:
-				}
-			}
+			timer.Stop()
 		}
 		cancelSession()
-		_ = stream.CloseSend()
-		_ = stream.Close()
+		if streamOpened {
+			_ = stream.CloseSend()
+			_ = stream.Close()
+		}
+		if controlErr != nil && ctx.Err() == nil {
+			if !controlFailed {
+				slog.Warn("Agent control stream interrupted", "operation", c.snapshot().OperationRversion, "error", controlErr)
+			}
+			controlFailed = true
+		}
 		select {
 		case <-ctx.Done():
 		case <-time.After(time.Second):

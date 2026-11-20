@@ -72,14 +72,14 @@ test('prepare initializes options once and registers the canonical workspace on 
   const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: [{id: 'example'}]};
   env.TEST_SECRET = 'private-test-credential';
   request.templateOptions.connections = {codex: connection, claude: connection, pi: {...connection, api: 'openai-responses'}};
-  request.repositoryOptions.connections = {codex: {...connection, baseUrl: 'http://127.0.0.1:8080/api', apiKeyEnv: undefined}, claude: null};
+  request.repositoryOptions.connections = {codex: {baseUrl: 'http://127.0.0.1:8080/api'}, claude: null};
   const invalid = await run(path.join(runtime, 'prepare.mjs'), env, {...request, repositoryOptions: {providers: ['not-a-backend']}});
   assert.notEqual(invalid.code, 0);
   assert.match(invalid.output, /unsupported Yep Anywhere backend: not-a-backend; supported backends: claude/);
   const first = await run(path.join(runtime, 'prepare.mjs'), env, request);
   assert.equal(first.code, 0, first.output);
   const data = env.CODESPACE_WEB_IDE_DATA_DIR;
-  const expected = {providers: ['codex'], connections: {codex: {baseUrl: 'http://127.0.0.1:8080/api', models: [{id: 'example'}], defaultModel: 'example'}, claude: null, pi: {...connection, api: 'openai-responses', models: [{id: 'example', contextWindow: 128000, maxTokens: 16384}], defaultModel: 'example'}}};
+  const expected = {providers: ['codex'], connections: {codex: {baseUrl: 'http://127.0.0.1:8080/api', models: []}, claude: null, pi: {...connection, api: 'openai-responses', models: [{id: 'example', contextWindow: 128000, maxTokens: 16384}], defaultModel: 'example'}}};
   assert.deepEqual(JSON.parse(await readFile(path.join(data, 'codespace-options.json'))), expected);
   assert.deepEqual(JSON.parse(await readFile(path.join(data, 'settings.json'))), {codexReasoningSummary: 'detailed', codexUpdatePolicy: 'off'});
   await writeFile(path.join(data, 'settings.json'), '{"userChanged":true}');
@@ -92,7 +92,7 @@ test('prepare initializes options once and registers the canonical workspace on 
 
 test('serve inherits user tools and secrets, restarts successful exits, and stops on termination', {timeout: 10_000}, async (t) => {
   const {root, app, env} = await fixture(t);
-  const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: [{id: 'example'}], defaultModel: 'example'};
+  const connection = {baseUrl: 'https://api.example.test/v1', apiKeyEnv: 'TEST_SECRET', models: []};
   await writeFile(path.join(root, 'data/codespace-options.json'), JSON.stringify({providers: ['codex'], connections: {codex: connection}}));
   await writeFile(path.join(app, 'dist/index.js'), `
     import {writeFile} from 'node:fs/promises';
