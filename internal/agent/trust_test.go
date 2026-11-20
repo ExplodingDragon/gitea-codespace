@@ -4,30 +4,45 @@
 package agent
 
 import (
-	"bytes"
-	"io"
+	"encoding/pem"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
+	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/certificates"
 	configpkg "gitea.dev/codespace/internal/config"
 	"gitea.dev/codespace/internal/identity"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	"github.com/moby/buildkit/util/tracing"
 	"github.com/stretchr/testify/require"
 )
 
-func TestRuntimeWritesFirstProgressBeforeTrustPreparation(t *testing.T) {
-	journal, err := OpenJournal(t.TempDir(), VolumeIdentity{SiteUID: "site", ResourceUID: "resource", CodespaceID: 1})
+func TestRuntimeConfiguresBuildClientTrust(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	bundlePath := filepath.Join(t.TempDir(), "bundle.pem")
+	require.NoError(t, os.WriteFile(bundlePath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o644))
+	previousTransport, previousClient := http.DefaultTransport, tracing.DefaultClient
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("NODE_EXTRA_CA_CERTS", "")
+	t.Cleanup(func() {
+		http.DefaultClient.CloseIdleConnections()
+		http.DefaultTransport, tracing.DefaultClient = previousTransport, previousClient
+	})
+	require.NoError(t, (runtimeTrust{caBundlePath: bundlePath}).configureClients())
+	response, err := tracing.DefaultClient.Get(server.URL)
 	require.NoError(t, err)
-	defer func() { require.NoError(t, journal.Close()) }()
-	runtime := &Runtime{Journal: journal, PodUID: "pod"}
-	var output bytes.Buffer
-	err = runtime.Execute(t.Context(), &agentv1.ControlResponse{Operation: &codespacev1.OperationPayload{OperationRversion: 1}, Runtime: &agentv1.RuntimeOptions{GiteaUrl: "invalid"}}, nil, &output, io.Discard)
-	require.Error(t, err)
-	require.Contains(t, output.String(), "[INFO] [runtime] Preparing trust and container engine")
+	require.NoError(t, response.Body.Close())
+	require.Equal(t, http.StatusNoContent, response.StatusCode)
+	local := runtimeLocalEnvironment(devcontainer.HostUser{Name: "developer", Home: "/home/developer"})
+	require.Equal(t, bundlePath, local["SSL_CERT_FILE"])
+	require.Equal(t, bundlePath, local["NODE_EXTRA_CA_CERTS"])
 }
 
 func testRootCA(t *testing.T) string {

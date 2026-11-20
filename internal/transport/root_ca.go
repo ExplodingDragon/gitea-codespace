@@ -36,6 +36,7 @@ func ExtendDefaultRootCAs(path string) error {
 		configured.TLSClientConfig = configured.TLSClientConfig.Clone()
 	}
 	configured.TLSClientConfig.RootCAs = roots
+	base.CloseIdleConnections()
 	http.DefaultTransport = configured
 	return nil
 }

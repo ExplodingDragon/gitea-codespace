@@ -20,7 +20,10 @@ func TestExtendDefaultRootCAs(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy-ca.pem")
 	require.NoError(t, os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw}), 0o600))
 	previous := http.DefaultTransport
-	t.Cleanup(func() { http.DefaultTransport = previous })
+	t.Cleanup(func() {
+		http.DefaultClient.CloseIdleConnections()
+		http.DefaultTransport = previous
+	})
 	require.NoError(t, ExtendDefaultRootCAs(path))
 	response, err := http.Get(server.URL)
 	require.NoError(t, err)

@@ -170,6 +170,13 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 		service.Command = command
 	}
 	project.Services[resolved.Service] = service
+	// Companion services have their own trust configuration and no platform CA mount.
+	proxyEnvironment := make(map[string]string)
+	for _, name := range devcontainer.ProxyVariableNames() {
+		if value := platformEnvironment[name]; value != "" {
+			proxyEnvironment[name] = value
+		}
+	}
 	for name, relatedService := range project.Services {
 		relatedService.CustomLabels = composetypes.Labels{
 			api.ProjectLabel:     project.Name,
@@ -192,7 +199,11 @@ func (e *Engine) createCompose(ctx context.Context, resolved *devcontainer.Resol
 				relatedEnvironment[environmentName] = *value
 			}
 		}
-		for environmentName, value := range mergePlatformEnvironment(relatedEnvironment, platformEnvironment) {
+		servicePlatformEnvironment := proxyEnvironment
+		if name == resolved.Service {
+			servicePlatformEnvironment = platformEnvironment
+		}
+		for environmentName, value := range mergePlatformEnvironment(relatedEnvironment, servicePlatformEnvironment) {
 			value := value
 			relatedService.Environment[environmentName] = &value
 		}

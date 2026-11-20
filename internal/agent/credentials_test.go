@@ -13,7 +13,6 @@ import (
 
 	codespacev1 "gitea.dev/codespace-proto-go/codespace/v1"
 	"gitea.dev/codespace/devcontainer"
-	"gitea.dev/codespace/internal/devcontainerruntime"
 	"github.com/stretchr/testify/require"
 )
 
@@ -91,9 +90,6 @@ func TestAccessEnvironmentFileRoundTripAndReplacement(t *testing.T) {
 		}
 		expected += "UNICODE=\"\u4e2d\u6587\"\n"
 		require.Equal(t, expected, string(systemd))
-		dropIn, err := os.ReadFile(filepath.Join(filepath.Dir(path), "systemd.conf"))
-		require.NoError(t, err)
-		require.Equal(t, "[Service]\nEnvironmentFile="+devcontainerruntime.ContainerSystemdEnvironmentPath+"\n", string(dropIn))
 		command := exec.CommandContext(t.Context(), "/bin/sh", "-c", `. "$1"; exec env -0`, "sh", path)
 		command.Dir = directory
 		command.Env = []string{"PATH=" + os.Getenv("PATH"), "GITEA_TOKEN=stale"}

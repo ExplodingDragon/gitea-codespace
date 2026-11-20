@@ -20,7 +20,10 @@ import (
 	"github.com/docker/docker/api/types/container"
 )
 
-const containerCABundlePath = "/var/lib/gitea-codespace/ca/bundle.pem"
+const (
+	containerPlatformCAPath = "/var/lib/gitea-codespace/ca/bundle.pem"
+	containerCABundlePath   = "/var/lib/gitea-codespace/trust/bundle.pem"
+)
 
 var runtimeMounts = [...]struct {
 	source string
@@ -84,7 +87,7 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 	}
 	// The CA bundle is mounted at runtime, after Feature image builds finish.
 	platformEnvironment := map[string]string{
-		"NODE_EXTRA_CA_CERTS": containerCABundlePath,
+		"NODE_EXTRA_CA_CERTS": containerPlatformCAPath,
 		"SSL_CERT_FILE":       containerCABundlePath,
 	}
 	for _, name := range devcontainer.ProxyVariableNames() {

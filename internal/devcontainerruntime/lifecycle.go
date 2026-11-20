@@ -27,9 +27,6 @@ import (
 //go:embed builtin/configure-git.sh
 var configureGitScript string
 
-//go:embed builtin/install-ca.sh
-var installCAScript string
-
 // Outcome records the Dev Container and the optional platform services that
 // were actually started for this lifecycle action.
 type Outcome struct {
@@ -61,6 +58,7 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 		return nil, err
 	}
 	defer func() { returnErr = errors.Join(returnErr, engine.Close()) }()
+	engine.BeforeContainerStart = prepareContainerTrust
 	outcome := &Outcome{}
 	ready := func(state *devcontainer.State, _ devcontainer.LifecycleStage) error {
 		outcome.Environment = state
@@ -162,11 +160,7 @@ func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, 
 	if err := runTemplateLifecycle(ctx, request, engine, state, "start", stdout); err != nil {
 		return err
 	}
-	_, _ = fmt.Fprintln(stdout, "[INFO] [container] Configuring CA certificates")
-	if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", []string{"/bin/sh", "-c", installCAScript}, nil, nil); err != nil {
-		return fmt.Errorf("configure platform CA in Dev Container: %w", err)
-	}
-	state.RemoteEnvironment["NODE_EXTRA_CA_CERTS"] = containerCABundlePath
+	state.RemoteEnvironment["NODE_EXTRA_CA_CERTS"] = containerPlatformCAPath
 	state.RemoteEnvironment["SSL_CERT_FILE"] = containerCABundlePath
 	values := map[string]string{"GITEA_URL": request.GiteaURL}
 	if request.Action == "create" {

@@ -59,7 +59,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.NoError(t, options.MutateContainer(config, &container.HostConfig{}))
 	require.Equal(t, []string{"GITEA_CLI_NO_UPDATE_NOTIFIER=1", "GITEA_INSTANCE_URL=" + request.GiteaURL, "PROJECT=value=with=equals"}, config.Env)
 	require.Equal(t, containerCABundlePath, options.PlatformEnvironment["SSL_CERT_FILE"])
-	require.Equal(t, containerCABundlePath, options.PlatformEnvironment["NODE_EXTRA_CA_CERTS"])
+	require.Equal(t, containerPlatformCAPath, options.PlatformEnvironment["NODE_EXTRA_CA_CERTS"])
 }
 
 func TestCreateOptionsSkipsWebIDEMountsWhenDisabled(t *testing.T) {

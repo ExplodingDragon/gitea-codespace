@@ -106,7 +106,7 @@ func runtimeLocalEnvironment(hostUser devcontainer.HostUser) map[string]string {
 		"LOGNAME": hostUser.Name,
 		"USER":    hostUser.Name,
 	}
-	for _, name := range []string{"PATH", "SHELL"} {
+	for _, name := range []string{"PATH", "SHELL", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
 		if value := os.Getenv(name); value != "" {
 			environment[name] = value
 		}

@@ -92,6 +92,11 @@ DNS, TLS, and SSH exposure.
 
 ## Create a codespace
 
+The primary Dev Container image must include its distribution's
+`ca-certificates` bundle so platform certificates can be added before its first
+process starts. See [certificate trust](charts/gitea-codespace/README.md#operations)
+for certificate sources and update behavior.
+
 After the site is enabled:
 
 1. Open a repository, commit, or pull request in Gitea.

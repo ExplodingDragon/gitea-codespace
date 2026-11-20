@@ -420,10 +420,12 @@ Inspect `kubectl logs web-ide-bundle-check` and the Pod's exit status, then remo
 it with `kubectl delete pod web-ide-bundle-check`. For a private registry, supply
 the Pod's `imagePullSecrets` and configure registry trust on the node.
 
-Create a Codespace to also validate Agent's manifest checks and the adapter
-inside a compatible Dev Container. Repeat with the supported isolation modes
-and verify that editor state survives a stop and resume. Use the
-[lifecycle table](#lifecycle) to identify which startup stage failed.
+Follow the project [connection guide](../README.md#connect-gitea) to select the
+provider image in an environment template, then create a Codespace to validate
+Agent's manifest checks and the adapter inside a compatible Dev Container.
+Repeat with the supported isolation modes and verify that editor state survives
+a stop and resume. Use the [lifecycle table](#lifecycle) to identify which startup
+stage failed.
 
 ### Implementation acceptance criteria
 
@@ -433,19 +435,6 @@ and verify that editor state survives a stop and resume. Use the
   an imported digest selects the exact locally available image.
 - A Codespace prepares and serves the editor as its remote user from the
   read-only bundle, and retains provider data across stop and resume.
-
-## Connect the provider to Codespace
-
-Follow the project [connection guide](../README.md#connect-gitea) to register the
-provider image in an environment template. Create a Codespace with that template
-and verify its browser workspace. Image selection and update behavior are
-documented in the [provider overview](README.md); the [lifecycle](#lifecycle)
-describes how Agent starts the adapter.
-
-### Implementation acceptance criteria
-
-- A newly created Codespace uses the saved image reference and configuration.
-- Updating a template leaves existing Codespace snapshots unchanged.
 
 ## Maintain the official providers
 

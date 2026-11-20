@@ -6,6 +6,7 @@ package agent
 import (
 	"encoding/pem"
 	"fmt"
+	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"gitea.dev/codespace/internal/certificates"
 	"gitea.dev/codespace/internal/controlplane"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
+	transportpkg "gitea.dev/codespace/internal/transport"
+	"github.com/moby/buildkit/util/tracing"
 )
 
 const defaultSystemCABundlePath = "/etc/ssl/certs/ca-certificates.crt"
@@ -24,6 +27,21 @@ type runtimeTrust struct {
 	giteaURL     string
 	caBundlePath string
 	caBundle     []byte
+}
+
+// configureClients configures this single-workspace Agent before builds run.
+// BuildKit keeps its own transport, captured before the Runtime CA is available.
+func (t runtimeTrust) configureClients() error {
+	if err := transportpkg.ExtendDefaultRootCAs(t.caBundlePath); err != nil {
+		return err
+	}
+	tracing.DefaultClient = &http.Client{Transport: tracing.NewTransport(http.DefaultTransport)}
+	for _, name := range []string{"SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS"} {
+		if err := os.Setenv(name, t.caBundlePath); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *Runtime) prepareRuntimeTrust(options *agentv1.RuntimeOptions) (runtimeTrust, error) {

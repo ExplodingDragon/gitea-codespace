@@ -219,10 +219,20 @@ Add a private Gitea CA to the site configuration when Gitea does not use a
 publicly trusted certificate.
 
 Each Runtime combines the system roots, the internal service root, the site
-CA, and the optional proxy CA before starting its Docker daemon. Git, image
-pulls, OCI Feature package downloads, and the running Dev Container use this
-trust set. Dockerfile `RUN` commands and Feature installation scripts execute
-inside the build image and use that image's own certificate configuration.
+CA, and the optional proxy CA before starting its Docker daemon and build
+clients. Git, registry token requests, HTTPS and OCI Feature downloads, and
+`initializeCommand` use this trust set.
+
+The Dev Container image must include its distribution's `ca-certificates`
+bundle. Before starting or resuming the primary container, Agent adds platform
+certificates to that container's own system bundle, preserving the image's
+public and enterprise roots. Each controlled start or resume combines the current
+site CA with the proxy CA saved in the instance's configuration snapshot;
+editing a template's proxy CA affects subsequently created instances.
+Shells, IDEs, and systemd services use the prepared trust from their first process
+start. Compose companion services retain their own trust configuration.
+Dockerfile `RUN` commands and Feature installation scripts
+execute inside the build image and use that image's own certificate configuration.
 Component mTLS identities remain in separate Secrets and are not exposed to
 the Dev Container.
 
@@ -243,8 +253,10 @@ not require a data migration workflow.
 ### Verify
 
 - Runtime Pods can reach the Cache Service through its `443/https` endpoint.
-- A site with a private CA can clone repositories and pull Dev Container or
-  OCI Feature images from that Gitea installation.
+- A site with a private CA can clone repositories, build Dev Container images,
+  and download HTTPS or OCI Features from that Gitea installation.
+- The primary container's public and enterprise roots remain trusted alongside
+  platform certificates, including after a stop and resume.
 - Cache cleanup completes without interrupting active image pushes or workspace
   lifecycle operations.
 - Editing an existing Cache shows its actual StorageClass and does not report a

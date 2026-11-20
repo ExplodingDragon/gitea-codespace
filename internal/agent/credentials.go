@@ -138,7 +138,7 @@ func writeAccessEnvironment(path string, environment map[string]string, owner de
 	}{
 		{filepath.Base(path), shell.String(), 0o600, &owner},
 		{filepath.Base(devcontainerruntime.ContainerSystemdEnvironmentPath), systemd.String(), 0o600, nil},
-		{filepath.Base(devcontainerruntime.RuntimeSystemdDropInPath), "[Service]\nEnvironmentFile=" + devcontainerruntime.ContainerSystemdEnvironmentPath + "\n", 0o644, nil},
+		{filepath.Base(devcontainerruntime.RuntimeSystemdDropInPath), devcontainerruntime.RuntimeSystemdDropIn, 0o644, nil},
 	}
 	// The Agent runs as root; only the shell file belongs to remoteUser.
 	for _, file := range files {

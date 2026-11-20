@@ -100,6 +100,9 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	if err != nil {
 		return err
 	}
+	if err := trust.configureClients(); err != nil {
+		return fmt.Errorf("configure runtime HTTPS clients: %w", err)
+	}
 	if err := r.ensureDocker(ctx, response.Runtime.Cache, trust); err != nil {
 		return err
 	}

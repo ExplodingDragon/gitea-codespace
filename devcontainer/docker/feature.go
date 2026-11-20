@@ -364,6 +364,21 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		}
 		return loadFeatureDirectory(featureReference, featureReference, "", rawOptions, directory, false)
 	}
+	featureClient := retry.DefaultClient
+	if len(cache.CABundlePEM) > 0 {
+		roots, err := x509.SystemCertPool()
+		if err != nil {
+			return nil, fmt.Errorf("load system CA pool for Dev Container Feature %s: %w", featureReference, err)
+		}
+		if !roots.AppendCertsFromPEM(cache.CABundlePEM) {
+			return nil, fmt.Errorf("runtime CA bundle for Dev Container Feature %s is invalid", featureReference)
+		}
+		transport := http.DefaultTransport.(*http.Transport).Clone()
+		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
+		// The retry wrapper does not forward CloseIdleConnections.
+		defer transport.CloseIdleConnections()
+		featureClient = &http.Client{Transport: retry.NewTransport(transport)}
+	}
 	if strings.HasPrefix(featureReference, "https://") || strings.HasPrefix(featureReference, "http://") {
 		resolveReference := featureReference
 		if locked.Resolved != "" {
@@ -373,7 +388,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		if err != nil {
 			return nil, fmt.Errorf("parse Dev Container Feature URL: %w", err)
 		}
-		response, err := http.DefaultClient.Do(request)
+		response, err := featureClient.Do(request)
 		if err != nil {
 			return nil, fmt.Errorf("download Dev Container Feature %s: %w", featureReference, err)
 		}
@@ -402,12 +417,8 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 	if err != nil {
 		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
 	}
-	registryClient, err := featureRegistryClient(cache.CABundlePEM)
-	if err != nil {
-		return nil, fmt.Errorf("configure OCI client for Dev Container Feature %s: %w", featureReference, err)
-	}
 	if mirrored {
-		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, registryClient)
+		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, featureClient)
 		if err == nil {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
@@ -417,20 +428,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 			return nil, err
 		}
 	}
-	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, registryClient)
-}
-
-func featureRegistryClient(caBundlePEM []byte) (*http.Client, error) {
-	if len(caBundlePEM) == 0 {
-		return retry.DefaultClient, nil
-	}
-	roots := x509.NewCertPool()
-	if !roots.AppendCertsFromPEM(caBundlePEM) {
-		return nil, fmt.Errorf("runtime CA bundle is invalid")
-	}
-	transport := http.DefaultTransport.(*http.Transport).Clone()
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
-	return &http.Client{Transport: retry.NewTransport(transport)}, nil
+	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, featureClient)
 }
 
 func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, registryCredentials map[string]devcontainer.RegistryCredential, registryClient *http.Client) (*resolvedFeature, error) {

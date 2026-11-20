@@ -46,13 +46,16 @@ const (
 
 // Engine creates and controls one complete Dev Container environment.
 type Engine struct {
-	cli        *command.DockerCli
-	client     client.APIClient
-	compose    api.Compose
-	stdout     io.Writer
-	stderr     io.Writer
-	platform   *ocispec.Platform
-	hostCgroup *cgroup.Reader
+	// BeforeContainerStart prepares runtime-only files before the container's
+	// first process starts, including Docker CLI and Compose starts.
+	BeforeContainerStart func(context.Context, client.APIClient, string) error
+	cli                  *command.DockerCli
+	client               client.APIClient
+	compose              api.Compose
+	stdout               io.Writer
+	stderr               io.Writer
+	platform             *ocispec.Platform
+	hostCgroup           *cgroup.Reader
 }
 
 // PrepareLifecycleFunc prepares caller-specific state after the remote user and
@@ -171,14 +174,33 @@ func New(ctx context.Context, stdout, stderr io.Writer) (*Engine, error) {
 	if strings.TrimSpace(version.Os) == "" || strings.TrimSpace(version.Arch) == "" {
 		return nil, fmt.Errorf("docker server platform is incomplete")
 	}
-	return &Engine{
+	engine := &Engine{
 		cli:      cli,
-		client:   dockerClient,
-		compose:  compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil })),
 		stdout:   stdout,
 		stderr:   stderr,
 		platform: &ocispec.Platform{OS: version.Os, Architecture: version.Arch},
-	}, nil
+	}
+	engine.client = &startingAPIClient{APIClient: dockerClient, engine: engine}
+	if err := command.WithAPIClient(engine.client)(cli); err != nil {
+		_ = dockerClient.Close()
+		return nil, err
+	}
+	engine.compose = compose.NewComposeService(cli, compose.WithPrompt(func(string, bool) (bool, error) { return true, nil }))
+	return engine, nil
+}
+
+type startingAPIClient struct {
+	client.APIClient
+	engine *Engine
+}
+
+func (c *startingAPIClient) ContainerStart(ctx context.Context, id string, options container.StartOptions) error {
+	if prepare := c.engine.BeforeContainerStart; prepare != nil {
+		if err := prepare(ctx, c.APIClient, id); err != nil {
+			return fmt.Errorf("prepare container %s before start: %w", id, err)
+		}
+	}
+	return c.APIClient.ContainerStart(ctx, id, options)
 }
 
 // Close releases the Docker client connection.
@@ -550,7 +572,7 @@ func (e *Engine) createContainerWithRunArgs(ctx context.Context, resolved *devco
 	if err != nil {
 		return "", fmt.Errorf("create Docker command client: %w", err)
 	}
-	apiClient := client.APIClient(e.client)
+	apiClient := e.client
 	if mutate != nil {
 		apiClient = &mutatingAPIClient{APIClient: apiClient, mutate: mutate}
 	}

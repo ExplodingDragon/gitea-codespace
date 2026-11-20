@@ -4,7 +4,7 @@ set -eu
 
 credential_helper='!f() { while IFS= read -r line; do [ -n "$line" ] || break; done; printf "username=codespace\npassword=%s\n\n" "$(cat /var/lib/gitea-codespace/gitea-token)"; }; f'
 ssh_command='ssh -i /var/lib/gitea-codespace/git/id -o IdentitiesOnly=yes -o UserKnownHostsFile=/var/lib/gitea-codespace/git/known_hosts -o StrictHostKeyChecking=yes'
-ca_bundle=/var/lib/gitea-codespace/ca/bundle.pem
+ca_bundle=/var/lib/gitea-codespace/trust/bundle.pem
 
 if command -v git >/dev/null 2>&1; then
   if [ "${GITEA_CONFIGURE_CA_ONLY:-false}" != true ]; then

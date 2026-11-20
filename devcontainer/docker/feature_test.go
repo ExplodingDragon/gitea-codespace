@@ -83,34 +83,33 @@ func TestFeatureBuildContext(t *testing.T) {
 	}
 }
 
-func TestFeatureRegistryClientUsesConfiguredRootCA(t *testing.T) {
+func TestFeatureDownloadUsesConfiguredRootCA(t *testing.T) {
 	t.Parallel()
 
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for name, value := range map[string]string{
+		"devcontainer-feature.json": `{"id":"private","version":"1.0.0"}`,
+		"install.sh":                "#!/bin/sh\n",
+	} {
+		if err := writer.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(value))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := writer.Write([]byte(value)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
-		response.WriteHeader(http.StatusNoContent)
+		_, _ = response.Write(archive.Bytes())
 	}))
 	defer server.Close()
 	root := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: server.Certificate().Raw})
-	client, err := featureRegistryClient(root)
-	if err != nil {
-		t.Fatalf("create Feature registry client: %v", err)
-	}
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodGet, server.URL, nil)
-	if err != nil {
-		t.Fatalf("create Feature registry request: %v", err)
-	}
-	response, err := client.Do(request)
-	if err != nil {
-		t.Fatalf("request Feature registry with configured CA: %v", err)
-	}
-	if err := response.Body.Close(); err != nil {
-		t.Fatalf("close Feature registry response: %v", err)
-	}
-	if response.StatusCode != http.StatusNoContent {
-		t.Fatalf("Feature registry status = %s", response.Status)
-	}
-	if _, err := featureRegistryClient([]byte("not a certificate")); err == nil {
-		t.Fatal("invalid Feature registry CA was accepted")
+	feature, err := (&Engine{}).fetchFeature(t.Context(), server.URL+"/feature.tgz", nil, t.TempDir(), devcontainer.LockedFeature{}, devcontainer.CacheOptions{CABundlePEM: root}, "", "")
+	if err != nil || feature.metadata.ID != "private" {
+		t.Fatalf("download Feature with configured CA: %v, %v", feature, err)
 	}
 }
 

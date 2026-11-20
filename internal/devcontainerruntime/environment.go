@@ -24,6 +24,11 @@ const ContainerSystemdEnvironmentPath = "/var/lib/gitea-codespace/environment/sy
 const containerEnvironmentPath = "/var/lib/gitea-codespace/environment/env.sh"
 const containerSystemdDropInPath = "/etc/systemd/system/service.d/60-gitea-codespace-environment.conf"
 
+// RuntimeSystemdDropIn gives system services the same trust as interactive tools.
+const RuntimeSystemdDropIn = "[Service]\nEnvironmentFile=" + ContainerSystemdEnvironmentPath +
+	"\nEnvironment=SSL_CERT_FILE=" + containerCABundlePath +
+	"\nEnvironment=NODE_EXTRA_CA_CERTS=" + containerPlatformCAPath + "\n"
+
 func prepareRuntimeEnvironment(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State) error {
 	uid, gid, err := engine.RemoteUserIDs(ctx, state)
 	if err != nil {
