@@ -43,6 +43,7 @@ func TestPrepareNativeDevicesManualMappings(t *testing.T) {
 	spec := &oci.Spec{Process: &oci.Process{}}
 	_, err = cache.InjectDevices(spec, nativeCDIDevice)
 	require.NoError(t, err)
+	require.Equal(t, "0.7.0", cache.GetDevice(nativeCDIDevice).GetSpec().Version)
 	require.Len(t, spec.Linux.Devices, 2)
 	require.Equal(t, "/dev/example/null", spec.Linux.Devices[0].Path)
 	require.Equal(t, directory, spec.Mounts[0].Source)
@@ -86,6 +87,7 @@ func TestNativeCDISpecUsesStableAllocation(t *testing.T) {
 		spec := &oci.Spec{Process: &oci.Process{}}
 		_, err = filtered.InjectDevices(spec, nativeCDIDevice)
 		require.NoError(t, err)
+		require.Equal(t, "0.3.0", filtered.GetDevice(nativeCDIDevice).GetSpec().Version)
 		require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=" + physical, "OVERRIDE=forwarded-" + physical}, spec.Process.Env)
 	}
 	for _, ids := range []string{"", "all", "other.example/device=first", "missing"} {

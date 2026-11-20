@@ -167,9 +167,16 @@ func prepareNativeDevices(configuration *runtimeplatform.NativeConfiguration, so
 	if err != nil {
 		return nil, err
 	}
-	if err := destination.WriteSpec(&cditypes.Spec{Version: cditypes.CurrentVersion, Kind: nativeCDIKind,
+	spec := &cditypes.Spec{Kind: nativeCDIKind,
 		Devices: []cditypes.Device{{Name: "current", ContainerEdits: *resolved}},
-	}, "native.json"); err != nil {
+	}
+	// Declare the version required by the edits so Docker can read the spec
+	// independently of the CDI library version used by the Agent.
+	spec.Version, err = cditypes.MinimumRequiredVersion(spec)
+	if err != nil {
+		return nil, fmt.Errorf("determine native device configuration version: %w", err)
+	}
+	if err := destination.WriteSpec(spec, "native.json"); err != nil {
 		return nil, fmt.Errorf("write native device configuration: %w", err)
 	}
 	prepared.DevContainer.CDIDeviceIDs = []string{nativeCDIDevice}
