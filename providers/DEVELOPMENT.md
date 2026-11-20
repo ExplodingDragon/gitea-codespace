@@ -6,7 +6,7 @@ releases can be updated without rebuilding Manager, Agent, or Gateway.
 
 This guide describes provider protocol version 1. The fake provider under
 [`tests/e2e/web-ide`](../tests/e2e/web-ide) is a compact working reference; the
-[`vscode`](vscode), [`dsh`](dsh), and [`yepanywhere`](yepanywhere) directories show
+[`vscode`](vscode) and [`dsh`](dsh) directories show
 production adapters.
 
 ## Lifecycle
@@ -379,9 +379,7 @@ and pinning behavior is documented in the [provider overview](README.md).
 The official providers use their `bin/serve` shell scripts to restart editors
 after exit, with a delay to avoid a tight failure loop. Shutdown signals reach
 the editor and end the loop so stopping the Dev Container does not start another
-process. Yep Anywhere also sends bounded exit diagnostics through the
-[workspace event command](../docs/events.md); reporting failures leave restart
-and shutdown available.
+process.
 
 Each provider has an independent toolchain because its application and
 integration follow upstream dependencies. Select Node.js from that provider's
@@ -392,14 +390,12 @@ From the repository root, validate the provider being changed:
 ```sh
 make -C providers/vscode check
 make -C providers/dsh check
-make -C providers/yepanywhere check
 ```
 
-Update upstream versions in the provider's `version.env`. For DSH and Yep Anywhere,
+Update upstream versions in the provider's `version.env`. For DSH,
 keep Node archive checksums aligned with `.node-version` so verified downloads
 match the selected toolchain. VS Code also accepts `CODE_SERVER_VERSION` for a
-different code-server release. Yep Anywhere's additional tool versions are
-pinned in [`tools/package.json`](yepanywhere/tools/package.json) and its lockfile.
+different code-server release.
 
 `make -C providers/<provider> version` reports the configured editor version.
 Each provider's `image` target builds for the current architecture and uses the
@@ -407,12 +403,12 @@ completed bundle manifest for its version label. Build on the target architectur
 because dependencies include native code. For example, from the repository root:
 
 ```sh
-make -C providers/yepanywhere image IMAGE=registry.example.com/yepanywhere:test
+make -C providers/dsh image IMAGE=registry.example.com/dsh:test
 ```
 
 Use the [local image verification steps](#test-the-image-locally) to check the
-mounted bundle. The [VS Code](vscode/README.md), [DSH](dsh/README.md), and
-[Yep Anywhere](yepanywhere/README.md) guides describe user configuration;
+mounted bundle. The [VS Code](vscode/README.md) and [DSH](dsh/README.md)
+guides describe user configuration;
 their Makefiles define the checks and build steps for each toolchain.
 
 Each provider workflow runs for changes to its own source. Changes to the shared

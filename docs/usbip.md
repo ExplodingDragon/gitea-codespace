@@ -21,11 +21,11 @@ support. The Dev Container also receives `gitea-codespace-usbip` for command-lin
 
 ## Connect a source
 
-In VS Code's USB view, choose **Copy USB tunnel command**. In DSH or Yep Anywhere,
+In VS Code's USB view, choose **Copy USB tunnel command**. In DSH,
 open **Codespace → Connection help** and use the USB/IP section. Choose a source name
 (default: `workstation`). The command includes the current workspace's actual
-SSH connection details. Run it on the workstation and keep it running. In both
-web interfaces, the generated command remains available for manual copying if
+SSH connection details. Run it on the workstation and keep it running. In DSH,
+the generated command remains available for manual copying if
 the browser cannot access the clipboard.
 
 To enter the connection details yourself:
@@ -100,8 +100,7 @@ a timeout, inspect `status` before repeating an attach or detach because the
 action may already have completed.
 
 The bundled [VS Code](../providers/vscode/README.md#usb-devices) and
-[DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins, and the
-[Yep Anywhere](../providers/yepanywhere/README.md#ports-and-usb) management page
+[DeepSeek Harness](../providers/dsh/README.md#usb-devices) plugins
 provide the same operations. They confirm a UI detach and refresh status after
 an operation.
 If status cannot be refreshed, the previous data remains visible but device

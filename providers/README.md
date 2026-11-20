@@ -17,7 +17,6 @@ When both a tag and digest are present, the digest selects the content.
 | --- | --- | --- |
 | VS Code | `ghcr.io/explodingdragon/gitea-codespace-web-ide-vscode:latest` | [Settings and extensions](vscode/README.md) |
 | DeepSeek Harness | `ghcr.io/explodingdragon/gitea-codespace-web-ide-dsh:latest` | [Settings and plugins](dsh/README.md) |
-| Yep Anywhere | `ghcr.io/explodingdragon/gitea-codespace-web-ide-yepanywhere:latest` | [Backends and settings](yepanywhere/README.md) |
 
 The official providers support `linux/amd64` and `linux/arm64` Dev Containers
 using glibc. The editor runs inside the Dev Container, so that image must supply
@@ -45,8 +44,7 @@ reproducibility is required. Nodes reuse cached layers when the content matches.
 
 The [provider development guide](DEVELOPMENT.md) defines the image metadata,
 runtime bundle, adapter protocol, build process, and verification steps. The
-official [VS Code](vscode/README.md), [DeepSeek Harness](dsh/README.md), and
-[Yep Anywhere](yepanywhere/README.md)
+official [VS Code](vscode/README.md) and [DeepSeek Harness](dsh/README.md)
 providers are production examples. The deterministic provider under
 [`tests/e2e/web-ide`](../tests/e2e/web-ide) is the smallest complete reference
 for protocol and Kubernetes lifecycle tests.
