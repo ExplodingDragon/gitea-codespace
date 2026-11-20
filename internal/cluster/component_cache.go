@@ -31,6 +31,7 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/log"
 )
 
 const (
@@ -65,6 +66,9 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		return nil, fmt.Errorf("site identity is no longer current")
 	}
 	for _, reference := range site.Spec.Caches {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		material, err := s.cacheByReference(ctx, reference)
 		if err != nil || !material.config.Enabled {
 			continue
@@ -94,11 +98,14 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			}
 			return nil
 		})
-		if connect.CodeOf(err) == connect.CodeResourceExhausted {
-			continue
-		}
 		if err != nil {
-			return nil, err
+			if ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			if connect.CodeOf(err) != connect.CodeResourceExhausted {
+				log.FromContext(ctx).Error(err, "Skip unavailable build cache", "cache", material.component.Name, "codespace", client.ObjectKeyFromObject(cs))
+			}
+			continue
 		}
 		registryAddress := fmt.Sprintf("%s.%s.svc", material.component.Name, s.ManagementNamespace)
 		registryURL := "https://" + registryAddress
@@ -122,7 +129,7 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		result.BuildScope = hex.EncodeToString(digest.Sum(nil))
 		return result, nil
 	}
-	return nil, nil
+	return nil, ctx.Err()
 }
 
 func (s *ComponentServer) cacheAvailable(ctx context.Context, material *cacheMaterial) (bool, error) {

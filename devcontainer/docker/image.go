@@ -96,7 +96,11 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 	}
 	if mirrored {
 		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulling image %s through mirror %s\n", imageName, fetchReference)
-		pullErr := e.pullImageReference(ctx, fetchReference)
+		mirrorCtx, progress, finish := watchMirrorProgress(ctx)
+		pullErr := finish(e.pullImageReference(mirrorCtx, fetchReference, progress))
+		if ctx.Err() != nil {
+			return "", ctx.Err()
+		}
 		if pullErr == nil {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulled image %s through mirror %s\n", imageName, fetchReference)
 			return fetchReference, nil
@@ -104,14 +108,14 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] OCI mirror for %s is unavailable; falling back to the original registry: %v\n", imageName, pullErr)
 	}
 	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulling image %s\n", imageName)
-	if err := e.pullImageReference(ctx, imageName); err != nil {
+	if err := e.pullImageReference(ctx, imageName, nil); err != nil {
 		return "", err
 	}
 	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulled image %s\n", imageName)
 	return imageName, nil
 }
 
-func (e *Engine) pullImageReference(ctx context.Context, imageName string) error {
+func (e *Engine) pullImageReference(ctx context.Context, imageName string, reportProgress func()) error {
 	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), imageName)
 	if err != nil {
 		return fmt.Errorf("resolve registry credentials for %s: %w", imageName, err)
@@ -124,8 +128,21 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string) error
 		return fmt.Errorf("pull Dev Container image %s: %w", imageName, err)
 	}
 	defer func() { _ = reader.Close() }()
+	var lastMessages map[string]dockerProgressMessage
+	if reportProgress != nil {
+		reportProgress()
+		lastMessages = make(map[string]dockerProgressMessage)
+	}
 	progress := dockerPullProgress{}
 	if err := readDockerProgress(reader, func(message dockerProgressMessage) {
+		if reportProgress != nil && message.Status != "" {
+			last, exists := lastMessages[message.ID]
+			// Docker can repeat an unchanged progress message while a transfer is stalled.
+			if !exists || message.Status != last.Status || message.ProgressDetail.Current > last.ProgressDetail.Current {
+				reportProgress()
+			}
+			lastMessages[message.ID] = message
+		}
 		if summary := progress.observe(message, time.Now()); summary != "" {
 			_, _ = fmt.Fprintln(e.stdout, "[INFO] [build]", summary)
 		}

@@ -250,8 +250,13 @@ Cache is cluster-internal and uses Manager's internal CA. Use a persistent
 volume for the local backend or shared object storage for the S3 backend.
 
 Cache cleanup pauses new use of that Cache while allowing active image pushes
-to finish. New workspaces use another available Cache or continue without cache
-acceleration, so cleanup does not change workspace lifecycle state.
+to finish. When a Cache is unavailable, including when its access credentials
+cannot be prepared safely, new workspaces use another available Cache or
+continue without cache acceleration. Direct image pulls and OCI Feature downloads
+through a mirror fall back to the original registry after two minutes without
+progress; ongoing transfers can take longer. Direct registry access still follows
+the site's outbound network policy and the registry's authentication and
+certificate requirements.
 
 The StorageClass of a Cache PVC is selected when the PVC is created and then
 becomes part of the running storage configuration. The administration page
@@ -339,14 +344,13 @@ SSH authenticates the connection; the device server and guest drivers still
 need their own security review. Protect the workstation's USB/IP endpoint from
 unintended clients.
 
-Validate the complete path with a disposable exported device before production
-use, following the [USB connection guide](../../docs/usbip.md). Verify device
-access as the configured non-root user. The kernel build guide above also
-covers automated USB/IP validation on a disposable worker.
 Stop hooks should tolerate a device already being offline, because the Gateway
 can revoke access before the hook runs.
 
 ### Verify
+
+Before production use, follow the [USB connection guide](../../docs/usbip.md)
+with disposable hardware representative of the intended devices:
 
 - List, attach, use, and detach a disposable device as the configured non-root
   user. Check the resulting device nodes and udev permissions; a storage test

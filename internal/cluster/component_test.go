@@ -461,6 +461,53 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, cacheNamespace, verified.Namespace)
 	require.True(t, verified.Policy.Build)
+
+	var gcLease coordinationv1.Lease
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "cache-gc-" + component.Name}, &gcLease))
+	fallback := testCacheComponent("cache-fallback", "cache-fallback-uid")
+	fallbackLease := ownerLease.DeepCopy()
+	fallbackLease.Name, fallbackLease.ResourceVersion = cacheOwnerLeaseName(fallback.Name), ""
+	fallbackLease.Labels[ComponentUIDLabel] = string(fallback.UID)
+	fallbackLease.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(fallback, api.GroupVersion.WithKind("CodespaceComponent"))}
+	fallbackLease.Spec.HolderIdentity = ptr.To(cacheOwnerHolder(componentIdentity{UID: string(fallback.UID)}, sessionID, fallback.Generation))
+	for _, scenario := range []string{"next cache", "without cache", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			currentSite := site.DeepCopy()
+			if scenario == "next cache" {
+				currentSite.Spec.Caches = append(currentSite.Spec.Caches, api.ResourceReference{Name: fallback.Name, UID: fallback.UID})
+			}
+			requestCtx, cancel := context.WithCancel(ctx)
+			defer cancel()
+			isolated := fake.NewClientBuilder().WithScheme(testScheme(t)).
+				WithObjects(component, secret, currentSite, &ownerLease, &gcLease, fallback, testComponentCredential(fallback, secret.Data), fallbackLease).
+				WithInterceptorFuncs(interceptor.Funcs{
+					Update: func(ctx context.Context, underlying client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+						if obj.GetName() == "cache-gc-"+component.Name {
+							if scenario == "canceled" {
+								cancel()
+							}
+							return errors.New("cache Lease update failed")
+						}
+						return underlying.Update(ctx, obj, opts...)
+					},
+				}).Build()
+			failing := &ComponentServer{ManagementNamespace: namespace, Client: isolated}
+			selected, err := failing.runtimeCache(requestCtx, cs, operation)
+			if scenario == "canceled" {
+				require.ErrorIs(t, err, context.Canceled)
+			} else {
+				require.NoError(t, err)
+			}
+			if scenario == "next cache" {
+				require.NotNil(t, selected)
+				require.Contains(t, selected.BuildRegistry, "https://cache-fallback.codespace-system.svc/cache/")
+				require.NotContains(t, selected.Credentials, "cache.codespace-system.svc")
+			} else {
+				require.Nil(t, selected)
+			}
+		})
+	}
+
 	grant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
 	require.NoError(t, err)
 	require.Equal(t, verified.ExpiresAt.UnixMilli(), grant.ReadyAtUnixMilliseconds)
@@ -471,7 +518,6 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
 	require.NoError(t, err)
 	require.Nil(t, runtimeCache)
-	var gcLease coordinationv1.Lease
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "cache-gc-" + component.Name}, &gcLease))
 	require.True(t, metav1.IsControlledBy(&gcLease, component))
 

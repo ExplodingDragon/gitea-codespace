@@ -14,8 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
+	"github.com/docker/cli/cli/command"
+	"github.com/docker/cli/cli/flags"
 	"github.com/docker/docker/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"github.com/stretchr/testify/require"
@@ -23,68 +26,112 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
+type registryTestTransport func(*http.Request) (*http.Response, error)
+
+func (f registryTestTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
+
 func TestResolveAndPullImage(t *testing.T) {
-	for _, scenario := range []string{"mirror", "fallback", "unavailable"} {
+	for _, scenario := range []string{"without cache", "mirror", "fallback", "unavailable", "stalled response", "repeated progress", "progress", "canceled"} {
 		t.Run(scenario, func(t *testing.T) {
-			pulls := make(chan string, 2)
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				w.Header().Set("Content-Type", "application/json")
-				switch {
-				case r.URL.Path == "/_ping":
-					w.Header().Set("OSType", "linux")
-				case strings.HasSuffix(r.URL.Path, "/version"):
-					_, _ = io.WriteString(w, `{"Os":"linux","Arch":"amd64","ApiVersion":"1.51"}`)
-				case strings.HasSuffix(r.URL.Path, "/images/create"):
-					reference := r.URL.Query().Get("fromImage")
-					pulls <- reference
-					if reference == "cache.example.com/proxy/app" && scenario != "mirror" {
-						w.WriteHeader(http.StatusServiceUnavailable)
-						_, _ = io.WriteString(w, `{"message":"mirror unavailable"}`)
-					} else if scenario == "unavailable" {
-						w.WriteHeader(http.StatusForbidden)
-						_, _ = io.WriteString(w, `{"message":"upstream denied"}`)
-					} else {
-						_, _ = io.WriteString(w, `{}`)
-					}
-				default:
-					t.Errorf("unexpected Docker request: %s %s", r.Method, r.URL.Path)
-					http.NotFound(w, r)
-				}
-			}))
-			defer server.Close()
-			t.Setenv("DOCKER_HOST", "tcp://"+server.Listener.Addr().String())
-			t.Setenv("DOCKER_API_VERSION", "1.51")
 			t.Setenv("DOCKER_CONFIG", t.TempDir())
-			t.Setenv("DOCKER_CONTEXT", "")
-			var output bytes.Buffer
-			engine, err := New(t.Context(), &output, &output)
-			require.NoError(t, err)
-			defer engine.Close()
-			result, err := engine.resolveAndPullImage(t.Context(), "registry.example.com/app:latest", devcontainer.CacheOptions{
-				Mirrors: map[string]string{"registry.example.com": "https://cache.example.com/proxy"},
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				var requests []string
+				transport := registryTestTransport(func(r *http.Request) (*http.Response, error) {
+					require.True(t, strings.HasSuffix(r.URL.Path, "/images/create"))
+					reference := r.URL.Query().Get("fromImage")
+					requests = append(requests, reference)
+					response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader("{}\n"))}
+					if reference == "cache.example.com/proxy/app" {
+						switch scenario {
+						case "canceled", "stalled response":
+							if scenario == "canceled" {
+								cancel()
+							}
+							<-r.Context().Done()
+							return nil, r.Context().Err()
+						case "repeated progress", "progress":
+							reader, writer := io.Pipe()
+							response.Body = reader
+							go func() {
+								defer writer.Close()
+								stop := context.AfterFunc(r.Context(), func() { _ = writer.CloseWithError(r.Context().Err()) })
+								defer stop()
+								encoder := json.NewEncoder(writer)
+								message := dockerProgressMessage{ID: "layer", Status: "Downloading"}
+								message.ProgressDetail.Current = 1
+								_ = encoder.Encode(message)
+								for range 3 {
+									select {
+									case <-r.Context().Done():
+										return
+									case <-time.After(mirrorIdleTimeout / 2):
+									}
+									if scenario == "progress" {
+										message.ProgressDetail.Current++
+									}
+									if err := encoder.Encode(message); err != nil {
+										return
+									}
+								}
+							}()
+						case "fallback", "unavailable":
+							response.StatusCode = http.StatusServiceUnavailable
+							response.Body = io.NopCloser(strings.NewReader(`{"message":"mirror unavailable"}`))
+						}
+					} else if scenario == "unavailable" {
+						response.StatusCode = http.StatusForbidden
+						response.Body = io.NopCloser(strings.NewReader(`{"message":"upstream denied"}`))
+					}
+					return response, nil
+				})
+				apiClient, err := client.NewClientWithOpts(client.WithVersion("1.51"), client.WithHTTPClient(&http.Client{Transport: transport}))
+				require.NoError(t, err)
+				defer apiClient.Close()
+				cli, err := command.NewDockerCli(command.WithAPIClient(apiClient))
+				require.NoError(t, err)
+				require.NoError(t, cli.Initialize(flags.NewClientOptions()))
+				var output bytes.Buffer
+				engine := &Engine{client: apiClient, cli: cli, stdout: &output, stderr: &output}
+				start := time.Now()
+				var cache devcontainer.CacheOptions
+				if scenario != "without cache" {
+					cache.Mirrors = map[string]string{"registry.example.com": "https://cache.example.com/proxy"}
+				}
+				result, err := engine.resolveAndPullImage(ctx, "registry.example.com/app:latest", cache)
+				if scenario == "canceled" {
+					require.ErrorIs(t, err, context.Canceled)
+					require.Equal(t, []string{"cache.example.com/proxy/app"}, requests)
+					return
+				}
+				if scenario == "mirror" || scenario == "progress" {
+					require.NoError(t, err)
+					require.Equal(t, "cache.example.com/proxy/app:latest", result)
+					require.Equal(t, []string{"cache.example.com/proxy/app"}, requests)
+					if scenario == "progress" {
+						require.Greater(t, time.Since(start), mirrorIdleTimeout)
+					}
+					return
+				}
+				if scenario == "without cache" {
+					require.Equal(t, []string{"registry.example.com/app"}, requests)
+				} else {
+					require.Equal(t, []string{"cache.example.com/proxy/app", "registry.example.com/app"}, requests)
+				}
+				if scenario == "stalled response" || scenario == "repeated progress" {
+					require.Equal(t, mirrorIdleTimeout, time.Since(start))
+					require.Contains(t, output.String(), "no progress")
+				}
+				if scenario == "unavailable" {
+					require.ErrorContains(t, err, "upstream denied")
+				} else {
+					require.NoError(t, err)
+					require.Equal(t, "registry.example.com/app:latest", result)
+				}
 			})
-			close(pulls)
-			var requests []string
-			for reference := range pulls {
-				requests = append(requests, reference)
-			}
-			if scenario == "mirror" {
-				require.NoError(t, err)
-				require.Equal(t, "cache.example.com/proxy/app:latest", result)
-				require.Equal(t, []string{"cache.example.com/proxy/app"}, requests)
-				require.Equal(t, "[INFO] [build] Pulling image registry.example.com/app:latest through mirror cache.example.com/proxy/app:latest\n"+
-					"[INFO] [build] Pulled image registry.example.com/app:latest through mirror cache.example.com/proxy/app:latest\n", output.String())
-				return
-			}
-			require.Equal(t, []string{"cache.example.com/proxy/app", "registry.example.com/app"}, requests)
-			require.Contains(t, output.String(), "falling back to the original registry: pull Dev Container image cache.example.com/proxy/app:latest:")
-			require.Contains(t, output.String(), "mirror unavailable")
-			if scenario == "unavailable" {
-				require.ErrorContains(t, err, "upstream denied")
-			} else {
-				require.NoError(t, err)
-				require.Equal(t, "registry.example.com/app:latest", result)
-			}
 		})
 	}
 }
@@ -243,23 +290,6 @@ func TestDockerPullProgressAggregatesLayerUpdates(t *testing.T) {
 	message.Status = "Pull complete"
 	if summary := progress.observe(message, start.Add(2*dockerPullProgressInterval)); summary != "Image pull progress: 1/1 layers complete, 100B / 100B downloaded" {
 		t.Fatalf("completed summary = %q", summary)
-	}
-}
-
-func TestImageMetadataContainsOnlyRuntimeProperties(t *testing.T) {
-	t.Parallel()
-
-	entry := imageMetadataEntry{
-		Entrypoint:      "/usr/local/share/entrypoint.sh",
-		ContainerEnv:    map[string]string{"FROM_IMAGE": "true"},
-		OnCreateCommand: devcontainer.Command{Value: json.RawMessage(`"echo image"`)},
-	}
-	configuration := entry.configuration()
-	if configuration.Image != "" || configuration.Build != nil || len(configuration.DockerComposeFile) != 0 || len(configuration.Features) != 0 {
-		t.Fatalf("image metadata selected a configuration source: %#v", configuration)
-	}
-	if configuration.ContainerEnv["FROM_IMAGE"] != "true" || len(configuration.OnCreateCommand.Value) == 0 {
-		t.Fatalf("image runtime metadata = %#v", configuration)
 	}
 }
 

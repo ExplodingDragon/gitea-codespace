@@ -10,14 +10,21 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/moby/buildkit/frontend/dockerfile/parser"
+	"github.com/opencontainers/go-digest"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/stretchr/testify/require"
+	"oras.land/oras-go/v2/registry/remote/retry"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -110,6 +117,114 @@ func TestFeatureDownloadUsesConfiguredRootCA(t *testing.T) {
 	feature, err := (&Engine{}).fetchFeature(t.Context(), server.URL+"/feature.tgz", nil, t.TempDir(), devcontainer.LockedFeature{}, devcontainer.CacheOptions{CABundlePEM: root}, "", "")
 	if err != nil || feature.metadata.ID != "private" {
 		t.Fatalf("download Feature with configured CA: %v, %v", feature, err)
+	}
+}
+
+func TestFeatureMirrorFallback(t *testing.T) {
+	var archive bytes.Buffer
+	writer := tar.NewWriter(&archive)
+	for name, value := range map[string]string{
+		"devcontainer-feature.json": `{"id":"example","version":"1.0.0"}`,
+		"install.sh":                "#!/bin/sh\n",
+	} {
+		require.NoError(t, writer.WriteHeader(&tar.Header{Name: name, Mode: 0o644, Size: int64(len(value))}))
+		_, err := io.WriteString(writer, value)
+		require.NoError(t, err)
+	}
+	require.NoError(t, writer.Close())
+	layer := archive.Bytes()
+	manifest, err := json.Marshal(ocispec.Manifest{
+		MediaType: ocispec.MediaTypeImageManifest,
+		Config:    ocispec.Descriptor{MediaType: devContainerFeatureMediaType},
+		Layers:    []ocispec.Descriptor{{MediaType: ocispec.MediaTypeImageLayer, Digest: digest.FromBytes(layer), Size: int64(len(layer))}},
+	})
+	require.NoError(t, err)
+	for _, scenario := range []string{"stalled response", "stalled body", "progress", "canceled"} {
+		t.Run(scenario, func(t *testing.T) {
+			t.Setenv("DOCKER_CONFIG", t.TempDir())
+			directory := t.TempDir()
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				upstreamRequests := 0
+				originalClient := retry.DefaultClient
+				defer func() { retry.DefaultClient = originalClient }()
+				retry.DefaultClient = &http.Client{Transport: registryTestTransport(func(r *http.Request) (*http.Response, error) {
+					mirrored := r.URL.Host == "cache.example.com"
+					if !mirrored {
+						upstreamRequests++
+					} else if scenario == "stalled response" || scenario == "canceled" {
+						if scenario == "canceled" {
+							cancel()
+						}
+						<-r.Context().Done()
+						return nil, r.Context().Err()
+					}
+					data, mediaType := manifest, ocispec.MediaTypeImageManifest
+					isLayer := strings.Contains(r.URL.Path, "/blobs/")
+					if isLayer {
+						data, mediaType = layer, ocispec.MediaTypeImageLayer
+					}
+					response := &http.Response{StatusCode: http.StatusOK, ContentLength: int64(len(data)),
+						Header: http.Header{"Content-Type": {mediaType}, "Docker-Content-Digest": {digest.FromBytes(data).String()}},
+						Body:   io.NopCloser(bytes.NewReader(data)),
+					}
+					if mirrored && isLayer {
+						reader, writer := io.Pipe()
+						response.Body = reader
+						go func() {
+							defer writer.Close()
+							stop := context.AfterFunc(r.Context(), func() { _ = writer.CloseWithError(r.Context().Err()) })
+							defer stop()
+							if scenario == "stalled body" {
+								partial := tar.NewWriter(writer)
+								_ = partial.WriteHeader(&tar.Header{Name: "partial-download", Mode: 0o644, Size: 1})
+								_, _ = partial.Write([]byte("x"))
+								<-r.Context().Done()
+								return
+							}
+							for len(data) > 0 {
+								select {
+								case <-r.Context().Done():
+									return
+								case <-time.After(mirrorIdleTimeout / 2):
+								}
+								n := min(1024, len(data))
+								if _, err := writer.Write(data[:n]); err != nil {
+									return
+								}
+								data = data[n:]
+							}
+						}()
+					}
+					return response, nil
+				})}
+				var output bytes.Buffer
+				engine := &Engine{stdout: &output, stderr: &output}
+				start := time.Now()
+				feature, err := engine.fetchFeature(ctx, "registry.example.com/features/example:1", nil, directory, devcontainer.LockedFeature{}, devcontainer.CacheOptions{
+					Mirrors: map[string]string{"registry.example.com": "https://cache.example.com/proxy"},
+				}, "", "")
+				if scenario == "canceled" {
+					require.ErrorIs(t, err, context.Canceled)
+					require.Zero(t, upstreamRequests)
+					return
+				}
+				require.NoError(t, err)
+				require.Equal(t, "example", feature.metadata.ID)
+				files, err := os.ReadDir(directory)
+				require.NoError(t, err)
+				require.Len(t, files, 2)
+				if scenario == "progress" {
+					require.Zero(t, upstreamRequests)
+					require.Greater(t, time.Since(start), mirrorIdleTimeout)
+				} else {
+					require.Positive(t, upstreamRequests)
+					require.Equal(t, mirrorIdleTimeout, time.Since(start))
+					require.Contains(t, output.String(), "no progress")
+				}
+			})
+		})
 	}
 }
 

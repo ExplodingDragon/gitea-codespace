@@ -418,7 +418,12 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
 	}
 	if mirrored {
-		feature, err := fetchFeatureReference(ctx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, featureClient)
+		mirrorCtx, progress, finish := watchMirrorProgress(ctx)
+		feature, err := fetchFeatureReference(mirrorCtx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, featureClient, progress)
+		err = finish(err)
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
 		if err == nil {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Dev Container Feature %s fetched through mirror %s\n", featureReference, fetchReference)
 			return feature, nil
@@ -428,10 +433,23 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 			return nil, err
 		}
 	}
-	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, featureClient)
+	return fetchFeatureReference(ctx, featureReference, resolveReference, rawOptions, directory, locked, cache.Credentials, featureClient, nil)
 }
 
-func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, registryCredentials map[string]devcontainer.RegistryCredential, registryClient *http.Client) (*resolvedFeature, error) {
+type progressReader struct {
+	io.Reader
+	progress func()
+}
+
+func (r progressReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	if n > 0 && r.progress != nil {
+		r.progress()
+	}
+	return n, err
+}
+
+func fetchFeatureReference(ctx context.Context, featureReference, resolveReference string, rawOptions json.RawMessage, directory string, locked devcontainer.LockedFeature, registryCredentials map[string]devcontainer.RegistryCredential, registryClient *http.Client, progress func()) (*resolvedFeature, error) {
 	original, err := registry.ParseReference(featureReference)
 	if err != nil {
 		return nil, fmt.Errorf("parse Dev Container Feature reference %s: %w", featureReference, err)
@@ -460,6 +478,9 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if err != nil {
 		return nil, fmt.Errorf("resolve Dev Container Feature %s: %w", featureReference, err)
 	}
+	if progress != nil {
+		progress()
+	}
 	if locked.Integrity != "" && descriptor.Digest.String() != locked.Integrity {
 		return nil, fmt.Errorf("dev container feature %s lockfile integrity does not match", featureReference)
 	}
@@ -467,8 +488,11 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if err != nil {
 		return nil, fmt.Errorf("fetch Dev Container Feature manifest %s: %w", featureReference, err)
 	}
+	if progress != nil {
+		progress()
+	}
 	var manifest ocispec.Manifest
-	decodeErr := json.NewDecoder(manifestReader).Decode(&manifest)
+	decodeErr := json.NewDecoder(progressReader{Reader: manifestReader, progress: progress}).Decode(&manifest)
 	closeErr := manifestReader.Close()
 	if err := errors.Join(decodeErr, closeErr); err != nil {
 		return nil, fmt.Errorf("decode Dev Container Feature manifest %s: %w", featureReference, err)
@@ -483,7 +507,10 @@ func fetchFeatureReference(ctx context.Context, featureReference, resolveReferen
 	if err != nil {
 		return nil, fmt.Errorf("fetch Dev Container Feature layer %s: %w", featureReference, err)
 	}
-	if err := extractFeatureLayer(layer, directory); err != nil {
+	if progress != nil {
+		progress()
+	}
+	if err := extractFeatureLayer(progressReader{Reader: layer, progress: progress}, directory); err != nil {
 		_ = layer.Close()
 		return nil, fmt.Errorf("extract Dev Container Feature %s: %w", featureReference, err)
 	}

@@ -120,12 +120,9 @@ The shared configuration includes
 the non-network device drivers described in the
 [operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip).
 
-Driver compilation and the virtual serial fixture cover different behavior
-from physical hardware. Before publishing hardware support, validate a
-disposable disk's mount/read/write cycle and the intended UART, HID, bridge,
-or instrument with its actual application. Repeat attachment and removal,
-and check access as the configured user. Verify character-device access in
-a non-privileged container so the test exercises its device cgroup rules.
+Driver compilation and the virtual serial fixture do not replace physical
+hardware validation. Follow the [operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip)
+to verify the intended devices and application access.
 
 ## Diagnostics and cleanup
 

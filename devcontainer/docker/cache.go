@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
@@ -26,6 +27,24 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 )
+
+const mirrorIdleTimeout = 2 * time.Minute
+
+// Mirror transfers can be large; only time without progress triggers fallback.
+func watchMirrorProgress(parent context.Context) (context.Context, func(), func(error) error) {
+	ctx, cancel := context.WithCancelCause(parent)
+	timer := time.AfterFunc(mirrorIdleTimeout, func() {
+		cancel(errors.New("OCI mirror transfer made no progress for " + mirrorIdleTimeout.String()))
+	})
+	return ctx, func() { timer.Reset(mirrorIdleTimeout) }, func(err error) error {
+		timer.Stop()
+		if cause := context.Cause(ctx); cause != nil {
+			err = cause
+		}
+		cancel(nil)
+		return err
+	}
+}
 
 func validateCacheOptions(cache devcontainer.CacheOptions) error {
 	if cache.BuildRegistry != "" {
@@ -142,7 +161,7 @@ func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bo
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Checking %s image cache\n", stage)
-	if err := e.pullImageReference(ctx, imageName); err != nil {
+	if err := e.pullImageReference(ctx, imageName, nil); err != nil {
 		if cerrdefs.IsNotFound(err) {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] %s image cache not found; building locally\n", stage)
 		} else {
