@@ -12,10 +12,11 @@ The provider accepts `settings` and `extensions` options for initial setup.
 Environment-template values are applied first and repository
 `customizations.vscode` values are applied afterwards. Repository settings
 override matching template keys, while an extension with the same identifier
-replaces the template version. Resume preserves the persisted configuration
-so user changes survive stops and Pod replacements. The bundled Gitea Codespace
-extension is maintained by the provider because it supplies the platform's
-port and USB management integration.
+replaces the template version. Resume preserves user settings and comments,
+adds missing provider defaults, and keeps telemetry disabled. Bundled extensions
+are installed from the provider image and refreshed when their contents change,
+so ordinary resumes do not reinstall them. The Gitea Codespace extension supplies
+the platform's port and USB management integration.
 
 ```json
 {
@@ -23,6 +24,32 @@ port and USB management integration.
   "extensions": ["golang.go", "redhat.vscode-yaml"]
 }
 ```
+
+## Editor defaults
+
+The IDE session trusts its workspaces automatically because Codespace already
+builds and executes the repository's Dev Container configuration. This enables
+tasks, debugging, and extensions without another trust prompt; repository code
+still needs to be trusted before creating the Codespace.
+
+Built-in AI features, including GitHub Copilot, are disabled by default with
+`chat.disableAIFeatures`. Set it to `false` in `settings` or in the editor to
+enable them explicitly.
+
+The provider includes Czech, German, Spanish, French, Italian, Japanese, Korean,
+Polish, Brazilian Portuguese, Russian, Turkish, Simplified Chinese, and Traditional
+Chinese language packs. They are installed locally before the IDE starts, so
+startup does not need the extension marketplace for translations. The interface
+uses the browser language unless a display language has been selected manually
+with **Configure Display Language**. English is the fallback for unavailable
+languages and untranslated messages. Language pack versions are pinned separately
+from code-server because their release schedules differ.
+
+Both extension installation and the IDE server run with telemetry disabled.
+Preparation sets `telemetry.telemetryLevel` to `off`, including on resume.
+Third-party extensions can have independent telemetry controls; consult their
+documentation when installing them. These editor settings do not restrict network
+access by workspace programs or extensions.
 
 ## SSH access
 

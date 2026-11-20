@@ -22,6 +22,7 @@ while :; do
   "$root/program/bin/code-server" \
     --bind-addr "$address" \
     --auth none \
+    --disable-workspace-trust \
     --disable-telemetry \
     --disable-update-check \
     --user-data-dir "$data/user-data" \

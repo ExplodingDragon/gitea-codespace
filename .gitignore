@@ -9,3 +9,4 @@ web/test-results/
 web/playwright-report/
 providers/vscode/extension/node_modules/
 providers/vscode/extension/dist/
+providers/vscode/node_modules/

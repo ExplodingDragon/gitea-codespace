@@ -1,0 +1,8 @@
+{
+  "name": "codespace-vscode-provider",
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "jsonc-parser": "3.3.1"
+  }
+}

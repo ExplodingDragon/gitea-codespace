@@ -7,8 +7,9 @@ import os from 'node:os';
 import path from 'node:path';
 import {spawn} from 'node:child_process';
 import test from 'node:test';
+import {parse} from 'jsonc-parser';
 
-test('VS Code adapter merges repository options and installs the Codespace extension', async (t) => {
+test('VS Code adapter prepares editor defaults and bundled extensions while preserving user configuration', async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'codespace-vscode-adapter-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
   const root = path.join(directory, 'program');
@@ -18,9 +19,17 @@ test('VS Code adapter merges repository options and installs the Codespace exten
   await mkdir(path.join(root, 'assets'), {recursive: true});
   await writeFile(path.join(root, 'program/bin/code-server'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\n', {mode: 0o755});
   await writeFile(path.join(root, 'assets/gitea-codespace.vsix'), 'extension');
-  await writeFile(path.join(root, 'assets/gitea-codespace.version'), '1.2.3\n');
+  await writeFile(path.join(root, 'assets/language-pack.vsix'), 'language pack');
+  await writeFile(path.join(root, 'assets/extensions.sha256'), 'bundle-version-1\n');
+  const languagePack = path.join(data, 'extensions/language-pack');
+  await mkdir(languagePack, {recursive: true});
+  await writeFile(path.join(data, 'extensions/extensions.json'), JSON.stringify([{identifier: {id: 'example.language-pack'}, location: {path: languagePack}}]));
+  await writeFile(path.join(languagePack, 'package.json'), JSON.stringify({version: '1.0.0', contributes: {
+    localizations: [{languageId: 'fr', translations: [{id: 'vscode', path: 'translations/main.json'}]}],
+  }}));
+  const script = path.join(import.meta.dirname, 'runtime/prepare.mjs');
   await runAdapter(
-    path.join(import.meta.dirname, 'runtime/prepare.mjs'),
+    script,
     {
       protocolVersion: 1,
       initialize: true,
@@ -31,11 +40,41 @@ test('VS Code adapter merges repository options and installs the Codespace exten
     data,
     log,
   );
-  assert.deepEqual(JSON.parse(await readFile(path.join(data, 'user-data/User/settings.json'), 'utf8')), {'editor.tabSize': 2});
+  const settingsPath = path.join(data, 'user-data/User/settings.json');
+  const localePath = path.join(data, 'user-data/User/argv.json');
+  assert.deepEqual(JSON.parse(await readFile(settingsPath, 'utf8')), {
+    'editor.tabSize': 2,
+    'chat.disableAIFeatures': true,
+    'telemetry.telemetryLevel': 'off',
+  });
+  assert.deepEqual(JSON.parse(await readFile(localePath, 'utf8')), {});
+  const languagePacks = JSON.parse(await readFile(path.join(data, 'user-data/languagepacks.json'), 'utf8'));
+  assert.equal(languagePacks.fr.translations.vscode, path.join(languagePack, 'translations/main.json'));
   const commands = await readFile(log, 'utf8');
   assert.match(commands, /--install-extension example\.tool@2/);
   assert.match(commands, /--install-extension example\.other/);
   assert.match(commands, /--force --install-extension .*gitea-codespace\.vsix/);
+  assert.match(commands, /--install-extension .*language-pack\.vsix/);
+  for (const command of commands.trim().split('\n')) assert.match(command, /^--disable-telemetry --disable-update-check /);
+
+  await writeFile(settingsPath, '{\n  // User preferences\n  "editor.tabSize": 8,\n  "chat.disableAIFeatures": false,\n  "telemetry.telemetryLevel": "all",\n}\n');
+  await writeFile(localePath, '{"locale":"fr"}\n');
+  const resume = {protocolVersion: 1, initialize: false, repositoryOptions: {settings: {'editor.tabSize': 2}}};
+  await runAdapter(script, resume, root, data, log);
+  const resumedSettings = await readFile(settingsPath, 'utf8');
+  assert.match(resumedSettings, /\/\/ User preferences/);
+  assert.deepEqual(parse(resumedSettings), {
+    'editor.tabSize': 8,
+    'chat.disableAIFeatures': false,
+    'telemetry.telemetryLevel': 'off',
+  });
+  assert.deepEqual(JSON.parse(await readFile(localePath, 'utf8')), {locale: 'fr'});
+  assert.equal(await readFile(log, 'utf8'), commands);
+
+  await writeFile(path.join(root, 'assets/extensions.sha256'), 'bundle-version-2\n');
+  await runAdapter(script, resume, root, data, log);
+  assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 3);
+  assert.equal(await readFile(path.join(data, '.bundled-extensions-version'), 'utf8'), 'bundle-version-2\n');
 });
 
 test('VS Code restarts a clean exit and stops on termination', async (t) => {
@@ -78,6 +117,7 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
   const commands = await readFile(log, 'utf8');
   assert.equal(commands.trim().split('\n').length, 2);
   assert.match(commands, /--bind-addr 127\.0\.0\.1:3080/);
+  assert.match(commands, /--disable-workspace-trust --disable-telemetry --disable-update-check/);
   assert.match(commands, new RegExp(`${workspace.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
 });
 

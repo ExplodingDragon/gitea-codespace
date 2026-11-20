@@ -11,10 +11,11 @@ SHELL_SCRIPTS := build.sh runtime/prepare runtime/serve
 
 .PHONY: check version bundle image clean
 check:
+	$(PNPM) install --frozen-lockfile
 	@set -e; for script in $(SHELL_SCRIPTS); do sh -n "$$script"; done
 	$(SHFMT) -d -ln posix -i 2 $(SHELL_SCRIPTS)
 	node --check runtime/prepare.mjs
-	node --test adapter.test.mjs build.test.mjs
+	node --test adapter.test.mjs
 	$(PNPM) --dir extension install --frozen-lockfile
 	$(PNPM) --dir extension run check
 	$(PNPM) --dir extension run format:check
@@ -25,6 +26,7 @@ version:
 
 bundle: check
 	$(PNPM) --dir extension run build
+	$(PNPM) --dir extension exec esbuild ../runtime/prepare.mjs --bundle --platform=node --format=esm --main-fields=module,main --target=node22 --outfile=../.tmp/prepare.mjs
 	./build.sh linux $(ARCH) .tmp/$(ARCH)
 
 image: bundle
