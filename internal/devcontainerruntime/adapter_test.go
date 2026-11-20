@@ -11,7 +11,6 @@ import (
 
 	"gitea.dev/codespace/devcontainer"
 	"gitea.dev/codespace/internal/runtimeendpoint"
-	"gitea.dev/codespace/internal/runtimeplatform"
 	"gitea.dev/codespace/internal/webide"
 	"github.com/docker/docker/api/types/container"
 	"github.com/stretchr/testify/require"
@@ -28,9 +27,7 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 		},
 		Cache: devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/cache", BuildScope: "scope"},
 		Native: NativeContainerConfiguration{
-			CDIDeviceIDs: []string{"nvidia.com/gpu=GPU-1"}, Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
-			Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
-			Mounts:  []runtimeplatform.MountMapping{{Source: "/opt/example", Target: "/opt/example", ReadOnly: true}},
+			CDIDeviceIDs: []string{"codespace.gitea.dev/native=current"}, Capabilities: []string{"SYS_PTRACE"}, ProvidesGPU: true,
 		},
 	}
 	asset := filepath.Join(t.TempDir(), "gt")
@@ -42,7 +39,6 @@ func TestCreateOptionsAddsCodespacePolicy(t *testing.T) {
 	require.Equal(t, []devcontainer.InjectedFeature{{Reference: "ghcr.io/example/features/tool:1", Origin: "environment template", Options: map[string]json.RawMessage{}}}, options.InjectedFeatures)
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: webide.ProgramRootPath, Target: webide.ContainerProgramPath, ReadOnly: true})
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: webide.ProviderDataPath("vscode"), Target: webide.ContainerDataPath})
-	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{Type: "bind", Source: "/opt/example", Target: "/opt/example", ReadOnly: true})
 	require.Contains(t, options.AdditionalMounts, devcontainer.Mount{
 		Type: "bind", Source: filepath.Dir(runtimeendpoint.AgentSocketPath), Target: filepath.Dir(runtimeendpoint.ContainerSocketPath), ReadOnly: true,
 	})

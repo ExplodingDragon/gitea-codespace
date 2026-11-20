@@ -24,7 +24,9 @@ import (
 	"gitea.dev/codespace/internal/logbuffer"
 	agentv1 "gitea.dev/codespace/internal/rpc/agent/v1"
 	"gitea.dev/codespace/internal/runtimeendpoint"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"google.golang.org/protobuf/proto"
+	"tags.cncf.io/container-device-interface/pkg/cdi"
 )
 
 const (
@@ -52,6 +54,7 @@ type Runtime struct {
 	Diagnostics                io.Writer
 	DevContainer               devcontainerruntime.Configuration
 	NativeDevices              *NativeDevices
+	NativeConfiguration        *runtimeplatform.NativeConfiguration
 	USBIP                      *USBIPRuntime
 	forwards                   reverseForwards
 	networkCtx                 context.Context
@@ -109,6 +112,13 @@ func (r *Runtime) Execute(ctx context.Context, response *agentv1.ControlResponse
 	}
 	if err := trust.configureClients(); err != nil {
 		return fmt.Errorf("configure runtime HTTPS clients: %w", err)
+	}
+	if response.Operation.GetCreate() != nil || response.Operation.GetResume() != nil {
+		nativeDevices, err := prepareNativeDevices(r.NativeConfiguration, cdi.DefaultSpecDirs, nativeCDISpecDirectory)
+		if err != nil {
+			return fmt.Errorf("prepare native devices: %w", err)
+		}
+		r.NativeDevices = nativeDevices
 	}
 	if err := r.ensureDocker(ctx, response.Runtime.Cache, trust); err != nil {
 		return err

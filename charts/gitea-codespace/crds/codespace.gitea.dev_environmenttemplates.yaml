@@ -119,6 +119,11 @@ spec:
                       NativeConfiguration configures the outer Runtime Pod and the primary Dev
                       Container when Kubernetes runs them on the node kernel.
                     properties:
+                      additionalGroups:
+                        items:
+                          format: int32
+                          type: integer
+                        type: array
                       devContainerCapAdd:
                         items:
                           description: Capability represent POSIX capabilities type
@@ -132,29 +137,35 @@ spec:
                           properties:
                             cdi:
                               description: |-
-                                CDIDevicePropagation converts Device Plugin allocation IDs into CDI device
-                                names understood by the nested Docker daemon.
+                                CDIDevicePropagation selects node CDI definitions using the allocation
+                                environment or identifiable device nodes already exposed to the Runtime.
                               properties:
                                 deviceIDEnvironment:
                                   type: string
+                                deviceNodePaths:
+                                  items:
+                                    type: string
+                                  type: array
                                 kind:
                                   type: string
+                                selection:
+                                  type: string
                               required:
-                              - deviceIDEnvironment
                               - kind
+                              - selection
                               type: object
                             count:
                               format: int64
                               type: integer
                             hostAccess:
                               description: |-
-                                HostAccess grants the Runtime Pod explicit access to node paths and forwards
-                                Device Plugin environment variables to the primary Dev Container.
+                                HostAccess forwards selected Runtime devices, mounts, and environment to the
+                                primary Dev Container. Mounts can also use explicitly authorized node paths.
                               properties:
                                 devices:
                                   items:
-                                    description: DeviceMapping exposes a node device
-                                      to the primary Dev Container.
+                                    description: DeviceMapping exposes Runtime device
+                                      nodes to the primary Dev Container.
                                     properties:
                                       permissions:
                                         type: string
@@ -174,17 +185,20 @@ spec:
                                   type: array
                                 mounts:
                                   items:
-                                    description: MountMapping exposes a node path
-                                      to the primary Dev Container.
+                                    description: MountMapping exposes a Runtime or
+                                      explicitly authorized node path.
                                     properties:
                                       readOnly:
                                         type: boolean
                                       source:
                                         type: string
+                                      sourceScope:
+                                        type: string
                                       target:
                                         type: string
                                     required:
                                     - source
+                                    - sourceScope
                                     - target
                                     type: object
                                   type: array

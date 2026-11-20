@@ -1,20 +1,77 @@
 <script setup lang="ts">
 import {computed} from 'vue';
-import {NAlert, NButton, NCheckbox, NFormItem, NInput, NInputNumber, NSelect} from 'naive-ui';
-import {Plus, Trash2} from '@lucide/vue';
+import {
+  NAlert,
+  NButton,
+  NCheckbox,
+  NDynamicInput,
+  NDynamicTags,
+  NFormItem,
+  NInput,
+  NInputNumber,
+  NSelect,
+} from 'naive-ui';
+import {ListPlus, Plus, Trash2} from '@lucide/vue';
 import {useI18n} from 'vue-i18n';
 import type {ClusterOptions, NativeRuntime} from '../api';
 import {linuxCapabilities, normalizeCapabilities} from '../utils/capability';
-import JsonEditor from './JsonEditor.vue';
 
 const props = defineProps<{
   native: NativeRuntime;
   cluster: ClusterOptions;
 }>();
-const hostAccess = defineModel<string[]>('hostAccess', {required: true});
 const {t} = useI18n();
+type Device = NativeRuntime['devicePlugins'][number];
+
+const selectionOptions = computed(() => [
+  {label: t('environment.cdiEnvironment'), value: 'environment'},
+  {label: t('environment.cdiDeviceNodes'), value: 'deviceNodes'},
+]);
+const scopeOptions = computed(() => [
+  {label: 'Runtime', value: 'runtime'},
+  {label: t('environment.nodeSource'), value: 'node'},
+]);
+
+function fillSuggestedMapping(device: Device) {
+  const access = (device.hostAccess ??= {});
+  if (['nvidia.com/gpu', 'gpu.intel.com/i915', 'gpu.intel.com/xe'].includes(device.resourceName)) {
+    if (!access.devices?.length) device.cdi ??= defaultCDI(device.resourceName);
+    device.providesGPU ??= true;
+  } else if (device.resourceName === 'amd.com/gpu') {
+    if (!access.devices?.length && !device.cdi) {
+      access.devices = [
+        {source: '/dev/dri', target: '/dev/dri', permissions: 'rwm'},
+        {source: '/dev/kfd', target: '/dev/kfd', permissions: 'rwm'},
+      ];
+    }
+    device.providesGPU ??= true;
+  }
+}
+
+function defaultCDI(resource: string): NonNullable<Device['cdi']> {
+  if (['gpu.intel.com/i915', 'gpu.intel.com/xe'].includes(resource))
+    return {kind: 'intel.cdi.k8s.io/gpu', selection: 'deviceNodes', deviceNodePaths: ['/dev/dri/card*']};
+  return {
+    kind: resource === 'nvidia.com/gpu' ? 'nvidia.com/gpu' : '',
+    selection: 'environment',
+    deviceIDEnvironment: resource === 'nvidia.com/gpu' ? 'NVIDIA_VISIBLE_DEVICES' : '',
+  };
+}
+
+function setCDISelection(device: Device, selection: 'environment' | 'deviceNodes') {
+  if (!device.cdi) return;
+  device.cdi.selection = selection;
+  if (selection === 'environment') {
+    delete device.cdi.deviceNodePaths;
+    device.cdi.deviceIDEnvironment ??= '';
+  } else {
+    delete device.cdi.deviceIDEnvironment;
+    device.cdi.deviceNodePaths ??= device.resourceName.startsWith('gpu.intel.com/') ? ['/dev/dri/card*'] : [];
+  }
+}
 
 const capabilityOptions = linuxCapabilities.map((value) => ({label: value, value}));
+const devicePermissionOptions = ['r', 'w', 'm', 'rw', 'rm', 'wm', 'rwm'].map((value) => ({label: value, value}));
 const requiredCapabilities = computed(() => new Set(props.cluster.requiredRuntimeCapabilities));
 const runtimeCapabilityOptions = computed(() => {
   const values = new Set([...linuxCapabilities, ...props.cluster.requiredRuntimeCapabilities]);
@@ -38,22 +95,13 @@ const deviceResourceOptions = computed(() =>
 );
 
 function addDevicePlugin() {
-  props.native.devicePlugins.push({
+  const device: Device = {
     resourceName: props.cluster.deviceResources[0]?.name ?? '',
     count: 1,
     hostAccess: {},
-  });
-  hostAccess.value.push('{}');
-}
-
-function removeDevicePlugin(index: number) {
-  props.native.devicePlugins.splice(index, 1);
-  hostAccess.value.splice(index, 1);
-}
-
-function setCDI(index: number, enabled: boolean) {
-  const device = props.native.devicePlugins[index];
-  if (device) device.cdi = enabled ? {kind: '', deviceIDEnvironment: ''} : undefined;
+  };
+  fillSuggestedMapping(device);
+  props.native.devicePlugins.push(device);
 }
 </script>
 
@@ -90,6 +138,21 @@ function setCDI(index: number, enabled: boolean) {
       />
     </NFormItem>
   </div>
+  <NFormItem :label="t('environment.additionalGroups')">
+    <NDynamicInput
+      v-model:value="native.additionalGroups"
+      :on-create="() => 1"
+    >
+      <template #default="{index}">
+        <NInputNumber
+          v-model:value="native.additionalGroups![index]"
+          :min="1"
+          :max="4294967294"
+          :precision="0"
+        />
+      </template>
+    </NDynamicInput>
+  </NFormItem>
   <div class="subsection-heading">
     <div>
       <h3>{{ t('environment.devicePlugins') }}</h3>
@@ -123,7 +186,7 @@ function setCDI(index: number, enabled: boolean) {
         type="error"
         :aria-label="t('environment.removeDevice')"
         :title="t('environment.removeDevice')"
-        @click="removeDevicePlugin(index)"
+        @click="native.devicePlugins.splice(index, 1)"
       >
         <template #icon><Trash2 :size="16" /></template>
       </NButton>
@@ -152,12 +215,19 @@ function setCDI(index: number, enabled: boolean) {
       <NFormItem>
         <NCheckbox
           :checked="Boolean(device.cdi)"
-          @update:checked="setCDI(index, $event)"
+          @update:checked="device.cdi = $event ? defaultCDI(device.resourceName) : undefined"
         >
           {{ t('environment.cdiEnabled') }}
         </NCheckbox>
       </NFormItem>
       <template v-if="device.cdi">
+        <NFormItem :label="t('environment.cdiSelection')">
+          <NSelect
+            :value="device.cdi.selection"
+            :options="selectionOptions"
+            @update:value="setCDISelection(device, $event)"
+          />
+        </NFormItem>
         <NFormItem
           :label="t('environment.cdiKind')"
           :feedback="t('environment.cdiKindHelp')"
@@ -168,6 +238,7 @@ function setCDI(index: number, enabled: boolean) {
           />
         </NFormItem>
         <NFormItem
+          v-if="device.cdi.selection === 'environment'"
           :label="t('environment.deviceIDEnvironment')"
           :feedback="t('environment.deviceIDEnvironmentHelp')"
         >
@@ -176,16 +247,95 @@ function setCDI(index: number, enabled: boolean) {
             placeholder="NVIDIA_VISIBLE_DEVICES"
           />
         </NFormItem>
-      </template>
-      <details class="field-wide advanced-fields">
-        <summary>{{ t('environment.hostAccess') }}</summary>
-        <NFormItem :feedback="t('environment.hostAccessHelp')">
-          <JsonEditor
-            v-model="hostAccess[index]"
-            :label="t('environment.hostAccess')"
-          />
+        <NFormItem
+          v-else
+          :label="t('environment.deviceNodePaths')"
+          :feedback="t('environment.deviceNodePathsHelp')"
+        >
+          <NDynamicTags v-model:value="device.cdi.deviceNodePaths" />
         </NFormItem>
-      </details>
+      </template>
     </div>
+    <NButton
+      size="small"
+      class="add-row"
+      @click="fillSuggestedMapping(device)"
+    >
+      <template #icon><ListPlus :size="16" /></template>
+      {{ t('environment.fillDevicePreset') }}
+    </NButton>
+    <template v-if="device.hostAccess">
+      <NFormItem :label="t('environment.deviceMappings')">
+        <NDynamicInput
+          v-model:value="device.hostAccess.devices"
+          :on-create="() => ({source: '', target: '', permissions: 'rwm'})"
+        >
+          <template #default="{value}">
+            <div class="mapping-fields">
+              <NInput
+                v-model:value="value.source"
+                :placeholder="t('environment.runtimeDeviceSource')"
+                :aria-label="t('environment.runtimeDeviceSource')"
+              />
+              <NInput
+                v-model:value="value.target"
+                :placeholder="t('environment.containerTarget')"
+                :aria-label="t('environment.containerTarget')"
+              />
+              <NSelect
+                v-model:value="value.permissions"
+                :options="devicePermissionOptions"
+                :aria-label="t('environment.devicePermissions')"
+              />
+            </div>
+          </template>
+        </NDynamicInput>
+      </NFormItem>
+      <NFormItem :label="t('environment.fileMappings')">
+        <NDynamicInput
+          v-model:value="device.hostAccess.mounts"
+          :on-create="() => ({sourceScope: 'runtime', source: '', target: '', readOnly: true})"
+        >
+          <template #default="{value}">
+            <div class="mapping-fields">
+              <NSelect
+                v-model:value="value.sourceScope"
+                :options="scopeOptions"
+                :aria-label="t('environment.mountSourceScope')"
+              />
+              <NInput
+                v-model:value="value.source"
+                :placeholder="t('environment.sourcePath')"
+                :aria-label="t('environment.sourcePath')"
+              />
+              <NInput
+                v-model:value="value.target"
+                :placeholder="t('environment.containerTarget')"
+                :aria-label="t('environment.containerTarget')"
+              />
+              <NCheckbox v-model:checked="value.readOnly">{{ t('environment.readOnlyMount') }}</NCheckbox>
+            </div>
+          </template>
+        </NDynamicInput>
+      </NFormItem>
+      <NFormItem :label="t('environment.forwardEnvironment')">
+        <NDynamicTags v-model:value="device.hostAccess.forwardEnvironment" />
+      </NFormItem>
+    </template>
   </div>
 </template>
+
+<style scoped>
+.mapping-fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+}
+@media (width <= 600px) {
+  .mapping-fields {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+</style>

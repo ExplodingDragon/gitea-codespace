@@ -132,14 +132,20 @@ export type Runtime = {
 export type NativeRuntime = {
   runtimeCapAdd: string[];
   devContainerCapAdd: string[];
+  additionalGroups?: number[];
   devicePlugins: {
     resourceName: string;
     count: number;
     providesGPU?: boolean;
-    cdi?: {kind: string; deviceIDEnvironment: string};
+    cdi?: {
+      kind: string;
+      selection: 'environment' | 'deviceNodes';
+      deviceIDEnvironment?: string;
+      deviceNodePaths?: string[];
+    };
     hostAccess?: {
       devices?: {source: string; target: string; permissions: string}[];
-      mounts?: {source: string; target: string; readOnly?: boolean}[];
+      mounts?: {sourceScope: 'runtime' | 'node'; source: string; target: string; readOnly?: boolean}[];
       forwardEnvironment?: string[];
     };
   }[];

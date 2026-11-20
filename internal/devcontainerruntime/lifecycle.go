@@ -13,6 +13,7 @@ import (
 	"io"
 	"maps"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,6 +27,9 @@ import (
 
 //go:embed builtin/configure-git.sh
 var configureGitScript string
+
+//go:embed builtin/configure-native-groups.sh
+var configureNativeGroupsScript string
 
 // Outcome records the Dev Container and the optional platform services that
 // were actually started for this lifecycle action.
@@ -143,6 +147,15 @@ func Apply(ctx context.Context, request Request, stdout, stderr io.Writer) (_ *O
 
 func prepareContainerStart(ctx context.Context, engine *containerdocker.Engine, state *devcontainer.State, request Request, stdout io.Writer) error {
 	_, _ = fmt.Fprintln(stdout, "[INFO] [container] Configuring runtime environment and commands")
+	if len(request.Native.CDIDeviceIDs) > 0 {
+		arguments := []string{"/bin/sh", "-c", configureNativeGroupsScript, "sh", state.RemoteUser}
+		for _, gid := range request.Native.AdditionalGroups {
+			arguments = append(arguments, strconv.FormatUint(uint64(gid), 10))
+		}
+		if err := engine.Run(ctx, state.PrimaryContainerID, "0", "/", arguments, nil, nil); err != nil {
+			return fmt.Errorf("configure remote user device groups: %w", err)
+		}
+	}
 	// Login-shell probing can load the profile; keep credentials out of saved state.
 	for name := range request.Secrets {
 		delete(state.RemoteEnvironment, name)

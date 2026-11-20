@@ -22,6 +22,7 @@ import (
 )
 
 var secretNamePattern = regexp.MustCompile(`^[A-Z_][A-Z0-9_]*$`)
+var runtimeEnvironmentNamePattern = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
 
 func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType string, owner devcontainer.HostUser) (map[string]string, error) {
 	if access == nil || strings.TrimSpace(access.GiteaToken) == "" {
@@ -81,7 +82,12 @@ func (r *Runtime) prepareAccess(access *codespacev1.RuntimeAccessBundle, keyType
 			return nil, err
 		}
 	}
-	if err := writeAccessEnvironment(devcontainerruntime.RuntimeEnvironmentPath, secrets, owner); err != nil {
+	environment := map[string]string{}
+	if r.NativeDevices != nil {
+		maps.Copy(environment, r.NativeDevices.DevContainer.Environment)
+	}
+	maps.Copy(environment, secrets)
+	if err := writeAccessEnvironment(devcontainerruntime.RuntimeEnvironmentPath, environment, owner); err != nil {
 		return nil, err
 	}
 	return secrets, nil
@@ -113,6 +119,9 @@ func writeAccessEnvironment(path string, environment map[string]string, owner de
 	var shell, systemd strings.Builder
 	escape := strings.NewReplacer("\\", "\\\\", "\"", "\\\"", "$", "\\$", "`", "\\`")
 	for _, name := range slices.Sorted(maps.Keys(environment)) {
+		if !runtimeEnvironmentNamePattern.MatchString(name) {
+			return fmt.Errorf("runtime environment variable name %q is not valid for shell and systemd", name)
+		}
 		value := environment[name]
 		if !utf8.ValidString(value) {
 			return fmt.Errorf("runtime environment variable %s is not valid UTF-8", name)

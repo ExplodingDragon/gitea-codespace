@@ -12,7 +12,6 @@ import (
 	"gitea.dev/codespace/devcontainer"
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 	"gitea.dev/codespace/internal/cgroup"
-	"gitea.dev/codespace/internal/runtimeplatform"
 )
 
 // RunTemplateLifecycleFunc durably executes one environment-template lifecycle action.
@@ -21,12 +20,11 @@ type RunTemplateLifecycleFunc func(context.Context, string, func(context.Context
 // NativeContainerConfiguration carries the devices already allocated to the
 // outer Runtime Pod into its primary Dev Container.
 type NativeContainerConfiguration struct {
-	CDIDeviceIDs []string
-	Devices      []runtimeplatform.DeviceMapping
-	Mounts       []runtimeplatform.MountMapping
-	Capabilities []string
-	Environment  map[string]string
-	ProvidesGPU  bool
+	CDIDeviceIDs     []string
+	AdditionalGroups []uint32
+	Capabilities     []string
+	Environment      map[string]string
+	ProvidesGPU      bool
 }
 
 // USBIPContainerConfiguration carries the Kata Guest device mounts prepared

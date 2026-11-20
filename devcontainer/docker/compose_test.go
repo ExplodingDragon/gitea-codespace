@@ -53,8 +53,7 @@ func TestApplyPlatformDevicesToComposeService(t *testing.T) {
 		}}}},
 	}
 	devices := PlatformDevices{
-		CDI:          []string{"example.com/device=codespace-0-0"},
-		Mappings:     []DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
+		CDI:          []string{"codespace.gitea.dev/native=current"},
 		Capabilities: []string{"SYS_PTRACE", "SYS_RAWIO"}, ProvidesGPU: true,
 	}
 	if err := applyPlatformDevicesToComposeService(&service, devices); err != nil {
@@ -63,7 +62,7 @@ func TestApplyPlatformDevicesToComposeService(t *testing.T) {
 	if len(service.Gpus) != 0 || len(service.Deploy.Resources.Reservations.Devices) != 1 || service.Deploy.Resources.Reservations.Devices[0].Driver != "example" {
 		t.Fatalf("normalized Compose GPU requests = %#v / %#v", service.Gpus, service.Deploy.Resources.Reservations.Devices)
 	}
-	if len(service.Devices) != 2 || service.Devices[0].Source != devices.CDI[0] || service.Devices[0].Target != devices.CDI[0] || !slices.Equal(service.CapAdd, devices.Capabilities) {
+	if len(service.Devices) != 1 || service.Devices[0].Source != devices.CDI[0] || service.Devices[0].Target != devices.CDI[0] || !slices.Equal(service.CapAdd, devices.Capabilities) {
 		t.Fatalf("Compose platform devices = %#v / %#v", service.Devices, service.CapAdd)
 	}
 	service.Gpus = []composetypes.DeviceRequest{{Count: 1, Driver: "nvidia", Capabilities: []string{"gpu"}}}

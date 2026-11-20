@@ -53,25 +53,31 @@ func TestNativeEnvironmentValidation(t *testing.T) {
 		DevContainer: devcontainerruntime.Configuration{},
 		Native: &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "nvidia.com/gpu", Count: 1,
-			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", Selection: "environment", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
 		}}},
 	}
 	require.NoError(t, configuration.Validate())
 	configuration.Native.DevicePlugins[0].CDI = nil
 	require.ErrorContains(t, configuration.Validate(), "requires a propagation method")
 
-	configuration.Native.DevicePlugins[0].CDI = &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"}
+	configuration.Native.DevicePlugins[0].CDI = &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", Selection: "environment", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"}
 	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = []string{"NVIDIA_VISIBLE_DEVICES"}
-	require.ErrorContains(t, configuration.Validate(), "shared by resources")
+	require.NoError(t, configuration.Validate())
 
 	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = []string{"GITEA_INSTANCE_URL"}
 	require.ErrorContains(t, configuration.Validate(), "reserved for the Codespace runtime")
 
 	configuration.Native.DevicePlugins[0].HostAccess.ForwardEnvironment = nil
-	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{Source: "/opt/toolkit", Target: "/var/lib/gitea-codespace/toolkit"}}
+	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{SourceScope: "node", Source: "/opt/toolkit", Target: "/var/lib/gitea-codespace/toolkit"}}
 	require.ErrorContains(t, configuration.Validate(), "reserved for the Codespace runtime")
-	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{Source: "/run/codespace", Target: "/opt/toolkit"}}
+	configuration.Native.DevicePlugins[0].HostAccess.Mounts = []runtimeplatform.MountMapping{{SourceScope: "runtime", Source: "/run/codespace", Target: "/opt/toolkit"}}
 	require.ErrorContains(t, configuration.Validate(), "host mount source")
+	configuration.Native.DevicePlugins[0].HostAccess = runtimeplatform.HostAccess{}
+	configuration.Native.DevicePlugins[0].CDI = &runtimeplatform.CDIDevicePropagation{Kind: "intel.cdi.k8s.io/gpu", Selection: "deviceNodes", DeviceNodePaths: []string{"/dev/dri/card*"}}
+	configuration.Native.AdditionalGroups = []uint32{44, 109}
+	require.NoError(t, configuration.Validate())
+	configuration.Native.DevicePlugins[0].CDI.DeviceNodePaths = []string{"/sys/*"}
+	require.ErrorContains(t, configuration.Validate(), "invalid CDI device node pattern")
 }
 
 func TestOutboundProxyValidation(t *testing.T) {

@@ -66,9 +66,6 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 			devcontainer.Mount{Type: "bind", Source: webide.ProviderDataPath(string(request.DevContainer.WebIDE.Provider)), Target: webide.ContainerDataPath},
 		)
 	}
-	for _, item := range request.Native.Mounts {
-		mounts = append(mounts, devcontainer.Mount{Type: "bind", Source: item.Source, Target: item.Target, ReadOnly: item.ReadOnly})
-	}
 	injected := make([]devcontainer.InjectedFeature, 0, len(request.DevContainer.Features))
 	for _, feature := range request.DevContainer.Features {
 		options := map[string]json.RawMessage{}
@@ -95,10 +92,6 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 			platformEnvironment[name] = value
 		}
 	}
-	deviceMappings := make([]containerdocker.DeviceMapping, 0, len(request.Native.Devices))
-	for _, mapping := range request.Native.Devices {
-		deviceMappings = append(deviceMappings, containerdocker.DeviceMapping{Source: mapping.Source, Target: mapping.Target, Permissions: mapping.Permissions})
-	}
 	mutateUSBIP := usbIPContainerMutator(request.USBIP)
 	return containerdocker.CreateOptions{
 		OwnerID:             request.OwnerID,
@@ -115,7 +108,7 @@ func buildCreateOptions(request Request, giteaCLIPath string) (containerdocker.C
 		AdditionalMounts:    mounts,
 		Labels:              map[string]string{"dev.gitea.codespace.resource-uid": request.OwnerID},
 		PlatformDevices: containerdocker.PlatformDevices{
-			CDI: request.Native.CDIDeviceIDs, Mappings: deviceMappings, Capabilities: request.Native.Capabilities, ProvidesGPU: request.Native.ProvidesGPU,
+			CDI: request.Native.CDIDeviceIDs, Capabilities: request.Native.Capabilities, ProvidesGPU: request.Native.ProvidesGPU,
 		},
 		MutateContainer: func(config *container.Config, host *container.HostConfig) error {
 			// Runtime-only values must not enter Feature builds or their cache keys.

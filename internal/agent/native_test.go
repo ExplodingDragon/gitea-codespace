@@ -5,6 +5,7 @@ package agent
 
 import (
 	"os"
+	"path/filepath"
 	"testing"
 
 	"gitea.dev/codespace/internal/runtimeplatform"
@@ -15,23 +16,46 @@ import (
 	cditypes "tags.cncf.io/container-device-interface/specs-go"
 )
 
-func TestPrepareNativeDevicesForwardsAllocatedConfiguration(t *testing.T) {
-	prepared, err := PrepareNativeDevices(&runtimeplatform.NativeConfiguration{
-		DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"},
+func TestPrepareNativeDevicesManualMappings(t *testing.T) {
+	directory := t.TempDir()
+	require.NoError(t, os.Symlink("/dev/null", filepath.Join(directory, "null")))
+	require.NoError(t, os.Symlink("/dev/zero", filepath.Join(directory, "zero")))
+	t.Setenv("DEVICE_RUNTIME", "current")
+	configuration := &runtimeplatform.NativeConfiguration{
+		DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"}, AdditionalGroups: []uint32{44, 44, 109},
 		DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "example.com/device", Count: 1, ProvidesGPU: true,
 			HostAccess: runtimeplatform.HostAccess{
-				Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/example", Target: "/dev/example", Permissions: "rwm"}},
+				Devices:            []runtimeplatform.DeviceMapping{{Source: directory, Target: "/dev/example", Permissions: "rw"}},
+				Mounts:             []runtimeplatform.MountMapping{{SourceScope: "runtime", Source: directory, Target: "/opt/example", ReadOnly: true}},
+				ForwardEnvironment: []string{"DEVICE_RUNTIME"},
 			},
 		}},
-	})
+	}
+	output := t.TempDir()
+	prepared, err := prepareNativeDevices(configuration, nil, output)
 	require.NoError(t, err)
 	require.True(t, prepared.DevContainer.ProvidesGPU)
 	require.Equal(t, []string{"SYS_PTRACE"}, prepared.DevContainer.Capabilities)
-	require.Empty(t, prepared.CDISpecDirectory)
+	require.Equal(t, []uint32{44, 109}, prepared.DevContainer.AdditionalGroups)
+	cache, err := cdi.NewCache(cdi.WithSpecDirs(output), cdi.WithAutoRefresh(false))
+	require.NoError(t, err)
+	spec := &oci.Spec{Process: &oci.Process{}}
+	_, err = cache.InjectDevices(spec, nativeCDIDevice)
+	require.NoError(t, err)
+	require.Len(t, spec.Linux.Devices, 2)
+	require.Equal(t, "/dev/example/null", spec.Linux.Devices[0].Path)
+	require.Equal(t, directory, spec.Mounts[0].Source)
+	require.Contains(t, spec.Mounts[0].Options, "ro")
+	require.Equal(t, []uint32{44, 109}, spec.Process.User.AdditionalGids)
+	require.Equal(t, []string{"DEVICE_RUNTIME=current"}, spec.Process.Env)
+	configuration.DevicePlugins[0].HostAccess.Devices = append(configuration.DevicePlugins[0].HostAccess.Devices,
+		runtimeplatform.DeviceMapping{Source: "/dev/zero", Target: "/dev/example/null", Permissions: "rw"})
+	_, err = prepareNativeDevices(configuration, nil, output)
+	require.ErrorContains(t, err, "conflicting native device target")
 }
 
-func TestNativeCDISpecUsesStableAliases(t *testing.T) {
+func TestNativeCDISpecUsesStableAllocation(t *testing.T) {
 	sourceDirectory, outputDirectory := t.TempDir(), t.TempDir()
 	source, err := cdi.NewCache(cdi.WithSpecDirs(sourceDirectory), cdi.WithAutoRefresh(false))
 	require.NoError(t, err)
@@ -45,41 +69,68 @@ func TestNativeCDISpecUsesStableAliases(t *testing.T) {
 		},
 	}, "devices.json"))
 	require.NoError(t, os.WriteFile(sourceDirectory+"/unrelated.json", []byte(`{"cdiVersion":"invalid"}`), 0o600))
-	alias := "example.com/device=codespace-0-0"
-	resolvedEnvironment, err := writeNativeCDISpecs(
-		[]allocatedCDIDevice{{physical: "example.com/device=first", alias: alias}},
-		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "first", "OVERRIDE": "forwarded-first"}, []string{sourceDirectory}, outputDirectory,
-	)
-	require.NoError(t, err)
-	require.Equal(t, map[string]string{
-		"COMMON": "spec", "PHYSICAL": "first", "EXAMPLE_VISIBLE_DEVICES": "first", "OVERRIDE": "forwarded-first",
-	}, resolvedEnvironment)
+	configuration := &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+		ResourceName: "example.com/device", Count: 2,
+		CDI:        &runtimeplatform.CDIDevicePropagation{Kind: "example.com/device", Selection: "environment", DeviceIDEnvironment: "DEVICE_IDS"},
+		HostAccess: runtimeplatform.HostAccess{ForwardEnvironment: []string{"OVERRIDE"}},
+	}}}
+	for _, physical := range []string{"first", "second"} {
+		t.Setenv("DEVICE_IDS", "example.com/device="+physical+","+physical)
+		t.Setenv("OVERRIDE", "forwarded-"+physical)
+		prepared, err := prepareNativeDevices(configuration, []string{sourceDirectory}, outputDirectory)
+		require.NoError(t, err)
+		require.Equal(t, []string{nativeCDIDevice}, prepared.DevContainer.CDIDeviceIDs)
+		require.Equal(t, map[string]string{"COMMON": "spec", "PHYSICAL": physical, "OVERRIDE": "forwarded-" + physical}, prepared.DevContainer.Environment)
+		filtered, err := cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
+		require.NoError(t, err)
+		spec := &oci.Spec{Process: &oci.Process{}}
+		_, err = filtered.InjectDevices(spec, nativeCDIDevice)
+		require.NoError(t, err)
+		require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=" + physical, "OVERRIDE=forwarded-" + physical}, spec.Process.Env)
+	}
+	for _, ids := range []string{"", "all", "other.example/device=first", "missing"} {
+		t.Setenv("DEVICE_IDS", ids)
+		_, err := prepareNativeDevices(configuration, []string{sourceDirectory}, outputDirectory)
+		require.Error(t, err, ids)
+	}
+}
 
-	filtered, err := cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
+func TestNativeCDISelectionByRuntimeNodes(t *testing.T) {
+	directory, sourceDirectory, outputDirectory := t.TempDir(), t.TempDir(), t.TempDir()
+	devicePath := filepath.Join(directory, "card0")
+	require.NoError(t, os.Symlink("/dev/null", devicePath))
+	source, err := cdi.NewCache(cdi.WithSpecDirs(sourceDirectory), cdi.WithAutoRefresh(false))
 	require.NoError(t, err)
-	require.ElementsMatch(t, []string{alias, "codespace.gitea.dev/environment=current"}, filtered.ListDevices())
-	require.Nil(t, filtered.GetDevice("example.com/device=first"))
-	containerSpec := &oci.Spec{Process: &oci.Process{}}
-	unresolved, err := filtered.InjectDevices(containerSpec, alias, "codespace.gitea.dev/environment=current")
+	definition := &cditypes.Spec{Version: cditypes.CurrentVersion, Kind: "example.com/device", Devices: []cditypes.Device{
+		{Name: "card0", ContainerEdits: cditypes.ContainerEdits{DeviceNodes: []*cditypes.DeviceNode{{Path: devicePath, HostPath: "/node/card0", Type: "c", Major: 1, Minor: 3}},
+			Mounts: []*cditypes.Mount{
+				{HostPath: "/node/driver", ContainerPath: directory, Options: []string{"bind", "ro"}},
+				{HostPath: "tmpfs", ContainerPath: "/run/device", Type: "tmpfs", Options: []string{"nosuid"}},
+			}}},
+		{Name: "card1", ContainerEdits: cditypes.ContainerEdits{DeviceNodes: []*cditypes.DeviceNode{{Path: filepath.Join(directory, "card1")}}}},
+	}}
+	definition.Devices = append(definition.Devices, cditypes.Device{Name: "all", ContainerEdits: definition.Devices[0].ContainerEdits})
+	require.NoError(t, source.WriteSpec(definition, "devices.json"))
+	configuration := &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
+		ResourceName: "example.com/device", Count: 3,
+		CDI: &runtimeplatform.CDIDevicePropagation{Kind: "example.com/device", Selection: "deviceNodes", DeviceNodePaths: []string{filepath.Join(directory, "card*")}},
+	}}}
+	prepared, err := prepareNativeDevices(configuration, []string{sourceDirectory}, outputDirectory)
 	require.NoError(t, err)
-	require.Empty(t, unresolved)
-	require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=first", "OVERRIDE=forwarded-first", "EXAMPLE_VISIBLE_DEVICES=first"}, containerSpec.Process.Env)
-
-	resolvedEnvironment, err = writeNativeCDISpecs(
-		[]allocatedCDIDevice{{physical: "example.com/device=second", alias: alias}},
-		map[string]string{"EXAMPLE_VISIBLE_DEVICES": "second", "OVERRIDE": "forwarded-second"}, []string{sourceDirectory}, outputDirectory,
-	)
+	filtered, err := cdi.NewCache(cdi.WithSpecDirs(prepared.CDISpecDirectory), cdi.WithAutoRefresh(false))
 	require.NoError(t, err)
-	require.Equal(t, map[string]string{
-		"COMMON": "spec", "PHYSICAL": "second", "EXAMPLE_VISIBLE_DEVICES": "second", "OVERRIDE": "forwarded-second",
-	}, resolvedEnvironment)
-	filtered, err = cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
-	require.NoError(t, err)
-	require.ElementsMatch(t, []string{alias, "codespace.gitea.dev/environment=current"}, filtered.ListDevices())
-	require.Nil(t, filtered.GetDevice("example.com/device=second"))
-	containerSpec = &oci.Spec{Process: &oci.Process{}}
-	unresolved, err = filtered.InjectDevices(containerSpec, alias, "codespace.gitea.dev/environment=current")
-	require.NoError(t, err)
-	require.Empty(t, unresolved)
-	require.ElementsMatch(t, []string{"COMMON=spec", "PHYSICAL=second", "OVERRIDE=forwarded-second", "EXAMPLE_VISIBLE_DEVICES=second"}, containerSpec.Process.Env)
+	device := filtered.GetDevice(nativeCDIDevice)
+	require.Len(t, device.ContainerEdits.DeviceNodes, 1)
+	require.Equal(t, devicePath, device.ContainerEdits.DeviceNodes[0].HostPath)
+	require.Equal(t, directory, device.ContainerEdits.Mounts[0].HostPath)
+	require.Equal(t, "tmpfs", device.ContainerEdits.Mounts[1].HostPath)
+	definition.Devices = append(definition.Devices, cditypes.Device{Name: "alias", ContainerEdits: definition.Devices[0].ContainerEdits})
+	require.NoError(t, source.WriteSpec(definition, "devices.json"))
+	_, err = prepareNativeDevices(configuration, []string{sourceDirectory}, outputDirectory)
+	require.ErrorContains(t, err, "ambiguously matches")
+	definition.Devices = definition.Devices[:1]
+	definition.Devices[0].ContainerEdits.Hooks = []*cditypes.Hook{{HookName: "createRuntime", Path: filepath.Join(directory, "missing-hook")}}
+	require.NoError(t, source.WriteSpec(definition, "devices.json"))
+	_, err = prepareNativeDevices(configuration, []string{sourceDirectory}, outputDirectory)
+	require.ErrorContains(t, err, "CDI hook")
 }

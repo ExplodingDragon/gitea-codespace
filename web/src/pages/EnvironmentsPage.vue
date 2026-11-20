@@ -41,7 +41,6 @@ const name = ref('');
 const webIDEOptionsJSON = ref('{}');
 const webIDEValidationError = ref('');
 const featuresJSON = ref('{}');
-const nativeHostAccessJSON = ref<string[]>([]);
 const error = ref('');
 const loading = ref(false);
 const saving = ref(false);
@@ -53,7 +52,6 @@ const dirty = useDirtyForm(() => ({
   form: form.value,
   webIDEOptions: webIDEOptionsJSON.value,
   features: featuresJSON.value,
-  nativeHostAccess: nativeHostAccessJSON.value,
   limitsEnabled: limitsEnabled.value,
   limits: limitsDraft.value,
 }));
@@ -123,15 +121,11 @@ function setIsolation(value: string) {
   form.value.runtime.isolation = value;
   if (value === 'native') {
     delete form.value.runtime.runtimeClassName;
-    form.value.runtime.native ??= {runtimeCapAdd: [], devContainerCapAdd: [], devicePlugins: []};
-    nativeHostAccessJSON.value = form.value.runtime.native.devicePlugins.map(({hostAccess}) =>
-      JSON.stringify(hostAccess ?? {}, null, 2),
-    );
+    form.value.runtime.native ??= {runtimeCapAdd: [], devContainerCapAdd: [], additionalGroups: [], devicePlugins: []};
   } else {
     form.value.runtime.runtimeClassName =
       cluster.value.runtimeClasses.find(({isolation}) => isolation === value)?.name ?? '';
     delete form.value.runtime.native;
-    nativeHostAccessJSON.value = [];
   }
 }
 
@@ -173,9 +167,9 @@ function edit(item?: Resource<Environment>) {
     form.value.runtime.native.runtimeCapAdd ??= [];
     form.value.runtime.native.devContainerCapAdd ??= [];
     form.value.runtime.native.devicePlugins ??= [];
+    form.value.runtime.native.additionalGroups ??= [];
+    for (const device of form.value.runtime.native.devicePlugins) device.hostAccess ??= {};
   }
-  nativeHostAccessJSON.value =
-    form.value.runtime.native?.devicePlugins.map(({hostAccess}) => JSON.stringify(hostAccess ?? {}, null, 2)) ?? [];
   const currentLimits = form.value.runtime.resources.limits;
   if (currentLimits?.cpu && currentLimits.memory) {
     limitsEnabled.value = true;
@@ -279,7 +273,7 @@ async function save() {
       );
       spec.runtime.native.devContainerCapAdd = normalizeCapabilities(spec.runtime.native.devContainerCapAdd);
       const selectedResources = new Set<string>();
-      spec.runtime.native.devicePlugins.forEach((device, index) => {
+      spec.runtime.native.devicePlugins.forEach((device) => {
         if (
           !cluster.value.deviceResources.some(({name}) => name === device.resourceName) ||
           selectedResources.has(device.resourceName) ||
@@ -288,10 +282,6 @@ async function save() {
         )
           throw new Error(t('environment.invalidDeviceResource'));
         selectedResources.add(device.resourceName);
-        const hostAccess: unknown = JSON.parse(nativeHostAccessJSON.value[index] ?? '{}');
-        if (!hostAccess || Array.isArray(hostAccess) || typeof hostAccess !== 'object')
-          throw new Error(t('environment.invalidDevicePropagation'));
-        device.hostAccess = hostAccess as NonNullable<typeof device.hostAccess>;
       });
     } else {
       delete spec.runtime.native;
@@ -429,7 +419,6 @@ function remove(item: Resource<Environment>) {
       <NativeRuntimeFields
         :native="form.runtime.native"
         :cluster="cluster"
-        v-model:host-access="nativeHostAccessJSON"
       />
     </template>
 

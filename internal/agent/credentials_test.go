@@ -121,4 +121,8 @@ func TestAccessEnvironmentRejectsUnsupportedValuesBeforeWriting(t *testing.T) {
 		require.NotContains(t, err.Error(), "sensitive")
 		require.NoDirExists(t, filepath.Dir(path))
 	}
+	path := filepath.Join(t.TempDir(), "environment", "env.sh")
+	err := writeAccessEnvironment(path, map[string]string{"INVALID;NAME": "value"}, devcontainer.HostUser{})
+	require.ErrorContains(t, err, "variable name")
+	require.NoDirExists(t, filepath.Dir(path))
 }

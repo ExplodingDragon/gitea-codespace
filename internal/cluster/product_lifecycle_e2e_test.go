@@ -30,6 +30,7 @@ import (
 	"gitea.dev/codespace-proto-go/codespace/v1/codespacev1connect"
 	api "gitea.dev/codespace/internal/cluster/api/v1alpha1"
 	"gitea.dev/codespace/internal/devcontainerruntime"
+	"gitea.dev/codespace/internal/runtimeplatform"
 	"gitea.dev/codespace/internal/webide"
 	"github.com/gorilla/websocket"
 	"github.com/pkg/sftp"
@@ -447,6 +448,26 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 	})
 
 	runtimeConfiguration := runtime.environmentConfiguration()
+	if runtime.isolation == api.IsolationNative {
+		runtimeConfiguration.Native.AdditionalGroups = []uint32{29002}
+		runtimeConfiguration.Native.DevicePlugins = append(runtimeConfiguration.Native.DevicePlugins,
+			runtimeplatform.DevicePluginRequest{
+				ResourceName: "e2e.codespace.gitea.dev/nodes", Count: 1,
+				CDI: &runtimeplatform.CDIDevicePropagation{Kind: "e2e.codespace.gitea.dev/nodes", Selection: "deviceNodes", DeviceNodePaths: []string{"/dev/e2e-cdi/*"}},
+			},
+			runtimeplatform.DevicePluginRequest{
+				ResourceName: "e2e.codespace.gitea.dev/manual", Count: 1,
+				HostAccess: runtimeplatform.HostAccess{
+					Devices: []runtimeplatform.DeviceMapping{{Source: "/dev/e2e-plugin", Target: "/dev/e2e-manual", Permissions: "rw"}},
+					Mounts: []runtimeplatform.MountMapping{
+						{SourceScope: "runtime", Source: "/opt/e2e-plugin/allocation", Target: "/opt/e2e-manual/allocation", ReadOnly: true},
+						{SourceScope: "node", Source: "/var/run/codespace-e2e-devices/node.txt", Target: "/opt/e2e-node/proof", ReadOnly: true},
+					},
+					ForwardEnvironment: []string{"E2E_MANUAL_ID"},
+				},
+			},
+		)
+	}
 	runtimeConfiguration.DevContainer = devcontainerruntime.Configuration{
 		WebIDE: devcontainerruntime.WebIDEConfiguration{
 			Image: webIDEImage,
@@ -545,6 +566,8 @@ func TestKubernetesE2EProductLifecycle(t *testing.T) {
 			}`
 	if usbIPE2E {
 		devContainerContent = usbIPE2EDevContainerContent
+	} else if runtime.isolation == api.IsolationNative {
+		devContainerContent = strings.Replace(devContainerContent, `"remoteUser":"root"`, `"remoteUser":"vscode"`, 1)
 	}
 	devContainer := &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_TemplateContent{TemplateContent: devContainerContent}}
 	if usbIPE2E {
@@ -914,11 +937,33 @@ func verifyGatewaySSH(ctx context.Context, node string, port int32, runtimeAlias
 	}
 	deviceCheck := ""
 	if verifyNativeDevice {
-		deviceCheck = `test -c /dev/fuse || { printf 'Native CDI device /dev/fuse is missing\n' >&2; exit 1; }; case "$CODESPACE_E2E_CDI" in fuse0|fuse1) ;; *) printf 'Native CDI environment is invalid: %s\n' "$CODESPACE_E2E_CDI" >&2; exit 1 ;; esac; `
+		deviceCheck = `set -e
+test "$(id -u)" != 0
+test -c /dev/fuse
+for allocation in "$CODESPACE_E2E_CDI" "$CODESPACE_E2E_CDI_NODE" "$E2E_MANUAL_ID"; do
+  case "$allocation" in fuse0|fuse1) ;; *) printf 'Invalid native allocation: %s\n' "$allocation" >&2; exit 1 ;; esac
+done
+test -c "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE"
+test -c /dev/e2e-manual/data
+printf device-write > "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE"
+printf device-write > /dev/e2e-manual/data
+test "$(cat /opt/e2e-cdi/allocation)" = "$CODESPACE_E2E_CDI_NODE"
+test "$(cat /opt/e2e-manual/allocation)" = "$E2E_MANUAL_ID"
+test "$(cat /opt/e2e-node/proof)" = node-mount-proof
+gid=$((29000 + ${CODESPACE_E2E_CDI_NODE#fuse}))
+test "$(stat -c '%a:%g' "/dev/e2e-cdi/$CODESPACE_E2E_CDI_NODE")" = "660:$gid"
+test "$(stat -c '%a:%g' /dev/e2e-manual/data)" = "660:29002"
+case " $(id -G) " in *" $gid "*) ;; *) printf 'Missing device group %s\n' "$gid" >&2; exit 1 ;; esac
+`
 		if initialize {
-			deviceCheck += `printf '%s' "$CODESPACE_E2E_CDI" > .codespace-native-device; `
+			deviceCheck += `printf '%s\n' "$CODESPACE_E2E_CDI" "$CODESPACE_E2E_CDI_NODE" "$E2E_MANUAL_ID" "$gid" > .codespace-native-device; `
 		} else {
-			deviceCheck += `previous_device=$(cat .codespace-native-device); test "$previous_device" != "$CODESPACE_E2E_CDI" || { printf 'Native CDI device did not change after resume: %s\n' "$CODESPACE_E2E_CDI" >&2; exit 1; }; `
+			deviceCheck += `test "$(sed -n '1p' .codespace-native-device)" != "$CODESPACE_E2E_CDI"
+test "$(sed -n '2p' .codespace-native-device)" != "$CODESPACE_E2E_CDI_NODE"
+test "$(sed -n '3p' .codespace-native-device)" != "$E2E_MANUAL_ID"
+previous_gid=$(sed -n '4p' .codespace-native-device)
+case " $(id -G) " in *" $previous_gid "*) printf 'Stale device group %s\n' "$previous_gid" >&2; exit 1 ;; esac
+`
 		}
 	}
 	if initialize {

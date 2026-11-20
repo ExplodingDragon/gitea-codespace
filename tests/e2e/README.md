@@ -14,7 +14,7 @@ Use a dedicated Linux amd64 k3s test worker with the selected runtime and Storag
 installed, meeting the [deployment requirements](../../charts/gitea-codespace/README.md#requirements).
 The standard `make images` path below builds the platform image for amd64.
 The harness imports images through local k3s containerd and, for
-Native tests, registers a local Device Plugin. `KUBECONFIG` selects Kubernetes
+Native tests, registers local Device Plugins. `KUBECONFIG` selects Kubernetes
 API access; those host operations still run on the machine invoking the harness.
 
 Use a dedicated test cluster and stop other Codespace Manager installations
@@ -113,12 +113,16 @@ the Dev Container verifies hotplug, udev permissions, and non-root serial I/O.
 All runtime variants also exercise ordinary SSH reverse forwarding into the
 Dev Container. These checks distinguish device visibility from usable access.
 
-The kernel cache key includes the runner OS, architecture, version file,
-USB/IP configuration, and build script. Fresh and cached artifacts pass the
-same checksum and configuration checks for enabled and disabled options.
-The shared configuration includes
-the non-network device drivers described in the
-[operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip).
+Native tests register local plugins for environment-selected CDI, node-selected
+CDI, and manual DeviceSpec propagation. The lifecycle test checks non-root
+device I/O, CDI and manual mounts, forwarded environment, and allocation/group
+changes after resume. These fixtures use FUSE and restricted null-device nodes;
+they verify nested-container propagation without requiring a physical GPU.
+
+Kernel build and validation steps are maintained by the
+[CI workflow](../../.github/workflows/ci.yml) and [build script](build-kata-kernel.sh).
+The shared configuration includes the non-network device drivers described in
+the [operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip).
 
 Driver compilation and the virtual serial fixture do not replace physical
 hardware validation. Follow the [operator guide](../../charts/gitea-codespace/README.md#enable-kata-usbip)

@@ -117,7 +117,6 @@ type CreateOptions struct {
 // template. It is applied only to the primary Dev Container.
 type PlatformDevices struct {
 	CDI          []string
-	Mappings     []DeviceMapping
 	Capabilities []string
 	ProvidesGPU  bool
 }
@@ -138,12 +137,6 @@ func appendUniqueCapabilities(base []string, additions ...[]string) []string {
 		}
 	}
 	return result
-}
-
-type DeviceMapping struct {
-	Source      string
-	Target      string
-	Permissions string
 }
 
 // New connects an Engine to the Docker endpoint selected by the standard Docker client configuration.
@@ -502,9 +495,6 @@ func (e *Engine) createContainer(ctx context.Context, resolved *devcontainer.Res
 		SecurityOpt:  slices.Clone(resolved.SecurityOpt),
 		Init:         &resolved.Init,
 		PortBindings: portBindings,
-	}
-	for _, mapping := range platformDevices.Mappings {
-		hostConfig.Devices = append(hostConfig.Devices, container.DeviceMapping{PathOnHost: mapping.Source, PathInContainer: mapping.Target, CgroupPermissions: mapping.Permissions})
 	}
 	if len(platformDevices.CDI) > 0 {
 		hostConfig.DeviceRequests = append(hostConfig.DeviceRequests, container.DeviceRequest{Driver: "cdi", DeviceIDs: slices.Clone(platformDevices.CDI)})

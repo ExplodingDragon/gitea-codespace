@@ -1,12 +1,13 @@
 // Copyright 2026 The Gitea Authors. All rights reserved.
 // SPDX-License-Identifier: MIT
 
-// Command device-plugin advertises interchangeable FUSE allocations for the
+// Command device-plugin simulates CDI and DeviceSpec allocations for the
 // Kubernetes E2E suite. Each allocation makes the next Pod use the other ID.
 package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"net"
@@ -24,24 +25,24 @@ import (
 
 const (
 	devicePluginDir     = "/var/lib/kubelet/device-plugins"
-	devicePluginSocket  = devicePluginDir + "/codespace-e2e-fuse.sock"
 	kubeletSocket       = devicePluginDir + "/kubelet.sock"
-	resourceName        = "e2e.codespace.gitea.dev/fuse"
 	deviceIDEnvironment = "E2E_FUSE_DEVICE_IDS"
+	fixtureDirectory    = "/var/run/codespace-e2e-devices"
 )
 
-type fusePlugin struct {
+type allocationPlugin struct {
 	pluginapi.UnimplementedDevicePluginServer
 	mu      sync.Mutex
 	health  map[string]string
 	updated chan struct{}
+	mode    string
 }
 
-func (*fusePlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
+func (*allocationPlugin) GetDevicePluginOptions(context.Context, *pluginapi.Empty) (*pluginapi.DevicePluginOptions, error) {
 	return &pluginapi.DevicePluginOptions{}, nil
 }
 
-func (plugin *fusePlugin) ListAndWatch(_ *pluginapi.Empty, stream grpc.ServerStreamingServer[pluginapi.ListAndWatchResponse]) error {
+func (plugin *allocationPlugin) ListAndWatch(_ *pluginapi.Empty, stream grpc.ServerStreamingServer[pluginapi.ListAndWatchResponse]) error {
 	for {
 		plugin.mu.Lock()
 		devices := []*pluginapi.Device{{ID: "fuse0", Health: plugin.health["fuse0"]}, {ID: "fuse1", Health: plugin.health["fuse1"]}}
@@ -57,17 +58,26 @@ func (plugin *fusePlugin) ListAndWatch(_ *pluginapi.Empty, stream grpc.ServerStr
 	}
 }
 
-func (plugin *fusePlugin) Allocate(_ context.Context, request *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
+func (plugin *allocationPlugin) Allocate(_ context.Context, request *pluginapi.AllocateRequest) (*pluginapi.AllocateResponse, error) {
 	response := &pluginapi.AllocateResponse{ContainerResponses: make([]*pluginapi.ContainerAllocateResponse, 0, len(request.ContainerRequests))}
 	for _, container := range request.ContainerRequests {
 		if len(container.DevicesIds) != 1 || container.DevicesIds[0] != "fuse0" && container.DevicesIds[0] != "fuse1" {
-			return nil, fmt.Errorf("expected one FUSE allocation, got %v", container.DevicesIds)
+			return nil, fmt.Errorf("expected one fixture device allocation, got %v", container.DevicesIds)
 		}
 		deviceID := container.DevicesIds[0]
-		response.ContainerResponses = append(response.ContainerResponses, &pluginapi.ContainerAllocateResponse{
-			Envs:       map[string]string{deviceIDEnvironment: deviceID},
-			CdiDevices: []*pluginapi.CDIDevice{{Name: resourceName + "=" + deviceID}},
-		})
+		allocation := &pluginapi.ContainerAllocateResponse{}
+		switch plugin.mode {
+		case "fuse":
+			allocation.Envs = map[string]string{deviceIDEnvironment: deviceID}
+			allocation.CdiDevices = []*pluginapi.CDIDevice{{Name: "e2e.codespace.gitea.dev/fuse=" + deviceID}}
+		case "nodes":
+			allocation.CdiDevices = []*pluginapi.CDIDevice{{Name: "e2e.codespace.gitea.dev/nodes=" + deviceID}}
+		case "manual":
+			allocation.Envs = map[string]string{"E2E_MANUAL_ID": deviceID}
+			allocation.Devices = []*pluginapi.DeviceSpec{{HostPath: fixtureDirectory + "/manual", ContainerPath: "/dev/e2e-plugin/data", Permissions: "rwm"}}
+			allocation.Mounts = []*pluginapi.Mount{{HostPath: fixtureDirectory + "/" + deviceID + ".txt", ContainerPath: "/opt/e2e-plugin/allocation", ReadOnly: true}}
+		}
+		response.ContainerResponses = append(response.ContainerResponses, allocation)
 		plugin.mu.Lock()
 		plugin.health["fuse0"], plugin.health["fuse1"] = pluginapi.Healthy, pluginapi.Healthy
 		plugin.health[deviceID] = pluginapi.Unhealthy
@@ -80,7 +90,12 @@ func (plugin *fusePlugin) Allocate(_ context.Context, request *pluginapi.Allocat
 	return response, nil
 }
 
-func run(ctx context.Context) error {
+func run(ctx context.Context, mode string) error {
+	if mode != "fuse" && mode != "nodes" && mode != "manual" {
+		return fmt.Errorf("unknown allocation mode %q", mode)
+	}
+	devicePluginSocket := devicePluginDir + "/codespace-e2e-" + mode + ".sock"
+	resourceName := "e2e.codespace.gitea.dev/" + mode
 	if err := os.MkdirAll(devicePluginDir, 0o755); err != nil {
 		return err
 	}
@@ -97,9 +112,10 @@ func run(ctx context.Context) error {
 	}()
 
 	server := grpc.NewServer()
-	pluginapi.RegisterDevicePluginServer(server, &fusePlugin{
+	pluginapi.RegisterDevicePluginServer(server, &allocationPlugin{
 		health:  map[string]string{"fuse0": pluginapi.Healthy, "fuse1": pluginapi.Healthy},
 		updated: make(chan struct{}, 1),
+		mode:    mode,
 	})
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- server.Serve(listener) }()
@@ -119,7 +135,7 @@ func run(ctx context.Context) error {
 		server.Stop()
 		return fmt.Errorf("register device plugin: %w", err)
 	}
-	log.Printf("registered %s with rotating FUSE allocations", resourceName)
+	log.Printf("registered %s with rotating allocations", resourceName)
 
 	select {
 	case <-ctx.Done():
@@ -133,9 +149,11 @@ func run(ctx context.Context) error {
 }
 
 func main() {
+	mode := flag.String("mode", "fuse", "allocation mode: fuse, nodes, manual")
+	flag.Parse()
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	if err := run(ctx); err != nil {
+	if err := run(ctx, *mode); err != nil {
 		log.Fatal(err)
 	}
 }

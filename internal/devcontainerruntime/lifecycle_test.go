@@ -11,6 +11,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -19,6 +22,28 @@ import (
 	containerdocker "gitea.dev/codespace/devcontainer/docker"
 	"github.com/stretchr/testify/require"
 )
+
+func TestNativeRemoteGroupsFollowAllocation(t *testing.T) {
+	directory := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "passwd"), []byte("root:x:0:0::/root:/bin/sh\ndeveloper:x:1000:1000::/home/developer:/bin/sh\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(directory, "group"), []byte("video:x:44:other\ndeveloper:x:1000:developer\n"), 0o644))
+	script := strings.ReplaceAll(configureNativeGroupsScript, "/etc/", directory+"/")
+	for _, groups := range [][]string{{"44", "109"}, {"110"}} {
+		arguments := append([]string{"-c", script, "sh", "1000"}, groups...)
+		output, err := exec.CommandContext(t.Context(), "/bin/sh", arguments...).CombinedOutput()
+		require.NoError(t, err, string(output))
+		content, err := os.ReadFile(filepath.Join(directory, "group"))
+		require.NoError(t, err)
+		want := "video:x:44:other\ndeveloper:x:1000:developer\n"
+		for _, gid := range groups {
+			want += "codespace-device-" + gid + ":x:" + gid + ":developer\n"
+		}
+		require.Equal(t, want, string(content))
+	}
+	output, err := exec.CommandContext(t.Context(), "/bin/sh", "-c", script, "sh", "developer:1000", "44").CombinedOutput()
+	require.Error(t, err)
+	require.Contains(t, string(output), "without an explicit group")
+}
 
 func TestWebIDEUserLookupFailure(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

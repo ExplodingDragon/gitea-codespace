@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -462,28 +461,20 @@ func configureNativeRuntimePod(pod *corev1.Pod, configuration *runtimeplatform.N
 		SeccompProfile:  &corev1.SeccompProfile{Type: corev1.SeccompProfileTypeUnconfined},
 		AppArmorProfile: &corev1.AppArmorProfile{Type: corev1.AppArmorProfileTypeUnconfined},
 	}
-	hostPaths := map[string]bool{}
 	usesCDI := false
-	for _, device := range configuration.DevicePlugins {
+	for pluginIndex, device := range configuration.DevicePlugins {
 		quantity := *resource.NewQuantity(device.Count, resource.DecimalSI)
 		container.Resources.Requests[device.ResourceName] = quantity
 		container.Resources.Limits[device.ResourceName] = quantity
 		usesCDI = usesCDI || device.CDI != nil
-		for _, mapping := range device.HostAccess.Mounts {
-			if current, exists := hostPaths[mapping.Source]; !exists || current && !mapping.ReadOnly {
-				hostPaths[mapping.Source] = mapping.ReadOnly
+		for mountIndex, mapping := range device.HostAccess.Mounts {
+			if mapping.SourceScope != "node" {
+				continue
 			}
+			name := fmt.Sprintf("native-path-%d-%d", pluginIndex, mountIndex)
+			pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: mapping.Source}}})
+			container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: name, MountPath: runtimeplatform.NativeMountPath(pluginIndex, mountIndex), ReadOnly: mapping.ReadOnly})
 		}
-	}
-	paths := make([]string, 0, len(hostPaths))
-	for path := range hostPaths {
-		paths = append(paths, path)
-	}
-	sort.Strings(paths)
-	for index, path := range paths {
-		name := fmt.Sprintf("native-path-%d", index)
-		pod.Spec.Volumes = append(pod.Spec.Volumes, corev1.Volume{Name: name, VolumeSource: corev1.VolumeSource{HostPath: &corev1.HostPathVolumeSource{Path: path}}})
-		container.VolumeMounts = append(container.VolumeMounts, corev1.VolumeMount{Name: name, MountPath: path, ReadOnly: hostPaths[path]})
 	}
 	if usesCDI {
 		for index, path := range []string{"/etc/cdi", "/var/run/cdi"} {

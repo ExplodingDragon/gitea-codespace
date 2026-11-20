@@ -99,7 +99,7 @@ func (r e2eRuntime) environmentConfiguration() api.EnvironmentConfiguration {
 	} else if r.isolation == api.IsolationNative {
 		configuration.Native = &runtimeplatform.NativeConfiguration{DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "e2e.codespace.gitea.dev/fuse", Count: 1,
-			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "e2e.codespace.gitea.dev/fuse", DeviceIDEnvironment: "E2E_FUSE_DEVICE_IDS"},
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "e2e.codespace.gitea.dev/fuse", Selection: "environment", DeviceIDEnvironment: "E2E_FUSE_DEVICE_IDS"},
 		}}}
 	}
 	return configuration

@@ -51,9 +51,28 @@ kubectl get nodes \
   -o custom-columns='NAME:.metadata.name,ALLOCATABLE:.status.allocatable'
 ```
 
-Select the resource and CDI settings in the environment template. Validate
-nested containers, persistent storage, and device access before making the
-template available to users.
+Select the resource and its propagation settings in the environment template.
+Suggested NVIDIA, Intel i915/xe, and AMD settings are editable starting points;
+validate them against the installed plugin and Runtime image before publishing
+the template. Filling suggestions preserves existing CDI or manual device
+mappings. Kubernetes reserves the resource; the Agent prepares the devices
+for the primary Dev Container on each create or resume.
+
+| Setting | Source and behavior |
+| --- | --- |
+| CDI `selection: environment` | `deviceIDEnvironment` names a Runtime variable containing comma-separated IDs or fully qualified names for `kind`. NVIDIA envvar deployments can use `NVIDIA_VISIBLE_DEVICES` with `nvidia.com/gpu`. |
+| CDI `selection: deviceNodes` | `deviceNodePaths` identifies Runtime device nodes, for example `/dev/dri/card*` with `intel.cdi.k8s.io/gpu`. Each visible identifying node must match one CDI device. Ambiguous aliases or shared control nodes require an allocation environment or manual mappings. |
+| Manual devices | Map a Runtime device or directory to the Dev Container. Directories expand to their character and block devices. |
+| Manual mounts | Choose `sourceScope: runtime` for paths already in the Runtime, or `node` for an explicit administrator-authorized hostPath. Node paths are staged separately so they do not replace Runtime system directories. |
+| Forwarded environment | Read the named variables from the current Runtime Pod, including after resource reallocation. |
+| Additional groups | Numeric GIDs grant device access to the main process and remote user commands. Use the actual device GIDs; group names and numbers can differ between images and nodes. Set `remoteUser` to an existing username or UID, because Docker exec omits supplementary groups when an explicit `user:group` is given. |
+
+CDI definitions describe node-wide devices; selection identifies the current
+Pod's allocation. A shared allocation can use fewer physical CDI devices than
+the requested resource count. The Agent uses the device and mount paths already
+exposed in the Runtime, so verify those paths and any required CDI hook
+executables and dependencies in the Runtime image. Manual mappings use those
+Runtime paths directly and can be configured independently of node CDI definitions.
 
 Native Runtime Pods include `SYS_PTRACE` so Docker and Agent can access the
 network namespace of a container whose main process is non-root. This applies
@@ -67,6 +86,8 @@ permit the required capabilities shown in the template editor.
 - Dev Container builds can run nested containers with Kata or Sysbox.
 - Native environments receive the selected extended resources, CDI devices,
   capabilities, and mounts.
+- Device access works as the configured remote user through SSH, Web IDE, and
+  lifecycle commands, including after a stop and start on a different allocation.
 - Containers with a non-root main process start and support TCP forwarding.
 
 ## Install

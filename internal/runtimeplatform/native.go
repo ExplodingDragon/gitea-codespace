@@ -5,7 +5,11 @@
 // Runtime Pod Agent.
 package runtimeplatform
 
-import corev1 "k8s.io/api/core/v1"
+import (
+	"fmt"
+
+	corev1 "k8s.io/api/core/v1"
+)
 
 // NativeConfiguration configures the outer Runtime Pod and the primary Dev
 // Container when Kubernetes runs them on the node kernel.
@@ -13,6 +17,7 @@ type NativeConfiguration struct {
 	RuntimeCapAdd      []corev1.Capability   `json:"runtimeCapAdd,omitempty"`
 	DevicePlugins      []DevicePluginRequest `json:"devicePlugins,omitempty"`
 	DevContainerCapAdd []corev1.Capability   `json:"devContainerCapAdd,omitempty"`
+	AdditionalGroups   []uint32              `json:"additionalGroups,omitempty"`
 }
 
 // DevicePluginRequest reserves one Kubernetes extended resource. CDI and
@@ -25,33 +30,41 @@ type DevicePluginRequest struct {
 	HostAccess   HostAccess            `json:"hostAccess,omitempty"`
 }
 
-// CDIDevicePropagation converts Device Plugin allocation IDs into CDI device
-// names understood by the nested Docker daemon.
+// CDIDevicePropagation selects node CDI definitions using the allocation
+// environment or identifiable device nodes already exposed to the Runtime.
 type CDIDevicePropagation struct {
-	Kind                string `json:"kind"`
-	DeviceIDEnvironment string `json:"deviceIDEnvironment"`
+	Kind                string   `json:"kind"`
+	Selection           string   `json:"selection"`
+	DeviceIDEnvironment string   `json:"deviceIDEnvironment,omitempty"`
+	DeviceNodePaths     []string `json:"deviceNodePaths,omitempty"`
 }
 
-// HostAccess grants the Runtime Pod explicit access to node paths and forwards
-// Device Plugin environment variables to the primary Dev Container.
+// HostAccess forwards selected Runtime devices, mounts, and environment to the
+// primary Dev Container. Mounts can also use explicitly authorized node paths.
 type HostAccess struct {
 	Devices            []DeviceMapping `json:"devices,omitempty"`
 	Mounts             []MountMapping  `json:"mounts,omitempty"`
 	ForwardEnvironment []string        `json:"forwardEnvironment,omitempty"`
 }
 
-// DeviceMapping exposes a node device to the primary Dev Container.
+// DeviceMapping exposes Runtime device nodes to the primary Dev Container.
 type DeviceMapping struct {
 	Source      string `json:"source"`
 	Target      string `json:"target"`
 	Permissions string `json:"permissions"`
 }
 
-// MountMapping exposes a node path to the primary Dev Container.
+// MountMapping exposes a Runtime or explicitly authorized node path.
 type MountMapping struct {
-	Source   string `json:"source"`
-	Target   string `json:"target"`
-	ReadOnly bool   `json:"readOnly,omitempty"`
+	SourceScope string `json:"sourceScope"`
+	Source      string `json:"source"`
+	Target      string `json:"target"`
+	ReadOnly    bool   `json:"readOnly,omitempty"`
+}
+
+// NativeMountPath is shared by Pod construction and Agent path resolution.
+func NativeMountPath(plugin, mount int) string {
+	return fmt.Sprintf("/run/codespace/native-mounts/%d/%d", plugin, mount)
 }
 
 // DeepCopyInto supports Kubernetes API deep-copy generation for the enclosing
@@ -60,6 +73,7 @@ func (in *NativeConfiguration) DeepCopyInto(out *NativeConfiguration) {
 	*out = *in
 	out.RuntimeCapAdd = append([]corev1.Capability(nil), in.RuntimeCapAdd...)
 	out.DevContainerCapAdd = append([]corev1.Capability(nil), in.DevContainerCapAdd...)
+	out.AdditionalGroups = append([]uint32(nil), in.AdditionalGroups...)
 	if in.DevicePlugins == nil {
 		return
 	}
@@ -69,6 +83,7 @@ func (in *NativeConfiguration) DeepCopyInto(out *NativeConfiguration) {
 		if in.DevicePlugins[index].CDI != nil {
 			value := *in.DevicePlugins[index].CDI
 			out.DevicePlugins[index].CDI = &value
+			out.DevicePlugins[index].CDI.DeviceNodePaths = append([]string(nil), value.DeviceNodePaths...)
 		}
 		out.DevicePlugins[index].HostAccess.Devices = append([]DeviceMapping(nil), in.DevicePlugins[index].HostAccess.Devices...)
 		out.DevicePlugins[index].HostAccess.Mounts = append([]MountMapping(nil), in.DevicePlugins[index].HostAccess.Mounts...)

@@ -124,7 +124,7 @@ test('administration workflows preserve resource identity and validate cluster-b
   const clusterOptions: ClusterOptions = {
     runtimeClasses: [{name: 'kata-qemu', handler: 'kata-qemu', isolation: 'kata'}],
     storageClasses: [{name: 'storage', provisioner: 'test.csi', default: true}],
-    deviceResources: [],
+    deviceResources: [{name: 'gpu.intel.com/i915', nodes: 1, maxPerNode: 2}],
     requiredRuntimeCapabilities: ['SYS_ADMIN', 'SYS_PTRACE', 'SYS_RESOURCE'],
     ingressClasses: [{name: 'nginx', controller: 'k8s.io/ingress-nginx', default: true}],
     tlsSecrets: ['wildcard-tls'],
@@ -293,6 +293,18 @@ test('administration workflows preserve resource identity and validate cluster-b
   await page.keyboard.press('Enter');
   await page.keyboard.press('Escape');
   await field('Tag').fill('standard');
+  await page.getByRole('button', {name: 'Add device resource', exact: true}).click();
+  await expect(field('CDI kind')).toHaveValue('intel.cdi.k8s.io/gpu');
+  await field('CDI kind').fill('example.com/custom');
+  await page.getByRole('button', {name: 'Fill suggested mappings', exact: true}).click();
+  await expect(field('CDI kind')).toHaveValue('example.com/custom');
+  await field('CDI kind').fill('intel.cdi.k8s.io/gpu');
+  const fileMounts = page
+    .locator('.n-form-item')
+    .filter({has: page.locator('.n-form-item-label', {hasText: /^File mounts$/})});
+  await fileMounts.getByRole('button').click();
+  await page.getByRole('textbox', {name: 'Source path', exact: true}).fill('/opt/driver');
+  await page.getByRole('textbox', {name: 'Dev Container target', exact: true}).fill('/opt/toolkit');
   await expect(page.getByRole('checkbox', {name: 'Debug mode'})).not.toBeChecked();
   await page.getByRole('checkbox', {name: 'Debug mode'}).check();
   let pendingResolution: Route | undefined;
@@ -348,12 +360,22 @@ test('administration workflows preserve resource identity and validate cluster-b
   expect(environments[0].spec.runtime.native).toMatchObject({
     runtimeCapAdd: ['SYS_MODULE'],
     devContainerCapAdd: ['SYS_PTRACE'],
+    devicePlugins: [
+      {
+        resourceName: 'gpu.intel.com/i915',
+        count: 1,
+        providesGPU: true,
+        cdi: {kind: 'intel.cdi.k8s.io/gpu', selection: 'deviceNodes', deviceNodePaths: ['/dev/dri/card*']},
+        hostAccess: {mounts: [{sourceScope: 'runtime', source: '/opt/driver', target: '/opt/toolkit', readOnly: true}]},
+      },
+    ],
   });
   expect(environments[0].spec.runtime.proxy).toEqual({
     httpProxy: 'http://proxy-user:proxy-password@proxy.example:3128',
     noProxy: ['registry.internal.example'],
   });
   await page.getByRole('button', {name: 'Edit template', exact: true}).click();
+  await expect(page.getByRole('textbox', {name: 'Source path', exact: true})).toHaveValue('/opt/driver');
   await expect(field('Provider image')).toHaveValue('ghcr.io/example/web-ide-vscode:latest');
   await page.getByRole('button', {name: 'Resolve image'}).click();
   await expect(page.getByText('VS Code', {exact: true})).toBeVisible();
@@ -453,6 +475,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     'requests.memory': '10Gi',
     'requests.storage': '100Gi',
     'requests.example.com/gpu': '2',
+    'requests.gpu.intel.com/i915': '1',
   });
   expect(lastWrite.uid).toBe('site-uid');
   expect(lastWrite.resourceVersion).toBe('1');
@@ -466,6 +489,7 @@ test('administration workflows preserve resource identity and validate cluster-b
     'requests.cpu': '10',
     'requests.memory': '10Gi',
     'requests.storage': '100Gi',
+    'requests.gpu.intel.com/i915': '1',
   });
   await page.setViewportSize({width: 390, height: 844});
   await page.getByRole('button', {name: 'Edit site', exact: true}).click();

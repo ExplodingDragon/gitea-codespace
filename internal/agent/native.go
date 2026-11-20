@@ -4,209 +4,355 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
-	"maps"
+	"io/fs"
 	"os"
-	"sort"
+	"path/filepath"
+	"reflect"
+	"slices"
 	"strings"
 
 	"gitea.dev/codespace/internal/devcontainerruntime"
 	"gitea.dev/codespace/internal/runtimeplatform"
+	"golang.org/x/sys/unix"
 	"tags.cncf.io/container-device-interface/pkg/cdi"
 	"tags.cncf.io/container-device-interface/pkg/parser"
 	cditypes "tags.cncf.io/container-device-interface/specs-go"
 )
 
-const nativeCDISpecDirectory = runtimeRunDirectory + "/cdi"
-
 const (
-	nativeEnvironmentCDIKind   = "codespace.gitea.dev/environment"
-	nativeEnvironmentCDIDevice = "current"
+	nativeCDISpecDirectory = runtimeRunDirectory + "/cdi"
+	nativeCDIKind          = "codespace.gitea.dev/native"
+	nativeCDIDevice        = nativeCDIKind + "=current"
 )
 
-// NativeDevices contains the allocated device access prepared for the primary
-// Dev Container and the filtered CDI directory used by its Docker daemon.
+// NativeDevices contains the current allocation and its Runtime-local CDI view.
 type NativeDevices struct {
 	DevContainer     devcontainerruntime.NativeContainerConfiguration
 	CDISpecDirectory string
 }
 
-type allocatedCDIDevice struct {
-	physical string
-	alias    string
-}
-
-// PrepareNativeDevices validates Device Plugin output and writes a filtered
-// CDI view for the nested Docker daemon. Only devices allocated to this Pod
-// are copied into the writable runtime directory.
-func PrepareNativeDevices(configuration *runtimeplatform.NativeConfiguration) (*NativeDevices, error) {
+func prepareNativeDevices(configuration *runtimeplatform.NativeConfiguration, sourceDirectories []string, outputDirectory string) (*NativeDevices, error) {
 	if configuration == nil {
 		return nil, nil
 	}
 	prepared := &NativeDevices{}
-	forwardedEnvironment := map[string]string{}
-	allocatedDevices := []allocatedCDIDevice{}
 	for _, capability := range configuration.DevContainerCapAdd {
 		prepared.DevContainer.Capabilities = append(prepared.DevContainer.Capabilities, string(capability))
 	}
-	requestedCDI := map[string]struct{}{}
+	if len(configuration.DevicePlugins) == 0 && len(configuration.AdditionalGroups) == 0 {
+		return prepared, nil
+	}
+	resolved, err := resolveNativeCDIEdits(configuration.DevicePlugins, sourceDirectories)
+	if err != nil {
+		return nil, err
+	}
+	prepared.DevContainer.Environment = map[string]string{}
+	for _, value := range resolved.Env {
+		name, value, _ := strings.Cut(value, "=")
+		prepared.DevContainer.Environment[name] = value
+	}
+	manualMounts := map[runtimeplatform.MountMapping]bool{}
 	for pluginIndex, plugin := range configuration.DevicePlugins {
 		prepared.DevContainer.ProvidesGPU = prepared.DevContainer.ProvidesGPU || plugin.ProvidesGPU
-		prepared.DevContainer.Devices = append(prepared.DevContainer.Devices, plugin.HostAccess.Devices...)
-		prepared.DevContainer.Mounts = append(prepared.DevContainer.Mounts, plugin.HostAccess.Mounts...)
 		for _, name := range plugin.HostAccess.ForwardEnvironment {
 			value, exists := os.LookupEnv(name)
 			if !exists {
 				return nil, fmt.Errorf("device resource %s did not provide environment %s", plugin.ResourceName, name)
 			}
-			forwardedEnvironment[name] = value
+			prepared.DevContainer.Environment[name] = value
 		}
-		if plugin.CDI == nil {
+		for _, mapping := range plugin.HostAccess.Devices {
+			count := len(resolved.DeviceNodes)
+			err := filepath.WalkDir(mapping.Source, func(path string, entry fs.DirEntry, err error) error {
+				if err != nil {
+					return err
+				}
+				info, err := os.Stat(path)
+				if err != nil {
+					return err
+				}
+				if info.IsDir() {
+					if entry.Type()&os.ModeSymlink != 0 {
+						return fmt.Errorf("device directory %s must not be a symbolic link", path)
+					}
+					return nil
+				}
+				if info.Mode()&os.ModeDevice == 0 {
+					if path == mapping.Source {
+						return fmt.Errorf("%s is not a device or device directory", path)
+					}
+					return nil
+				}
+				relative, err := filepath.Rel(mapping.Source, path)
+				if err != nil {
+					return err
+				}
+				node := &cditypes.DeviceNode{Path: filepath.Join(mapping.Target, relative), Permissions: mapping.Permissions}
+				if err := resolveNativeDeviceNode(node, path); err != nil {
+					return err
+				}
+				resolved.DeviceNodes = append(resolved.DeviceNodes, node)
+				return nil
+			})
+			if err != nil {
+				return nil, fmt.Errorf("device resource %s mapping %s: %w", plugin.ResourceName, mapping.Source, err)
+			}
+			if len(resolved.DeviceNodes) == count {
+				return nil, fmt.Errorf("device resource %s mapping %s contains no devices", plugin.ResourceName, mapping.Source)
+			}
+		}
+		for mountIndex, mapping := range plugin.HostAccess.Mounts {
+			if manualMounts[mapping] {
+				continue
+			}
+			manualMounts[mapping] = true
+			source := mapping.Source
+			if mapping.SourceScope == "node" {
+				source = runtimeplatform.NativeMountPath(pluginIndex, mountIndex)
+			}
+			if _, err := os.Stat(source); err != nil {
+				return nil, fmt.Errorf("device resource %s mount %s: %w", plugin.ResourceName, mapping.Source, err)
+			}
+			options := []string{"bind"}
+			if mapping.ReadOnly {
+				options = append(options, "ro")
+			}
+			resolved.Mounts = append(resolved.Mounts, &cditypes.Mount{HostPath: source, ContainerPath: mapping.Target, Options: options})
+		}
+	}
+	// One entry keeps saved Docker requests independent of physical device names
+	// and of the number of devices backing a shared allocation.
+	resolved.AdditionalGIDs = append(resolved.AdditionalGIDs, configuration.AdditionalGroups...)
+	slices.Sort(resolved.AdditionalGIDs)
+	resolved.AdditionalGIDs = slices.Compact(resolved.AdditionalGIDs)
+	prepared.DevContainer.AdditionalGroups = resolved.AdditionalGIDs
+	resolved.Env = nil
+	for name, value := range prepared.DevContainer.Environment {
+		resolved.Env = append(resolved.Env, name+"="+value)
+	}
+	slices.Sort(resolved.Env)
+	targets := map[string]any{}
+	nodes := resolved.DeviceNodes[:0]
+	for _, node := range resolved.DeviceNodes {
+		if previous, exists := targets[node.Path]; exists {
+			if !reflect.DeepEqual(previous, node) {
+				return nil, fmt.Errorf("conflicting native device target %s", node.Path)
+			}
 			continue
 		}
-		value := strings.TrimSpace(os.Getenv(plugin.CDI.DeviceIDEnvironment))
-		if value == "" {
-			return nil, fmt.Errorf("device resource %s did not provide CDI device IDs in %s", plugin.ResourceName, plugin.CDI.DeviceIDEnvironment)
-		}
-		ids := strings.Split(value, ",")
-		if int64(len(ids)) != plugin.Count {
-			return nil, fmt.Errorf("device resource %s allocated %d CDI device IDs, expected %d", plugin.ResourceName, len(ids), plugin.Count)
-		}
-		vendor, class := parser.ParseQualifier(plugin.CDI.Kind)
-		for deviceIndex, value := range ids {
-			id := strings.TrimSpace(value)
-			if strings.EqualFold(id, "all") || strings.EqualFold(id, "none") || strings.EqualFold(id, "void") || parser.ValidateDeviceName(id) != nil {
-				return nil, fmt.Errorf("device resource %s provided invalid CDI device ID %q", plugin.ResourceName, id)
+		targets[node.Path] = node
+		nodes = append(nodes, node)
+	}
+	resolved.DeviceNodes = nodes
+	mounts := resolved.Mounts[:0]
+	for _, mount := range resolved.Mounts {
+		if previous, exists := targets[mount.ContainerPath]; exists {
+			if !reflect.DeepEqual(previous, mount) {
+				return nil, fmt.Errorf("conflicting native mount target %s", mount.ContainerPath)
 			}
-			qualified := parser.QualifiedName(vendor, class, id)
-			if _, duplicate := requestedCDI[qualified]; duplicate {
-				return nil, fmt.Errorf("CDI device %s was allocated more than once", qualified)
-			}
-			requestedCDI[qualified] = struct{}{}
-			alias := parser.QualifiedName(vendor, class, fmt.Sprintf("codespace-%d-%d", pluginIndex, deviceIndex))
-			allocatedDevices = append(allocatedDevices, allocatedCDIDevice{physical: qualified, alias: alias})
-			prepared.DevContainer.CDIDeviceIDs = append(prepared.DevContainer.CDIDeviceIDs, alias)
+			continue
 		}
+		targets[mount.ContainerPath] = mount
+		mounts = append(mounts, mount)
 	}
-	if len(allocatedDevices) == 0 && len(forwardedEnvironment) == 0 {
-		return prepared, nil
-	}
-	if len(forwardedEnvironment) > 0 {
-		prepared.DevContainer.CDIDeviceIDs = append(prepared.DevContainer.CDIDeviceIDs, parser.QualifiedName("codespace.gitea.dev", "environment", nativeEnvironmentCDIDevice))
-	}
-	resolvedEnvironment, err := writeNativeCDISpecs(allocatedDevices, forwardedEnvironment, cdi.DefaultSpecDirs, nativeCDISpecDirectory)
-	if err != nil {
-		return nil, err
-	}
-	prepared.DevContainer.Environment = resolvedEnvironment
-	prepared.CDISpecDirectory = nativeCDISpecDirectory
-	return prepared, nil
-}
-
-func writeNativeCDISpecs(devices []allocatedCDIDevice, environment map[string]string, sourceDirectories []string, outputDirectory string) (map[string]string, error) {
-	source, err := cdi.NewCache(cdi.WithSpecDirs(sourceDirectories...), cdi.WithAutoRefresh(false))
-	if err != nil {
-		return nil, fmt.Errorf("open node CDI specifications: %w", err)
-	}
-	// A malformed unrelated node spec must not hide a valid allocated device;
-	// each requested device is checked explicitly below.
-	_ = source.Refresh()
-	type selectedSpec struct {
-		raw     *cditypes.Spec
-		devices map[string]struct{}
-	}
-	selected := map[string]*selectedSpec{}
-	aliases := make(map[string]string, len(devices))
-	resolvedEnvironment := map[string]string{}
-	appliedSpecEnvironment := map[string]struct{}{}
-	for _, allocated := range devices {
-		device := source.GetDevice(allocated.physical)
-		if device == nil {
-			return nil, fmt.Errorf("allocated CDI device %s is not present in the node specifications", allocated.physical)
-		}
-		spec := device.GetSpec()
-		if _, applied := appliedSpecEnvironment[spec.GetPath()]; !applied {
-			mergeCDIEnvironment(resolvedEnvironment, spec.ContainerEdits.Env)
-			appliedSpecEnvironment[spec.GetPath()] = struct{}{}
-		}
-		mergeCDIEnvironment(resolvedEnvironment, device.ContainerEdits.Env)
-		entry := selected[spec.GetPath()]
-		if entry == nil {
-			encoded, err := json.Marshal(spec.Spec)
-			if err != nil {
-				return nil, fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
-			}
-			var raw cditypes.Spec
-			if err := json.Unmarshal(encoded, &raw); err != nil {
-				return nil, fmt.Errorf("copy CDI specification %s: %w", spec.GetPath(), err)
-			}
-			entry = &selectedSpec{raw: &raw, devices: map[string]struct{}{}}
-			selected[spec.GetPath()] = entry
-		}
-		entry.devices[device.Name] = struct{}{}
-		_, _, aliasName, err := parser.ParseQualifiedName(allocated.alias)
-		if err != nil {
-			return nil, fmt.Errorf("parse internal CDI device alias %s: %w", allocated.alias, err)
-		}
-		aliases[allocated.physical] = aliasName
-	}
-	maps.Copy(resolvedEnvironment, environment)
-	if err := os.RemoveAll(outputDirectory); err != nil {
-		return nil, fmt.Errorf("reset filtered CDI directory: %w", err)
+	resolved.Mounts = mounts
+	if err := (&cdi.ContainerEdits{ContainerEdits: resolved}).Validate(); err != nil {
+		return nil, fmt.Errorf("validate native device configuration: %w", err)
 	}
 	if err := os.MkdirAll(outputDirectory, 0o700); err != nil {
-		return nil, fmt.Errorf("create filtered CDI directory: %w", err)
+		return nil, err
 	}
 	destination, err := cdi.NewCache(cdi.WithSpecDirs(outputDirectory), cdi.WithAutoRefresh(false))
 	if err != nil {
-		return nil, fmt.Errorf("open filtered CDI directory: %w", err)
+		return nil, err
 	}
-	paths := make([]string, 0, len(selected))
-	for path := range selected {
-		paths = append(paths, path)
+	if err := destination.WriteSpec(&cditypes.Spec{Version: cditypes.CurrentVersion, Kind: nativeCDIKind,
+		Devices: []cditypes.Device{{Name: "current", ContainerEdits: *resolved}},
+	}, "native.json"); err != nil {
+		return nil, fmt.Errorf("write native device configuration: %w", err)
 	}
-	sort.Strings(paths)
-	for index, path := range paths {
-		entry := selected[path]
-		devices := entry.raw.Devices[:0]
-		vendor, class := parser.ParseQualifier(entry.raw.Kind)
-		for _, device := range entry.raw.Devices {
-			if _, keep := entry.devices[device.Name]; keep {
-				physical := parser.QualifiedName(vendor, class, device.Name)
-				device.Name = aliases[physical]
-				devices = append(devices, device)
-			}
-		}
-		entry.raw.Devices = devices
-		if err := destination.WriteSpec(entry.raw, fmt.Sprintf("codespace-%d.json", index)); err != nil {
-			return nil, fmt.Errorf("write filtered CDI specification: %w", err)
-		}
-	}
-	if len(environment) > 0 {
-		names := make([]string, 0, len(environment))
-		for name := range environment {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		values := make([]string, 0, len(names))
-		for _, name := range names {
-			values = append(values, name+"="+environment[name])
-		}
-		if err := destination.WriteSpec(&cditypes.Spec{
-			Version: cditypes.CurrentVersion,
-			Kind:    nativeEnvironmentCDIKind,
-			Devices: []cditypes.Device{{Name: nativeEnvironmentCDIDevice, ContainerEdits: cditypes.ContainerEdits{Env: values}}},
-		}, "codespace-environment.json"); err != nil {
-			return nil, fmt.Errorf("write forwarded device environment CDI specification: %w", err)
-		}
-	}
-	return resolvedEnvironment, nil
+	prepared.DevContainer.CDIDeviceIDs = []string{nativeCDIDevice}
+	prepared.CDISpecDirectory = outputDirectory
+	return prepared, nil
 }
 
-func mergeCDIEnvironment(environment map[string]string, assignments []string) {
-	for _, assignment := range assignments {
-		name, value, _ := strings.Cut(assignment, "=")
-		environment[name] = value
+func resolveNativeCDIEdits(plugins []runtimeplatform.DevicePluginRequest, sourceDirectories []string) (*cditypes.ContainerEdits, error) {
+	edits := &cdi.ContainerEdits{ContainerEdits: &cditypes.ContainerEdits{}}
+	var source *cdi.Cache
+	appliedSpecs, appliedDevices := map[string]bool{}, map[string]bool{}
+	for _, plugin := range plugins {
+		if plugin.CDI == nil {
+			continue
+		}
+		if source == nil {
+			var err error
+			source, err = cdi.NewCache(cdi.WithSpecDirs(sourceDirectories...), cdi.WithAutoRefresh(false))
+			if err != nil {
+				return nil, fmt.Errorf("open node CDI specifications: %w", err)
+			}
+		}
+		names, err := selectNativeCDIDevices(source, plugin.CDI)
+		if err != nil {
+			return nil, fmt.Errorf("device resource %s: %w", plugin.ResourceName, err)
+		}
+		for _, name := range names {
+			if appliedDevices[name] {
+				continue
+			}
+			device := source.GetDevice(name)
+			if device == nil {
+				return nil, fmt.Errorf("allocated CDI device %s is not present in the node specifications", name)
+			}
+			spec := device.GetSpec()
+			if !appliedSpecs[spec.GetPath()] {
+				edits.Append(&cdi.ContainerEdits{ContainerEdits: &spec.ContainerEdits})
+				appliedSpecs[spec.GetPath()] = true
+			}
+			edits.Append(&cdi.ContainerEdits{ContainerEdits: &device.ContainerEdits})
+			appliedDevices[name] = true
+		}
 	}
+	// Append owns the slices, but their nodes and mounts still belong to the cache.
+	for index, original := range edits.DeviceNodes {
+		node := *original
+		// The outer CRI has already placed this node at its container path.
+		if err := resolveNativeDeviceNode(&node, node.Path); err != nil {
+			return nil, err
+		}
+		edits.DeviceNodes[index] = &node
+	}
+	for index, original := range edits.Mounts {
+		mount := *original
+		if mount.Type != "bind" && !slices.Contains(mount.Options, "bind") && !slices.Contains(mount.Options, "rbind") {
+			continue
+		}
+		if _, err := os.Stat(mount.ContainerPath); err != nil {
+			return nil, fmt.Errorf("CDI mount %s is unavailable in Runtime: %w", mount.ContainerPath, err)
+		}
+		mount.HostPath = mount.ContainerPath
+		edits.Mounts[index] = &mount
+	}
+	for _, hook := range edits.Hooks {
+		info, err := os.Stat(hook.Path)
+		if err != nil {
+			return nil, fmt.Errorf("CDI hook %s is unavailable in Runtime: %w", hook.Path, err)
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			return nil, fmt.Errorf("CDI hook %s must be executable in Runtime", hook.Path)
+		}
+	}
+	return edits.ContainerEdits, nil
+}
+
+func selectNativeCDIDevices(source *cdi.Cache, configuration *runtimeplatform.CDIDevicePropagation) ([]string, error) {
+	var names []string
+	switch configuration.Selection {
+	case "environment":
+		for _, value := range strings.Split(os.Getenv(configuration.DeviceIDEnvironment), ",") {
+			name := strings.TrimSpace(value)
+			if !strings.Contains(name, "=") {
+				name = configuration.Kind + "=" + name
+			}
+			vendor, class, id, err := parser.ParseQualifiedName(name)
+			if err != nil || vendor+"/"+class != configuration.Kind || slices.Contains([]string{"all", "none", "void"}, strings.ToLower(id)) {
+				return nil, fmt.Errorf("invalid CDI device %q in %s", value, configuration.DeviceIDEnvironment)
+			}
+			names = append(names, name)
+		}
+	case "deviceNodes":
+		visible := map[string]bool{}
+		for _, pattern := range configuration.DeviceNodePaths {
+			paths, err := filepath.Glob(pattern)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CDI device path pattern %s: %w", pattern, err)
+			}
+			for _, path := range paths {
+				info, err := os.Stat(path)
+				if err != nil {
+					return nil, err
+				}
+				if info.Mode()&os.ModeDevice != 0 {
+					visible[path] = true
+				}
+			}
+		}
+		owners := map[string]string{}
+		for _, name := range source.ListDevices() {
+			device := source.GetDevice(name)
+			if device.GetSpec().Kind != configuration.Kind || slices.Contains([]string{"all", "none", "void"}, strings.ToLower(device.Name)) {
+				continue
+			}
+			var anchors []string
+			matches := true
+			for _, node := range device.ContainerEdits.DeviceNodes {
+				for _, pattern := range configuration.DeviceNodePaths {
+					if matched, _ := filepath.Match(pattern, node.Path); !matched {
+						continue
+					}
+					if !visible[node.Path] {
+						matches = false
+						break
+					}
+					anchors = append(anchors, node.Path)
+				}
+			}
+			if !matches || len(anchors) == 0 {
+				continue
+			}
+			for _, path := range anchors {
+				if previous, exists := owners[path]; exists && previous != name {
+					return nil, fmt.Errorf("CDI device node %s ambiguously matches %s and %s; use allocation environment or manual mappings", path, previous, name)
+				}
+				owners[path] = name
+			}
+			names = append(names, name)
+		}
+		for path := range visible {
+			if owners[path] == "" {
+				return nil, fmt.Errorf("Runtime device %s has no matching %s CDI device", path, configuration.Kind)
+			}
+		}
+	default:
+		return nil, fmt.Errorf("unsupported CDI selection %q", configuration.Selection)
+	}
+	if len(names) == 0 {
+		return nil, fmt.Errorf("no allocated CDI devices found for %s", configuration.Kind)
+	}
+	slices.Sort(names)
+	return slices.Compact(names), nil
+}
+
+func resolveNativeDeviceNode(node *cditypes.DeviceNode, source string) error {
+	var stat unix.Stat_t
+	if err := unix.Stat(source, &stat); err != nil {
+		return fmt.Errorf("device %s is unavailable in Runtime: %w", source, err)
+	}
+	kind := "c"
+	switch stat.Mode & unix.S_IFMT {
+	case unix.S_IFCHR:
+	case unix.S_IFBLK:
+		kind = "b"
+	default:
+		return fmt.Errorf("Runtime path %s is not a character or block device", source)
+	}
+	major, minor := int64(unix.Major(stat.Rdev)), int64(unix.Minor(stat.Rdev))
+	if node.Type != "" && node.Type != kind && !(node.Type == "u" && kind == "c") || node.Major != 0 && (node.Major != major || node.Minor != minor) {
+		return fmt.Errorf("Runtime device %s does not match CDI type or device number", source)
+	}
+	node.HostPath, node.Type, node.Major, node.Minor = source, kind, major, minor
+	if node.Permissions == "" {
+		node.Permissions = "rwm"
+	}
+	if node.FileMode == nil {
+		mode := os.FileMode(stat.Mode & 0o777)
+		node.FileMode = &mode
+	}
+	if node.UID == nil {
+		node.UID = &stat.Uid
+	}
+	if node.GID == nil {
+		node.GID = &stat.Gid
+	}
+	return nil
 }

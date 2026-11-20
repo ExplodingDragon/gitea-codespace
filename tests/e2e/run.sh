@@ -13,10 +13,9 @@ MANAGER_NAME=${CODESPACE_E2E_MANAGER_NAME:-"codespace-manager-${RUN_ID}"}
 ARTIFACTS=${CODESPACE_E2E_ARTIFACTS:-".tmp/e2e/${RUN_ID}"}
 RUN_LABEL=codespace.gitea.dev/e2e-run
 PORT_FORWARD_PID=
-DEVICE_PLUGIN_PID=
+DEVICE_PLUGIN_PIDS=()
 USBIP_FIXTURE_PID=
-DEVICE_PLUGIN_SOCKET=/var/lib/kubelet/device-plugins/codespace-e2e-fuse.sock
-DEVICE_PLUGIN_CDI_SPEC=/var/run/cdi/codespace-e2e-fuse.yaml
+DEVICE_PLUGIN_DIRECTORY=/var/run/codespace-e2e-devices
 
 if [[ $ARTIFACTS != /* ]]; then
 	ARTIFACTS="$PWD/$ARTIFACTS"
@@ -125,10 +124,15 @@ cleanup() {
 		kill "$PORT_FORWARD_PID" >/dev/null 2>&1
 		wait "$PORT_FORWARD_PID" >/dev/null 2>&1
 	fi
-	if [[ -n $DEVICE_PLUGIN_PID ]]; then
-		sudo kill "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
-		wait "$DEVICE_PLUGIN_PID" >/dev/null 2>&1 || true
-		sudo rm -f "$DEVICE_PLUGIN_SOCKET" "$DEVICE_PLUGIN_CDI_SPEC"
+	if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == native ]]; then
+		for pid in "${DEVICE_PLUGIN_PIDS[@]}"; do
+			sudo kill "$pid" >/dev/null 2>&1 || true
+			wait "$pid" >/dev/null 2>&1 || true
+		done
+		for mode in fuse nodes manual; do
+			sudo rm -f "/var/lib/kubelet/device-plugins/codespace-e2e-$mode.sock" "/var/run/cdi/codespace-e2e-$mode.yaml"
+		done
+		sudo rm -rf "$DEVICE_PLUGIN_DIRECTORY"
 	fi
 	if [[ -n $USBIP_FIXTURE_PID ]]; then
 		kill "$USBIP_FIXTURE_PID" >/dev/null 2>&1 || true
@@ -251,49 +255,75 @@ echo "Building Runtime test binaries"
 CGO_ENABLED=0 "$GO_BIN" test -c -o "$ARTIFACTS/bin/devcontainer.test" ./devcontainer/docker
 
 if [[ $CODESPACE_E2E_RUNTIME_ISOLATION == native ]]; then
-	echo "Registering the E2E FUSE Device Plugin"
+	echo "Registering the E2E CDI and manual Device Plugins"
 	sudo modprobe fuse
 	test -c /dev/fuse
 	CGO_ENABLED=0 "$GO_BIN" build -o "$ARTIFACTS/bin/device-plugin" ./tests/e2e/device-plugin
 	sudo install -d -m 0755 /var/run/cdi
-	sudo tee "$DEVICE_PLUGIN_CDI_SPEC" >/dev/null <<'EOF'
-cdiVersion: 0.8.0
-kind: e2e.codespace.gitea.dev/fuse
-devices:
-  - name: fuse0
+	{
+		printf 'cdiVersion: 0.8.0\nkind: e2e.codespace.gitea.dev/fuse\ndevices:\n'
+		for index in 0 1; do
+			cat <<EOF
+  - name: fuse$index
     containerEdits:
       env:
-        - CODESPACE_E2E_CDI=fuse0
-      deviceNodes:
-        - path: /dev/fuse
-          hostPath: /dev/fuse
-          permissions: rwm
-  - name: fuse1
-    containerEdits:
-      env:
-        - CODESPACE_E2E_CDI=fuse1
+        - CODESPACE_E2E_CDI=fuse$index
       deviceNodes:
         - path: /dev/fuse
           hostPath: /dev/fuse
           permissions: rwm
 EOF
-	sudo "$ARTIFACTS/bin/device-plugin" >"$ARTIFACTS/diagnostics/device-plugin.log" 2>&1 &
-	DEVICE_PLUGIN_PID=$!
-	for ((attempt = 0; attempt < 120; attempt++)); do
-		allocatable=$("$KUBECTL_BIN" get node -o jsonpath='{.items[0].status.allocatable.e2e\.codespace\.gitea\.dev/fuse}' 2>/dev/null || true)
-		if [[ $allocatable == 2 ]]; then
-			break
-		fi
-		if ! sudo kill -0 "$DEVICE_PLUGIN_PID" 2>/dev/null; then
-			cat "$ARTIFACTS/diagnostics/device-plugin.log" >&2
+		done
+	} | sudo tee /var/run/cdi/codespace-e2e-fuse.yaml >/dev/null
+	sudo install -d -m 0755 "$DEVICE_PLUGIN_DIRECTORY"
+	printf 'node-mount-proof\n' | sudo tee "$DEVICE_PLUGIN_DIRECTORY/node.txt" >/dev/null
+	for index in 0 1; do
+		printf 'fuse%s\n' "$index" | sudo tee "$DEVICE_PLUGIN_DIRECTORY/fuse$index.txt" >/dev/null
+		sudo mknod -m 0660 "$DEVICE_PLUGIN_DIRECTORY/fuse$index" c 1 3
+		sudo chown "0:$((29000 + index))" "$DEVICE_PLUGIN_DIRECTORY/fuse$index"
+	done
+	sudo mknod -m 0660 "$DEVICE_PLUGIN_DIRECTORY/manual" c 1 3
+	sudo chown 0:29002 "$DEVICE_PLUGIN_DIRECTORY/manual"
+	{
+		printf 'cdiVersion: 0.8.0\nkind: e2e.codespace.gitea.dev/nodes\ndevices:\n'
+		for index in 0 1; do
+			cat <<EOF
+  - name: fuse$index
+    containerEdits:
+      env:
+        - CODESPACE_E2E_CDI_NODE=fuse$index
+      additionalGids: [$((29000 + index))]
+      deviceNodes:
+        - path: /dev/e2e-cdi/fuse$index
+          hostPath: $DEVICE_PLUGIN_DIRECTORY/fuse$index
+          permissions: rwm
+      mounts:
+        - hostPath: $DEVICE_PLUGIN_DIRECTORY/fuse$index.txt
+          containerPath: /opt/e2e-cdi/allocation
+          options: [bind, ro]
+EOF
+		done
+	} | sudo tee /var/run/cdi/codespace-e2e-nodes.yaml >/dev/null
+	for mode in fuse nodes manual; do
+		sudo "$ARTIFACTS/bin/device-plugin" --mode="$mode" >"$ARTIFACTS/diagnostics/device-plugin-$mode.log" 2>&1 &
+		pid=$!
+		DEVICE_PLUGIN_PIDS+=("$pid")
+		for ((attempt = 0; attempt < 120; attempt++)); do
+			allocatable=$("$KUBECTL_BIN" get node -o "jsonpath={.items[0].status.allocatable.e2e\\.codespace\\.gitea\\.dev/$mode}" 2>/dev/null || true)
+			if [[ $allocatable == 2 ]]; then
+				break
+			fi
+			if ! sudo kill -0 "$pid" 2>/dev/null; then
+				cat "$ARTIFACTS/diagnostics/device-plugin-$mode.log" >&2
+				exit 1
+			fi
+			sleep 1
+		done
+		if [[ ${allocatable:-} != 2 ]]; then
+			echo "E2E $mode Device Plugin did not publish its resource" >&2
 			exit 1
 		fi
-		sleep 1
 	done
-	if [[ ${allocatable:-} != 2 ]]; then
-		echo "E2E FUSE Device Plugin did not publish its resource" >&2
-		exit 1
-	fi
 fi
 
 "$KUBECTL_BIN" create namespace "$MANAGEMENT_NAMESPACE"

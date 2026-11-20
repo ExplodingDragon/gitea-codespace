@@ -375,7 +375,11 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 		RuntimeCapAdd: []corev1.Capability{"SYS_MODULE", "SYS_PTRACE"}, DevContainerCapAdd: []corev1.Capability{"SYS_PTRACE"},
 		DevicePlugins: []runtimeplatform.DevicePluginRequest{{
 			ResourceName: "nvidia.com/gpu", Count: 2,
-			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
+			CDI: &runtimeplatform.CDIDevicePropagation{Kind: "nvidia.com/gpu", Selection: "environment", DeviceIDEnvironment: "NVIDIA_VISIBLE_DEVICES"},
+			HostAccess: runtimeplatform.HostAccess{Mounts: []runtimeplatform.MountMapping{
+				{SourceScope: "node", Source: "/opt/driver", Target: "/opt/driver", ReadOnly: true},
+				{SourceScope: "runtime", Source: "/usr/lib/driver", Target: "/usr/lib/driver", ReadOnly: true},
+			}},
 		}},
 	}
 	cs := &api.Codespace{
@@ -401,6 +405,12 @@ func TestNativeRuntimePodRequestsDevicesWithoutPrivilegedMode(t *testing.T) {
 		require.NotEqual(t, "/sys/fs/cgroup", mount.MountPath)
 	}
 	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "cdi-specs-0", MountPath: "/etc/cdi", ReadOnly: true})
+	require.Contains(t, container.VolumeMounts, corev1.VolumeMount{Name: "native-path-0-0", MountPath: runtimeplatform.NativeMountPath(0, 0), ReadOnly: true})
+	for _, volume := range pod.Spec.Volumes {
+		if volume.HostPath != nil {
+			require.NotEqual(t, "/usr/lib/driver", volume.HostPath.Path)
+		}
+	}
 }
 
 func TestRuntimePodUsesProxySecret(t *testing.T) {

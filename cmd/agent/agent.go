@@ -88,10 +88,6 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err := json.Unmarshal([]byte(os.Getenv("CODESPACE_NATIVE_CONFIGURATION")), &nativeConfiguration); err != nil {
 		return fmt.Errorf("decode CODESPACE_NATIVE_CONFIGURATION: %w", err)
 	}
-	nativeDevices, err := agentpkg.PrepareNativeDevices(nativeConfiguration)
-	if err != nil {
-		return fmt.Errorf("prepare native devices: %w", err)
-	}
 	ctx, cancel := signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM, syscall.SIGINT)
 	defer cancel()
 	managerIdentity := strings.TrimSpace(os.Getenv("CODESPACE_MANAGER_IDENTITY"))
@@ -147,7 +143,7 @@ func runWorker(parent context.Context, diagnostics io.Writer) (returnErr error) 
 	if err != nil {
 		slog.Warn("Discover Runtime cgroup", "error", err)
 	}
-	runtime := &agentpkg.Runtime{Debug: os.Getenv("CODESPACE_DEBUG") == "true", Isolation: os.Getenv("CODESPACE_RUNTIME_ISOLATION"), Cgroup: hierarchy, Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeDevices: nativeDevices, USBIP: usbIP}
+	runtime := &agentpkg.Runtime{Debug: os.Getenv("CODESPACE_DEBUG") == "true", Isolation: os.Getenv("CODESPACE_RUNTIME_ISOLATION"), Cgroup: hierarchy, Journal: journal, PodUID: podUID, DockerDirectory: "/var/lib/codespace", Diagnostics: diagnostics, DevContainer: devContainer, NativeConfiguration: nativeConfiguration, USBIP: usbIP}
 	runtime.SSHEnvironment = make(map[string]string, len(runtimeplatform.SSHEnvironmentNames))
 	for _, name := range runtimeplatform.SSHEnvironmentNames {
 		runtime.SSHEnvironment[name] = os.Getenv(name)

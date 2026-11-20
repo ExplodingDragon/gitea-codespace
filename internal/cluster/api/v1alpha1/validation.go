@@ -447,6 +447,11 @@ func (r EnvironmentConfiguration) Validate() error {
 }
 
 func validateNativeConfiguration(configuration *runtimeplatform.NativeConfiguration) error {
+	for _, gid := range configuration.AdditionalGroups {
+		if gid == 0 || gid == ^uint32(0) {
+			return fmt.Errorf("native additional group must be between 1 and 4294967294")
+		}
+	}
 	for label, capabilities := range map[string][]corev1.Capability{
 		"runtime":       configuration.RuntimeCapAdd,
 		"Dev Container": configuration.DevContainerCapAdd,
@@ -463,7 +468,7 @@ func validateNativeConfiguration(configuration *runtimeplatform.NativeConfigurat
 		}
 	}
 	resources := make(map[corev1.ResourceName]struct{}, len(configuration.DevicePlugins))
-	targets := map[string]struct{}{}
+	targets := map[string]any{}
 	environments := map[string]corev1.ResourceName{}
 	for _, device := range configuration.DevicePlugins {
 		if len(validation.IsQualifiedName(string(device.ResourceName))) != 0 || !strings.Contains(string(device.ResourceName), "/") {
@@ -480,16 +485,33 @@ func validateNativeConfiguration(configuration *runtimeplatform.NativeConfigurat
 			return fmt.Errorf("native device resource %q requires a propagation method", device.ResourceName)
 		}
 		if device.CDI != nil {
-			if !cdiKindPattern.MatchString(device.CDI.Kind) || !environmentPattern.MatchString(device.CDI.DeviceIDEnvironment) {
+			if !cdiKindPattern.MatchString(device.CDI.Kind) {
 				return fmt.Errorf("native device resource %q has invalid CDI settings", device.ResourceName)
 			}
-			if strings.HasPrefix(device.CDI.DeviceIDEnvironment, "CODESPACE_") {
-				return fmt.Errorf("native device resource %q uses a platform-reserved CDI allocation environment %q", device.ResourceName, device.CDI.DeviceIDEnvironment)
+			switch device.CDI.Selection {
+			case "environment":
+				if !environmentPattern.MatchString(device.CDI.DeviceIDEnvironment) || len(device.CDI.DeviceNodePaths) != 0 {
+					return fmt.Errorf("native device resource %q requires only a CDI allocation environment", device.ResourceName)
+				}
+				if strings.HasPrefix(device.CDI.DeviceIDEnvironment, "CODESPACE_") {
+					return fmt.Errorf("native device resource %q uses a platform-reserved CDI allocation environment %q", device.ResourceName, device.CDI.DeviceIDEnvironment)
+				}
+				if owner, exists := environments[device.CDI.DeviceIDEnvironment]; exists {
+					return fmt.Errorf("native device environment %q is shared by resources %q and %q", device.CDI.DeviceIDEnvironment, owner, device.ResourceName)
+				}
+				environments[device.CDI.DeviceIDEnvironment] = device.ResourceName
+			case "deviceNodes":
+				if device.CDI.DeviceIDEnvironment != "" || len(device.CDI.DeviceNodePaths) == 0 {
+					return fmt.Errorf("native device resource %q requires CDI device node paths", device.ResourceName)
+				}
+				for _, pattern := range device.CDI.DeviceNodePaths {
+					if _, err := filepath.Match(pattern, ""); err != nil || !canonicalAbsolutePath(pattern) || !strings.HasPrefix(pattern, "/dev/") || platformMountTarget(pattern) {
+						return fmt.Errorf("native device resource %q has invalid CDI device node pattern %q", device.ResourceName, pattern)
+					}
+				}
+			default:
+				return fmt.Errorf("native device resource %q requires CDI selection environment or deviceNodes", device.ResourceName)
 			}
-			if owner, exists := environments[device.CDI.DeviceIDEnvironment]; exists {
-				return fmt.Errorf("native device environment %q is shared by resources %q and %q", device.CDI.DeviceIDEnvironment, owner, device.ResourceName)
-			}
-			environments[device.CDI.DeviceIDEnvironment] = device.ResourceName
 		}
 		if err := validateHostAccess(device.ResourceName, device.HostAccess, targets, environments); err != nil {
 			return err
@@ -498,9 +520,9 @@ func validateNativeConfiguration(configuration *runtimeplatform.NativeConfigurat
 	return nil
 }
 
-func validateHostAccess(resourceName corev1.ResourceName, hostAccess runtimeplatform.HostAccess, targets map[string]struct{}, environments map[string]corev1.ResourceName) error {
+func validateHostAccess(resourceName corev1.ResourceName, hostAccess runtimeplatform.HostAccess, targets map[string]any, environments map[string]corev1.ResourceName) error {
 	for _, device := range hostAccess.Devices {
-		if !canonicalAbsolutePath(device.Source) || !canonicalAbsolutePath(device.Target) || device.Permissions == "" || strings.Trim(device.Permissions, "rwm") != "" {
+		if !canonicalAbsolutePath(device.Source) || !canonicalAbsolutePath(device.Target) || !strings.HasPrefix(device.Source, "/dev/") || device.Permissions == "" || strings.Trim(device.Permissions, "rwm") != "" {
 			return fmt.Errorf("native device resource %q has an invalid device mapping", resourceName)
 		}
 		permissions := map[rune]struct{}{}
@@ -510,28 +532,31 @@ func validateHostAccess(resourceName corev1.ResourceName, hostAccess runtimeplat
 		if len(device.Permissions) != len(permissions) {
 			return fmt.Errorf("native device resource %q has duplicated device permissions", resourceName)
 		}
-		if _, exists := targets[device.Target]; exists {
-			return fmt.Errorf("native device target %q is duplicated", device.Target)
+		if previous, exists := targets[device.Target]; exists && previous != device {
+			return fmt.Errorf("native device target %q has conflicting mappings", device.Target)
 		}
 		if platformMountTarget(device.Target) {
 			return fmt.Errorf("native device target %q is reserved for the Codespace runtime", device.Target)
 		}
-		targets[device.Target] = struct{}{}
+		targets[device.Target] = device
 	}
 	for _, mount := range hostAccess.Mounts {
+		if mount.SourceScope != "runtime" && mount.SourceScope != "node" {
+			return fmt.Errorf("native device resource %q mount source scope must be runtime or node", resourceName)
+		}
 		if !canonicalAbsolutePath(mount.Source) || !canonicalAbsolutePath(mount.Target) {
 			return fmt.Errorf("native device resource %q has an invalid mount mapping", resourceName)
 		}
 		if pathWithin(mount.Source, platformRuntimePaths) {
 			return fmt.Errorf("native host mount source %q is reserved for the Codespace runtime", mount.Source)
 		}
-		if _, exists := targets[mount.Target]; exists {
-			return fmt.Errorf("native device target %q is duplicated", mount.Target)
+		if previous, exists := targets[mount.Target]; exists && previous != mount {
+			return fmt.Errorf("native device target %q has conflicting mappings", mount.Target)
 		}
 		if platformMountTarget(mount.Target) {
 			return fmt.Errorf("native device target %q is reserved for the Codespace runtime", mount.Target)
 		}
-		targets[mount.Target] = struct{}{}
+		targets[mount.Target] = mount
 	}
 	for _, name := range hostAccess.ForwardEnvironment {
 		if !environmentPattern.MatchString(name) {
@@ -540,7 +565,7 @@ func validateHostAccess(resourceName corev1.ResourceName, hostAccess runtimeplat
 		if _, reserved := platformEnvironmentNames[name]; reserved || strings.HasPrefix(name, "CODESPACE_") {
 			return fmt.Errorf("native device environment %q is reserved for the Codespace runtime", name)
 		}
-		if owner, exists := environments[name]; exists {
+		if owner, exists := environments[name]; exists && owner != resourceName {
 			return fmt.Errorf("native device environment %q is shared by resources %q and %q", name, owner, resourceName)
 		}
 		environments[name] = resourceName
