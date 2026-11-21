@@ -34,7 +34,11 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
     serviceUrl: 'https://template.example/api',
     resourceUrlTemplate: 'https://template.example/assets/{publisher}/{name}/{version}/{path}',
   };
-  const repositoryGallery = {serviceUrl: 'https://repository.example/api'};
+  const repositoryGallery = {
+    serviceUrl: 'https://repository.example/api',
+    controlUrl: '', recommendationsUrl: '',
+    metadata: {enabled: true, scopes: ['extensions']},
+  };
   const galleryPath = path.join(data, 'extensions-gallery.json');
   await runAdapter(
     script,
@@ -47,6 +51,7 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
     root,
     data,
     log,
+    'invalid JSON overridden by repository configuration',
   );
   const settingsPath = path.join(data, 'user-data/User/settings.json');
   const localePath = path.join(data, 'user-data/User/argv.json');
@@ -88,10 +93,32 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
 
   await writeFile(path.join(root, 'assets/extensions.sha256'), 'bundle-version-2\n');
   await runAdapter(script, {...resume, templateOptions: {}}, root, data, log);
-  await assert.rejects(readFile(galleryPath), {code: 'ENOENT'});
+  assert.deepEqual(JSON.parse(await readFile(galleryPath, 'utf8')), inheritedGallery);
   assert.deepEqual(JSON.parse((await readFile(`${log}.gallery`, 'utf8')).trim().split('\n').at(-1)), inheritedGallery);
   assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 3);
   assert.equal(await readFile(path.join(data, '.bundled-extensions-version'), 'utf8'), 'bundle-version-2\n');
+
+  await runAdapter(script, {...resume, repositoryOptions: {extensionsGallery: {}}}, root, data, log);
+  assert.deepEqual(JSON.parse(await readFile(galleryPath, 'utf8')), {});
+  await runAdapter(script, {
+    protocolVersion: 1, initialize: true,
+    repositoryOptions: {extensions: ['example.default']},
+  }, root, data, log, '');
+  await assert.rejects(readFile(galleryPath), {code: 'ENOENT'});
+  assert.equal((await readFile(`${log}.gallery`, 'utf8')).split('\n').at(-2), '');
+
+  await assert.rejects(
+    runAdapter(script, {...resume, repositoryOptions: {extensionsGallery: null}}, root, data, log),
+    /repository extensionsGallery must be a JSON object/,
+  );
+  await assert.rejects(
+    runAdapter(script, {...resume, templateOptions: {}}, root, data, log, 'invalid-private-gallery-config'),
+    (error) => {
+      assert.match(error.message, /EXTENSIONS_GALLERY contains invalid JSON/);
+      assert.doesNotMatch(error.message, /invalid-private-gallery-config/);
+      return true;
+    },
+  );
 });
 
 test('VS Code restarts a clean exit and stops on termination', async (t) => {
@@ -104,7 +131,7 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
   const restartMarker = path.join(directory, 'restart-marker');
   await mkdir(path.join(root, 'program/bin'), {recursive: true});
   await mkdir(data);
-  const gallery = {serviceUrl: 'https://extensions.example/api'};
+  const gallery = {serviceUrl: 'https://extensions.example/api', controlUrl: '', accessScopes: ['extensions']};
   await writeFile(path.join(data, 'extensions-gallery.json'), `${JSON.stringify(gallery)}\n`);
   await mkdir(workspace);
   await writeFile(
@@ -143,14 +170,18 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
   assert.deepEqual((await readFile(`${log}.gallery`, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)), [gallery, gallery]);
 });
 
-async function runAdapter(script, request, root, data, log) {
+async function runAdapter(script, request, root, data, log, galleryEnvironment = JSON.stringify(inheritedGallery)) {
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], {
-      env: {...process.env, EXTENSIONS_GALLERY: JSON.stringify(inheritedGallery), CODESPACE_WEB_IDE_PROGRAM_DIR: root, CODESPACE_WEB_IDE_DATA_DIR: data, CODESPACE_TEST_LOG: log},
-      stdio: ['pipe', 'inherit', 'inherit'],
+      env: {...process.env, EXTENSIONS_GALLERY: galleryEnvironment, CODESPACE_WEB_IDE_PROGRAM_DIR: root, CODESPACE_WEB_IDE_DATA_DIR: data, CODESPACE_TEST_LOG: log},
+      stdio: ['pipe', 'inherit', 'pipe'],
     });
+    const stderr = [];
+    child.stderr.on('data', (chunk) => stderr.push(chunk));
     child.once('error', reject);
-    child.once('exit', (code, signal) => code === 0 ? resolve() : reject(new Error(`${script} exited with ${signal ?? code}`)));
+    child.once('exit', (code, signal) => code === 0
+      ? resolve()
+      : reject(new Error(Buffer.concat(stderr).toString('utf8') || `${script} exited with ${signal ?? code}`)));
     child.stdin.end(JSON.stringify(request));
   });
 }

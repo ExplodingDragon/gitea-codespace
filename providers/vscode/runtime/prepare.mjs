@@ -20,9 +20,26 @@ const extensionDir = path.join(data, 'extensions');
 await mkdir(path.join(userData, 'User'), {recursive: true});
 await mkdir(extensionDir, {recursive: true});
 
-const extensionsGallery = repository.extensionsGallery ?? template.extensionsGallery;
+let extensionsGallery;
+for (const [source, value] of [
+  ['repository extensionsGallery', repository.extensionsGallery],
+  ['template extensionsGallery', template.extensionsGallery],
+  ['EXTENSIONS_GALLERY', process.env.EXTENSIONS_GALLERY || undefined],
+]) {
+  if (value === undefined) continue;
+  extensionsGallery = value;
+  if (source === 'EXTENSIONS_GALLERY') {
+    try {
+      extensionsGallery = JSON.parse(value);
+    } catch {
+      throw new Error('EXTENSIONS_GALLERY contains invalid JSON');
+    }
+  }
+  if (!isObject(extensionsGallery)) throw new Error(`${source} must be a JSON object`);
+  break;
+}
 const galleryPath = path.join(data, 'extensions-gallery.json');
-if (extensionsGallery) {
+if (extensionsGallery !== undefined) {
   process.env.EXTENSIONS_GALLERY = JSON.stringify(extensionsGallery);
   // Preparation and serving are separate processes; share the selected gallery.
   await atomicWrite(galleryPath, `${process.env.EXTENSIONS_GALLERY}\n`);
@@ -113,25 +130,7 @@ function vscodeOptions(value) {
   if (!Array.isArray(extensions) || extensions.some((item) => typeof item !== 'string' || item.trim() === '')) {
     throw new Error('VS Code extensions must be an array of non-empty strings');
   }
-  const extensionsGallery = value.extensionsGallery;
-  if (extensionsGallery !== undefined) {
-    if (!isObject(extensionsGallery) || !Object.hasOwn(extensionsGallery, 'serviceUrl')) {
-      throw new Error('VS Code extensionsGallery must be an object with serviceUrl');
-    }
-    for (const [field, url] of Object.entries(extensionsGallery)) {
-      if (!['serviceUrl', 'itemUrl', 'extensionUrlTemplate', 'resourceUrlTemplate'].includes(field)) {
-        throw new Error(`Unknown VS Code extensionsGallery field: ${field}`);
-      }
-      if (typeof url !== 'string' || !URL.canParse(url)) {
-        throw new Error(`VS Code extensionsGallery.${field} must be an HTTP or HTTPS URL`);
-      }
-      const parsed = new URL(url);
-      if (!['http:', 'https:'].includes(parsed.protocol) || parsed.username || parsed.password) {
-        throw new Error(`VS Code extensionsGallery.${field} must be an HTTP or HTTPS URL without credentials`);
-      }
-    }
-  }
-  return {settings, extensions: extensions.map((item) => item.trim()), extensionsGallery};
+  return {settings, extensions: extensions.map((item) => item.trim()), extensionsGallery: value.extensionsGallery};
 }
 
 function mergeExtensions(template, repository) {

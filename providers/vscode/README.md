@@ -36,7 +36,9 @@ environment-template provider options, or under `customizations.vscode` in
   "customizations": {
     "vscode": {
       "extensionsGallery": {
-        "serviceUrl": "https://extensions.example.com/api"
+        "serviceUrl": "https://extensions.example.com/api",
+        "controlUrl": "",
+        "recommendationsUrl": ""
       },
       "extensions": ["golang.go"]
     }
@@ -45,16 +47,26 @@ environment-template provider options, or under `customizations.vscode` in
 ```
 
 The service must implement the [VS Code Extension Gallery API](https://coder.com/docs/code-server/FAQ#how-do-i-use-my-own-extensions-marketplace).
-`serviceUrl` is required. Optional `itemUrl`, `extensionUrlTemplate`, and
-`resourceUrlTemplate` use the URLs and placeholders provided by your marketplace
-for extension details and web resources. URLs accept HTTP or HTTPS; use HTTPS
-for browser access to avoid mixed-content restrictions. Keep credentials out of
-these options because gallery configuration is also exposed to the browser.
+The provider passes the complete JSON object to code-server's
+`EXTENSIONS_GALLERY`, preserving all fields, empty strings, nested values, and URL
+placeholders. code-server interprets the fields: for example, an empty `controlUrl`
+skips fetching the extension control list, including malicious and deprecated
+extension information. Use HTTPS for browser access to avoid mixed-content
+restrictions. Gallery configuration can reach the browser and code-server debug
+logs, so treat it as client-visible configuration rather than a secret store.
 
 Repository configuration replaces the complete template gallery object so query
 and resource addresses from different markets are not accidentally combined.
-If neither specifies a gallery, code-server uses the inherited
-`EXTENSIONS_GALLERY` environment variable, then its default Open VSX marketplace.
+If neither specifies a gallery, the provider parses the inherited
+`EXTENSIONS_GALLERY` environment variable as strict JSON. Only the selected source
+is checked, and its value must be an object; malformed JSON, `null`, arrays, and
+other top-level types fail preparation with an error that omits the input value.
+Field semantics and service availability are handled by code-server.
+
+An explicit `{}` supplies an empty gallery configuration. To use code-server's
+default Open VSX marketplace, omit `extensionsGallery` from both sources and leave
+`EXTENSIONS_GALLERY` unset or empty. In that case the provider leaves code-server's
+defaults unchanged and clears only its previous generated gallery configuration.
 The selected gallery applies to initial extension installation and the running
 IDE, including after restart. Existing extensions are preserved.
 
