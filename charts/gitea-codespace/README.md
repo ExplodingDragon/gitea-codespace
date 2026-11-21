@@ -244,6 +244,8 @@ appropriate for the services they expose.
 
 ## Operations
 
+### Certificate trust
+
 Back up `Secret/<Helm fullname>-internal-ca` because running workspaces and
 components trust this identity. Enable Kubernetes Secret encryption at rest.
 Add a private Gitea CA to the site configuration when Gitea does not use a
@@ -267,16 +269,36 @@ execute inside the build image and use that image's own certificate configuratio
 Component mTLS identities remain in separate Secrets and are not exposed to
 the Dev Container.
 
+#### Verify
+
+- Create a workspace using the site's private CA and check repository cloning,
+  image builds, and HTTPS or OCI Feature downloads.
+- Check HTTPS access to the required public and enterprise services from the
+  primary container, then repeat after stop and resume to verify its trust bundle.
+
+### Cache maintenance
+
 Cache is cluster-internal and uses Manager's internal CA. Use a persistent
 volume for the local backend or shared object storage for the S3 backend.
 
-Cache cleanup pauses new use of that Cache while allowing active image pushes
-to finish. When a Cache is unavailable, including when its access credentials
-cannot be prepared safely, new workspaces use another available Cache or
-continue without cache acceleration. Direct image pulls and OCI Feature downloads
-through a mirror fall back to the original registry after two minutes without
-progress; ongoing transfers can take longer. Direct registry access still follows
-the site's outbound network policy and the registry's authentication and
+The maximum cache size covers committed blobs in both build and mirror storage.
+It is a soft limit checked during maintenance; the free-space reserve checks
+actual filesystem space, including temporary uploads. Retention age is measured
+from repository updates, not reads. Under disk pressure, already cached digests
+remain readable, while mirror tag refreshes and cache misses fall back upstream.
+
+Cleanup checks for reclaimable data before pausing new use of that Cache.
+Existing uploads can continue while their credentials remain valid; cleanup
+starts after that window and has a limited duration. When a Cache is unavailable,
+including when its access credentials cannot be prepared safely, new workspaces
+use another available Cache or continue without cache acceleration. Direct image
+pulls and OCI Feature downloads through a mirror fall back to the original
+registry after two minutes without progress; ongoing transfers can take longer.
+Feature image cache transfers use the same idle deadline, and cache publishing
+failures preserve the built image.
+Dockerfile image references are resolved by BuildKit; build-layer cache reuse
+and direct image mirroring are separate paths. Direct registry access still
+follows the site's outbound network policy and the registry's authentication and
 certificate requirements.
 
 The StorageClass of a Cache PVC is selected when the PVC is created and then
@@ -286,14 +308,8 @@ Cache and rebinding the site because Kubernetes does not migrate an existing
 PVC between StorageClasses. Cache data is reproducible, so this operation does
 not require a data migration workflow.
 
-### Verify
-
-- Check connectivity from a Runtime Pod to the Cache Service's `443/https`
-  endpoint.
-- Create a workspace using the site's private CA and check repository cloning,
-  image builds, and HTTPS or OCI Feature downloads.
-- Check HTTPS access to the required public and enterprise services from the
-  primary container, then repeat after stop and resume to verify its trust bundle.
+Check connectivity from a Runtime Pod to the Cache Service's `443/https`
+endpoint when diagnosing cache access.
 
 ## Enable Kata USB/IP
 

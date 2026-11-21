@@ -11,6 +11,7 @@ import (
 
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/mount"
+	"github.com/stretchr/testify/require"
 
 	"gitea.dev/codespace/devcontainer"
 )
@@ -165,16 +166,18 @@ func TestCacheReferences(t *testing.T) {
 		t.Fatalf("GHCR mirror = %q, %v, %v", image, mirrored, err)
 	}
 	cache := devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/codespace", BuildScope: "scope"}
-	first, export := registryBuildCache(cache, "features")
-	other, _ := registryBuildCache(cache, "remote-user")
-	repeated, _ := registryBuildCache(cache, "features")
+	first, export := registryBuildCache(cache, "features", "linux/amd64")
+	other, _ := registryBuildCache(cache, "remote-user", "linux/amd64")
+	repeated, _ := registryBuildCache(cache, "features", "linux/amd64")
+	otherPlatform, _ := registryBuildCache(cache, "features", "linux/arm64")
+	require.NotEqual(t, first, otherPlatform)
 	if first == "" || first == other || first != repeated {
 		t.Fatalf("BuildKit cache references are not stable and stage-specific: %q", first)
 	}
 	if export != first+",mode=max,oci-mediatypes=true,image-manifest=true,ignore-error=true" {
 		t.Fatalf("BuildKit cache export = %q", export)
 	}
-	featureImage := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+	featureImage := featureImageArtifactCacheReference(cache, "sha256:base", "linux/amd64", []*resolvedFeature{{
 		reference: "ghcr.io/devcontainers/features/git:1",
 		digest:    "sha256:feature",
 		options:   map[string]string{"version": "latest"},
@@ -182,12 +185,15 @@ func TestCacheReferences(t *testing.T) {
 	if featureImage == "" || featureImage == strings.TrimPrefix(first, "type=registry,ref=") {
 		t.Fatalf("Feature image cache reference = %q", featureImage)
 	}
-	changedFeature := featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+	changedFeature := featureImageArtifactCacheReference(cache, "sha256:base", "linux/amd64", []*resolvedFeature{{
 		reference: "ghcr.io/devcontainers/features/git:1",
 		digest:    "sha256:changed",
 		options:   map[string]string{"version": "latest"},
 	}}, "root", "root", map[string]string{"PATH": "/usr/bin"})
-	if featureImage == changedFeature || featureImage != featureImageArtifactCacheReference(cache, "sha256:base", []*resolvedFeature{{
+	cache.BuildScope = "another/configuration.json"
+	changedScope, _ := registryBuildCache(cache, "features", "linux/amd64")
+	require.NotEqual(t, first, changedScope)
+	if featureImage == changedFeature || featureImage != featureImageArtifactCacheReference(cache, "sha256:base", "linux/amd64", []*resolvedFeature{{
 		reference: "ghcr.io/devcontainers/features/git:1",
 		digest:    "sha256:feature",
 		options:   map[string]string{"version": "latest"},

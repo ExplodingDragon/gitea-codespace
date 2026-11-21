@@ -135,12 +135,11 @@ program/...
 }
 ```
 
-`architecture` is `amd64` or `arm64` and must match the image being run.
-The manifest is limited to 64 KiB. `bin/prepare` and `bin/serve` must be regular
-executable files. Everything else under the bundle is provider-owned.
-
-The manifest identifies the selected provider and architecture, uses schema
-version `1`, and contains a nonempty version.
+The manifest is limited to 64 KiB, uses `schemaVersion: 1`, identifies the
+selected provider, and contains a nonempty `version`. Its `architecture` is
+`amd64` or `arm64` and must match the image being run. `bin/prepare` and
+`bin/serve` must be regular executable files. Everything else under the bundle
+is provider-owned.
 
 Make directories traversable and files readable by the Dev Container remote
 user, and preserve executable permissions on programs. The image can use
@@ -251,10 +250,8 @@ exec "${CODESPACE_WEB_IDE_PROGRAM_DIR:?}/program/bin/example-ide" \
 Replace the flags with the editor's own command line. The editor must serve HTTP
 and WebSocket traffic from the same address. A simple Provider can use `exec` as
 shown above. A Provider that needs automatic restart owns that behavior in a
-foreground process manager behind `bin/serve`.
-
-Endpoint publication and startup failures follow the [lifecycle table](#lifecycle),
-so process recovery remains the provider's responsibility.
+foreground process manager behind `bin/serve`. See the [lifecycle table](#lifecycle)
+for how startup failures and editor exits affect access.
 
 Providers can report unexpected exits through the [workspace event command](../docs/events.md).
 Keep error details bounded and reporting failures independent of process

@@ -5,12 +5,10 @@ package cluster
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -71,10 +69,12 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 		}
 		material, err := s.cacheByReference(ctx, reference)
 		if err != nil || !material.config.Enabled {
+			log.FromContext(ctx).V(1).Info("Skip unavailable cache configuration", "cache", reference.Name, "error", err)
 			continue
 		}
 		available, err := s.cacheAvailable(ctx, material)
 		if err != nil || !available {
+			log.FromContext(ctx).V(1).Info("Skip cache without an active service", "cache", reference.Name, "error", err)
 			continue
 		}
 		namespace := cachepkg.Namespace(material.secret.Data["registryKey"], string(site.UID), create.Repository.RepositoryId, create.GitIdentity.UserId)
@@ -104,6 +104,8 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			}
 			if connect.CodeOf(err) != connect.CodeResourceExhausted {
 				log.FromContext(ctx).Error(err, "Skip unavailable build cache", "cache", material.component.Name, "codespace", client.ObjectKeyFromObject(cs))
+			} else {
+				log.FromContext(ctx).Info("Skip cache during maintenance", "cache", material.component.Name)
 			}
 			continue
 		}
@@ -118,17 +120,14 @@ func (s *ComponentServer) runtimeCache(ctx context.Context, cs *api.Codespace, o
 			result.Mirrors[upstream] = registryURL + "/mirror/" + configpkg.CacheUpstreamID(upstream)
 		}
 		result.Credentials[registryAddress] = &agentv1.RegistryCredential{Username: cachepkg.Username, Password: token}
-		digest := sha256.New()
-		_, _ = fmt.Fprintf(digest, "%s\x00%d\x00%d\x00", site.UID, create.Repository.RepositoryId, create.GitIdentity.UserId)
-		injection, _ := json.Marshal(cs.Spec.Runtime.DevContainer)
-		_, _ = digest.Write(injection)
-		if create.DevContainer != nil {
-			encoded, _ := json.Marshal(create.DevContainer)
-			_, _ = digest.Write(encoded)
+		result.BuildScope = "template"
+		if source := create.DevContainer.GetRepositoryPath(); source != "" {
+			result.BuildScope = "repository:" + path.Clean(source)
 		}
-		result.BuildScope = hex.EncodeToString(digest.Sum(nil))
+		log.FromContext(ctx).Info("Selected runtime cache", "cache", material.component.Name, "codespace", client.ObjectKeyFromObject(cs))
 		return result, nil
 	}
+	log.FromContext(ctx).Info("Creating runtime without a cache", "configured_caches", len(site.Spec.Caches), "codespace", client.ObjectKeyFromObject(cs))
 	return nil, ctx.Err()
 }
 
@@ -352,7 +351,7 @@ func (s *ComponentServer) CacheControl(ctx context.Context, stream componentv1co
 			response := &componentv1.CacheControlResponse{Sequence: sequence, PermitValidForMilliseconds: cacheOwnerTTL.Milliseconds()}
 			switch maintenance := request.Maintenance.(type) {
 			case *componentv1.CacheControlRequest_BeginGc:
-				response.GcGrant, err = s.beginCacheGC(ctx, identity, material, first.SessionId)
+				response.GcGrant, err = s.beginCacheGC(ctx, identity, material, first.SessionId, maintenance.BeginGc.GetStartIfIdle())
 			case *componentv1.CacheControlRequest_CompleteGc:
 				err = s.completeCacheGC(ctx, material.component, first.SessionId, maintenance.CompleteGc.GrantId)
 			}

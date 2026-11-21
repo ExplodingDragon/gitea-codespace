@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"maps"
 	"net/url"
+	"os"
 	"os/exec"
 	"path"
 	"path/filepath"
@@ -28,15 +29,15 @@ import (
 	"gitea.dev/codespace/devcontainer"
 )
 
-const mirrorIdleTimeout = 2 * time.Minute
+const imageTransferIdleTimeout = 2 * time.Minute
 
-// Mirror transfers can be large; only time without progress triggers fallback.
-func watchMirrorProgress(parent context.Context) (context.Context, func(), func(error) error) {
+// Cache transfers can be large; only time without progress triggers fallback.
+func watchImageTransfer(parent context.Context) (context.Context, func(), func(error) error) {
 	ctx, cancel := context.WithCancelCause(parent)
-	timer := time.AfterFunc(mirrorIdleTimeout, func() {
-		cancel(errors.New("OCI mirror transfer made no progress for " + mirrorIdleTimeout.String()))
+	timer := time.AfterFunc(imageTransferIdleTimeout, func() {
+		cancel(errors.New("OCI transfer made no progress for " + imageTransferIdleTimeout.String()))
 	})
-	return ctx, func() { timer.Reset(mirrorIdleTimeout) }, func(err error) error {
+	return ctx, func() { timer.Reset(imageTransferIdleTimeout) }, func(err error) error {
 		timer.Stop()
 		if cause := context.Cause(ctx); cause != nil {
 			err = cause
@@ -116,8 +117,8 @@ func mirroredReference(value string, mirrors map[string]string) (string, bool, e
 	return repository + ":" + named.(reference.Tagged).Tag(), true, nil
 }
 
-func registryBuildCache(cache devcontainer.CacheOptions, stage string) (string, string) {
-	reference := cacheReference(cache, "build", stage, "cache")
+func registryBuildCache(cache devcontainer.CacheOptions, stage, platform string) (string, string) {
+	reference := cacheReference(cache, "build", cache.BuildScope, stage, platform)
 	if reference == "" {
 		return "", ""
 	}
@@ -126,7 +127,7 @@ func registryBuildCache(cache devcontainer.CacheOptions, stage string) (string, 
 }
 
 func cacheReference(cache devcontainer.CacheOptions, parts ...string) string {
-	if strings.TrimSpace(cache.BuildRegistry) == "" || strings.TrimSpace(cache.BuildScope) == "" {
+	if strings.TrimSpace(cache.BuildRegistry) == "" {
 		return ""
 	}
 	base, err := parseOCIRepositoryBase(cache.BuildRegistry, true)
@@ -134,7 +135,6 @@ func cacheReference(cache devcontainer.CacheOptions, parts ...string) string {
 		return ""
 	}
 	digestInput := strings.Builder{}
-	digestInput.WriteString(cache.BuildScope)
 	for _, part := range parts {
 		digestInput.WriteByte(0)
 		digestInput.WriteString(part)
@@ -147,58 +147,72 @@ func stringMapCachePart(values map[string]string) string {
 	if len(values) == 0 {
 		return "{}"
 	}
-	content, err := json.Marshal(values)
-	if err != nil {
-		return "{}"
-	}
+	content, _ := json.Marshal(values)
 	return string(content)
 }
 
-func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) bool {
+func (e *Engine) useCachedImage(ctx context.Context, imageName, stage string) (bool, error) {
 	if strings.TrimSpace(imageName) == "" {
-		return false
+		return false, ctx.Err()
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
+	started := time.Now()
 	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Checking %s image cache\n", stage)
-	if err := e.pullImageReference(ctx, imageName, nil); err != nil {
-		if cerrdefs.IsNotFound(err) {
-			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] %s image cache not found; building locally\n", stage)
-		} else {
-			_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] %s image cache unavailable; building locally: %v\n", stage, err)
-		}
-		return false
+	available, err := e.localImageAvailable(ctx, imageName)
+	if err != nil {
+		return false, err
 	}
-	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using %s image cache\n", stage)
-	return true
+	if available {
+		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using %s image cache (local)\n", stage)
+		return true, nil
+	}
+	transferCtx, progress, finish := watchImageTransfer(ctx)
+	err = finish(e.pullImageReference(transferCtx, imageName, progress))
+	if ctx.Err() != nil {
+		return false, ctx.Err()
+	}
+	if err != nil {
+		if cerrdefs.IsNotFound(err) {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] %s image cache not found after %s; building locally\n", stage, time.Since(started).Round(time.Millisecond))
+		} else {
+			_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] %s image cache unavailable after %s; building locally: %v\n", stage, time.Since(started).Round(time.Millisecond), err)
+		}
+		return false, nil
+	}
+	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using %s image cache (pulled in %s)\n", stage, time.Since(started).Round(time.Millisecond))
+	return true, nil
 }
 
 func (e *Engine) publishCachedImage(ctx context.Context, sourceImage, targetImage, stage string) {
 	if strings.TrimSpace(targetImage) == "" {
 		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	if err := e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot tag %s image cache; built image remains usable: %v\n", stage, err)
+	started := time.Now()
+	ctx, progress, finish := watchImageTransfer(ctx)
+	var err error
+	defer func() {
+		if err := finish(err); err != nil {
+			_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot publish %s image cache; built image remains usable: %v\n", stage, err)
+		} else {
+			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Published %s image cache in %s\n", stage, time.Since(started).Round(time.Millisecond))
+		}
+	}()
+	if err = e.client.ImageTag(ctx, sourceImage, targetImage); err != nil {
+		err = fmt.Errorf("tag image: %w", err)
 		return
 	}
 	registryAuth, err := command.RetrieveAuthTokenFromImage(e.cli.ConfigFile(), targetImage)
 	if err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot resolve %s image cache credentials; built image remains usable: %v\n", stage, err)
+		err = fmt.Errorf("resolve registry credentials: %w", err)
 		return
 	}
 	reader, err := e.client.ImagePush(ctx, targetImage, image.PushOptions{RegistryAuth: registryAuth})
 	if err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot push %s image cache; built image remains usable: %v\n", stage, err)
+		err = fmt.Errorf("push image: %w", err)
 		return
 	}
 	defer func() { _ = reader.Close() }()
-	if err := readDockerProgress(reader, nil); err != nil {
-		_, _ = fmt.Fprintf(e.stderr, "[WARN] [build] Cannot publish %s image cache; built image remains usable: %v\n", stage, err)
-		return
-	}
-	_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Published %s image cache\n", stage)
+	progress()
+	err = readDockerProgress(reader, observeImageTransfer(progress))
 }
 
 func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageName, target string, args map[string]*string, cacheFrom, options []string, cache devcontainer.CacheOptions, stage string, platformEnvironment map[string]string) error {
@@ -220,7 +234,18 @@ func (e *Engine) buildImage(ctx context.Context, contextPath, dockerfile, imageN
 		for _, source := range cacheFrom {
 			arguments = append(arguments, "--cache-from", source)
 		}
-		if source, destination := registryBuildCache(cache, stage); source != "" {
+		platform := os.Getenv("DOCKER_DEFAULT_PLATFORM")
+		if platform == "" {
+			platform = e.imagePlatform()
+		}
+		for index, option := range options {
+			if value, ok := strings.CutPrefix(option, "--platform="); ok {
+				platform = value
+			} else if option == "--platform" && index+1 < len(options) {
+				platform = options[index+1]
+			}
+		}
+		if source, destination := registryBuildCache(cache, stage, platform); source != "" {
 			arguments = append(arguments, "--cache-from", source, "--cache-to", destination)
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Import and export %s build cache (export failures are non-fatal)\n", stage)
 		}
@@ -255,7 +280,19 @@ func (e *Engine) buildService(ctx context.Context, project *types.Project, servi
 	originalBuild := service.Build
 	build := *originalBuild
 	build.Args = types.MappingWithEquals(mergeBuildProxyArguments(build.Args, platformEnvironment))
-	if source, destination := registryBuildCache(cache, stage); source != "" {
+	platform := service.Platform
+	if len(build.Platforms) > 0 {
+		platforms := slices.Clone(build.Platforms)
+		slices.Sort(platforms)
+		platform = strings.Join(platforms, ",")
+	}
+	if platform == "" {
+		platform = os.Getenv("DOCKER_DEFAULT_PLATFORM")
+	}
+	if platform == "" {
+		platform = e.imagePlatform()
+	}
+	if source, destination := registryBuildCache(cache, stage, platform); source != "" {
 		build.CacheFrom = append(slices.Clone(build.CacheFrom), source)
 		build.CacheTo = append(slices.Clone(build.CacheTo), destination)
 		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Import and export %s build cache (export failures are non-fatal)\n", stage)

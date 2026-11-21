@@ -142,7 +142,7 @@ func TestBuildServiceCacheOptions(t *testing.T) {
 			}
 			build := compose.builds[0]
 			wantFrom, wantTo := slices.Clone(original.CacheFrom), slices.Clone(original.CacheTo)
-			if source, destination := registryBuildCache(test.cache, "repository"); source != "" {
+			if source, destination := registryBuildCache(test.cache, "repository", ""); source != "" {
 				wantFrom, wantTo = append(wantFrom, source), append(wantTo, destination)
 			}
 			if !slices.Equal(build.CacheFrom, wantFrom) || !slices.Equal(build.CacheTo, wantTo) {

@@ -15,22 +15,33 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"gitea.dev/codespace/devcontainer"
 	"github.com/stretchr/testify/require"
 )
 
-func TestImageCacheReportsAvailability(t *testing.T) {
+func TestUseCachedImage(t *testing.T) {
 	for _, test := range []struct {
-		status  int
-		message string
+		name          string
+		localImage    string
+		inspectStatus int
+		pullStatus    int
+		pulls         int32
+		cached        bool
+		wantError     string
+		message       string
 	}{
-		{http.StatusOK, "[INFO] [build] Using features image cache"},
-		{http.StatusNotFound, "[INFO] [build] features image cache not found; building locally"},
-		{http.StatusForbidden, "[WARN] [build] features image cache unavailable; building locally:"},
+		{name: "local", inspectStatus: http.StatusOK, localImage: `{"Os":"linux","Architecture":"amd64","Config":{}}`, pullStatus: http.StatusOK, cached: true, message: "Using features image cache (local)"},
+		{name: "remote", pullStatus: http.StatusOK, pulls: 1, cached: true, message: "Using features image cache (pulled in"},
+		{name: "other platform", inspectStatus: http.StatusOK, localImage: `{"Os":"linux","Architecture":"arm64","Config":{}}`, pullStatus: http.StatusOK, pulls: 1, cached: true, message: "Using features image cache (pulled in"},
+		{name: "missing", pullStatus: http.StatusNotFound, pulls: 1, message: "features image cache not found"},
+		{name: "unavailable", pullStatus: http.StatusForbidden, pulls: 1, message: "features image cache unavailable"},
+		{name: "inspect failure", inspectStatus: http.StatusInternalServerError, pullStatus: http.StatusOK, wantError: "local inspection failed"},
 	} {
-		t.Run(http.StatusText(test.status), func(t *testing.T) {
+		t.Run(test.name, func(t *testing.T) {
+			var pulls atomic.Int32
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				switch {
@@ -39,8 +50,20 @@ func TestImageCacheReportsAvailability(t *testing.T) {
 				case strings.HasSuffix(r.URL.Path, "/version"):
 					_, _ = io.WriteString(w, `{"Os":"linux","Arch":"amd64","ApiVersion":"1.51"}`)
 				case strings.HasSuffix(r.URL.Path, "/images/create"):
-					w.WriteHeader(test.status)
+					pulls.Add(1)
+					w.WriteHeader(test.pullStatus)
 					_, _ = io.WriteString(w, `{"message":"cache registry response"}`)
+				case strings.HasSuffix(r.URL.Path, "/images/registry.example.com/cache:features/json"):
+					if test.inspectStatus == 0 {
+						w.WriteHeader(http.StatusNotFound)
+					} else {
+						w.WriteHeader(test.inspectStatus)
+					}
+					if test.localImage != "" {
+						_, _ = io.WriteString(w, test.localImage)
+					} else {
+						_, _ = io.WriteString(w, `{"message":"local inspection failed"}`)
+					}
 				default:
 					http.NotFound(w, r)
 				}
@@ -54,8 +77,15 @@ func TestImageCacheReportsAvailability(t *testing.T) {
 			engine, err := New(t.Context(), &output, &output)
 			require.NoError(t, err)
 			defer engine.Close()
-			require.Equal(t, test.status == http.StatusOK, engine.useCachedImage(t.Context(), "registry.example.com/cache:features", "features"))
-			require.Contains(t, output.String(), "[INFO] [build] Checking features image cache\n"+test.message)
+			cached, err := engine.useCachedImage(t.Context(), "registry.example.com/cache:features", "features")
+			if test.wantError != "" {
+				require.ErrorContains(t, err, test.wantError)
+			} else {
+				require.NoError(t, err)
+				require.Contains(t, output.String(), test.message)
+			}
+			require.Equal(t, test.cached, cached)
+			require.Equal(t, test.pulls, pulls.Load())
 		})
 	}
 }
@@ -109,7 +139,7 @@ exit "$BUILD_EXIT_CODE"
 				"buildx", "build", "--load", "--progress=plain", "--file", filepath.Join(directory, "Dockerfile"), "--tag", "example:local",
 				"--target", "development", "--build-arg", "EXAMPLE=with spaces", "--build-arg", "HTTPS_PROXY=http://proxy.example:3128",
 				"--cache-from", "example:cache"}
-			if source, destination := registryBuildCache(test.cache, "repository"); source != "" {
+			if source, destination := registryBuildCache(test.cache, "repository", ""); source != "" {
 				want = append(want, "--cache-from", source, "--cache-to", destination)
 			}
 			want = append(want, options...)

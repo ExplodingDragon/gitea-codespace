@@ -228,7 +228,10 @@ message CacheGCGrant {
   int64 ready_at_unix_milliseconds = 5;
 }
 
-message CacheGCRequest {}
+message CacheGCRequest {
+  // Existing grants are resumed regardless of this flag.
+  bool start_if_idle = 1;
+}
 
 message CacheGCComplete {
   string grant_id = 1;

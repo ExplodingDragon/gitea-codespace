@@ -94,7 +94,7 @@ DNS, TLS, and SSH exposure.
 
 The primary Dev Container image must include its distribution's
 `ca-certificates` bundle so platform certificates can be added before its first
-process starts. See [certificate trust](charts/gitea-codespace/README.md#operations)
+process starts. See [certificate trust](charts/gitea-codespace/README.md#certificate-trust)
 for certificate sources and update behavior.
 
 After the site is enabled:

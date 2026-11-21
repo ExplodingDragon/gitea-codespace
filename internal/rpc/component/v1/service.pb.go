@@ -1977,7 +1977,9 @@ func (x *CacheGCGrant) GetReadyAtUnixMilliseconds() int64 {
 }
 
 type CacheGCRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Existing grants are resumed regardless of this flag.
+	StartIfIdle   bool `protobuf:"varint,1,opt,name=start_if_idle,json=startIfIdle,proto3" json:"start_if_idle,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2010,6 +2012,13 @@ func (x *CacheGCRequest) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CacheGCRequest.ProtoReflect.Descriptor instead.
 func (*CacheGCRequest) Descriptor() ([]byte, []int) {
 	return file_component_v1_service_proto_rawDescGZIP(), []int{26}
+}
+
+func (x *CacheGCRequest) GetStartIfIdle() bool {
+	if x != nil {
+		return x.StartIfIdle
+	}
+	return false
 }
 
 type CacheGCComplete struct {
@@ -2240,8 +2249,9 @@ const file_component_v1_service_proto_rawDesc = "" +
 	"\bcache_id\x18\x01 \x01(\tR\acacheId\x12\x0e\n" +
 	"\x02id\x18\x02 \x01(\tR\x02id\x12?\n" +
 	"\x1cexpires_at_unix_milliseconds\x18\x04 \x01(\x03R\x19expiresAtUnixMilliseconds\x12;\n" +
-	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"\x10\n" +
-	"\x0eCacheGCRequest\",\n" +
+	"\x1aready_at_unix_milliseconds\x18\x05 \x01(\x03R\x17readyAtUnixMilliseconds\"4\n" +
+	"\x0eCacheGCRequest\x12\"\n" +
+	"\rstart_if_idle\x18\x01 \x01(\bR\vstartIfIdle\",\n" +
 	"\x0fCacheGCComplete\x12\x19\n" +
 	"\bgrant_id\x18\x01 \x01(\tR\agrantId2\x89\x04\n" +
 	"\x10ComponentService\x12_\n" +

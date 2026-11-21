@@ -461,6 +461,15 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, cacheNamespace, verified.Namespace)
 	require.True(t, verified.Policy.Build)
+	require.Equal(t, "template", runtimeCache.BuildScope)
+	operation.GetCreate().DevContainer = &codespacev1.DevContainerConfiguration{Source: &codespacev1.DevContainerConfiguration_RepositoryPath{RepositoryPath: ".devcontainer/go/../devcontainer.json"}}
+	configured, err := server.runtimeCache(ctx, cs, operation)
+	require.NoError(t, err)
+	require.Equal(t, "repository:.devcontainer/devcontainer.json", configured.BuildScope)
+	cs.Spec.Runtime.DevContainer.GiteaCLI = !cs.Spec.Runtime.DevContainer.GiteaCLI
+	unchanged, err := server.runtimeCache(ctx, cs, operation)
+	require.NoError(t, err)
+	require.Equal(t, configured.BuildScope, unchanged.BuildScope)
 
 	var gcLease coordinationv1.Lease
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: namespace, Name: "cache-gc-" + component.Name}, &gcLease))
@@ -508,11 +517,14 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 		})
 	}
 
-	grant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	idle, err := server.beginCacheGC(cacheContext, identity, material, sessionID, false)
+	require.NoError(t, err)
+	require.Nil(t, idle)
+	grant, err := server.beginCacheGC(cacheContext, identity, material, sessionID, true)
 	require.NoError(t, err)
 	require.Equal(t, verified.ExpiresAt.UnixMilli(), grant.ReadyAtUnixMilliseconds)
 	require.GreaterOrEqual(t, grant.ExpiresAtUnixMilliseconds-grant.ReadyAtUnixMilliseconds, cacheGCTTL.Milliseconds())
-	repeatedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	repeatedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID, true)
 	require.NoError(t, err)
 	require.Equal(t, grant, repeatedGrant)
 	runtimeCache, err = server.runtimeCache(ctx, cs, operation)
@@ -530,7 +542,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	previousSession := sessionID
 	sessionID = "replacement-session"
 	require.NoError(t, server.claimCache(cacheContext, identity, material, sessionID))
-	resumedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	resumedGrant, err := server.beginCacheGC(cacheContext, identity, material, sessionID, false)
 	require.NoError(t, err)
 	require.NotEqual(t, grant.Id, resumedGrant.Id)
 	require.Equal(t, grant.ReadyAtUnixMilliseconds, resumedGrant.ReadyAtUnixMilliseconds)
@@ -543,7 +555,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 	protectedUntil, err := cacheCredentialDeadline(&gcLease)
 	require.NoError(t, err)
 	require.WithinDuration(t, verified.ExpiresAt, protectedUntil, 0)
-	notDue, err := server.beginCacheGC(cacheContext, identity, material, sessionID)
+	notDue, err := server.beginCacheGC(cacheContext, identity, material, sessionID, true)
 	require.NoError(t, err)
 	require.Nil(t, notDue)
 	gcLease.Annotations[cacheLastCleanupAnnotation] = time.Now().Add(-material.config.GCInterval.ToStdlib()).Format(time.RFC3339Nano)
@@ -556,7 +568,7 @@ func TestCacheControlAndRuntimeCredential(t *testing.T) {
 		Update: func(ctx context.Context, underlying client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 			if obj.GetName() == gcLease.Name && !raced {
 				raced = true
-				grant, err = maintenanceServer.beginCacheGC(cacheContext, identity, material, sessionID)
+				grant, err = maintenanceServer.beginCacheGC(cacheContext, identity, material, sessionID, true)
 				require.NoError(t, err)
 			}
 			return underlying.Update(ctx, obj, opts...)

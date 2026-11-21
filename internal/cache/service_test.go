@@ -5,9 +5,7 @@ package cache
 
 import (
 	"context"
-	"crypto/sha256"
 	"crypto/tls"
-	"encoding/hex"
 	"errors"
 	"io"
 	"net/http"
@@ -15,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
@@ -24,29 +23,22 @@ import (
 )
 
 func TestCacheAuthenticationExpiry(t *testing.T) {
-	key := []byte(strings.Repeat("t", 32))
-	reader := &registryCache{id: "test", tokenKey: key}
-	token, err := SignCredential(key, "test", "repository", configpkg.CachePolicy{Build: true}, time.Now().Add(time.Hour))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := reader.verifyToken(token); err != nil {
-		t.Fatal(err)
-	}
-	hashKey := cacheSessionKey(token)
-	expires := reader.sessions[hashKey].expires
-	if _, err := reader.verifyToken(token); err != nil {
-		t.Fatal(err)
-	}
-	if !reader.sessions[hashKey].expires.Equal(expires) {
-		t.Fatal("cache hit extended credential lifetime")
-	}
-	entry := reader.sessions[hashKey]
-	entry.expires = time.Now().Add(-time.Second)
-	reader.sessions[hashKey] = entry
-	if _, err := reader.verifyToken(token + "x"); err == nil {
-		t.Fatal("modified cache credential was accepted")
-	}
+	synctest.Test(t, func(t *testing.T) {
+		key := []byte(strings.Repeat("t", 32))
+		reader := &registryCache{id: "test", tokenKey: key}
+		token, err := SignCredential(key, "test", "repository", configpkg.CachePolicy{Build: true}, time.Now().Add(time.Second))
+		require.NoError(t, err)
+		_, err = reader.verifyToken(token)
+		require.NoError(t, err)
+		time.Sleep(time.Second / 2)
+		_, err = reader.verifyToken(token)
+		require.NoError(t, err)
+		_, err = reader.verifyToken(token + "x")
+		require.Error(t, err)
+		time.Sleep(time.Second / 2)
+		_, err = reader.verifyToken(token)
+		require.Error(t, err, "a cached credential expires at its original deadline")
+	})
 }
 
 func TestCacheServiceStopsMaintenanceWhenManagerLeaseIsLost(t *testing.T) {
@@ -103,11 +95,6 @@ func testCacheTLSConfig(t *testing.T) *tls.Config {
 	return server.TLS.Clone()
 }
 
-func cacheSessionKey(value string) string {
-	hash := sha256.Sum256([]byte(value))
-	return hex.EncodeToString(hash[:])
-}
-
 // fakeCacheControl models the Manager contract. Manager integration tests cover
 // lease and revision conditions against Kubernetes resources.
 type fakeCacheControl struct {
@@ -118,7 +105,6 @@ type fakeCacheControl struct {
 	permitDuration time.Duration
 	stallHeartbeat bool
 	gcGrant        GCGrant
-	gcGrantSet     bool
 	beginSignal    chan struct{}
 	completeSignal chan struct{}
 	completeCount  int
@@ -169,23 +155,21 @@ func (f *fakeCacheControl) ReleaseCache(_ context.Context, owner Owner) error {
 	return nil
 }
 
-func (f *fakeCacheControl) BeginCacheGC(context.Context, Owner) (GCGrant, error) {
+func (f *fakeCacheControl) BeginCacheGC(context.Context, Owner, bool) (GCGrant, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.beginSignal != nil {
 		close(f.beginSignal)
 		f.beginSignal = nil
 	}
-	if f.gcGrantSet {
-		return f.gcGrant, nil
-	}
-	return GCGrant{CacheID: f.owner.CacheID, ID: "gc"}, nil
+	return f.gcGrant, nil
 }
 
 func (f *fakeCacheControl) CompleteCacheGC(context.Context, GCGrant) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.completeCount++
+	f.gcGrant = GCGrant{}
 	if f.completeSignal != nil {
 		close(f.completeSignal)
 		f.completeSignal = nil
@@ -193,72 +177,48 @@ func (f *fakeCacheControl) CompleteCacheGC(context.Context, GCGrant) error {
 	return nil
 }
 
-func TestCacheMaintenanceWaitsForReadyAt(t *testing.T) {
-	config := configpkg.CacheConfig{ID: "test", Revision: 1, Enabled: true, GCInterval: configpkg.Duration(time.Nanosecond)}
-	driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": t.TempDir()})
-	require.NoError(t, err)
-	readyAt := time.Now().Add(3 * time.Second)
-	control := &fakeCacheControl{
-		config:      ControlConfig{Config: config},
-		gcGrantSet:  true,
-		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ReadyAt: readyAt, ExpiresAt: readyAt.Add(time.Minute)},
-		beginSignal: make(chan struct{}), completeSignal: make(chan struct{}),
-	}
-	beginSignal, completeSignal := control.beginSignal, control.completeSignal
-	cache := &registryCache{id: "test", configRevision: 1, gcInterval: time.Nanosecond, driver: driver}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan struct{})
-	go func() { cache.maintain(ctx, control); close(done) }()
-
-	select {
-	case <-beginSignal:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cache maintenance did not request a grant")
-	}
-	select {
-	case <-completeSignal:
-		if time.Now().Before(readyAt) {
-			t.Fatalf("cache maintenance completed before ReadyAt %s", readyAt)
+func TestCacheMaintenanceGrant(t *testing.T) {
+	for _, complete := range []bool{false, true} {
+		name := "canceled"
+		if complete {
+			name = "completed"
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("cache maintenance did not run after ReadyAt")
+		t.Run(name, func(t *testing.T) {
+			driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": t.TempDir()})
+			require.NoError(t, err)
+			synctest.Test(t, func(t *testing.T) {
+				readyAt := time.Now().Add(time.Minute)
+				control := &fakeCacheControl{
+					config:      ControlConfig{Config: configpkg.CacheConfig{ID: "test", Revision: 1, Enabled: true}},
+					gcGrant:     GCGrant{CacheID: "test", ID: "grant", ReadyAt: readyAt, ExpiresAt: readyAt.Add(time.Minute)},
+					beginSignal: make(chan struct{}), completeSignal: make(chan struct{}),
+				}
+				beginSignal, completeSignal := control.beginSignal, control.completeSignal
+				cache := &registryCache{id: "test", configRevision: 1, gcInterval: time.Hour, driver: driver}
+				ctx, cancel := context.WithCancel(t.Context())
+				defer cancel()
+				done := make(chan struct{})
+				go func() { cache.maintain(ctx, control); close(done) }()
+				<-beginSignal
+				synctest.Wait()
+				control.mu.Lock()
+				completed := control.completeCount
+				control.mu.Unlock()
+				require.Zero(t, completed)
+				if complete {
+					<-completeSignal
+					require.Equal(t, readyAt, time.Now())
+				}
+				cancel()
+				<-done
+				if complete {
+					require.Equal(t, 1, control.completeCount)
+					require.Empty(t, control.gcGrant.ID)
+				} else {
+					require.Zero(t, control.completeCount)
+					require.Equal(t, "grant", control.gcGrant.ID)
+				}
+			})
+		})
 	}
-	cancel()
-	<-done
-	control.mu.Lock()
-	require.Equal(t, 1, control.completeCount)
-	control.mu.Unlock()
-}
-
-func TestCacheMaintenanceCancellationKeepsPendingGrant(t *testing.T) {
-	config := configpkg.CacheConfig{ID: "test", Revision: 1, Enabled: true, GCInterval: configpkg.Duration(time.Nanosecond)}
-	driver, err := filesystem.FromParameters(map[string]any{"rootdirectory": t.TempDir()})
-	require.NoError(t, err)
-	control := &fakeCacheControl{
-		config:      ControlConfig{Config: config},
-		gcGrantSet:  true,
-		gcGrant:     GCGrant{CacheID: "test", ID: "grant", ReadyAt: time.Now().Add(time.Minute), ExpiresAt: time.Now().Add(2 * time.Minute)},
-		beginSignal: make(chan struct{}),
-	}
-	beginSignal := control.beginSignal
-	cache := &registryCache{id: "test", configRevision: 1, gcInterval: time.Nanosecond, driver: driver}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	done := make(chan struct{})
-	go func() { cache.maintain(ctx, control); close(done) }()
-	select {
-	case <-beginSignal:
-	case <-time.After(3 * time.Second):
-		t.Fatal("cache maintenance did not request a grant")
-	}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("cache maintenance did not stop after cancellation")
-	}
-	control.mu.Lock()
-	require.Equal(t, 0, control.completeCount)
-	control.mu.Unlock()
 }

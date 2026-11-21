@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"maps"
 	"net/http"
 	"os"
@@ -101,7 +102,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, err
 	}
 	for _, feature := range orderedFeatures {
-		if feature.digest == "" {
+		if !feature.lockable {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using local Dev Container Feature %s\n", feature.reference)
 		} else {
 			_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Dev Container Feature %s resolved to %s\n", feature.reference, feature.digest)
@@ -216,8 +217,13 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 	if len(orderedFeatures) == 0 {
 		return baseImage, map[string]string{}, nil
 	}
-	cacheReference := featureImageArtifactCacheReference(resolved.Cache, inspect.ID, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv)
-	if e.useCachedImage(ctx, cacheReference, "features") {
+	platform := inspect.Os + "/" + inspect.Architecture + "/" + inspect.Variant
+	cacheReference := featureImageArtifactCacheReference(resolved.Cache, inspect.ID, platform, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv)
+	cached, err := e.useCachedImage(ctx, cacheReference, "features")
+	if err != nil {
+		return "", nil, err
+	}
+	if cached {
 		return cacheReference, digests, nil
 	}
 	if err := writeFeatureBuildContext(buildContext, baseImage, orderedFeatures, resolved.ContainerUser, resolved.RemoteUser, resolved.ContainerEnv); err != nil {
@@ -228,7 +234,7 @@ func (e *Engine) applyFeatures(ctx context.Context, baseImage string, resolved *
 		return "", nil, fmt.Errorf("build Dev Container Features: %w", err)
 	}
 	e.publishCachedImage(ctx, imageName, cacheReference, "features")
-	return imageName, digests, nil
+	return imageName, digests, ctx.Err()
 }
 
 func (e *Engine) resolveFeatures(ctx context.Context, resolved *devcontainer.ResolvedConfiguration, buildContext string) ([]*resolvedFeature, error) {
@@ -334,17 +340,17 @@ func writeResolvedFeatureLockfile(resolved *devcontainer.ResolvedConfiguration, 
 	return devcontainer.WriteLockfile(resolved.ConfigurationPath, lockfile, resolved.FrozenLockfile)
 }
 
-func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseImageID string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) string {
+func featureImageArtifactCacheReference(cache devcontainer.CacheOptions, baseImageID, platform string, features []*resolvedFeature, containerUser, remoteUser string, containerEnvironment map[string]string) string {
 	parts := []string{
 		"recipe", "bind-mount-v1",
 		"base", strings.TrimSpace(baseImageID),
+		"platform", platform,
 		"container-user", strings.TrimSpace(containerUser),
 		"remote-user", strings.TrimSpace(remoteUser),
 		"container-env", stringMapCachePart(containerEnvironment),
 	}
 	for _, feature := range features {
 		parts = append(parts,
-			"feature", strings.TrimSpace(feature.reference),
 			"digest", strings.TrimSpace(feature.digest),
 			"options", stringMapCachePart(feature.options),
 		)
@@ -362,7 +368,42 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		if err := copyDirectory(path, directory); err != nil {
 			return nil, fmt.Errorf("copy local Dev Container Feature %s: %w", featureReference, err)
 		}
-		return loadFeatureDirectory(featureReference, featureReference, "", rawOptions, directory, false)
+		hash := sha256.New()
+		err = filepath.WalkDir(directory, func(filePath string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return err
+			}
+			info, err := entry.Info()
+			if err != nil {
+				return err
+			}
+			relative, err := filepath.Rel(directory, filePath)
+			if err != nil {
+				return err
+			}
+			_, _ = fmt.Fprintf(hash, "%q %d ", filepath.ToSlash(relative), info.Mode())
+			switch {
+			case info.Mode().IsRegular():
+				_, _ = fmt.Fprintf(hash, "%d ", info.Size())
+				file, err := os.Open(filePath)
+				if err != nil {
+					return err
+				}
+				_, copyErr := io.Copy(hash, file)
+				return errors.Join(copyErr, file.Close())
+			case info.Mode()&os.ModeSymlink != 0:
+				target, err := os.Readlink(filePath)
+				if err != nil {
+					return err
+				}
+				_, _ = fmt.Fprintf(hash, "%q", target)
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, fmt.Errorf("hash local Dev Container Feature %s: %w", featureReference, err)
+		}
+		return loadFeatureDirectory(featureReference, featureReference, fmt.Sprintf("sha256:%x", hash.Sum(nil)), rawOptions, directory, false)
 	}
 	featureClient := retry.DefaultClient
 	if len(cache.CABundlePEM) > 0 {
@@ -418,7 +459,7 @@ func (e *Engine) fetchFeature(ctx context.Context, featureReference string, rawO
 		return nil, fmt.Errorf("resolve OCI mirror for Dev Container Feature %s: %w", featureReference, err)
 	}
 	if mirrored {
-		mirrorCtx, progress, finish := watchMirrorProgress(ctx)
+		mirrorCtx, progress, finish := watchImageTransfer(ctx)
 		feature, err := fetchFeatureReference(mirrorCtx, featureReference, fetchReference, rawOptions, directory, locked, cache.Credentials, featureClient, progress)
 		err = finish(err)
 		if ctx.Err() != nil {

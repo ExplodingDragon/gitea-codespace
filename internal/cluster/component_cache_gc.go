@@ -80,7 +80,7 @@ func cacheLeaseDeadline(lease *coordinationv1.Lease) time.Time {
 	return lease.Spec.RenewTime.Add(time.Duration(ptr.Deref(lease.Spec.LeaseDurationSeconds, 0)) * time.Second)
 }
 
-func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string) (*componentv1.CacheGCGrant, error) {
+func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentIdentity, material *cacheMaterial, sessionID string, startIfIdle bool) (*componentv1.CacheGCGrant, error) {
 	var owner coordinationv1.Lease
 	if err := s.Client.Get(ctx, types.NamespacedName{Namespace: s.ManagementNamespace, Name: cacheOwnerLeaseName(material.component.Name)}, &owner); err != nil {
 		return nil, err
@@ -97,6 +97,9 @@ func (s *ComponentServer) beginCacheGC(ctx context.Context, identity componentId
 		now := metav1.NowMicro()
 		deadline := cacheLeaseDeadline(lease)
 		if !now.Time.Before(deadline) {
+			if !startIfIdle {
+				return errCacheCleanupNotDue
+			}
 			if value := lease.Annotations[cacheLastCleanupAnnotation]; value != "" {
 				completedAt, err := time.Parse(time.RFC3339Nano, value)
 				if err != nil {

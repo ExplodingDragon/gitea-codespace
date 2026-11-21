@@ -187,7 +187,7 @@ func TestFeatureMirrorFallback(t *testing.T) {
 								select {
 								case <-r.Context().Done():
 									return
-								case <-time.After(mirrorIdleTimeout / 2):
+								case <-time.After(imageTransferIdleTimeout / 2):
 								}
 								n := min(1024, len(data))
 								if _, err := writer.Write(data[:n]); err != nil {
@@ -217,10 +217,10 @@ func TestFeatureMirrorFallback(t *testing.T) {
 				require.Len(t, files, 2)
 				if scenario == "progress" {
 					require.Zero(t, upstreamRequests)
-					require.Greater(t, time.Since(start), mirrorIdleTimeout)
+					require.Greater(t, time.Since(start), imageTransferIdleTimeout)
 				} else {
 					require.Positive(t, upstreamRequests)
-					require.Equal(t, mirrorIdleTimeout, time.Since(start))
+					require.Equal(t, imageTransferIdleTimeout, time.Since(start))
 					require.Contains(t, output.String(), "no progress")
 				}
 			})
@@ -280,6 +280,24 @@ func TestLoadLocalFeature(t *testing.T) {
 	}
 	if resolved.metadata.ID != "local" || resolved.lockable {
 		t.Fatalf("local Feature = %#v", resolved)
+	}
+	require.NotEmpty(t, resolved.digest)
+	installer := filepath.Join(featureDirectory, "install.sh")
+	old := time.Now().Add(-time.Hour)
+	require.NoError(t, os.Chtimes(installer, old, old))
+	repeated, err := (&Engine{}).fetchFeature(t.Context(), "./feature", nil, filepath.Join(t.TempDir(), "copy"), devcontainer.LockedFeature{}, devcontainer.CacheOptions{}, configurationDirectory, configurationDirectory)
+	require.NoError(t, err)
+	require.Equal(t, resolved.digest, repeated.digest)
+	for _, change := range []func() error{
+		func() error { return os.WriteFile(installer, []byte("#!/bin/sh\necho changed\n"), 0o700) },
+		func() error { return os.Chmod(installer, 0o755) },
+		func() error { return os.Symlink("install.sh", filepath.Join(featureDirectory, "link")) },
+	} {
+		require.NoError(t, change())
+		changed, err := (&Engine{}).fetchFeature(t.Context(), "./feature", nil, filepath.Join(t.TempDir(), "copy"), devcontainer.LockedFeature{}, devcontainer.CacheOptions{}, configurationDirectory, configurationDirectory)
+		require.NoError(t, err)
+		require.NotEqual(t, repeated.digest, changed.digest)
+		repeated = changed
 	}
 }
 

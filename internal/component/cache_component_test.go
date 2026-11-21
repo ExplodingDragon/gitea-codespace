@@ -69,11 +69,12 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		ctx, cancel := context.WithCancel(t.Context())
 		done := make(chan error, 1)
 		go func() {
-			_, err := client.BeginCacheGC(ctx, owner)
+			_, err := client.BeginCacheGC(ctx, owner, true)
 			done <- err
 		}()
 		request := <-stream.requests
 		require.Nil(t, request.Status)
+		require.True(t, request.GetBeginGc().GetStartIfIdle())
 		cancel()
 		require.ErrorIs(t, <-done, context.Canceled)
 		synctest.Wait()
@@ -94,10 +95,11 @@ func TestCacheMaintenanceAcknowledgmentAndCancellation(t *testing.T) {
 		var issued cachepkg.GCGrant
 		go func() {
 			var err error
-			issued, err = client.BeginCacheGC(t.Context(), owner)
+			issued, err = client.BeginCacheGC(t.Context(), owner, false)
 			done <- err
 		}()
 		request = <-stream.requests
+		require.False(t, request.GetBeginGc().GetStartIfIdle())
 		stream.responses <- &componentv1.CacheControlResponse{
 			Sequence: request.Sequence, PermitValidForMilliseconds: 15000,
 			GcGrant: &componentv1.CacheGCGrant{CacheId: "cache", Id: "next-grant", ReadyAtUnixMilliseconds: time.Now().UnixMilli(), ExpiresAtUnixMilliseconds: time.Now().Add(time.Minute).UnixMilli()},

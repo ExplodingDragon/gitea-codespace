@@ -40,12 +40,8 @@ Codespace state or count as user activity. Avoid including credentials in
 diagnostic messages, because arbitrary secrets supplied by applications may be
 unknown to the platform.
 
-Events share the existing bounded log queue and Gitea log size limit. Framing
-many lines or redacting a message can increase its size; an event that exceeds
-the remaining admission budget is rejected as a whole and does not consume the
-instance's rate allowance. Accepted events can be lost during process failure,
-operation changes, or resource cleanup. After Manager recovers, running instances
-can send new events; events not yet delivered to Gitea may have been lost.
-This makes the interface suitable for concise diagnostics rather than bulk
-application output or durable notifications. Read delivered events in the
-Gitea Codespace log.
+Events share the bounded log queue and Gitea log size limit. Insufficient queue
+space rejects the entire event. Accepted events that have not reached Gitea can
+be lost during process failure, operation changes, or resource cleanup. Use this
+interface for concise diagnostics; use a durable service when delivery must be
+guaranteed. Read delivered events in the Gitea Codespace log.

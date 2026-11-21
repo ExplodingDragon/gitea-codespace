@@ -22,7 +22,7 @@ type Control interface {
 	ClaimCache(context.Context, string) (Owner, error)
 	HeartbeatCache(context.Context, Owner, Status) (time.Time, error)
 	ReleaseCache(context.Context, Owner) error
-	BeginCacheGC(context.Context, Owner) (GCGrant, error)
+	BeginCacheGC(context.Context, Owner, bool) (GCGrant, error)
 	CompleteCacheGC(context.Context, GCGrant) error
 }
 

@@ -100,7 +100,13 @@ func (b gatewayTestBackend) OpenWorkspaceEndpoint(ctx context.Context, _, _ stri
 func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 	t.Parallel()
 
-	for _, endpointID := range []string{"app-3000", "workspace"} {
+	for _, test := range []struct {
+		endpointID, scheme, port, cookieName string
+	}{
+		{"app-3000", "http", "80", sessionCookieName},
+		{"workspace", "https", "443", secureSessionCookieName},
+	} {
+		endpointID := test.endpointID
 		t.Run(endpointID, func(t *testing.T) {
 			externalHost := endpointID + "-11111111111141118111111111111111.gateway.example.test"
 			if endpointID == "workspace" {
@@ -113,6 +119,10 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 				}
 				if request.URL.Path != "/socket" || !isGatewayWebSocketRequest(request) || request.Host != externalHost {
 					http.Error(writer, "invalid upgrade request", http.StatusBadRequest)
+					return
+				}
+				if request.Header.Get("X-Forwarded-Host") != externalHost || request.Header.Get("X-Forwarded-Proto") != test.scheme || request.Header.Get("X-Forwarded-Port") != test.port {
+					http.Error(writer, "inconsistent forwarded origin", http.StatusForbidden)
 					return
 				}
 				connection, buffered, err := writer.(http.Hijacker).Hijack()
@@ -138,7 +148,7 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 			snapshot := testGatewayRuntime()
 			snapshot.Endpoints = []endpointSnapshot{{EndpointID: endpointID, Label: "Workspace", Public: endpointID != "workspace"}}
 			require.NoError(t, routes.ReplaceSharedGatewayRuntimes([]runtimeSnapshot{snapshot}))
-			policy, err := newOriginPolicy("http://gateway.example.test")
+			policy, err := newOriginPolicy(test.scheme + "://gateway.example.test")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -165,8 +175,9 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 			request.Host = externalHost
 			request.Header.Set("Connection", "Upgrade")
 			request.Header.Set("Upgrade", "websocket")
-			request.Header.Set("Origin", "http://"+externalHost)
-			request.AddCookie(&http.Cookie{Name: sessionCookieName, Value: token})
+			request.Header.Set("Origin", test.scheme+"://"+externalHost)
+			request.Header.Set("X-Forwarded-Port", "8080")
+			request.AddCookie(&http.Cookie{Name: test.cookieName, Value: token})
 			response, err := gateway.Client().Do(request)
 			if err != nil {
 				t.Fatal(err)
@@ -192,8 +203,8 @@ func TestGatewayEndpointProxiesWebSocket(t *testing.T) {
 				followup, err := http.NewRequest(http.MethodGet, gateway.URL+"/status", nil)
 				require.NoError(t, err)
 				followup.Host = externalHost
-				followup.Header.Set("Origin", "http://"+externalHost)
-				followup.AddCookie(&http.Cookie{Name: sessionCookieName, Value: oldCookie})
+				followup.Header.Set("Origin", test.scheme+"://"+externalHost)
+				followup.AddCookie(&http.Cookie{Name: test.cookieName, Value: oldCookie})
 				result, err := gateway.Client().Do(followup)
 				require.NoError(t, err)
 				require.NoError(t, result.Body.Close())

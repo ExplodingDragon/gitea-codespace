@@ -135,9 +135,16 @@ func prepareGatewayProxyRequest(request *http.Request, proxyContext gatewayProxy
 	if proxyContext.userID > 0 {
 		header.Set(proxyHeaderUserID, formatInt64(proxyContext.userID))
 	}
+	host := firstNonEmpty(proxyContext.externalHost, request.Host)
+	port := (&url.URL{Host: host}).Port()
+	if port == "" {
+		port = defaultProxyPort(proxyContext.externalScheme)
+	}
 	header.Set("X-Forwarded-For", gatewayPeerIP(request))
 	header.Set("X-Forwarded-Proto", proxyContext.externalScheme)
-	header.Set("X-Forwarded-Host", firstNonEmpty(proxyContext.externalHost, request.Host))
+	header.Set("X-Forwarded-Host", host)
+	// Upstreams use this port with Host to validate WebSocket origins.
+	header.Set("X-Forwarded-Port", port)
 }
 
 func rebuildGatewayProxyCookieHeader(request *http.Request) {

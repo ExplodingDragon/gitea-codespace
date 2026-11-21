@@ -13,17 +13,14 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
-	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/configuration"
 	"github.com/distribution/distribution/v3/registry/handlers"
-	"github.com/distribution/distribution/v3/registry/storage"
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
 	// Storage drivers register themselves with the distribution factory.
@@ -62,9 +59,9 @@ type registryCache struct {
 	maintenanceRequested atomic.Bool
 	sessionsMu           sync.Mutex
 	sessions             map[string]cachedCacheSession
-	cleanupMu            sync.Mutex
+	statusMu             sync.Mutex
 	lastCleanup          time.Time
-	cleanupResult        string
+	status               Status
 }
 
 type cachedCacheSession struct {
@@ -240,6 +237,7 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 	app := handlers.NewApp(ctx, config)
 	c.registries = append(c.registries, app)
 	mirrors := make(map[string]*handlers.App, len(c.upstreams))
+	localMirrors := make(map[string]*handlers.App, len(c.upstreams))
 	for upstreamID, upstream := range c.upstreams {
 		remoteURL := "https://" + upstream.host
 		if upstream.host == "docker.io" {
@@ -252,7 +250,13 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			"delete":               configuration.Parameters{"enabled": true},
 			"maintenance":          config.Storage["maintenance"],
 		}
-		proxyConfig.Proxy = configuration.Proxy{RemoteURL: remoteURL, TTL: &c.maxAge}
+		localConfig := proxyConfig
+		local := handlers.NewApp(ctx, &localConfig)
+		localMirrors[upstreamID] = local
+		c.registries = append(c.registries, local)
+		// The Manager-authorized maintenance pass owns all storage deletion.
+		ttl := time.Duration(0)
+		proxyConfig.Proxy = configuration.Proxy{RemoteURL: remoteURL, TTL: &ttl}
 		proxy := handlers.NewApp(ctx, &proxyConfig)
 		mirrors[upstreamID] = proxy
 		c.registries = append(c.registries, proxy)
@@ -273,9 +277,12 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			return
 		}
 		mirrorRepository, mirrored := strings.CutPrefix(repository, "mirror/")
+		lowSpace := false
 		if c.storageConfig.Driver == "filesystem" && (action == "push" || mirrored) {
 			var disk unix.Statfs_t
-			if err := unix.Statfs(c.storageDir, &disk); err != nil || disk.Bavail*uint64(disk.Bsize) < uint64(c.minFreeBytes) {
+			err := unix.Statfs(c.storageDir, &disk)
+			lowSpace = err != nil || disk.Bavail*uint64(disk.Bsize) < uint64(c.minFreeBytes)
+			if lowSpace && action == "push" {
 				http.Error(writer, "cache disk free space is below the write threshold", http.StatusServiceUnavailable)
 				return
 			}
@@ -286,6 +293,20 @@ func (c *registryCache) wrapDistributionHandler(ctx context.Context) http.Handle
 			forward.URL.Path = "/v2/" + strings.TrimPrefix(request.URL.Path, "/v2/mirror/"+upstreamID+"/")
 			forward.URL.RawPath = ""
 			forward.Header.Del("Authorization")
+			if lowSpace {
+				// Immutable reads can use local storage without downloading or
+				// refreshing a mutable tag. A miss lets the client fall back.
+				_, value, found := strings.Cut(forward.URL.Path, "/manifests/")
+				if !found {
+					_, value, _ = strings.Cut(forward.URL.Path, "/blobs/")
+				}
+				if _, err := digest.Parse(value); err != nil {
+					http.Error(writer, "cache disk free space is below the write threshold", http.StatusServiceUnavailable)
+					return
+				}
+				localMirrors[upstreamID].ServeHTTP(writer, forward)
+				return
+			}
 			mirrors[upstreamID].ServeHTTP(writer, forward)
 			return
 		}
@@ -330,8 +351,11 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 		return nil
 	}
 	if token.Policy.Build && strings.HasPrefix(repository, "cache/"+token.Namespace+"/") {
+		if _, err := reference.WithName(repository); err != nil {
+			return errors.New("cache registry repository is invalid")
+		}
 		if action == "pull" || action == "push" {
-			if err := validateRegistryCacheBlobMount(request, repository); err != nil {
+			if err := validateRegistryCacheBlobMount(request, "cache/"+token.Namespace+"/"); err != nil {
 				return err
 			}
 			return nil
@@ -354,17 +378,17 @@ func (c *registryCache) authorize(request *http.Request, repository, action stri
 	return errors.New("cache registry repository is not allowed")
 }
 
-func validateRegistryCacheBlobMount(request *http.Request, repository string) error {
+func validateRegistryCacheBlobMount(request *http.Request, namespacePrefix string) error {
 	values := request.URL.Query()
 	mount := strings.TrimSpace(values.Get("mount"))
-	from := strings.TrimSpace(values.Get("from"))
+	from := values.Get("from")
 	if mount == "" && from == "" {
 		return nil
 	}
 	if request.Method != http.MethodPost || mount == "" || from == "" {
 		return errors.New("cache registry blob mount is invalid")
 	}
-	if from != repository {
+	if _, err := reference.WithName(from); err != nil || !strings.HasPrefix(from, namespacePrefix) {
 		return errors.New("cache registry blob mount source is not allowed")
 	}
 	return nil
@@ -387,175 +411,4 @@ func (c *registryCache) upstreamAllows(upstreamID, imagePath string) bool {
 		}
 	}
 	return false
-}
-
-func (c *registryCache) prune(ctx context.Context) (err error) {
-	result := "completed"
-	defer func() {
-		c.cleanupMu.Lock()
-		defer c.cleanupMu.Unlock()
-		c.lastCleanup = time.Now().UTC()
-		if err != nil {
-			result = "failed; inspect the manager log"
-		}
-		c.cleanupResult = result
-	}()
-	// Set the request gate before waiting for the write lock. Polling TryLock
-	// keeps a manager lease loss from leaving an unbounded lock wait behind.
-	c.maintenanceRequested.Store(true)
-	defer c.maintenanceRequested.Store(false)
-	if err := c.lockMaintenance(ctx); err != nil {
-		return err
-	}
-	defer c.maintenance.Unlock()
-	total, err := cacheBlobBytes(ctx, c.driver)
-	if err != nil {
-		return err
-	}
-	driver := c.driver
-	if total == 0 {
-		if _, err := driver.Stat(ctx, "/docker/registry/v2/repositories"); err != nil {
-			var missing storagedriver.PathNotFoundError
-			if errors.As(err, &missing) {
-				return nil
-			}
-			return err
-		}
-	}
-	if _, errs := storage.PurgeUploads(ctx, driver, time.Now().Add(-24*time.Hour), true); len(errs) != 0 {
-		var unexpected []error
-		for _, err := range errs {
-			var missing storagedriver.PathNotFoundError
-			if !errors.As(err, &missing) {
-				unexpected = append(unexpected, err)
-			}
-		}
-		if err := errors.Join(unexpected...); err != nil {
-			return err
-		}
-	}
-	if total == 0 {
-		return nil
-	}
-	registry, err := storage.NewRegistry(ctx, driver, storage.EnableDelete)
-	if err != nil {
-		return err
-	}
-	// Retention evicts complete repositories. Shared layer blobs are collected
-	// only after all surviving manifests have been marked by Distribution.
-	type retentionCandidate struct {
-		name    string
-		updated time.Time
-	}
-	var candidates []retentionCandidate
-	err = registry.(distribution.RepositoryEnumerator).Enumerate(ctx, func(name string) error {
-		latest := time.Time{}
-		root := path.Join("/docker/registry/v2/repositories", name, "_manifests")
-		err := driver.Walk(ctx, root, func(info storagedriver.FileInfo) error {
-			if !info.IsDir() && info.ModTime().After(latest) {
-				latest = info.ModTime()
-			}
-			return nil
-		})
-		var missing storagedriver.PathNotFoundError
-		if errors.As(err, &missing) {
-			return nil
-		}
-		if err == nil && !latest.IsZero() {
-			candidates = append(candidates, retentionCandidate{name: name, updated: latest})
-		}
-		return err
-	})
-	if err != nil {
-		return fmt.Errorf("enumerate cache retention candidates: %w", err)
-	}
-	sort.Slice(candidates, func(i, j int) bool { return candidates[i].updated.Before(candidates[j].updated) })
-	for _, candidate := range candidates {
-		age := time.Since(candidate.updated)
-		expired := c.maxAge > 0 && age > c.maxAge
-		overCapacity := c.maxBytes > 0 && total > c.maxBytes && age >= time.Hour
-		if !expired && !overCapacity {
-			continue
-		}
-		if err := deleteCacheRepository(ctx, driver, registry, candidate.name); err != nil {
-			return err
-		}
-		total, err = cacheBlobBytes(ctx, driver)
-		if err != nil {
-			return err
-		}
-	}
-	// Abandoned uploads can leave committed blobs without any manifest.
-	// Collect them even when retention did not evict a repository this time.
-	return storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{})
-}
-
-func (c *registryCache) lockMaintenance(ctx context.Context) error {
-	for {
-		if c.maintenance.TryLock() {
-			return nil
-		}
-		timer := time.NewTimer(10 * time.Millisecond)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			return ctx.Err()
-		case <-timer.C:
-		}
-	}
-}
-
-func deleteCacheRepository(ctx context.Context, driver storagedriver.StorageDriver, registry distribution.Namespace, repositoryName string) error {
-	name, err := reference.WithName(repositoryName)
-	if err != nil {
-		return err
-	}
-	repository, err := registry.Repository(ctx, name)
-	if err != nil {
-		return err
-	}
-	manifests, err := repository.Manifests(ctx)
-	if err != nil {
-		return err
-	}
-	var digests []digest.Digest
-	if err := manifests.(distribution.ManifestEnumerator).Enumerate(ctx, func(value digest.Digest) error {
-		digests = append(digests, value)
-		return nil
-	}); err != nil {
-		return err
-	}
-	tags, err := repository.Tags(ctx).All(ctx)
-	if err != nil {
-		return err
-	}
-	for _, tag := range tags {
-		if err := repository.Tags(ctx).Untag(ctx, tag); err != nil {
-			return err
-		}
-	}
-	for _, value := range digests {
-		if err := manifests.Delete(ctx, value); err != nil {
-			return err
-		}
-	}
-	if err := storage.MarkAndSweep(ctx, driver, registry, storage.GCOpts{}); err != nil {
-		return fmt.Errorf("collect cache registry: %w", err)
-	}
-	return nil
-}
-
-func cacheBlobBytes(ctx context.Context, driver storagedriver.StorageDriver) (int64, error) {
-	var total int64
-	err := driver.Walk(ctx, "/docker/registry/v2/blobs", func(info storagedriver.FileInfo) error {
-		if !info.IsDir() && path.Base(info.Path()) == "data" {
-			total += info.Size()
-		}
-		return nil
-	})
-	var missing storagedriver.PathNotFoundError
-	if errors.As(err, &missing) {
-		return 0, nil
-	}
-	return total, err
 }

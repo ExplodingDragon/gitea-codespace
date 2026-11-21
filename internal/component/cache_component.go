@@ -331,8 +331,8 @@ func (c *CacheComponentClient) ReleaseCache(context.Context, cachepkg.Owner) err
 }
 
 // BeginCacheGC obtains a time-bounded maintenance grant from Manager.
-func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.Owner) (cachepkg.GCGrant, error) {
-	response, err := c.send(ctx, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{}}})
+func (c *CacheComponentClient) BeginCacheGC(ctx context.Context, owner cachepkg.Owner, startIfIdle bool) (cachepkg.GCGrant, error) {
+	response, err := c.send(ctx, &componentv1.CacheControlRequest{Maintenance: &componentv1.CacheControlRequest_BeginGc{BeginGc: &componentv1.CacheGCRequest{StartIfIdle: startIfIdle}}})
 	if err != nil {
 		return cachepkg.GCGrant{}, err
 	}

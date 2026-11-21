@@ -5,15 +5,20 @@ package cache
 
 import (
 	"crypto/rand"
+	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	configpkg "gitea.dev/codespace/internal/config"
+	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/manifest/schema2"
 	"github.com/opencontainers/go-digest"
+	"github.com/opencontainers/image-spec/specs-go"
 	"github.com/stretchr/testify/require"
 )
 
@@ -42,7 +47,6 @@ func TestCacheS3E2E(t *testing.T) {
 			t.Error(err)
 		}
 	}()
-	attachTestCacheControl(t, cache)
 	server := httptest.NewServer(cache.httpHandler())
 	defer server.Close()
 	token := testRegistryToken(t, cache, "repo", configpkg.CachePolicy{Build: true})
@@ -55,6 +59,9 @@ func TestCacheS3E2E(t *testing.T) {
 		}
 		request.SetBasicAuth(Username, token)
 		request.Header.Set("Content-Type", "application/octet-stream")
+		if strings.Contains(target, "/manifests/") {
+			request.Header.Set("Content-Type", schema2.MediaTypeManifest)
+		}
 		response, err := client.Do(request)
 		if err != nil {
 			t.Fatal(err)
@@ -68,7 +75,7 @@ func TestCacheS3E2E(t *testing.T) {
 	response := do(http.MethodPost, server.URL+"/v2/cache/repo/build/blobs/uploads/", "", http.StatusAccepted)
 	location := response.Header.Get("Location")
 	require.NoError(t, response.Body.Close())
-	content := "S3 cache layer"
+	content := `{"architecture":"amd64","os":"linux","rootfs":{"type":"layers","diff_ids":[]}}`
 	response = do(http.MethodPut, location+"&digest="+digest.FromString(content).String(), content, http.StatusCreated)
 	require.NoError(t, response.Body.Close())
 	response = do(http.MethodGet, server.URL+"/v2/cache/repo/build/blobs/"+digest.FromString(content).String(), "", http.StatusOK)
@@ -81,11 +88,21 @@ func TestCacheS3E2E(t *testing.T) {
 	if err != nil || bytes < int64(len(content)) {
 		t.Fatalf("S3 usage: %d, %v", bytes, err)
 	}
+	manifest, err := json.Marshal(schema2.Manifest{
+		Versioned: specs.Versioned{SchemaVersion: 2}, MediaType: schema2.MediaTypeManifest,
+		Config: distribution.Descriptor{MediaType: schema2.MediaTypeImageConfig, Digest: digest.FromString(content), Size: int64(len(content))},
+		Layers: []distribution.Descriptor{},
+	})
+	require.NoError(t, err)
+	response = do(http.MethodPut, server.URL+"/v2/cache/repo/build/manifests/cache", string(manifest), http.StatusCreated)
+	require.NoError(t, response.Body.Close())
+	// Expire a completed cache entry without waiting for the orphan-upload grace period.
+	cache.maxAge = time.Nanosecond
 	if err := cache.prune(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	bytes, err = cacheBlobBytes(t.Context(), cache.driver)
 	if err != nil || bytes != 0 {
-		t.Fatalf("S3 orphan cleanup: %d, %v", bytes, err)
+		t.Fatalf("S3 expired cache cleanup: %d, %v", bytes, err)
 	}
 }

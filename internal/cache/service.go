@@ -21,7 +21,7 @@ import (
 
 var errCacheServiceBusy = errors.New("another cache service is active")
 
-const cacheStatusScanTimeout = 2 * time.Second
+const cacheStorageScanTimeout = 5 * time.Minute
 
 func waitCacheManagerRetry(ctx context.Context) bool {
 	timer := time.NewTimer(time.Second)
@@ -115,9 +115,7 @@ func Run(ctx context.Context, output io.Writer, control Control, options RunOpti
 					watching = false
 					continue
 				}
-				if updated.Config.Revision != config.Revision {
-					watching = false
-				} else if !updated.Config.Enabled {
+				if updated.Config.Revision != config.Revision || !updated.Config.Enabled {
 					watching = false
 				}
 			}
@@ -182,32 +180,11 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 	_, _ = fmt.Fprintf(output, "codespace cache registry listening on %s\n", listener.Addr())
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
-	var status Status
-	var nextScan time.Time
 	running := true
 	for running {
-		if !time.Now().Before(nextScan) {
-			scanCtx, stopScan := context.WithTimeout(ctx, cacheStatusScanTimeout)
-			cacheBytes, cacheErr := cacheBlobBytes(scanCtx, cache.driver)
-			mirrorBytes := int64(0)
-			for _, driver := range cache.mirrorDrivers {
-				bytes, scanErr := cacheBlobBytes(scanCtx, driver)
-				if scanErr != nil {
-					cacheErr = errors.Join(cacheErr, scanErr)
-					break
-				}
-				mirrorBytes += bytes
-			}
-			stopScan()
-			if cacheErr == nil {
-				status.CacheBytes = cacheBytes
-				status.MirrorBytes = mirrorBytes
-			}
-			nextScan = time.Now().Add(5 * time.Minute)
-		}
-		cache.cleanupMu.Lock()
-		status.CleanupResult = cache.cleanupResult
-		cache.cleanupMu.Unlock()
+		cache.statusMu.Lock()
+		status := cache.status
+		cache.statusMu.Unlock()
 		deadline, heartbeatErr := control.HeartbeatCache(ctx, owner, status)
 		if heartbeatErr != nil {
 			resultErr = heartbeatErr
@@ -252,14 +229,19 @@ func runCacheInstance(ctx context.Context, output io.Writer, control Control, co
 }
 
 func (c *registryCache) maintain(ctx context.Context, control Control) {
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
+	interval := 5 * time.Minute
+	if c.gcInterval > 0 {
+		interval = min(interval, max(2*time.Second, c.gcInterval))
+	}
+	timer := time.NewTimer(0)
+	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-timer.C:
 		}
+		timer.Reset(interval)
 		current, err := control.GetCache(ctx, c.id)
 		if err != nil {
 			continue
@@ -267,27 +249,40 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 		if !current.Config.Enabled || current.Config.Revision != c.configRevision {
 			continue
 		}
-		if c.gcInterval <= 0 || time.Now().Before(c.lastCleanup.Add(c.gcInterval)) {
-			continue
-		}
-		grant, err := control.BeginCacheGC(ctx, c.owner)
+		// Recover a pending freeze before scanning: even an empty store must
+		// complete the grant left by a disconnected owner.
+		grant, err := control.BeginCacheGC(ctx, c.owner, false)
 		if err != nil {
 			if ctx.Err() == nil {
 				slog.Warn("Authorize cache cleanup", "cache_id", c.id, "error", err)
 			}
+			timer.Reset(min(interval, time.Minute))
 			continue
 		}
 		if grant.ID == "" {
-			// Reconnected instances may still be inside the persisted GC interval.
-			// Avoid an authorization RPC on every local configuration poll.
-			timer := time.NewTimer(min(c.gcInterval, time.Minute))
-			select {
-			case <-ctx.Done():
-				timer.Stop()
-				return
-			case <-timer.C:
+			scanCtx, stopScan := context.WithTimeout(ctx, cacheStorageScanTimeout)
+			scan, scanErr := c.scanStorage(scanCtx)
+			stopScan()
+			timer.Reset(interval)
+			if scanErr != nil {
+				if ctx.Err() == nil {
+					slog.Warn("Scan cache storage", "cache_id", c.id, "error", scanErr)
+				}
+				continue
 			}
-			continue
+			if !scan.needsCleanup || c.gcInterval <= 0 || time.Now().Before(c.lastCleanup.Add(c.gcInterval)) {
+				continue
+			}
+			grant, err = control.BeginCacheGC(ctx, c.owner, true)
+			if err != nil {
+				if ctx.Err() == nil {
+					slog.Warn("Authorize cache cleanup", "cache_id", c.id, "error", err)
+				}
+				continue
+			}
+			if grant.ID == "" {
+				continue
+			}
 		}
 		// Manager freezes credential issuance before returning ReadyAt. Waiting
 		// until that point protects uploads whose manifest request follows the
@@ -299,12 +294,12 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 			}
 			continue
 		}
-		timer := time.NewTimer(time.Until(grant.ReadyAt))
+		readyTimer := time.NewTimer(time.Until(grant.ReadyAt))
 		select {
 		case <-ctx.Done():
-			timer.Stop()
+			readyTimer.Stop()
 			return
-		case <-timer.C:
+		case <-readyTimer.C:
 		}
 		gcCtx, stop := context.WithDeadline(ctx, deadline)
 		err = c.prune(gcCtx)
@@ -315,6 +310,7 @@ func (c *registryCache) maintain(ctx context.Context, control Control) {
 			return
 		}
 		completeErr := control.CompleteCacheGC(ctx, grant)
+		timer.Reset(interval)
 		if completeErr != nil {
 			err = errors.Join(err, completeErr)
 		}

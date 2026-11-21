@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	cerrdefs "github.com/containerd/errdefs"
+	"github.com/distribution/reference"
 	"github.com/docker/cli/cli/command"
 	"github.com/docker/docker/api/types/image"
 	"github.com/docker/docker/client"
@@ -94,9 +96,29 @@ func (e *Engine) resolveAndPullImage(ctx context.Context, imageName string, cach
 	if err != nil {
 		return "", fmt.Errorf("resolve OCI mirror for %s: %w", imageName, err)
 	}
+	named, err := reference.ParseNormalizedNamed(imageName)
+	if err != nil {
+		return "", err
+	}
+	if _, pinned := named.(reference.Digested); pinned {
+		localReferences := []string{imageName}
+		if fetchReference != imageName {
+			localReferences = append(localReferences, fetchReference)
+		}
+		for _, localReference := range localReferences {
+			available, err := e.localImageAvailable(ctx, localReference)
+			if err != nil {
+				return "", err
+			}
+			if available {
+				_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Using local image %s\n", localReference)
+				return localReference, nil
+			}
+		}
+	}
 	if mirrored {
 		_, _ = fmt.Fprintf(e.stdout, "[INFO] [build] Pulling image %s through mirror %s\n", imageName, fetchReference)
-		mirrorCtx, progress, finish := watchMirrorProgress(ctx)
+		mirrorCtx, progress, finish := watchImageTransfer(ctx)
 		pullErr := finish(e.pullImageReference(mirrorCtx, fetchReference, progress))
 		if ctx.Err() != nil {
 			return "", ctx.Err()
@@ -128,20 +150,14 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string, repor
 		return fmt.Errorf("pull Dev Container image %s: %w", imageName, err)
 	}
 	defer func() { _ = reader.Close() }()
-	var lastMessages map[string]dockerProgressMessage
+	observe := observeImageTransfer(reportProgress)
 	if reportProgress != nil {
 		reportProgress()
-		lastMessages = make(map[string]dockerProgressMessage)
 	}
 	progress := dockerPullProgress{}
 	if err := readDockerProgress(reader, func(message dockerProgressMessage) {
-		if reportProgress != nil && message.Status != "" {
-			last, exists := lastMessages[message.ID]
-			// Docker can repeat an unchanged progress message while a transfer is stalled.
-			if !exists || message.Status != last.Status || message.ProgressDetail.Current > last.ProgressDetail.Current {
-				reportProgress()
-			}
-			lastMessages[message.ID] = message
+		if observe != nil {
+			observe(message)
 		}
 		if summary := progress.observe(message, time.Now()); summary != "" {
 			_, _ = fmt.Fprintln(e.stdout, "[INFO] [build]", summary)
@@ -150,6 +166,24 @@ func (e *Engine) pullImageReference(ctx context.Context, imageName string, repor
 		return fmt.Errorf("read image pull progress: %w", err)
 	}
 	return nil
+}
+
+func observeImageTransfer(progress func()) func(dockerProgressMessage) {
+	if progress == nil {
+		return nil
+	}
+	lastMessages := make(map[string]dockerProgressMessage)
+	return func(message dockerProgressMessage) {
+		if message.Status == "" {
+			return
+		}
+		last, exists := lastMessages[message.ID]
+		// Repeated progress messages do not mean the transfer is advancing.
+		if !exists || message.Status != last.Status || message.ProgressDetail.Current > last.ProgressDetail.Current {
+			progress()
+		}
+		lastMessages[message.ID] = message
+	}
 }
 
 type dockerProgressMessage struct {
@@ -343,6 +377,36 @@ func (e *Engine) imagePlatform() string {
 	return platform
 }
 
+func (e *Engine) matchesImagePlatform(os, architecture, variant string) bool {
+	return e.platform != nil && os == e.platform.OS && architecture == e.platform.Architecture && (e.platform.Variant == "" || variant == e.platform.Variant)
+}
+
+func (e *Engine) availableImageManifestID(manifests []image.ManifestSummary) string {
+	for _, manifest := range manifests {
+		if manifest.Available && manifest.Kind == image.ManifestKindImage && manifest.ImageData != nil {
+			platform := manifest.ImageData.Platform
+			if e.matchesImagePlatform(platform.OS, platform.Architecture, platform.Variant) {
+				return manifest.ID
+			}
+		}
+	}
+	return ""
+}
+
+func (e *Engine) localImageAvailable(ctx context.Context, imageName string) (bool, error) {
+	inspect, err := e.client.ImageInspect(ctx, imageName, client.ImageInspectWithManifests(true))
+	if cerrdefs.IsNotFound(err) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect local image %s: %w", imageName, err)
+	}
+	if len(inspect.Manifests) > 0 {
+		return e.availableImageManifestID(inspect.Manifests) != "", nil
+	}
+	return inspect.Config != nil && e.matchesImagePlatform(inspect.Os, inspect.Architecture, inspect.Variant), nil
+}
+
 func (e *Engine) inspectImage(ctx context.Context, imageName string) (image.InspectResponse, error) {
 	inspect, err := e.client.ImageInspect(ctx, imageName, client.ImageInspectWithManifests(true))
 	if err != nil || inspect.Config != nil && inspect.Os != "" && inspect.Architecture != "" {
@@ -351,24 +415,17 @@ func (e *Engine) inspectImage(ctx context.Context, imageName string) (image.Insp
 	if e.platform == nil {
 		return image.InspectResponse{}, fmt.Errorf("inspect image %s: docker server platform is unavailable", imageName)
 	}
-	for _, manifest := range inspect.Manifests {
-		if !manifest.Available || manifest.Kind != image.ManifestKindImage || manifest.ImageData == nil {
-			continue
-		}
-		platform := manifest.ImageData.Platform
-		if platform.OS != e.platform.OS || platform.Architecture != e.platform.Architecture || e.platform.Variant != "" && platform.Variant != e.platform.Variant {
-			continue
-		}
-		resolved, err := e.client.ImageInspect(ctx, manifest.ID)
+	if manifestID := e.availableImageManifestID(inspect.Manifests); manifestID != "" {
+		resolved, err := e.client.ImageInspect(ctx, manifestID)
 		if err != nil {
-			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: %w", imageName, manifest.ID, err)
+			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: %w", imageName, manifestID, err)
 		}
 		if resolved.Config == nil {
-			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: configuration is missing", imageName, manifest.ID)
+			return image.InspectResponse{}, fmt.Errorf("inspect %s image manifest %s: configuration is missing", imageName, manifestID)
 		}
 		return resolved, nil
 	}
-	return image.InspectResponse{}, fmt.Errorf("image %s does not provide an available %s/%s configuration", imageName, e.platform.OS, e.platform.Architecture)
+	return image.InspectResponse{}, fmt.Errorf("image %s does not provide an available %s configuration", imageName, e.imagePlatform())
 }
 
 func parseImageMetadata(raw []byte) (imageMetadata, error) {

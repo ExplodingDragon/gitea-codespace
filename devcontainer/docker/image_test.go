@@ -68,7 +68,7 @@ func TestResolveAndPullImage(t *testing.T) {
 									select {
 									case <-r.Context().Done():
 										return
-									case <-time.After(mirrorIdleTimeout / 2):
+									case <-time.After(imageTransferIdleTimeout / 2):
 									}
 									if scenario == "progress" {
 										message.ProgressDetail.Current++
@@ -112,7 +112,7 @@ func TestResolveAndPullImage(t *testing.T) {
 					require.Equal(t, "cache.example.com/proxy/app:latest", result)
 					require.Equal(t, []string{"cache.example.com/proxy/app"}, requests)
 					if scenario == "progress" {
-						require.Greater(t, time.Since(start), mirrorIdleTimeout)
+						require.Greater(t, time.Since(start), imageTransferIdleTimeout)
 					}
 					return
 				}
@@ -122,7 +122,7 @@ func TestResolveAndPullImage(t *testing.T) {
 					require.Equal(t, []string{"cache.example.com/proxy/app", "registry.example.com/app"}, requests)
 				}
 				if scenario == "stalled response" || scenario == "repeated progress" {
-					require.Equal(t, mirrorIdleTimeout, time.Since(start))
+					require.Equal(t, imageTransferIdleTimeout, time.Since(start))
 					require.Contains(t, output.String(), "no progress")
 				}
 				if scenario == "unavailable" {
@@ -136,59 +136,158 @@ func TestResolveAndPullImage(t *testing.T) {
 	}
 }
 
+func TestResolveDigestImage(t *testing.T) {
+	const digest = "sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	const original = "registry.example.com/app@" + digest
+	const mirrored = "cache.example.com/proxy/app@" + digest
+	const localImage = `{"Id":"sha256:child","Os":"linux","Architecture":"amd64","Config":{}}`
+	for _, test := range []struct {
+		name      string
+		image     string
+		mirror    bool
+		local     map[string]string
+		wantImage string
+		wantPulls []string
+		wantError string
+	}{
+		{name: "local digest", image: original, local: map[string]string{original: localImage}, wantImage: original},
+		{name: "tag and digest", image: "registry.example.com/app:release@" + digest, local: map[string]string{"registry.example.com/app:release@" + digest: localImage}, wantImage: "registry.example.com/app:release@" + digest},
+		{name: "original before mirror", image: original, mirror: true, local: map[string]string{original: localImage, mirrored: localImage}, wantImage: original},
+		{name: "local mirror", image: original, mirror: true, local: map[string]string{mirrored: localImage}, wantImage: mirrored},
+		{name: "missing", image: original, wantImage: original, wantPulls: []string{"registry.example.com/app"}},
+		{name: "missing with mirror", image: original, mirror: true, wantImage: mirrored, wantPulls: []string{"cache.example.com/proxy/app"}},
+		{name: "other platform", image: original, local: map[string]string{original: `{"Os":"linux","Architecture":"arm64","Config":{}}`}, wantImage: original, wantPulls: []string{"registry.example.com/app"}},
+		{name: "index", image: original, local: map[string]string{
+			original: `{"Manifests":[{"ID":"sha256:child","Available":true,"Kind":"image","ImageData":{"Platform":{"os":"linux","architecture":"amd64"}}}]}`,
+		}, wantImage: original},
+		{name: "incomplete layers", image: original, local: map[string]string{
+			original: `{"Os":"linux","Architecture":"amd64","Config":{},"Manifests":[{"ID":"sha256:child","Available":false,"Kind":"image","ImageData":{"Platform":{"os":"linux","architecture":"amd64"}}}]}`,
+		}, wantImage: original, wantPulls: []string{"registry.example.com/app"}},
+		{name: "inspect failure", image: original, wantError: "local inspection failed"},
+		{name: "canceled", image: original, wantError: context.Canceled.Error()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("DOCKER_CONFIG", t.TempDir())
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			var pulls []string
+			transport := registryTestTransport(func(r *http.Request) (*http.Response, error) {
+				status, body := http.StatusOK, "{}"
+				if strings.HasSuffix(r.URL.Path, "/json") {
+					require.Equal(t, "1", r.URL.Query().Get("manifests"))
+					name := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1.51/images/"), "/json")
+					if test.name == "canceled" {
+						cancel()
+						return nil, ctx.Err()
+					}
+					if test.wantError != "" {
+						status, body = http.StatusInternalServerError, `{"message":"local inspection failed"}`
+					} else if value, exists := test.local[name]; exists {
+						body = value
+					} else {
+						status, body = http.StatusNotFound, `{"message":"image not found"}`
+					}
+				} else {
+					require.True(t, strings.HasSuffix(r.URL.Path, "/images/create"), r.URL.Path)
+					require.Equal(t, digest, r.URL.Query().Get("tag"))
+					pulls = append(pulls, r.URL.Query().Get("fromImage"))
+				}
+				return &http.Response{StatusCode: status, Header: http.Header{"Content-Type": {"application/json"}}, Body: io.NopCloser(strings.NewReader(body))}, nil
+			})
+			apiClient, err := client.NewClientWithOpts(client.WithVersion("1.51"), client.WithHTTPClient(&http.Client{Transport: transport}))
+			require.NoError(t, err)
+			defer apiClient.Close()
+			cli, err := command.NewDockerCli(command.WithAPIClient(apiClient))
+			require.NoError(t, err)
+			require.NoError(t, cli.Initialize(flags.NewClientOptions()))
+			engine := &Engine{client: apiClient, cli: cli, platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}, stdout: io.Discard, stderr: io.Discard}
+			var cache devcontainer.CacheOptions
+			if test.mirror {
+				cache.Mirrors = map[string]string{"registry.example.com": "https://cache.example.com/proxy"}
+			}
+			result, err := engine.resolveAndPullImage(ctx, test.image, cache)
+			if test.wantError != "" {
+				require.ErrorContains(t, err, test.wantError)
+				if test.name == "canceled" {
+					require.ErrorIs(t, err, context.Canceled)
+				}
+			} else {
+				require.NoError(t, err)
+			}
+			require.Equal(t, test.wantImage, result)
+			require.Equal(t, test.wantPulls, pulls)
+		})
+	}
+}
+
 func TestPrepareImage(t *testing.T) {
 	t.Parallel()
-	workspace := t.TempDir()
-	featureDir := filepath.Join(workspace, "feature")
-	require.NoError(t, os.Mkdir(featureDir, 0o700))
-	require.NoError(t, os.WriteFile(filepath.Join(featureDir, "devcontainer-feature.json"), []byte(`{
+	for _, scenario := range []string{"build", "local cache"} {
+		t.Run(scenario, func(t *testing.T) {
+			workspace := t.TempDir()
+			featureDir := filepath.Join(workspace, "feature")
+			require.NoError(t, os.Mkdir(featureDir, 0o700))
+			require.NoError(t, os.WriteFile(filepath.Join(featureDir, "devcontainer-feature.json"), []byte(`{
 		"id":"example","version":"1.0.0","name":"Example",
 		"containerEnv":{"FROM_FEATURE":"true"},"entrypoint":"/feature.sh","onCreateCommand":"echo feature"
 	}`), 0o600))
-	require.NoError(t, os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o700))
-	resolved := &devcontainer.ResolvedConfiguration{
-		Configuration: devcontainer.Configuration{
-			Image: "base", ContainerUser: "developer", RemoteUser: "remote",
-			Features:        map[string]json.RawMessage{"./feature": json.RawMessage(`{}`)},
-			ContainerEnv:    map[string]string{"ORDER": "repository"},
-			OnCreateCommand: devcontainer.Command{Value: json.RawMessage(`"echo repository"`)},
-		},
-		Workspace: workspace, ConfigurationDir: workspace, ConfigurationPath: filepath.Join(workspace, "devcontainer.json"),
-		AllowedPathRoot: workspace, DevContainerID: "test", Synthetic: true,
-	}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !strings.HasSuffix(r.URL.Path, "/images/base/json") {
-			t.Errorf("unexpected Docker request: %s", r.URL.Path)
-		}
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"Id":"base","Os":"linux","Architecture":"amd64","Config":{"User":"image-user","Labels":{
+			require.NoError(t, os.WriteFile(filepath.Join(featureDir, "install.sh"), []byte("#!/bin/sh\nexit 0\n"), 0o700))
+			resolved := &devcontainer.ResolvedConfiguration{
+				Configuration: devcontainer.Configuration{
+					Image: "base", ContainerUser: "developer", RemoteUser: "remote",
+					Features:        map[string]json.RawMessage{"./feature": json.RawMessage(`{}`)},
+					ContainerEnv:    map[string]string{"ORDER": "repository"},
+					OnCreateCommand: devcontainer.Command{Value: json.RawMessage(`"echo repository"`)},
+				},
+				Workspace: workspace, ConfigurationDir: workspace, ConfigurationPath: filepath.Join(workspace, "devcontainer.json"),
+				AllowedPathRoot: workspace, DevContainerID: "test", Synthetic: true,
+			}
+			if scenario == "local cache" {
+				resolved.Cache = devcontainer.CacheOptions{BuildRegistry: "https://registry.example.com/cache", BuildScope: "test"}
+			}
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				if strings.Contains(r.URL.Path, "/images/registry.example.com/cache/") && scenario == "local cache" {
+					_, _ = io.WriteString(w, `{"Id":"features","Os":"linux","Architecture":"amd64","Config":{}}`)
+					return
+				}
+				if !strings.HasSuffix(r.URL.Path, "/images/base/json") {
+					t.Errorf("unexpected Docker request: %s", r.URL.Path)
+				}
+				_, _ = io.WriteString(w, `{"Id":"base","Os":"linux","Architecture":"amd64","Config":{"User":"image-user","Labels":{
 			"devcontainer.metadata":"[{\"containerEnv\":{\"ORDER\":\"image\"},\"entrypoint\":\"/image.sh\",\"onCreateCommand\":\"echo image\"}]"
 		}}}`)
-	}))
-	defer server.Close()
-	apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
-	require.NoError(t, err)
-	defer apiClient.Close()
-	compose := &recordingBuildCompose{}
-	engine := &Engine{client: apiClient, compose: compose, stdout: io.Discard, stderr: io.Discard}
-	image, digests, err := engine.prepareImage(t.Context(), "base", resolved, devcontainer.HostUser{UID: 1001, GID: 1001}, func(image ImageCustomization) error {
-		require.Equal(t, "devcontainer-user:test", image.BaseImage)
-		require.Equal(t, "developer", image.ContainerUser)
-		return os.WriteFile(filepath.Join(image.ContextDir, "Dockerfile"), []byte("FROM "+image.BaseImage+"\n"), 0o600)
-	}, nil)
-	require.NoError(t, err)
-	require.Equal(t, "devcontainer-customized:test", image)
-	require.Contains(t, digests, "./feature")
-	require.Len(t, compose.builds, 3)
-	require.Equal(t, "Dockerfile.features", compose.builds[0].Dockerfile)
-	require.Contains(t, filepath.Base(compose.builds[1].Context), "devcontainer-user-")
-	require.Contains(t, filepath.Base(compose.builds[2].Context), "devcontainer-customization-")
-	require.Equal(t, "repository", resolved.ContainerEnv["ORDER"])
-	require.Equal(t, "true", resolved.ContainerEnv["FROM_FEATURE"])
-	require.Equal(t, []string{"/image.sh", "/feature.sh"}, resolved.FeatureEntrypoints)
-	require.Equal(t, []devcontainer.Command{
-		{Value: json.RawMessage(`"echo image"`)}, {Value: json.RawMessage(`"echo feature"`)}, {Value: json.RawMessage(`"echo repository"`)},
-	}, resolved.LifecycleCommands.OnCreate)
+			}))
+			defer server.Close()
+			apiClient, err := client.NewClientWithOpts(client.WithHost(server.URL), client.WithVersion("1.51"))
+			require.NoError(t, err)
+			defer apiClient.Close()
+			compose := &recordingBuildCompose{}
+			engine := &Engine{client: apiClient, compose: compose, platform: &ocispec.Platform{OS: "linux", Architecture: "amd64"}, stdout: io.Discard, stderr: io.Discard}
+			image, digests, err := engine.prepareImage(t.Context(), "base", resolved, devcontainer.HostUser{UID: 1001, GID: 1001}, func(image ImageCustomization) error {
+				require.Equal(t, "devcontainer-user:test", image.BaseImage)
+				require.Equal(t, "developer", image.ContainerUser)
+				return os.WriteFile(filepath.Join(image.ContextDir, "Dockerfile"), []byte("FROM "+image.BaseImage+"\n"), 0o600)
+			}, nil)
+			require.NoError(t, err)
+			require.Equal(t, "devcontainer-customized:test", image)
+			require.Contains(t, digests, "./feature")
+			if scenario == "local cache" {
+				require.Len(t, compose.builds, 2)
+			} else {
+				require.Len(t, compose.builds, 3)
+				require.Equal(t, "Dockerfile.features", compose.builds[0].Dockerfile)
+			}
+			require.Contains(t, filepath.Base(compose.builds[len(compose.builds)-2].Context), "devcontainer-user-")
+			require.Contains(t, filepath.Base(compose.builds[len(compose.builds)-1].Context), "devcontainer-customization-")
+			require.Equal(t, "repository", resolved.ContainerEnv["ORDER"])
+			require.Equal(t, "true", resolved.ContainerEnv["FROM_FEATURE"])
+			require.Equal(t, []string{"/image.sh", "/feature.sh"}, resolved.FeatureEntrypoints)
+			require.Equal(t, []devcontainer.Command{
+				{Value: json.RawMessage(`"echo image"`)}, {Value: json.RawMessage(`"echo feature"`)}, {Value: json.RawMessage(`"echo repository"`)},
+			}, resolved.LifecycleCommands.OnCreate)
+		})
+	}
 }
 
 func TestInspectImageSelectsDockerServerPlatform(t *testing.T) {
