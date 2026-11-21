@@ -3,6 +3,7 @@
 
 import * as vscode from "vscode";
 import { USBClient, type USBImportedDevice } from "./usb-client.js";
+import { showOperationError } from "./errors.js";
 import {
   readSSHConnection,
   sshCommand,
@@ -12,7 +13,13 @@ import {
 class USBItem extends vscode.TreeItem {
   constructor(readonly device: USBImportedDevice) {
     super(device.description, vscode.TreeItemCollapsibleState.None);
-    this.description = `${device.busId || "?"} · ${vscode.l10n.t("VHCI port {0}", device.port)} · ${device.state}`;
+    const state =
+      device.state === "Port in Use"
+        ? vscode.l10n.t("Connected")
+        : device.state === "Port Error"
+          ? vscode.l10n.t("Device error")
+          : device.state;
+    this.description = `${device.busId || "?"} · ${vscode.l10n.t("VHCI port {0}", device.port)} · ${state}`;
     this.tooltip = vscode.l10n.t(
       "USB port {0}: {1}",
       device.port,
@@ -41,7 +48,15 @@ export async function registerUSB(
   output: vscode.OutputChannel,
 ): Promise<void> {
   const client = new USBClient((message) => output.appendLine(message));
-  context.subscriptions.push(client);
+  let disposed = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  context.subscriptions.push({
+    dispose() {
+      disposed = true;
+      clearTimeout(timer);
+      client.dispose();
+    },
+  });
   await vscode.commands.executeCommand(
     "setContext",
     "giteaCodespace.usbAvailable",
@@ -69,8 +84,13 @@ export async function registerUSB(
       },
     },
   );
-  const run = async (operation?: () => Promise<void>) => {
-    if (busy) return;
+  view.message = vscode.l10n.t("Loading USB devices...");
+  const run = async (
+    operation?: () => Promise<void>,
+    notify = operation !== undefined,
+  ) => {
+    if (busy || disposed) return;
+    clearTimeout(timer);
     busy = true;
     await vscode.commands.executeCommand(
       "setContext",
@@ -81,16 +101,12 @@ export async function registerUSB(
     try {
       await operation?.();
     } catch (error) {
-      errors.push(
-        vscode.l10n.t(
-          "USB operation failed: {0}",
-          error instanceof Error ? error.message : String(error),
-        ),
-      );
+      errors.push(error instanceof Error ? error.message : String(error));
     } finally {
       // A timeout does not prove that attach/detach failed. Read actual state.
       try {
         const status = await client.status();
+        if (disposed) return;
         statusReady = true;
         const sources = new Set([
           ...status.sources.map((source) => source.name),
@@ -109,8 +125,12 @@ export async function registerUSB(
           status.sources.length > 0
             ? vscode.l10n.t("SSH USB forwarding is active")
             : vscode.l10n.t("SSH USB forwarding is not connected");
+        if (status.devices.length === 0) {
+          view.message += `\n${vscode.l10n.t("No imported USB devices")}`;
+        }
         changes.fire();
       } catch (error) {
+        if (disposed) return;
         statusReady = false;
         view.message = vscode.l10n.t(
           "USB status is out of date. Refresh to continue.",
@@ -135,18 +155,33 @@ export async function registerUSB(
       );
       if (errors.length > 0) {
         const detail = errors.join("\n");
-        output.appendLine(detail);
-        void vscode.window.showErrorMessage(detail);
+        if (notify)
+          void showOperationError(
+            output,
+            vscode.l10n.t("USB operation failed"),
+            detail,
+          );
+        else output.appendLine(detail);
+      }
+      if (!disposed && view.visible && vscode.window.state.focused) {
+        timer = setTimeout(() => {
+          void run();
+        }, 10000);
       }
     }
+  };
+  const refreshVisible = () => {
+    clearTimeout(timer);
+    if (view.visible && vscode.window.state.focused) void run();
   };
   context.subscriptions.push(
     changes,
     view,
-    view.onDidChangeVisibility((event) => {
-      if (event.visible) void run();
-    }),
-    vscode.commands.registerCommand("giteaCodespace.usb.refresh", () => run()),
+    view.onDidChangeVisibility(refreshVisible),
+    vscode.window.onDidChangeWindowState(refreshVisible),
+    vscode.commands.registerCommand("giteaCodespace.usb.refresh", () =>
+      run(undefined, true),
+    ),
     vscode.commands.registerCommand(
       "giteaCodespace.usb.copyTunnel",
       async () => {
@@ -171,10 +206,18 @@ export async function registerUSB(
                 ),
         });
         if (source === undefined) return;
-        await vscode.env.clipboard.writeText(sshCommand(connection, source));
-        void vscode.window.showInformationMessage(
-          vscode.l10n.t("Command copied. Run it on your local computer."),
-        );
+        try {
+          await vscode.env.clipboard.writeText(sshCommand(connection, source));
+          void vscode.window.showInformationMessage(
+            vscode.l10n.t("Command copied. Run it on your local computer."),
+          );
+        } catch (error) {
+          showOperationError(
+            output,
+            vscode.l10n.t("Could not copy the SSH command"),
+            error,
+          );
+        }
       },
     ),
     vscode.commands.registerCommand("giteaCodespace.usb.attach", () => {
@@ -245,7 +288,24 @@ export async function registerUSB(
             { modal: true },
             vscode.l10n.t("Detach USB device"),
           );
-          if (confirmed) await client.detach(device.port);
+          if (confirmed) {
+            const status = await client.status();
+            if (
+              !status.devices.some(
+                (current) =>
+                  current.port === device.port &&
+                  current.source === device.source &&
+                  current.busId === device.busId,
+              )
+            ) {
+              throw new Error(
+                vscode.l10n.t(
+                  "The USB device changed. Refresh and select it again.",
+                ),
+              );
+            }
+            await client.detach(device.port);
+          }
         });
       },
     ),

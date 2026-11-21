@@ -2,13 +2,14 @@
 // SPDX-License-Identifier: MIT
 
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { readdir, readFile } from "node:fs/promises";
 import { registerHooks } from "node:module";
 import { resolve } from "node:path";
 import { it } from "node:test";
 import type * as vscode from "vscode";
 import { parseUSBResponse, USBClient } from "../src/usb-client.js";
 import { readSSHConnection, sshCommand } from "../src/connection.js";
+import { EndpointClient, type Endpoint } from "../src/cli.js";
 
 it("generates local SSH commands from only the workspace connection fields", () => {
   const environment = {
@@ -77,11 +78,27 @@ it("reads imported devices independently of forwarding, including VHCI port zero
   }
 });
 
-it("activates capability discovery and gates every USB entry point", async () => {
+it("declares translations and gates USB commands by runtime capability", async () => {
   const manifest = JSON.parse(
     await readFile(resolve(__dirname, "../package.json"), "utf8"),
   );
   assert.ok(manifest.activationEvents.includes("onStartupFinished"));
+  for (const name of (await readdir(resolve(__dirname, ".."))).filter((name) =>
+    /^package\.nls.*\.json$/.test(name),
+  )) {
+    const messages = JSON.parse(
+      await readFile(resolve(__dirname, "..", name), "utf8"),
+    );
+    for (const welcome of manifest.contributes.viewsWelcome) {
+      assert.match(welcome.contents, /^%[^%]+%$/);
+      const text = messages[welcome.contents.slice(1, -1)];
+      assert.ok(text);
+      assert.doesNotMatch(text, /%[^%]+%/);
+      assert.match(text, /command:giteaCodespace\.ports\.add/);
+    }
+  }
+  const bundles = await readdir(resolve(__dirname, "..", manifest.l10n));
+  assert.ok(bundles.includes("bundle.l10n.zh-cn.json"));
   for (const command of manifest.contributes.commands.filter(
     (item: { command: string }) =>
       item.command.startsWith("giteaCodespace.usb."),
@@ -107,11 +124,12 @@ it("activates capability discovery and gates every USB entry point", async () =>
   );
 });
 
-it("filters imported devices and recovers from stale status without repeating mutations", async (t) => {
+it("keeps port and USB actions synchronized with runtime state", async (t) => {
   const commands = new Map<string, (...args: unknown[]) => unknown>();
   const contexts = new Map<string, boolean>();
   const errors: string[] = [];
   const warnings: string[] = [];
+  const outputLines: string[] = [];
   const picks: {
     device: { source: string; busId: string; port?: number };
   }[][] = [];
@@ -128,14 +146,25 @@ it("filters imported devices and recovers from stale status without repeating mu
   let confirm = false;
   let statusFails = false;
   let detachFails = false;
+  let deviceChanged = false;
+  let onVisibility = () => {};
+  const onFocus: (() => void)[] = [];
   const disposable = { dispose() {} };
   const view = {
     ...disposable,
-    message: "",
+    message: undefined as string | undefined,
     visible: false,
-    onDidChangeVisibility: () => disposable,
+    onDidChangeVisibility: (callback: () => void) => {
+      onVisibility = callback;
+      return disposable;
+    },
   };
+  const portView = { ...view, onDidChangeVisibility: () => disposable };
   let tree: vscode.TreeDataProvider<vscode.TreeItem>;
+  let portTree: vscode.TreeDataProvider<vscode.TreeItem>;
+  let inputResult: string | undefined = "lab";
+  let onInput = () => {};
+  let onPick = () => {};
   const api = {
     env: {
       clipboard: {
@@ -171,21 +200,37 @@ it("filters imported devices and recovers from stale status without repeating mu
       },
     },
     window: {
-      createOutputChannel: () => ({ ...disposable, appendLine() {} }),
-      registerTreeDataProvider: () => disposable,
+      state: { focused: true },
+      onDidChangeWindowState: (callback: () => void) => {
+        onFocus.push(callback);
+        return disposable;
+      },
+      createOutputChannel: () => ({
+        ...disposable,
+        appendLine: (line: string) => outputLines.push(line),
+        show() {},
+      }),
       showInputBox: async (options: {
+        title: string;
         value: string;
         validateInput: (value: string) => unknown;
       }) => {
-        assert.equal(options.value, "workstation");
-        assert.ok(options.validateInput("invalid source"));
-        assert.equal(options.validateInput("lab"), undefined);
-        return "lab";
+        if (options.title === "Copy USB tunnel command") {
+          assert.equal(options.value, "workstation");
+          assert.ok(options.validateInput("invalid source"));
+          assert.equal(options.validateInput("lab"), undefined);
+        }
+        onInput();
+        return inputResult;
       },
       createTreeView: (
-        _id: string,
+        id: string,
         options: { treeDataProvider: typeof tree },
       ) => {
+        if (id === "giteaCodespace.ports") {
+          portTree = options.treeDataProvider;
+          return portView;
+        }
         tree = options.treeDataProvider;
         return view;
       },
@@ -203,6 +248,7 @@ it("filters imported devices and recovers from stale status without repeating mu
       },
       showQuickPick: async (items: (typeof picks)[number]) => {
         picks.push(items);
+        onPick();
         return items[0];
       },
     },
@@ -241,11 +287,11 @@ it("filters imported devices and recovers from stale status without repeating mu
     state: "Port in Use",
   };
   t.mock.method(USBClient.prototype, "available", async () => true);
-  t.mock.method(USBClient.prototype, "status", async () => {
+  const statusRead = t.mock.method(USBClient.prototype, "status", async () => {
     if (statusFails) throw new Error("Status unavailable");
     return {
       sources: [{ name: "workstation" }, { name: "lab" }],
-      devices: [device],
+      devices: [{ ...device, busId: deviceChanged ? "1-4" : device.busId }],
     };
   });
   t.mock.method(USBClient.prototype, "list", async () => ({
@@ -266,7 +312,10 @@ it("filters imported devices and recovers from stale status without repeating mu
   const { registerUSB } = await import("../src/usb-view.js");
   await registerUSB(
     { subscriptions } as vscode.ExtensionContext,
-    { appendLine() {} } as unknown as vscode.OutputChannel,
+    {
+      appendLine: (line: string) => outputLines.push(line),
+      show() {},
+    } as unknown as vscode.OutputChannel,
   );
   assert.equal(contexts.get("giteaCodespace.usbStatusReady"), true);
   await commands.get("giteaCodespace.usb.attach")!();
@@ -280,14 +329,21 @@ it("filters imported devices and recovers from stale status without repeating mu
   assert.equal(detach.mock.callCount(), 0);
   assert.match(warnings.at(-1)!, /workstation.*VHCI port 0/);
   confirm = true;
+  deviceChanged = true;
+  await commands.get("giteaCodespace.usb.detach")!({ device });
+  assert.equal(detach.mock.callCount(), 0);
+  assert.match(outputLines.at(-1)!, /device changed/);
+  deviceChanged = false;
+  errors.length = 0;
   detachFails = true;
   const previousItems = await tree!.getChildren!();
   await commands.get("giteaCodespace.usb.detach")!();
   assert.deepEqual(detach.mock.calls[0].arguments, [0]);
   assert.equal(errors.length, 1);
-  assert.match(errors[0], /Detach timed out/);
-  assert.match(errors[0], /Status unavailable/);
-  assert.match(view.message, /out of date/);
+  assert.equal(errors[0], "USB operation failed");
+  assert.match(outputLines.at(-1)!, /Detach timed out/);
+  assert.match(outputLines.at(-1)!, /Status unavailable/);
+  assert.match(view.message!, /out of date/);
   assert.equal(contexts.get("giteaCodespace.usbStatusReady"), false);
   await commands.get("giteaCodespace.usb.copyTunnel")!();
   assert.match(copied, /-R usbip.lab:3240:127.0.0.1:3240/);
@@ -303,10 +359,66 @@ it("filters imported devices and recovers from stale status without repeating mu
   statusFails = false;
   await commands.get("giteaCodespace.usb.refresh")!();
   assert.equal(contexts.get("giteaCodespace.usbStatusReady"), true);
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+  view.visible = true;
+  onVisibility();
+  await settle();
+  const beforePoll = statusRead.mock.callCount();
+  statusFails = true;
+  errors.length = 0;
+  t.mock.timers.tick(10000);
+  await settle();
+  assert.equal(statusRead.mock.callCount(), beforePoll + 1);
+  assert.equal(errors.length, 0);
+  assert.match(view.message!, /out of date/);
+  view.visible = false;
+  onVisibility();
+  t.mock.timers.tick(20000);
+  await settle();
+  assert.equal(statusRead.mock.callCount(), beforePoll + 1);
+  statusFails = false;
+  view.visible = true;
+  api.window.state.focused = false;
+  onFocus.forEach((callback) => callback());
+  t.mock.timers.tick(20000);
+  assert.equal(statusRead.mock.callCount(), beforePoll + 1);
+  api.window.state.focused = true;
+  onFocus.forEach((callback) => callback());
+  await settle();
+  assert.equal(contexts.get("giteaCodespace.usbStatusReady"), true);
+  view.visible = false;
+  onVisibility();
+
   commands.clear();
   t.mock.method(USBClient.prototype, "available", async () => false);
+  let endpoints: Endpoint[] = [
+    { port: 3000, label: "App", visibility: "public" },
+  ];
+  let portsFail = false;
+  let writeFails = false;
+  const list = t.mock.method(EndpointClient.prototype, "list", async () => {
+    if (portsFail) throw new Error("Ports unavailable");
+    return endpoints.map((endpoint) => ({ ...endpoint }));
+  });
+  const set = t.mock.method(
+    EndpointClient.prototype,
+    "set",
+    async (endpoint: Endpoint) => {
+      endpoints = [endpoint];
+      if (writeFails) throw new Error("Reply timed out");
+    },
+  );
+  const unpublish = t.mock.method(
+    EndpointClient.prototype,
+    "delete",
+    async () => {
+      endpoints = [];
+    },
+  );
   const { activate } = await import("../src/extension.js");
   await activate({ subscriptions } as vscode.ExtensionContext);
+  await commands.get("giteaCodespace.ports.refresh")!();
   assert.equal(contexts.get("giteaCodespace.usbAvailable"), false);
   assert.ok(
     [...commands.keys()].every(
@@ -318,4 +430,52 @@ it("filters imported devices and recovers from stale status without repeating mu
     copied,
     "ssh -p 2222 -l cs-933ef4a9-54c7-4f36-aad9-32ea72c4c986 ssh.example.com",
   );
+
+  const oldItems = await portTree!.getChildren!();
+  portsFail = true;
+  await commands.get("giteaCodespace.ports.refresh")!();
+  assert.equal(await portTree!.getChildren!(), oldItems);
+  assert.match(portView.message!, /out of date/);
+  portsFail = false;
+  inputResult = "Renamed";
+  onInput = () => {
+    endpoints[0].visibility = "authenticated";
+  };
+  await commands.get("giteaCodespace.ports.rename")!();
+  assert.deepEqual(endpoints[0], {
+    port: 3000,
+    label: "Renamed",
+    visibility: "authenticated",
+  });
+  assert.equal(portView.message, undefined);
+  onInput = () => {};
+  inputResult = undefined;
+  const previousWrites = set.mock.callCount();
+  await commands.get("giteaCodespace.ports.rename")!();
+  assert.equal(set.mock.callCount(), previousWrites);
+  onPick = () => {
+    endpoints[0].label = "Changed elsewhere";
+  };
+  await commands.get("giteaCodespace.ports.visibility")!();
+  assert.equal(endpoints[0].label, "Changed elsewhere");
+  onPick = () => {};
+  inputResult = "After timeout";
+  writeFails = true;
+  const previousReads = list.mock.callCount();
+  await commands.get("giteaCodespace.ports.rename")!();
+  assert.ok(list.mock.callCount() > previousReads);
+  assert.equal((await portTree!.getChildren!())![0].label, "After timeout");
+  assert.equal(contexts.get("giteaCodespace.portsBusy"), false);
+  writeFails = false;
+  onInput = () => {
+    endpoints = [];
+  };
+  const writesBeforeDeletion = set.mock.callCount();
+  await commands.get("giteaCodespace.ports.rename")!();
+  assert.equal(set.mock.callCount(), writesBeforeDeletion);
+  endpoints = [{ port: 3000, label: "App", visibility: "public" }];
+  await commands.get("giteaCodespace.ports.remove")!();
+  assert.equal(unpublish.mock.callCount(), 1);
+  assert.deepEqual(await portTree!.getChildren!(), []);
+  assert.equal(portView.message, undefined);
 });

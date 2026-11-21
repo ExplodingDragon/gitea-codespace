@@ -19,6 +19,7 @@
     "workspace"
   ],
   "main": "./dist/extension.js",
+  "l10n": "./l10n",
   "scripts": {
     "build:bundle": "node esbuild.mjs",
     "build": "pnpm run check && pnpm run build:bundle && mkdir -p dist && vsce package --no-dependencies --out dist/gitea-codespace.vsix",
@@ -32,27 +33,32 @@
       {
         "command": "giteaCodespace.ports.add",
         "title": "%command.add%",
-        "icon": "$(add)"
+        "icon": "$(add)",
+        "enablement": "!giteaCodespace.portsBusy"
       },
       {
         "command": "giteaCodespace.ports.refresh",
         "title": "%command.refresh%",
-        "icon": "$(refresh)"
+        "icon": "$(refresh)",
+        "enablement": "!giteaCodespace.portsBusy"
       },
       {
         "command": "giteaCodespace.ports.rename",
         "title": "%command.rename%",
-        "icon": "$(edit)"
+        "icon": "$(edit)",
+        "enablement": "!giteaCodespace.portsBusy"
       },
       {
         "command": "giteaCodespace.ports.visibility",
         "title": "%command.visibility%",
-        "icon": "$(lock)"
+        "icon": "$(lock)",
+        "enablement": "!giteaCodespace.portsBusy"
       },
       {
         "command": "giteaCodespace.ports.remove",
         "title": "%command.remove%",
-        "icon": "$(trash)"
+        "icon": "$(trash)",
+        "enablement": "!giteaCodespace.portsBusy"
       },
       {
         "command": "giteaCodespace.usb.refresh",
@@ -102,12 +108,7 @@
     "viewsWelcome": [
       {
         "view": "giteaCodespace.ports",
-        "contents": "%portsWelcome%\n[%command.add%](command:giteaCodespace.ports.add)"
-      },
-      {
-        "view": "giteaCodespace.usb",
-        "contents": "%usb.empty%",
-        "when": "giteaCodespace.usbAvailable"
+        "contents": "%portsWelcome%"
       }
     ],
     "menus": {
