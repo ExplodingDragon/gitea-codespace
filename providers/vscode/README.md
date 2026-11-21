@@ -25,6 +25,48 @@ the platform's port and USB management integration.
 }
 ```
 
+### Extension marketplace
+
+Set `extensionsGallery` alongside `settings` and `extensions` in the
+environment-template provider options, or under `customizations.vscode` in
+`devcontainer.json`:
+
+```json
+{
+  "customizations": {
+    "vscode": {
+      "extensionsGallery": {
+        "serviceUrl": "https://extensions.example.com/api"
+      },
+      "extensions": ["golang.go"]
+    }
+  }
+}
+```
+
+The service must implement the [VS Code Extension Gallery API](https://coder.com/docs/code-server/FAQ#how-do-i-use-my-own-extensions-marketplace).
+`serviceUrl` is required. Optional `itemUrl`, `extensionUrlTemplate`, and
+`resourceUrlTemplate` use the URLs and placeholders provided by your marketplace
+for extension details and web resources. URLs accept HTTP or HTTPS; use HTTPS
+for browser access to avoid mixed-content restrictions. Keep credentials out of
+these options because gallery configuration is also exposed to the browser.
+
+Repository configuration replaces the complete template gallery object so query
+and resource addresses from different markets are not accidentally combined.
+If neither specifies a gallery, code-server uses the inherited
+`EXTENSIONS_GALLERY` environment variable, then its default Open VSX marketplace.
+The selected gallery applies to initial extension installation and the running
+IDE, including after restart. Existing extensions are preserved.
+
+The marketplace's responses and redirects determine VSIX download addresses;
+`serviceUrl` alone does not redirect all downloads to that host. To serve packages
+locally, configure the marketplace to return local download and resource URLs.
+The Dev Container must reach its download endpoints, and browsers must reach and
+trust endpoints used by web extensions with suitable cross-origin access.
+Container CA configuration does not install certificates in users' browsers.
+Bundled VSIX files still install locally. Downloads made by extensions themselves,
+such as language servers, follow those extensions' own configuration.
+
 ## Editor defaults
 
 The IDE session trusts its workspaces automatically because Codespace already

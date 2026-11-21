@@ -8,6 +8,11 @@ data=${CODESPACE_WEB_IDE_DATA_DIR:?}
 address=${CODESPACE_WEB_IDE_ADDRESS:?}
 workspace=${CODESPACE_WEB_IDE_WORKSPACE:?}
 
+if [ -f "$data/extensions-gallery.json" ]; then
+  EXTENSIONS_GALLERY=$(cat "$data/extensions-gallery.json")
+  export EXTENSIONS_GALLERY
+fi
+
 child=
 stopping=
 stop() {

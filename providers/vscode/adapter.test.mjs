@@ -9,6 +9,8 @@ import {spawn} from 'node:child_process';
 import test from 'node:test';
 import {parse} from 'jsonc-parser';
 
+const inheritedGallery = {serviceUrl: 'https://inherited.example/api'};
+
 test('VS Code adapter prepares editor defaults and bundled extensions while preserving user configuration', async (t) => {
   const directory = await mkdtemp(path.join(os.tmpdir(), 'codespace-vscode-adapter-'));
   t.after(() => rm(directory, {recursive: true, force: true}));
@@ -17,7 +19,7 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
   const log = path.join(directory, 'commands');
   await mkdir(path.join(root, 'program/bin'), {recursive: true});
   await mkdir(path.join(root, 'assets'), {recursive: true});
-  await writeFile(path.join(root, 'program/bin/code-server'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\n', {mode: 0o755});
+  await writeFile(path.join(root, 'program/bin/code-server'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\nprintf \'%s\\n\' "$EXTENSIONS_GALLERY" >>"$CODESPACE_TEST_LOG.gallery"\n', {mode: 0o755});
   await writeFile(path.join(root, 'assets/gitea-codespace.vsix'), 'extension');
   await writeFile(path.join(root, 'assets/language-pack.vsix'), 'language pack');
   await writeFile(path.join(root, 'assets/extensions.sha256'), 'bundle-version-1\n');
@@ -28,13 +30,19 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
     localizations: [{languageId: 'fr', translations: [{id: 'vscode', path: 'translations/main.json'}]}],
   }}));
   const script = path.join(import.meta.dirname, 'runtime/prepare.mjs');
+  const templateGallery = {
+    serviceUrl: 'https://template.example/api',
+    resourceUrlTemplate: 'https://template.example/assets/{publisher}/{name}/{version}/{path}',
+  };
+  const repositoryGallery = {serviceUrl: 'https://repository.example/api'};
+  const galleryPath = path.join(data, 'extensions-gallery.json');
   await runAdapter(
     script,
     {
       protocolVersion: 1,
       initialize: true,
-      templateOptions: {settings: {'editor.tabSize': 4}, extensions: ['example.tool@1']},
-      repositoryOptions: {settings: {'editor.tabSize': 2}, extensions: ['example.tool@2', 'example.other']},
+      templateOptions: {settings: {'editor.tabSize': 4}, extensions: ['example.tool@1'], extensionsGallery: templateGallery},
+      repositoryOptions: {settings: {'editor.tabSize': 2}, extensions: ['example.tool@2', 'example.other'], extensionsGallery: repositoryGallery},
     },
     root,
     data,
@@ -56,11 +64,18 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
   assert.match(commands, /--force --install-extension .*gitea-codespace\.vsix/);
   assert.match(commands, /--install-extension .*language-pack\.vsix/);
   for (const command of commands.trim().split('\n')) assert.match(command, /^--disable-telemetry --disable-update-check /);
+  assert.deepEqual(JSON.parse(await readFile(galleryPath, 'utf8')), repositoryGallery);
+  assert.deepEqual((await readFile(`${log}.gallery`, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)), [repositoryGallery, repositoryGallery]);
 
   await writeFile(settingsPath, '{\n  // User preferences\n  "editor.tabSize": 8,\n  "chat.disableAIFeatures": false,\n  "telemetry.telemetryLevel": "all",\n}\n');
   await writeFile(localePath, '{"locale":"fr"}\n');
-  const resume = {protocolVersion: 1, initialize: false, repositoryOptions: {settings: {'editor.tabSize': 2}}};
+  const resume = {
+    protocolVersion: 1, initialize: false,
+    templateOptions: {extensionsGallery: templateGallery},
+    repositoryOptions: {settings: {'editor.tabSize': 2}},
+  };
   await runAdapter(script, resume, root, data, log);
+  assert.deepEqual(JSON.parse(await readFile(galleryPath, 'utf8')), templateGallery);
   const resumedSettings = await readFile(settingsPath, 'utf8');
   assert.match(resumedSettings, /\/\/ User preferences/);
   assert.deepEqual(parse(resumedSettings), {
@@ -72,7 +87,9 @@ test('VS Code adapter prepares editor defaults and bundled extensions while pres
   assert.equal(await readFile(log, 'utf8'), commands);
 
   await writeFile(path.join(root, 'assets/extensions.sha256'), 'bundle-version-2\n');
-  await runAdapter(script, resume, root, data, log);
+  await runAdapter(script, {...resume, templateOptions: {}}, root, data, log);
+  await assert.rejects(readFile(galleryPath), {code: 'ENOENT'});
+  assert.deepEqual(JSON.parse((await readFile(`${log}.gallery`, 'utf8')).trim().split('\n').at(-1)), inheritedGallery);
   assert.equal((await readFile(log, 'utf8')).trim().split('\n').length, 3);
   assert.equal(await readFile(path.join(data, '.bundled-extensions-version'), 'utf8'), 'bundle-version-2\n');
 });
@@ -86,10 +103,13 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
   const log = path.join(directory, 'commands');
   const restartMarker = path.join(directory, 'restart-marker');
   await mkdir(path.join(root, 'program/bin'), {recursive: true});
+  await mkdir(data);
+  const gallery = {serviceUrl: 'https://extensions.example/api'};
+  await writeFile(path.join(data, 'extensions-gallery.json'), `${JSON.stringify(gallery)}\n`);
   await mkdir(workspace);
   await writeFile(
     path.join(root, 'program/bin/code-server'),
-    '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\nif [ ! -e "$CODESPACE_TEST_RESTART_MARKER" ]; then\n  : >"$CODESPACE_TEST_RESTART_MARKER"\n  exit 0\nfi\nkill -TERM "$PPID"\nexec sleep 5\n',
+    '#!/bin/sh\nprintf \'%s\\n\' "$*" >>"$CODESPACE_TEST_LOG"\nprintf \'%s\\n\' "$EXTENSIONS_GALLERY" >>"$CODESPACE_TEST_LOG.gallery"\nif [ ! -e "$CODESPACE_TEST_RESTART_MARKER" ]; then\n  : >"$CODESPACE_TEST_RESTART_MARKER"\n  exit 0\nfi\nkill -TERM "$PPID"\nexec sleep 5\n',
     {mode: 0o755},
   );
 
@@ -97,6 +117,7 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
     const child = spawn(path.join(import.meta.dirname, 'runtime/serve'), {
       env: {
         ...process.env,
+        EXTENSIONS_GALLERY: JSON.stringify(inheritedGallery),
         CODESPACE_WEB_IDE_PROGRAM_DIR: root,
         CODESPACE_WEB_IDE_DATA_DIR: data,
         CODESPACE_WEB_IDE_ADDRESS: '127.0.0.1:3080',
@@ -119,12 +140,13 @@ test('VS Code restarts a clean exit and stops on termination', async (t) => {
   assert.match(commands, /--bind-addr 127\.0\.0\.1:3080/);
   assert.match(commands, /--disable-workspace-trust --disable-telemetry --disable-update-check/);
   assert.match(commands, new RegExp(`${workspace.replaceAll(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'm'));
+  assert.deepEqual((await readFile(`${log}.gallery`, 'utf8')).trim().split('\n').map((line) => JSON.parse(line)), [gallery, gallery]);
 });
 
 async function runAdapter(script, request, root, data, log) {
   await new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [script], {
-      env: {...process.env, CODESPACE_WEB_IDE_PROGRAM_DIR: root, CODESPACE_WEB_IDE_DATA_DIR: data, CODESPACE_TEST_LOG: log},
+      env: {...process.env, EXTENSIONS_GALLERY: JSON.stringify(inheritedGallery), CODESPACE_WEB_IDE_PROGRAM_DIR: root, CODESPACE_WEB_IDE_DATA_DIR: data, CODESPACE_TEST_LOG: log},
       stdio: ['pipe', 'inherit', 'inherit'],
     });
     child.once('error', reject);
